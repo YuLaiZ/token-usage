@@ -1,0 +1,21 @@
+{
+  "providers": {
+    "zai": {
+      "name": "智谱主实例",
+      "baseUrl": "https://autoglm-acceleration-api.zhipuai.cn/autoclaw-proxy/proxy/autoclaw",
+      "api": "openai-completions",
+      "models": [
+        {"id": "zai_auto", "name": "Auto"},
+        {"id": "zai_pony-alpha-2", "name": "Pony Alpha 2"}
+      ]
+    },
+    "zai__47e08418-0b24-43eb-9795-310a2389c9a6": {
+      "name": "智谱开放平台",
+      "baseUrl": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "api": "openai-completions",
+      "models": [
+        {"id": "glm-5.2", "name": "GLM-5.2"}
+      ]
+    }
+  }
+}

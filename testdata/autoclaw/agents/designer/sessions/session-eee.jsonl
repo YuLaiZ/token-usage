@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"sess-eee-uuid","timestamp":"2026-07-29T12:00:00.000Z","cwd":"/Users/test/openclaw/designer-ws"}
+{"type":"message","id":"eee-m1","parentId":"root","timestamp":"2026-07-29T12:00:40.000Z","message":{"role":"assistant","api":"openai-completions","provider":"zai","model":"zai_auto","usage":{"input":300,"output":60,"cacheRead":40,"cacheWrite":0,"reasoningTokens":0,"totalTokens":400,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"endTurn","timestamp":1785326440000,"responseId":"resp-eee-m1"}}

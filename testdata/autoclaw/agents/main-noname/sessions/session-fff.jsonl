@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"sess-fff-uuid","timestamp":"2026-07-29T12:00:00.000Z","cwd":"/Users/test/openclaw/noname-ws"}
+{"type":"message","id":"fff-m1","parentId":"root","timestamp":"2026-07-29T12:00:50.000Z","message":{"role":"assistant","api":"openai-completions","provider":"zai","model":"zai_auto","usage":{"input":200,"output":40,"cacheRead":30,"cacheWrite":0,"reasoningTokens":0,"totalTokens":270,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"endTurn","timestamp":1785326450000,"responseId":"resp-fff-m1"}}
