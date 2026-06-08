@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"test-002","timestamp":"2026-06-08T11:00:00Z","entrypoint":"cli","cwd":"/Users/test/IdeaProjects/another-project","version":"1.0.0"}
+{"type":"assistant","sessionId":"test-002","timestamp":"2026-06-08T11:00:05Z","entrypoint":"cli","cwd":"/Users/test/IdeaProjects/another-project","version":"1.0.0","message":{"id":"msg-010","type":"message","role":"assistant","model":"glm-5.1","content":[{"type":"text","text":"处理中"}],"usage":{"input_tokens":1000,"output_tokens":200}}}

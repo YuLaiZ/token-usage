@@ -1,0 +1,4 @@
+{"timestamp":"2026-07-08T04:00:00Z","type":"session_meta","payload":{"id":"vscode-thread","source":"vscode","originator":"","cwd":"/tmp/vscode-project"}}
+{"timestamp":"2026-07-08T04:01:00Z","type":"turn_context","payload":{"model":"gpt-5.5"}}
+{"timestamp":"2026-07-08T04:02:00Z","type":"response_item","payload":{"type":"message","role":"assistant","id":"msg-vscode"}}
+{"timestamp":"2026-07-08T04:03:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":150,"cached_input_tokens":50,"output_tokens":30,"reasoning_output_tokens":8,"total_tokens":180}}}}

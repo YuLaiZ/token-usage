@@ -1,0 +1,3 @@
+{"type":"user","sessionId":"branch-session","timestamp":"2026-07-08T10:00:00+08:00","entrypoint":"cli","cwd":"/tmp/branch","message":{"id":"u-branch-1","role":"user"}}
+{"type":"assistant","sessionId":"branch-session","timestamp":"2026-07-08T10:01:00+08:00","entrypoint":"cli","cwd":"/tmp/branch","message":{"id":"branch-shared","role":"assistant","model":"model-a","usage":{"input_tokens":50,"output_tokens":5}}}
+{"type":"assistant","sessionId":"branch-session","timestamp":"2026-07-08T10:02:00+08:00","entrypoint":"cli","cwd":"/tmp/branch","message":{"id":"branch-parent-only","role":"assistant","model":"model-a","usage":{"input_tokens":60,"output_tokens":6}}}

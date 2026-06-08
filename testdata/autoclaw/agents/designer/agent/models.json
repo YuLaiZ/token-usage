@@ -1,0 +1,12 @@
+{
+  "providers": {
+    "zai": {
+      "name": "智谱设计器实例",
+      "baseUrl": "https://autoglm-acceleration-api.zhipuai.cn/autoclaw-proxy/proxy/autoclaw",
+      "api": "openai-completions",
+      "models": [
+        {"id": "zai_auto", "name": "Auto"}
+      ]
+    }
+  }
+}
