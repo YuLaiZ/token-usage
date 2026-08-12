@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -29,7 +30,14 @@ const githubDownloadBase = "https://github.com/YuLaiZ/token-usage/releases/downl
 const defaultMaxBinaryBytes int64 = 256 << 20
 
 // stageFilePattern 是临时 stage 文件的默认命名模式，前缀固定以便清理。
-const stageFilePattern = ".token-usage-update-*"
+// Windows 上加 .exe 扩展名：版本探针需 exec.Command 执行 stage 文件，
+// Windows CreateProcess 对无 .exe 的 PE 在 ARM64 仿真下报 elevation required。
+var stageFilePattern = func() string {
+	if runtime.GOOS == "windows" {
+		return ".token-usage-update-*.exe"
+	}
+	return ".token-usage-update-*"
+}()
 
 // ErrNonHTTPSRedirect 表示下载/查询链路中出现非 HTTPS 重定向目标，一律拒绝。
 var ErrNonHTTPSRedirect = errors.New("拒绝非 HTTPS 重定向")
