@@ -35,6 +35,7 @@
 | `internal/runmeta/` | 守护进程双文件元数据协议：PID 文件 + runtime-state JSON |
 | `internal/fileutil/` | 跨平台「完整文件替换」`ReplaceCompleteFile` 与 temp 清理 |
 | `internal/service/` | 跨平台开机自启服务定义管理（macOS launchd / Windows 注册表），定义层与运行层解耦 |
+| `internal/update/` | 自更新核心（非 CLI）：版本解析、平台资产映射、`SHA256SUMS` 清单、GitHub Release 查询、下载、来源校验、安装编排。不依赖 `internal/cli` |
 | `internal/model/` | 数据模型（Message、Session、SyncCursor、RouterLog 等） |
 | `internal/db/` | SQLite 连接、Schema 迁移、各表 DAO |
 | `internal/collector/` | 采集引擎（6 个 client collector + CC Switch router adapter） |
@@ -128,6 +129,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 | `runmeta/` | 双文件元数据协议：PID + runtime-state，完整文件替换 | `WritePIDFile()`, `WriteRuntimeState()`, `ReadPIDFile()`, `CleanupStaleMetadata()` |
 | `fileutil/` | 跨平台完整文件替换 + temp 清理 | `ReplaceCompleteFile()`, `CleanupKnownTempFiles()` |
 | `service/` | 跨平台开机自启定义管理（定义层与运行层解耦） | `SyncWith()`, `AutoStartManager.Status()`, `StopCurrent()` |
+| `update/` | 自更新核心（非 CLI）：版本解析、平台资产映射、`SHA256SUMS` 清单、GitHub Release 查询、下载、来源校验、安装编排。直接 import `config`/`control`/`fileutil` 与标准库，`buildinfo` 版本字面量与 `runtimecfg` effective 配置经 seam 注入；**不**依赖 `internal/cli`，CLI 只解析参数、装配依赖、格式化结果 | `Service.Check()`, `Service.Apply()`, `ParseVersion()`, `ParseManifest()`, `AssetName()`, `VerifyProvenance()` |
 | `config/` | 用户配置读写、dotted key get/set、默认模板 | `LoadUserConfigAuto()`, `Set()`, `Get()`, `MarshalUserConfig()`, `DefaultConfigTemplate()` |
 | `model/` | 定义 Message、Session、SyncCursor、RouterLog 等共享结构体 | `Message`, `Session`, `SyncCursor`, `SubtractCache()` |
 | `db/` | SQLite 连接管理、Schema 迁移、各表 DAO | `Open()`, `UpsertMessages()`, `UpsertSessionMeta()`, `SetSyncCursors()`, `QueryRouterLogsByMessageIDs()`, `BackfillRouterFields()` |
@@ -285,6 +287,40 @@ daemon lock 是存活唯一真相源，PID/runtime-state 是**可降级**的定�
 
 catch-up 覆盖「最后一次手工 collect 到监听 ready」的窗口，因此只要 daemon 成功启动并完成 catch-up，期间产生的增量会被补采。catch-up 部分失败会在 `status`（`catch_up=failed`）与 `errors` 中体现。
 
+## 自更新架构
+
+`internal/update` 承载自更新核心。`update` CLI 命令只解析参数、装配依赖、格式化结果——经窄接口 `Check`/`Apply` 调用 `update.Service`。该包直接 import `config`、`control`、`fileutil` 与标准库，`buildinfo` 版本字面量与 `runtimecfg` effective 配置经 seam 注入而非直接 import；**不**依赖 `internal/cli`，使核心可在无 cobra 环境下测试。
+
+### 官方来源验证
+
+唯一受信仓库为 `YuLaiZ/token-usage`。下载 URL 由固定前缀 + 已验证 tag + 预期资产名重构，不信任 Release JSON 的 `browser_download_url`。所有 HTTP 强制 HTTPS、固定 `User-Agent`、有限超时、响应大小上限、状态码检查。
+
+### 更新信任链
+
+若同目录已存在受限的 POSIX 事务 journal，`Apply` 会在版本比较和来源校验之前先处理该本地事务。这一路径不引入新二进制或下载：路径由当前 executable 与 journal nonce 推导，恢复会重新校验已记录的 hash 后才恢复一致的文件和 daemon 状态。
+
+对于新的二进制替换，一次运行只有在每一环都成立时才继续：
+
+1. 请求的 tag 严格解析（`vMAJOR.MINOR.PATCH[-rc.N]`，无前导零）。
+2. 目标版本严格高于当前版本。
+3. 校验当前二进制来源——其 SHA256 必须等于当前版本的官方资产 hash。当前为 `dev`/伪版本、非普通文件或 symlink、或 hash 不匹配，即判定来源不可信，输出人工安装指引而不覆盖。
+4. 下载目标资产并流式 SHA256，与 `SHA256SUMS` 清单（`ParseManifest`）比对。
+5. stage 后的二进制用 `--version` 二次校验通过后才允许替换在用二进制。
+6. 替换在 control lock 内完成（见下文）。
+
+默认只选择最新**稳定版**；只有显式 `--version v…-rc.N` 才会触达预发布版。
+
+### 事务与 daemon 协调
+
+`control.Session` 提供 lock 内 `Stop` 与 `StartWithExecutable`（后者取显式新 target 路径）。`update` 在同一 control lock 回调内执行 `Inspect` →（若运行则）`Stop` → install →（若原运行则）`StartWithExecutable`，或回滚 restart。它**不**在 lock 回调内嵌套调用 `Manager.Start`/`Stop`/`Restart`，以避免自死锁。`update --check` 不创建 `control.Manager`、不获取 control lock、不创建 `~/.token-usage` 配置目录。
+
+### POSIX 与 Windows 替换差异
+
+- **POSIX**：同目录原子 rename。installer 写 backup → rename 新二进制到位 → `fsync`，失败回滚；中断的运行会在下一次 `update` 调用按 journal 恢复。
+- **Windows**：分阶段替换（staged replacement）。父进程（运行中的 `update`）写 helper plan、复制隐藏 helper.exe、捕获父进程身份、spawn 隐藏 helper；父进程随后返回 sentinel `ErrDeferredToHelper`。`Apply` 将其传递为 `ApplyResult.Deferred`，因此 CLI 能明确说明「后台替换已排队」，而不会与安装未完成混淆。父进程退出后，helper 取 control lock、用 `MoveFileEx` 替换运行中的 `.exe`、按需重启 daemon 并写 result；cleanup 步骤（新 target 上的隐藏命令）等 helper 退出后清理临时文件。helper 经显式进程身份（PID + 创建时间）等待父/helper 退出，避免 PID 复用 TOCTOU。`_update-helper` 与 `_update-cleanup` 是隐藏内部命令（`--help` 不可见），勿直接调用。
+
+Windows staged replacement 已实现（代码经 `update.NewWindowsInstaller()` 与 helper runner 接线），但实机验收在发布候选（RC）阶段进行；因此 Windows 上命令报告异步结果，绝不声称已完成。
+
 ## 包依赖
 
 依赖方向自上而下，禁止反向依赖：
@@ -292,11 +328,12 @@ catch-up 覆盖「最后一次手工 collect 到监听 ready」的窗口，因�
 ```text
 cmd/token-usage → cli
 
-cli → control / configapp / runtimecfg / daemon / config / querier / engine / collector / db / logger / buildinfo
+cli → control / configapp / runtimecfg / daemon / config / querier / engine / collector / db / logger / buildinfo / update
 tui → configapp / runtimecfg / config
 configapp → control / runtimecfg / service / fileutil / config
 control → daemon / runmeta / runtimecfg / config
 daemon → runmeta / fileutil / analyzer / engine / db / logger
+update → control / config / fileutil（buildinfo 版本字面量与 runtimecfg effective 配置经 seam 注入，不直接 import）
 runmeta → fileutil
 runtimecfg → config
 buildinfo → 标准库（runtime / runtime/debug）
@@ -307,6 +344,7 @@ fileutil → 标准库（+ Windows 经 golang.org/x/sys）
 
 - `cli` 是装配顶层；`tui` 不直接 import `control`/`service`（经 `configapp` 的 `ApplyFunc` 解耦）。
 - `cli → buildinfo`：根命令装配处调用一次 `buildinfo.Current()` 取快照，供 `--version` flag 与 `version` 子命令共享。`buildinfo` 是叶子包（仅依赖标准库），不被任何底层业务包反向引入。
+- `cli → update`：`update` 命令经窄接口 `Check`/`Apply` 装配真实 `*update.Service`；`update` 直接依赖 `control`/`config`/`fileutil`，`buildinfo` 版本字面量与 `runtimecfg` effective 配置经 seam 注入。`update` 不 import `internal/cli`，使自更新核心可在无 cobra 环境下测试。
 - `control` 依赖 `daemon` 的 lock 判活与 detached spawn（`daemon.IsDaemonRunning` / `daemon.SpawnDetached`），但不调用 `daemon.Run`。
 - `runmeta`/`runtimecfg`/`fileutil`/`buildinfo` 是底层叶子包，避免反向引入业务包。
 - 完整文件替换（`fileutil.ReplaceCompleteFile`）是 `runmeta`/`configapp` 的共享持久化契约。
@@ -324,6 +362,7 @@ fileutil → 标准库（+ Windows 经 golang.org/x/sys）
 | `errors` | `internal/cli/errors.go` |
 | `config` / `config show` / `config get` / `config set` / `config init` | `internal/cli/config_tui.go` / `config_show.go` / `config_get.go` / `config_set.go` / `init.go` |
 | `start` / `stop` / `restart` / `status` | `internal/cli/{start,stop,restart,status}.go` |
+| `update` / `update --check` / `update --version` | `internal/cli/update.go`（核心在 `internal/update`；隐藏的 `_update-helper`/`_update-cleanup` 在 `internal/cli/update_helper*.go`） |
 | `_run`（Hidden） | `internal/cli/run_internal.go` |
 
 > 历史变更：原 `token-usage run --daemon` 命令已删除，由 `start` + Hidden `_run` 取代。旧版用户脚本需迁移至 `token-usage start`。

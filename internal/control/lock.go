@@ -241,6 +241,11 @@ var errPIDInvalid = errors.New("PID 文件格式无效")
 // errPIDMetadataUnavailable lock 持有但 PID 元数据不可用，无法安全 spawn/stop（安全错误）。
 var errPIDMetadataUnavailable = errors.New("守护进程正在运行但 PID 元数据不可用")
 
+// errSessionReleased Session 已释放（control lock 不再持有）时调用其方法返回。
+// 锁内公开 API（Session.Stop / Session.StartWithExecutable）据此拒绝：它们依赖本次
+// WithLock 持有的 control lock，在锁外调用会把「不加锁操作」误用成「已加锁」。
+var errSessionReleased = errors.New("进程控制会话已释放，control lock 不再持有")
+
 // Manager 进程控制管理器。home 在 CLI bootstrap 时解析并传入；不可变。
 type Manager struct {
 	home string

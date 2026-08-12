@@ -807,7 +807,7 @@ func TestAutoClaw_ScanCancel_KeepsAlreadyFoundFiles(t *testing.T) {
 	}
 }
 
-// ---- 用例 19：空 sessions_dir 不 panic（默认路径回填在 analyzer 侧 Task 5 测） ----
+// ---- 空 sessions_dir 不 panic（默认路径回填由 analyzer 层覆盖） ----
 
 func TestAutoClaw_EmptySessionsDir_NoPanic(t *testing.T) {
 	cfg := &config.Config{

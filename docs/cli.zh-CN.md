@@ -30,6 +30,7 @@ token-usage
 ├── restart
 ├── status
 ├── stop
+├── update                                # 从官方 GitHub Release 自更新（--check / --version）
 └── _run                                  # Hidden，由 start/launchd/注册表拉起，勿直接调用
 ```
 
@@ -41,6 +42,7 @@ token-usage
 - 直接执行 `token-usage`（不带任何参数）只打印帮助，既不启动 TUI 也不启动守护进程。
 - 根命令带 `-v, --version` flag（单行短输出），同时提供 `version` 子命令（多行详细输出）；二者详见下文「version」。
 - `completion` 是 Cobra 提供的内置命令，只向标准输出生成 bash/zsh/fish/PowerShell 补全脚本，不读取配置或数据库。
+- `update` 是顶层自更新命令（标志 `--check` 与 `--version`）；它是唯一会改写当前运行二进制的命令，且仅当当前二进制是官方 Release 资产时才执行。详见下文「[update](#update)」。
 
 ## 通用约定
 
@@ -412,6 +414,60 @@ catch-up 经 analyzer 的串行化锁 Submit（与实时触发同一路径，保
 
 - 父 lease 路径（`start` spawn 的 `_run`）：父进程持进程控制锁并通过 pipe lease 授权 child，child 不抢锁。
 - 独立路径（launchd/注册表直接拉起）：无合法父 lease 时自行获取进程控制锁（15s 超时；超时则成功退出码 0 不进入主循环，避免与正在进行的控制操作冲突，并在 macOS 上避免 launchd KeepAlive 立即重拉）。
+
+## update
+
+从官方 GitHub Release 原地更新 `token-usage` 二进制。CLI 只解析参数、装配依赖、格式化结果，自更新核心位于 `internal/update`（见[架构设计](architecture.zh-CN.md)）。
+
+```text
+token-usage update
+token-usage update --check
+token-usage update --version <tag>
+```
+
+| 形式 | 作用 |
+|------|------|
+| `update` | 更新到最新稳定版。若当前二进制同目录存在一次中断的 POSIX 更新留下的受限事务 journal，先完成恢复；之后仅当目标严格高于当前版本且当前来源可信时才继续新替换：下载资产、与 `SHA256SUMS` 清单比对 SHA256、stage `--version` 二次校验、替换二进制并按原运行态恢复 daemon。 |
+| `update --check` | 只读检查；不创建任何本地文件（不创建配置目录/锁/日志/数据库/服务定义）。 |
+| `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | 更新（或加 `--check` 后仅检查）指定精确版本 tag。`--version` 接受严格 Release tag（`v` 前缀、`MAJOR.MINOR.PATCH`、可选 `-rc.N`、无前导零）；非法值在任何网络请求前即报错。 |
+
+`--check` 与 `--version` 可组合，如 `update --check --version v0.1.0-rc.1` 只检查候选版。
+
+标志：
+
+- `--check`（bool）：只读检查，不写本地文件。
+- `--version`（string）：目标 Release tag。接受 `vMAJOR.MINOR.PATCH` 与 `vMAJOR.MINOR.PATCH-rc.N`（无前导零，`N >= 1`，无 build metadata）。
+
+`update` 不接受位置参数（`Args: NoArgs`）。
+
+### 稳定版 / RC 选择
+
+默认 `update` 只解析最新**稳定版**，绝不选择 prerelease。只有用 `--version` 显式指定 rc tag（如 `--version v0.1.0-rc.1`）时才会查询/安装预发布版。
+
+### 信任与来源校验
+
+`update` 仅在目标严格更高且当前来源可信时才覆盖当前二进制。满足以下任一条件即判定当前来源**不可信**（`update` 输出人工安装指引，不原地覆盖）：
+
+- 当前 `Version` 为 `dev` 或伪版本（如来自 `make build`、`make build-all` 或 `go install`）；
+- 当前二进制不是普通文件，或为 symlink；
+- 当前二进制的 SHA256 与当前版本的官方资产 hash 不一致。
+
+唯一受信仓库为 `YuLaiZ/token-usage`；下载 URL 重构、清单与分阶段安装信任链见[架构设计](architecture.zh-CN.md)。
+
+该来源安全门约束的是新的二进制替换。恢复已经记录的本地事务不会下载或接受新来源：只使用由当前 executable 与 journal nonce 推导出的同目录路径，并重新校验 journal 中记录的 hash 后恢复一致状态。
+
+### 退出码
+
+- `0`：已完成的预期状态——无稳定 Release、已是最新、发现可更新（`--check`）、Windows 后台替换已排队，或恢复确认上次中断时新二进制已经落地。
+- 非 `0`：指定 tag 不存在、当前来源无法安全覆盖、下载/清单/checksum/stage `--version` 校验被拒绝、恢复后回到旧版本、安装尚未完成、安装/回滚/daemon 重启失败，或 `--version` 非法。
+
+### 副作用边界
+
+`update --check` 完全只读。真正 `update` 发现已有事务 journal 时先完成恢复；否则仅在确有更新且来源可信时才停 daemon → 替换二进制 → 重启；无更新时不启停 daemon，也不重写 `config.toml`、数据库、日志、macOS LaunchAgent plist 或 Windows 注册表。
+
+### Windows 异步替换
+
+Windows 上替换运行中的 `.exe` 受限，自更新把替换交给后台 helper 后返回。helper 成功启动后，命令会明确说明「后台替换已排队」，以 `0` 退出，并提示稍后运行 `token-usage version` 或 `token-usage update --check` 确认最终版本，**不声称已完成**。macOS/POSIX 为同步原子替换（同目录 backup + rename + fsync，失败回滚 + 下一次 `update` 调用按 journal 恢复）。
 
 ## 配置文件
 

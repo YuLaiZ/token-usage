@@ -79,6 +79,14 @@ func ReplaceCompleteFile(target string, data []byte, mode fs.FileMode) error {
 	return replaceCompleteFileWithOps(target, data, mode, defaultReplaceOps())
 }
 
+// RenameReplace 原子地把 from 移动到 to，覆盖已存在的 to。
+// POSIX 用同目录 os.Rename；Windows 用 MoveFileEx + MOVEFILE_REPLACE_EXISTING。
+// 导出版本供需要直接做「移动覆盖」（而非完整写）的调用方复用，例如自更新 helper
+// 的 FileMover 把下载的新二进制替换到位。
+func RenameReplace(from, to string) error {
+	return renameReplace(from, to)
+}
+
 // replaceCompleteFileWithOps 用注入的 ops 执行完整替换,便于测试各失败点。
 func replaceCompleteFileWithOps(target string, data []byte, mode fs.FileMode, ops replaceOps) error {
 	if strings.TrimSpace(target) == "" {

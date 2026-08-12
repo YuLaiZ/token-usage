@@ -35,6 +35,7 @@
 | `internal/runmeta/` | Daemon two-file metadata protocol: PID file plus runtime-state JSON. |
 | `internal/fileutil/` | Cross-platform complete-file replacement through `ReplaceCompleteFile`, plus temporary-file cleanup. |
 | `internal/service/` | Cross-platform autostart service-definition management (macOS launchd / Windows Registry), decoupling definition and runtime layers. |
+| `internal/update/` | Self-update core (non-CLI): version parsing, platform asset mapping, the `SHA256SUMS` manifest, GitHub Release lookup, download, source verification, and install orchestration. Does not depend on `internal/cli`. |
 | `internal/model/` | Data models such as Message, Session, SyncCursor, and RouterLog. |
 | `internal/db/` | SQLite connections, schema migration, and table DAOs. |
 | `internal/collector/` | Collection engine: six client collectors plus the CC Switch router adapter. |
@@ -128,6 +129,7 @@ Queries directly SUM `fresh_input_tokens` and `total_tokens`: values come from t
 | `runmeta/` | Two-file metadata protocol: PID plus runtime-state, using complete-file replacement. | `WritePIDFile()`, `WriteRuntimeState()`, `ReadPIDFile()`, `CleanupStaleMetadata()` |
 | `fileutil/` | Cross-platform complete-file replacement and temporary-file cleanup. | `ReplaceCompleteFile()`, `CleanupKnownTempFiles()` |
 | `service/` | Cross-platform autostart-definition management, decoupled from the runtime layer. | `SyncWith()`, `AutoStartManager.Status()`, `StopCurrent()` |
+| `update/` | Self-update core (non-CLI): version parsing, platform asset mapping, the `SHA256SUMS` manifest, GitHub Release lookup, download, source verification, and install orchestration. Directly imports `config`/`control`/`fileutil` plus the standard library, with the `buildinfo` version literal and `runtimecfg` effective config injected via seams; does **not** depend on `internal/cli`, and the CLI only parses flags, assembles dependencies, and formats results. | `Service.Check()`, `Service.Apply()`, `ParseVersion()`, `ParseManifest()`, `AssetName()`, `VerifyProvenance()` |
 | `config/` | User-configuration read/write, dotted-key get/set, and default template. | `LoadUserConfigAuto()`, `Set()`, `Get()`, `MarshalUserConfig()`, `DefaultConfigTemplate()` |
 | `model/` | Shared structures including Message, Session, SyncCursor, and RouterLog. | `Message`, `Session`, `SyncCursor`, `SubtractCache()` |
 | `db/` | SQLite connection management, schema migration, and table DAOs. | `Open()`, `UpsertMessages()`, `UpsertSessionMeta()`, `SetSyncCursors()`, `QueryRouterLogsByMessageIDs()`, `BackfillRouterFields()` |
@@ -285,6 +287,40 @@ This contract covers PID files, runtime-state, and `config.toml` (written by `Ap
 
 Catch-up covers the window from the last manual collection until monitoring is ready. As long as the daemon starts successfully and finishes catch-up, incremental data created in that window is collected. Partial catch-up failure appears in `status` (`catch_up=failed`) and `errors`.
 
+## Self-Update Architecture
+
+`internal/update` carries the self-update core. The `update` CLI command only parses flags, assembles dependencies, and formats results — it calls `update.Service` through a narrow `Check`/`Apply` interface. The package directly imports `config`, `control`, `fileutil`, and the standard library, with the `buildinfo` version literal and `runtimecfg` effective config injected via seams rather than imported; it does **not** depend on `internal/cli`, keeping the core testable without cobra.
+
+### Official-source verification
+
+The sole trusted repository is `YuLaiZ/token-usage`. Download URLs are reconstructed from a fixed prefix plus the verified tag and the expected asset name; the Release JSON's `browser_download_url` is never trusted. All HTTP is HTTPS-only with a fixed `User-Agent`, bounded timeouts, a response-size cap, and status-code checks.
+
+### Update trust chain
+
+If a restricted same-directory POSIX transaction journal already exists, `Apply` resolves that local transaction before version comparison or source verification. This path introduces no new binary or download: its paths are derived from the current executable and journal nonce, and recovery rechecks the recorded hashes before it restores a consistent file and daemon state.
+
+For a new replacement, a run proceeds only when every link holds:
+
+1. The requested tag is parsed strictly (`vMAJOR.MINOR.PATCH[-rc.N]`; no leading zeros).
+2. The target version is strictly higher than the current one.
+3. The current binary's source is verified — its SHA256 must equal the official asset hash for the current version. A `dev`/pseudo version, a non-regular file or symlink, or a hash mismatch marks the source untrusted and yields manual-install guidance instead of an overwrite.
+4. The target asset is downloaded with streaming SHA256 and compared against the `SHA256SUMS` manifest (`ParseManifest`).
+5. The staged binary is re-checked with `--version` (second check) before it may replace the live binary.
+6. Replacement happens inside the control lock (see below).
+
+By default only the latest **stable** release is selected; a prerelease is reached only through an explicit `--version v…-rc.N`.
+
+### Transaction and daemon coordination
+
+`control.Session` exposes lock-held `Stop` and `StartWithExecutable` (the latter takes an explicit new target path). Within one control-lock callback, `update` performs `Inspect` → (if running) `Stop` → install → (if it was running) `StartWithExecutable`, or rollback-restart. It does **not** nest `Manager.Start`/`Stop`/`Restart` inside the lock callback, which avoids self-deadlock. `update --check` creates no `control.Manager`, acquires no control lock, and creates no `~/.token-usage` configuration directory.
+
+### POSIX vs Windows replacement
+
+- **POSIX**: same-directory atomic rename. The installer writes a backup, renames the new binary into place, `fsync`s, and on failure rolls back; an interrupted run is recovered from its journal on the next `update` invocation.
+- **Windows**: staged replacement. The parent process (the running `update`) writes a helper plan, copies a hidden helper executable, captures the parent's process identity, and spawns the hidden helper; the parent then returns the sentinel `ErrDeferredToHelper`. `Apply` carries this as `ApplyResult.Deferred`, so the CLI can explicitly report that background replacement has been queued rather than confuse it with an incomplete installation. After the parent exits, the helper takes the control lock, replaces the running `.exe` with `MoveFileEx`, restarts the daemon if needed, and writes its result; a cleanup step (a hidden command on the new target) then removes the temporary files once the helper has exited. The helper waits on the parent/helper via explicit process identity (PID plus creation time), avoiding PID-reuse TOCTOU. The `_update-helper` and `_update-cleanup` commands are hidden internal commands (absent from `--help`) and must not be invoked directly.
+
+Windows staged replacement is implemented (the code path is wired through `update.NewWindowsInstaller()` and the helper runner), but real-machine acceptance is performed during the release-candidate stage; on Windows the command therefore reports an asynchronous result and never claims completion.
+
 ## Package Dependencies
 
 Dependencies flow from top to bottom; reverse dependencies are forbidden:
@@ -292,11 +328,12 @@ Dependencies flow from top to bottom; reverse dependencies are forbidden:
 ```text
 cmd/token-usage → cli
 
-cli → control / configapp / runtimecfg / daemon / config / querier / engine / collector / db / logger / buildinfo
+cli → control / configapp / runtimecfg / daemon / config / querier / engine / collector / db / logger / buildinfo / update
 tui → configapp / runtimecfg / config
 configapp → control / runtimecfg / service / fileutil / config
 control → daemon / runmeta / runtimecfg / config
 daemon → runmeta / fileutil / analyzer / engine / db / logger
+update → control / config / fileutil (buildinfo version literal and runtimecfg effective config injected via seams, not imported)
 runmeta → fileutil
 runtimecfg → config
 buildinfo → standard library (runtime / runtime/debug)
@@ -307,6 +344,7 @@ Key points:
 
 - `cli` is the top-level composition layer; `tui` does not import `control` or `service` directly (it is decoupled through `configapp`'s `ApplyFunc`).
 - `cli → buildinfo`: root-command assembly calls `buildinfo.Current()` once to take a snapshot shared by the `--version` flag and `version` subcommand. `buildinfo` is a leaf package that depends only on the standard library and is not imported back into lower-level business packages.
+- `cli → update`: the `update` command assembles a real `*update.Service` through a narrow `Check`/`Apply` interface; `update` depends on `control`/`config`/`fileutil` directly, while the `buildinfo` version literal and `runtimecfg` effective config are injected via seams. `update` does not import `internal/cli`, keeping the self-update core testable without cobra.
 - `control` depends on daemon lock liveness and detached spawn (`daemon.IsDaemonRunning` / `daemon.SpawnDetached`), but it does not call `daemon.Run`.
 - `runmeta`, `runtimecfg`, `fileutil`, and `buildinfo` are lower-level leaf packages and must avoid reverse business-package imports.
 - Complete-file replacement (`fileutil.ReplaceCompleteFile`) is the shared persistence contract of `runmeta` and `configapp`.
@@ -324,6 +362,7 @@ See the [CLI Reference](cli.md) for command-level details (arguments, flags, exi
 | `errors` | `internal/cli/errors.go` |
 | `config` / `config show` / `config get` / `config set` / `config init` | `internal/cli/config_tui.go` / `config_show.go` / `config_get.go` / `config_set.go` / `init.go` |
 | `start` / `stop` / `restart` / `status` | `internal/cli/{start,stop,restart,status}.go` |
+| `update` / `update --check` / `update --version` | `internal/cli/update.go` (core in `internal/update`; the hidden `_update-helper`/`_update-cleanup` helpers live in `internal/cli/update_helper*.go`) |
 | `_run` (hidden) | `internal/cli/run_internal.go` |
 
 > Historical change: the former `token-usage run --daemon` command was removed and replaced by `start` plus hidden `_run`. Scripts written for older versions must migrate to `token-usage start`.

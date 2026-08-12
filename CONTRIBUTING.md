@@ -62,6 +62,17 @@ For documentation-only changes, at minimum verify that relative links resolve, c
 
 When changing a collector, router adapter, configuration behavior, or daemon lifecycle, include tests for the changed contract and update the architecture/CLI documentation where relevant. Preserve message-level token accounting semantics and do not silently change historical-data behavior.
 
+### Release builds (release-build / release-verify)
+
+The `make build` and `make build-all` targets inject `VERSION=dev` by default, so their artifacts report `version: dev` and **cannot** be published or self-updated. Before a release, build the three official assets and `SHA256SUMS` reproducibly and verify them locally:
+
+```bash
+make release-build VERSION=vX.Y.Z[-rc.N] COMMIT=<commit> BUILD_TIME=<UTC RFC3339>
+make release-verify VERSION=vX.Y.Z[-rc.N]
+```
+
+`release-build` rejects `dev` and any tag that does not match the version contract (`vMAJOR.MINOR.PATCH[-rc.N]`, no leading zeros), then produces `dist/token-usage-darwin-arm64`, `dist/token-usage-darwin-amd64`, `dist/token-usage-windows-amd64.exe`, and a strictly-sorted `dist/SHA256SUMS`. `release-verify` re-validates the manifest format and hashes through the same `internal/update` parsing path used by the updater and, when the host matches a supported platform, checks the injected `--version`. Only `release-build` artifacts may be attached to a GitHub Release.
+
 ## Documentation Policy
 
 English is the default public documentation. The Chinese versions are complete counterparts:
@@ -96,6 +107,15 @@ Before opening a pull request, make sure it:
 - Does not contain generated binaries, local databases, logs, credentials, or unrelated changes.
 
 Keep one pull request focused on one topic. Small, reviewable changes with clear verification evidence are much easier to evaluate.
+
+## Releases and Tagging
+
+Only authorized maintainers may create version tags or GitHub Releases.
+
+- The release workflow (`.github/workflows/release.yml`) runs only on a tag matching `v*`. It first verifies the tag contract and that the tag's target commit equals the event commit (for both annotated and lightweight tags), then runs `go test` / `go vet` / `make release-build` / `make release-verify`, and fails if a Release with the same name already exists (it never overwrites, patches, deletes, or moves assets).
+- Contributors must not push `v*` tags or publish Releases themselves. Release candidates (`-rc.N`) are tagged as prereleases by the workflow.
+
+Propose a release by opening an issue; a maintainer will tag and publish it.
 
 ## Reporting Issues
 
