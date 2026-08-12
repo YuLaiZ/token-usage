@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -68,10 +69,22 @@ func sqliteDSN(path string) (string, error) {
 	}
 	u := url.URL{
 		Scheme:   "file",
-		Path:     filepath.ToSlash(absolute),
+		Path:     fileURIPath(filepath.ToSlash(absolute)),
 		RawQuery: values.Encode(),
 	}
 	return u.String(), nil
+}
+
+// fileURIPath 把 file URI 的 path 段规范化为 SQLite 可解析的形式。
+// Windows 盘符路径（C:/Users/...）不以 / 开头，直接放进 url.URL 会生成
+// "file:C:/..."——SQLite 会把 C: 当作 URI authority 报 invalid uri authority。
+// 补前导斜杠生成 "file:///C:/..."（空 host + 盘符路径）是 SQLite 的合法形式；
+// POSIX 路径本已以 / 开头，保持原样。
+func fileURIPath(slashed string) string {
+	if !strings.HasPrefix(slashed, "/") {
+		return "/" + slashed
+	}
+	return slashed
 }
 
 func (d *DB) Close() error {

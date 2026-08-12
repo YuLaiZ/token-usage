@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -248,5 +249,35 @@ func TestDB_ContextMethods(t *testing.T) {
 	}
 	if c != "x" {
 		t.Fatalf("QueryRowContext 结果 = %q", c)
+	}
+}
+
+// TestFileURIPath_WindowsDrive Windows 盘符路径须补前导斜杠，
+// 否则 url.URL{Scheme:"file"} 生成 "file:C:/..." 时 SQLite 把 C: 当 URI
+// authority 报 invalid uri authority（Windows 实机复现的根因）。
+func TestFileURIPath_WindowsDrive(t *testing.T) {
+	cases := map[string]string{
+		"C:/Users/yulaiz/.token-usage/usage.db": "/C:/Users/yulaiz/.token-usage/usage.db",
+		"/Users/yulaiz/.token-usage/usage.db":   "/Users/yulaiz/.token-usage/usage.db",
+		"C:/x.db":                               "/C:/x.db",
+	}
+	for in, want := range cases {
+		if got := fileURIPath(in); got != want {
+			t.Errorf("fileURIPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestFileURIPath_ProducesParseableURI 补斜杠后的 path 放进 url.URL 生成的
+// DSN 必须以 file:/// 开头（空 host），保证 SQLite URI 解析不把盘符当 authority。
+func TestFileURIPath_ProducesParseableURI(t *testing.T) {
+	u := url.URL{Scheme: "file", Path: fileURIPath("C:/Users/y/usage.db")}
+	dsn := u.String()
+	if got, want := dsn, "file:///C:/Users/y/usage.db"; got != want {
+		t.Errorf("DSN = %q, want %q", got, want)
+	}
+	u2 := url.URL{Scheme: "file", Path: fileURIPath("/Users/y/usage.db")}
+	if got, want := u2.String(), "file:///Users/y/usage.db"; got != want {
+		t.Errorf("POSIX DSN = %q, want %q", got, want)
 	}
 }
