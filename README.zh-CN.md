@@ -21,9 +21,71 @@
 
 ### 安装
 
-任选下列一种安装方式。推荐方式 A（手动二进制安装），不依赖 Go 环境，二进制与配置/日志统一收纳在 `~/.token-usage/`；方式 D（官方 Release 二进制）是唯一支持原地自更新的来源。
+任选下列一种安装方式。推荐方式 A（官方 Release 二进制）：无需 Go 环境、一条命令即可安装，也是唯一支持原地自更新的来源。
 
-#### 方式 A：手动二进制安装（推荐）
+#### 方式 A：官方 Release 二进制（推荐——支持自更新）
+
+**复制给 AI Agent**（它读到这段指令后自行完成安装）：
+
+```text
+请在本机安装 token-usage CLI：从 github.com/YuLaiZ/token-usage/releases 下载与当前
+平台匹配的官方 Release 二进制（macOS Apple Silicon 用 token-usage-darwin-arm64，
+macOS Intel 用 token-usage-darwin-amd64，Windows 用 token-usage-windows-amd64.exe），
+用该 Release 的 SHA256SUMS 校验 SHA256，安装到 PATH 中的目录（如 /usr/local/bin），
+最后运行 token-usage version 确认（运行 token-usage --help 查看可用命令）。
+```
+
+或手动执行命令：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.sh | bash
+```
+
+脚本自动检测 CPU 架构、下载最新官方 Release（稳定版发布前含预发布）、按官方 `SHA256SUMS` 校验后安装到 `/usr/local/bin`。指定版本：
+
+```bash
+TAG=v0.1.0-rc.1 curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.sh | bash
+```
+
+已发布的资产：
+
+- `token-usage-darwin-arm64`（macOS Apple Silicon）
+- `token-usage-darwin-amd64`（macOS Intel）
+- `token-usage-windows-amd64.exe`（Windows）
+
+Windows：从 [Releases 页面](https://github.com/YuLaiZ/token-usage/releases) 下载 `token-usage-windows-amd64.exe`，重命名为 `token-usage.exe`，放到 `PATH` 中的目录，运行 `token-usage version` 确认。
+
+macOS 手动安装（不希望通过网络管道执行脚本时）：
+
+```bash
+# latest 链接需要稳定版存在；当前仅有预发布（prerelease）时它返回 404。
+# 请用 Releases 页面最新 tag 的下载链接（下方示例固定为 v0.1.0-rc.1）：
+curl -L -o token-usage https://github.com/YuLaiZ/token-usage/releases/download/v0.1.0-rc.1/token-usage-darwin-arm64
+chmod +x token-usage
+sudo mv token-usage /usr/local/bin/token-usage
+token-usage --help
+token-usage version
+```
+
+从官方 Release 安装的二进制可原地自更新：
+
+```bash
+token-usage update                  # 更新到最新稳定版
+token-usage update --check          # 只检查，不写任何本地文件
+token-usage update --version v0.2.0 # 更新（或检查）指定版本 tag
+```
+
+完整标志、退出码与副作用边界见 [CLI 参考](docs/cli.zh-CN.md)。
+
+> **开发构建不能自动更新**：`make build`、`make build-all` 或 `go install` 产物的 `Version` 为 `dev`（或伪版本），`update` 会判定来源不可信并给出人工安装指引，不会原地覆盖。
+>
+> **自更新支持平台**：`darwin/arm64`、`darwin/amd64`、`windows/amd64` 有官方资产；其他平台 `update` 会提示「无官方资产，请手动安装」。
+>
+> **人工升级边界**：`update` 只在当前二进制是所报告版本的官方 Release 资产时才覆盖（当前二进制的 SHA256 必须等于该版本官方资产的 hash）。若当前二进制来自 `go install`/本地构建/软链，或版本/hash 不匹配，`update` 不会覆盖，而是输出人工安装指引。
+>
+> **中断更新恢复**：来源安全门约束的是新的 Release 下载。若此前 POSIX 更新遗留了受限的本地事务 journal，后续 `update` 会先把这笔已记录的事务恢复为一致状态；恢复期间不会接受或下载新的二进制。
+
+#### 方式 B：手动二进制安装
 
 **macOS**：
 
@@ -60,7 +122,7 @@ token-usage --version
 >
 > 若未开启开发者模式且无管理员权限，`mklink` 会失败。临时替代：用 `Copy-Item` 复制代替软链，但每次升级后需重新复制。
 
-#### 方式 B：go install（需 Go 环境）
+#### 方式 C：go install（需 Go 环境）
 
 ```bash
 go install github.com/YuLaiZ/token-usage/cmd/token-usage@latest
@@ -68,7 +130,7 @@ go install github.com/YuLaiZ/token-usage/cmd/token-usage@latest
 
 二进制装到 `$GOBIN`（默认 `~/go/bin`），需自行确保该目录在 PATH 中。配置和日志仍在 `~/.token-usage/`。安装后可用 `token-usage --version` 验证。
 
-#### 方式 C：直接 go build（开发用）
+#### 方式 D：直接 go build（开发用）
 
 ```bash
 git clone https://github.com/YuLaiZ/token-usage.git && cd token-usage
@@ -76,43 +138,6 @@ go build -o token-usage ./cmd/token-usage
 ./token-usage --help
 ./token-usage --version
 ```
-
-#### 方式 D：官方 Release 二进制（支持自更新）
-
-从 [Releases 页面](https://github.com/YuLaiZ/token-usage/releases) 下载对应平台的预编译二进制，放到 `PATH` 中。已发布的资产：
-
-- `token-usage-darwin-arm64`（macOS Apple Silicon）
-- `token-usage-darwin-amd64`（macOS Intel）
-- `token-usage-windows-amd64.exe`（Windows）
-
-macOS 示例：
-
-```bash
-curl -L -o token-usage https://github.com/YuLaiZ/token-usage/releases/latest/download/token-usage-darwin-arm64
-chmod +x token-usage
-sudo mv token-usage /usr/local/bin/token-usage
-token-usage version
-```
-
-Windows 上下载 `token-usage-windows-amd64.exe`，重命名为 `token-usage.exe`，放到 `PATH` 中的目录，运行 `token-usage version` 确认。
-
-从官方 Release 安装的二进制可原地自更新：
-
-```bash
-token-usage update                  # 更新到最新稳定版
-token-usage update --check          # 只检查，不写任何本地文件
-token-usage update --version v0.2.0 # 更新（或检查）指定版本 tag
-```
-
-完整标志、退出码与副作用边界见 [CLI 参考](docs/cli.zh-CN.md)。
-
-> **开发构建不能自动更新**：`make build`、`make build-all` 或 `go install` 产物的 `Version` 为 `dev`（或伪版本），`update` 会判定来源不可信并给出人工安装指引，不会原地覆盖。
->
-> **自更新支持平台**：`darwin/arm64`、`darwin/amd64`、`windows/amd64` 有官方资产；其他平台 `update` 会提示「无官方资产，请手动安装」。
->
-> **人工升级边界**：`update` 只在当前二进制是所报告版本的官方 Release 资产时才覆盖（当前二进制的 SHA256 必须等于该版本官方资产的 hash）。若当前二进制来自 `go install`/本地构建/软链，或版本/hash 不匹配，`update` 不会覆盖，而是输出人工安装指引。
->
-> **中断更新恢复**：来源安全门约束的是新的 Release 下载。若此前 POSIX 更新遗留了受限的本地事务 journal，后续 `update` 会先把这笔已记录的事务恢复为一致状态；恢复期间不会接受或下载新的二进制。
 
 ### 首次使用
 

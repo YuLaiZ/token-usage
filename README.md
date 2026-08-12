@@ -21,9 +21,74 @@ A local LLM usage analytics tool for collecting, analyzing, and querying token u
 
 ### Installation
 
-Choose one of the installation methods below. Option A (manual binary installation) is recommended because it does not require Go and keeps the binary, configuration, and logs together under `~/.token-usage/`. Option D (official Release binary) is the only source that supports in-place self-update.
+Choose one of the installation methods below. Option A (official Release binary) is recommended: it requires no Go toolchain, works with one command, and is the only source that supports in-place self-update.
 
-#### Option A: Manual binary installation (recommended)
+#### Option A: Official Release binary (recommended — enables self-update)
+
+**Paste to an AI agent** (it reads this instruction and performs the install itself):
+
+```text
+Install the token-usage CLI on this machine: download the official Release binary
+matching this platform (token-usage-darwin-arm64 for macOS Apple Silicon,
+token-usage-darwin-amd64 for macOS Intel, token-usage-windows-amd64.exe for Windows)
+from github.com/YuLaiZ/token-usage/releases, verify its SHA256 against the
+SHA256SUMS file of that release, install it into a directory on PATH (e.g.
+/usr/local/bin), and confirm with `token-usage version` (run `token-usage --help`
+to see the available commands).
+```
+
+Or run it manually:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.sh | bash
+```
+
+The script detects your architecture, downloads the newest official Release (prereleases included until a stable release exists), verifies its SHA256 against the official `SHA256SUMS`, and installs it to `/usr/local/bin`. To pin a specific release tag:
+
+```bash
+TAG=v0.1.0-rc.1 curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.sh | bash
+```
+
+Published assets:
+
+- `token-usage-darwin-arm64` (macOS Apple Silicon)
+- `token-usage-darwin-amd64` (macOS Intel)
+- `token-usage-windows-amd64.exe` (Windows)
+
+Windows: download `token-usage-windows-amd64.exe` from the [Releases page](https://github.com/YuLaiZ/token-usage/releases), rename it to `token-usage.exe`, place it in a directory on `PATH`, and run `token-usage version` to confirm.
+
+Manual install on macOS (when you prefer not to pipe a script from the network):
+
+```bash
+# The `latest` link requires a stable release; while only prereleases are
+# published it returns 404. Use the newest tag from the Releases page
+# (the example below pins v0.1.0-rc.1):
+curl -L -o token-usage https://github.com/YuLaiZ/token-usage/releases/download/v0.1.0-rc.1/token-usage-darwin-arm64
+chmod +x token-usage
+sudo mv token-usage /usr/local/bin/token-usage
+token-usage --help
+token-usage version
+```
+
+A binary installed from an official Release can update itself in place:
+
+```bash
+token-usage update                  # update to the latest stable release
+token-usage update --check          # only check; writes no local files
+token-usage update --version v0.2.0 # update (or check) a specific release tag
+```
+
+See the [CLI Reference](docs/cli.md) for the full set of flags, exit codes, and side-effect boundaries.
+
+> **Development builds cannot self-update.** Binaries from `make build`, `make build-all`, or `go install` report `Version = dev` (or a pseudo-version); `update` treats such a source as untrusted and prints manual-install guidance instead of overwriting it.
+>
+> **Supported platforms for self-update:** `darwin/arm64`, `darwin/amd64`, and `windows/amd64` have official assets. On any other platform, `update` reports that there is no official asset and asks you to install manually.
+>
+> **Manual-upgrade boundary:** `update` only replaces the current binary when it is the official Release asset for the reported version — its SHA256 must match the official asset hash for that version. If the current binary is a `go install`/locally built/symlinked copy, or its version or hash do not match, `update` does not overwrite it and prints manual-install guidance instead.
+>
+> **Interrupted-update recovery:** the source gate applies to a new Release download. If a previous POSIX update left its restricted local transaction journal behind, a later `update` first restores that recorded transaction to a consistent state; it does not accept or download a new binary during recovery.
+
+#### Option B: Manual binary installation
 
 **macOS**:
 
@@ -60,7 +125,7 @@ token-usage --version
 >
 > Without Developer Mode or administrator privileges, `mklink` fails. As a temporary alternative, use `Copy-Item` instead of a symlink, but repeat the copy after every upgrade.
 
-#### Option B: `go install` (requires Go)
+#### Option C: `go install` (requires Go)
 
 ```bash
 go install github.com/YuLaiZ/token-usage/cmd/token-usage@latest
@@ -68,7 +133,7 @@ go install github.com/YuLaiZ/token-usage/cmd/token-usage@latest
 
 The binary is installed to `$GOBIN` (by default `~/go/bin`); ensure that directory is on `PATH`. Configuration and logs remain under `~/.token-usage/`. Verify the installation with `token-usage --version`.
 
-#### Option C: Build directly with Go (for development)
+#### Option D: Build directly with Go (for development)
 
 ```bash
 git clone https://github.com/YuLaiZ/token-usage.git && cd token-usage
@@ -76,43 +141,6 @@ go build -o token-usage ./cmd/token-usage
 ./token-usage --help
 ./token-usage --version
 ```
-
-#### Option D: Official Release binary (enables self-update)
-
-Download the prebuilt binary for your platform from the [Releases page](https://github.com/YuLaiZ/token-usage/releases) and place it on `PATH`. The published assets are:
-
-- `token-usage-darwin-arm64` (macOS Apple Silicon)
-- `token-usage-darwin-amd64` (macOS Intel)
-- `token-usage-windows-amd64.exe` (Windows)
-
-macOS example:
-
-```bash
-curl -L -o token-usage https://github.com/YuLaiZ/token-usage/releases/latest/download/token-usage-darwin-arm64
-chmod +x token-usage
-sudo mv token-usage /usr/local/bin/token-usage
-token-usage version
-```
-
-On Windows, download `token-usage-windows-amd64.exe`, rename it to `token-usage.exe`, place it in a directory on `PATH`, and run `token-usage version` to confirm.
-
-A binary installed from an official Release can update itself in place:
-
-```bash
-token-usage update                  # update to the latest stable release
-token-usage update --check          # only check; writes no local files
-token-usage update --version v0.2.0 # update (or check) a specific release tag
-```
-
-See the [CLI Reference](docs/cli.md) for the full set of flags, exit codes, and side-effect boundaries.
-
-> **Development builds cannot self-update.** Binaries from `make build`, `make build-all`, or `go install` report `Version = dev` (or a pseudo-version); `update` treats such a source as untrusted and prints manual-install guidance instead of overwriting it.
->
-> **Supported platforms for self-update:** `darwin/arm64`, `darwin/amd64`, and `windows/amd64` have official assets. On any other platform, `update` reports that there is no official asset and asks you to install manually.
->
-> **Manual-upgrade boundary:** `update` only replaces the current binary when it is the official Release asset for the reported version — its SHA256 must match the official asset hash for that version. If the current binary is a `go install`/locally built/symlinked copy, or its version or hash do not match, `update` does not overwrite it and prints manual-install guidance instead.
->
-> **Interrupted-update recovery:** the source gate applies to a new Release download. If a previous POSIX update left its restricted local transaction journal behind, a later `update` first restores that recorded transaction to a consistent state; it does not accept or download a new binary during recovery.
 
 ### First use
 
