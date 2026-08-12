@@ -105,7 +105,7 @@ func TestNewDeps_RegistersZCodeCollector(t *testing.T) {
 }
 
 // TestValidateResult_ZCodeNotUnknown zcode 注册后，Matched=true 时 ValidateResult
-// 不报「未知客户端」。文案同步更新由 grep 断言覆盖（见 task-4 report）。
+// 不报「未知客户端」。相关文案由断言覆盖。
 func TestValidateResult_ZCodeNotUnknown(t *testing.T) {
 	res := Result{Matched: true, Attempted: 1, Succeeded: 1}
 	if err := ValidateResult("zcode", res); err != nil {

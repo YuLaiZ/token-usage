@@ -62,6 +62,17 @@ make build-all
 
 修改 collector、router adapter、配置行为或守护进程生命周期时，需要覆盖变更后的行为合同，并在适用时更新架构/CLI 文档。请保持消息级 token 统计语义，避免静默改变历史数据行为。
 
+### 正式发布构建（release-build / release-verify）
+
+`make build` 与 `make build-all` 默认注入 `VERSION=dev`，其产物 `version` 为 `dev`，**不能**用于发布或自动更新。发布前需可重复地构建三份官方资产与 `SHA256SUMS`，并在本地校验：
+
+```bash
+make release-build VERSION=vX.Y.Z[-rc.N] COMMIT=<commit> BUILD_TIME=<UTC RFC3339>
+make release-verify VERSION=vX.Y.Z[-rc.N]
+```
+
+`release-build` 拒绝 `dev` 及任何不符合版本合同（`vMAJOR.MINOR.PATCH[-rc.N]`，无前导零）的 tag，然后产出 `dist/token-usage-darwin-arm64`、`dist/token-usage-darwin-amd64`、`dist/token-usage-windows-amd64.exe` 与严格排序的 `dist/SHA256SUMS`。`release-verify` 经 updater 使用的同一 `internal/update` 解析路径重新校验清单格式与 hash，并在本机为受支持平台时校验注入的 `--version`。只有 `release-build` 产物才能作为 GitHub Release 资产。
+
 ## 文档规范
 
 英文是默认的公开文档；中文是完整的对应版本：
@@ -96,6 +107,15 @@ git commit -m "补充贡献指南"
 - 不包含生成的二进制、本地数据库、日志、凭证或无关改动。
 
 一个 Pull Request 只聚焦一个主题。小而可评审的改动，加上清晰的验证证据，更容易被评估。
+
+## 发布与打 tag
+
+只有经授权的维护者才能创建版本 tag 或 GitHub Release。
+
+- 发布工作流（`.github/workflows/release.yml`）仅在 push 形如 `v*` 的 tag 时运行。它先校验 tag 合同，以及 tag 指向的 commit 与触发事件 commit 一致（同时适用于 annotated 与 lightweight tag），再依次执行 `go test` / `go vet` / `make release-build` / `make release-verify`；若同名 Release 已存在则直接失败（绝不覆盖、修补、删除或移动资产）。
+- 贡献者不要自行 push `v*` tag 或发布 Release。发布候选（`-rc.N`）由工作流标记为 prerelease。
+
+如需发布，请创建 Issue 提出，由维护者打 tag 并发布。
 
 ## 报告 Issue
 

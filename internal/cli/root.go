@@ -40,7 +40,10 @@ func newRootCmd(info buildinfo.Info) *cobra.Command {
 		newStatusCmd(),
 		newStopCmd(),
 		newRestartCmd(),
+		newUpdateCmd(info),
 		newInternalRunCmd(),
+		newUpdateHelperCmd(),
+		newUpdateCleanupCmd(),
 	)
 
 	return root

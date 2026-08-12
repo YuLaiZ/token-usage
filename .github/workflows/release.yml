@@ -1,0 +1,136 @@
+# release.yml —— tag 触发的正式发布工作流。
+#
+# 仅在 push 形如 v* 的 tag 时运行。先校验 tag 严格符合版本合同、tag 指向的 commit
+# 与事件 SHA 一致，再跑测试/vet/release-build/release-verify，最后用 gh 创建 Release。
+# 已存在同名 Release 时直接失败，绝不覆盖、删除或移动资产。
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 最小权限：仅需写 Release（contents:write）。不授予 packages/deployments 等。
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tag
+        # 固定到完整 commit SHA（actions/checkout v7.0.1）。
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # 取完整历史与 tag 对象，供后续 git rev-parse 校验与 peel。
+          fetch-depth: 0
+
+      - name: Verify tag format
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          echo "Tag: $tag"
+          # 严格 tag 合同（与 internal/update/version.go ParseVersion 等价）：
+          # vMAJOR.MINOR.PATCH[-rc.N]，无前导零，rc.N 中 N>=1。
+          if ! printf '%s' "$tag" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$'; then
+            echo "::error::tag '$tag' 不符合版本合同（须 vMAJOR.MINOR.PATCH[-rc.N]，无前导零）" >&2
+            exit 1
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Verify tag target commit equals event SHA
+        # GITHUB_SHA 是 push 事件关联的 commit。annotated tag 的原始 ref 是 tag
+        # object，必须 peel 到 commit 后比较；lightweight tag peel 后同样是该 commit。
+        run: |
+          set -euo pipefail
+          tag_commit=$(git rev-parse "refs/tags/${TAG}^{commit}")
+          if [ "$tag_commit" != "${GITHUB_SHA}" ]; then
+            echo "::error::tag target commit $tag_commit 与事件 SHA ${GITHUB_SHA} 不一致" >&2
+            exit 1
+          fi
+
+      - name: Setup Go
+        # 固定到完整 commit SHA（actions/setup-go v7.0.0）。
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        # CI 规避：ubuntu runner 环境下 Go 1.26 netpoll 偶发崩溃
+        # （runtime: netpoll failed / epollwait EINVAL|EBADF，internal/control 包，
+        # 本地 macOS 复现不出、代码无 fd 操纵）。串行跑包降低并行 fd 压力，
+        # 并禁用动态 GOMAXPROCS（runner 有 cgroup CPU quota 时默认启用）。
+        env:
+          GODEBUG: cpuquota=off
+        run: go test ./... -p 1
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Derive build metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          # COMMIT 取 tag peel 后的 commit（兼容 annotated tag）。
+          commit=$(git rev-parse "${TAG}^{commit}")
+          build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "build_time=$build_time" >> "$GITHUB_OUTPUT"
+
+      - name: Release build
+        env:
+          COMMIT: ${{ steps.meta.outputs.commit }}
+          BUILD_TIME: ${{ steps.meta.outputs.build_time }}
+        run: make release-build VERSION="${TAG}" COMMIT="${COMMIT}" BUILD_TIME="${BUILD_TIME}"
+
+      - name: Release verify
+        run: make release-verify VERSION="${TAG}"
+
+      - name: Fail if Release already exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "::error::Release ${TAG} 已存在，拒绝覆盖（不修补、不删除、不移动）" >&2
+            exit 1
+          fi
+
+      - name: Generate release body
+        # 用定制 body 替代 gh 的 --generate-notes：手写中英版本内容 + 版本性质 +
+        # 自动提取的外部贡献致谢，拼成英文在前、中文在后、含资产与校验的完整 body。
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # 取前一个 v* release tag 作为致谢提取的时间下界；首发版本取不到则留空
+          # （cmd/release-body 会回退到仓库首个 commit 日期）。
+          prev_tag=$(git describe --tags --abbrev=0 --match "v[0-9]*" "${{ steps.meta.outputs.commit }}^" 2>/dev/null || true)
+          go run ./cmd/release-body \
+            -tag "${TAG}" \
+            -notes ".github/release-notes/${TAG}.md" \
+            -repo "${GITHUB_REPOSITORY}" \
+            -prev-tag "${prev_tag}" \
+            -out dist/RELEASE_BODY.md
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          args=(
+            release create "${TAG}"
+            --repo "${GITHUB_REPOSITORY}"
+            --verify-tag
+            --notes-file dist/RELEASE_BODY.md
+            --target "${{ steps.meta.outputs.commit }}"
+            dist/token-usage-darwin-arm64
+            dist/token-usage-darwin-amd64
+            dist/token-usage-windows-amd64.exe
+            dist/SHA256SUMS
+          )
+          # 仅 rc tag 标记为 prerelease（与版本合同一致，不依赖 Release API 字段）。
+          if printf '%s' "${TAG}" | grep -Eq -- '-rc\.'; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}"

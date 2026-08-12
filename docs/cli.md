@@ -30,6 +30,7 @@ token-usage
 ├── restart
 ├── status
 ├── stop
+├── update                                # self-update from official GitHub Releases (--check / --version)
 └── _run                                  # hidden; started by start/launchd/the Registry; do not invoke directly
 ```
 
@@ -41,6 +42,7 @@ Design points:
 - Running `token-usage` with no arguments only prints help; it starts neither the TUI nor the daemon.
 - The root command has a `-v, --version` flag for one-line short output and a `version` subcommand for multi-line detailed output; see [version](#version).
 - `completion` is Cobra's built-in command. It writes bash/zsh/fish/PowerShell completion scripts to standard output and reads neither configuration nor the database.
+- `update` is a top-level self-update command (flags `--check` and `--version`); it is the only command that rewrites the running binary, and only when the current binary is an official Release asset. See [update](#update).
 
 ## General Conventions
 
@@ -412,6 +414,60 @@ An internal command started by `start` through detached spawn or directly by lau
 
 - Parent-lease path (`_run` spawned by `start`): the parent holds the process-control lock and authorizes the child through a pipe lease; the child does not acquire the lock.
 - Independent path (started directly by launchd/the Registry): without a valid parent lease, it acquires the process-control lock itself (15-second timeout). On timeout it exits successfully with code 0 rather than entering the main loop, avoiding conflict with an in-progress control operation and preventing launchd KeepAlive from immediately relaunching it on macOS.
+
+## update
+
+Updates the `token-usage` binary in place from official GitHub Releases. The CLI only parses flags, assembles dependencies, and formats results; the self-update core lives in `internal/update` (see [Architecture](architecture.md)).
+
+```text
+token-usage update
+token-usage update --check
+token-usage update --version <tag>
+```
+
+| Form | Purpose |
+|------|---------|
+| `update` | Updates to the latest stable release. If a restricted transaction journal from an interrupted POSIX update exists beside this binary, it is recovered first; a new replacement then proceeds only when the target is strictly higher than the current version and the current source is trusted. It downloads the asset, verifies its SHA256 against the `SHA256SUMS` manifest, stages a `--version` second check, replaces the binary, and restores the daemon to its previous run state. |
+| `update --check` | Read-only check; creates no local files (no configuration directory, lock, log, database, or service definition). |
+| `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | Updates (or, with `--check`, only checks) the specified exact release tag. `--version` accepts a strict release tag (`v` prefix, `MAJOR.MINOR.PATCH`, optional `-rc.N`, no leading zeros); an invalid value errors before any network request. |
+
+`--check` and `--version` may be combined, for example `update --check --version v0.1.0-rc.1` checks a release candidate only.
+
+Flags:
+
+- `--check` (bool): read-only check; writes no local files.
+- `--version` (string): target release tag. Accepts `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-rc.N` (no leading zeros, `N >= 1`, no build metadata).
+
+`update` takes no positional arguments (`Args: NoArgs`).
+
+### Stable / release-candidate selection
+
+By default `update` resolves only the latest **stable** release and never selects a prerelease. A release candidate is consulted or installed only when you pass its tag explicitly with `--version` (for example `--version v0.1.0-rc.1`).
+
+### Trust and source verification
+
+`update` only replaces the current binary when the target is strictly higher and the current source is trusted. The current source is treated as **untrusted** (and `update` prints manual-install guidance instead of overwriting) when any of the following holds:
+
+- the current `Version` is `dev` or a pseudo-version (e.g. from `make build`, `make build-all`, or `go install`);
+- the current binary is not a regular file, or is a symlink;
+- the current binary's SHA256 does not match the official asset hash for the current version.
+
+The sole trusted repository is `YuLaiZ/token-usage`; see [Architecture](architecture.md) for the download-URL reconstruction, manifest, and staged-install trust chain.
+
+This source gate applies to a new replacement. Recovering an already recorded local transaction does not download or accept a new source: it uses only same-directory paths derived from the executable and journal nonce, and rechecks the recorded hashes before restoring a consistent state.
+
+### Exit codes
+
+- `0` for expected completed states: no stable release available, already up to date, an update is available (`--check`), a Windows background replacement has been queued, or recovery confirms that the interrupted update had already installed the new binary.
+- Non-zero when the requested tag does not exist, the current source cannot be safely overwritten, download/manifest/checksum/staged-`--version` validation is rejected, recovery returns the binary to the old version, installation is incomplete, install/rollback/daemon-restart fails, or `--version` is invalid.
+
+### Side-effect boundary
+
+`update --check` is fully read-only. A real `update` first resolves an existing transaction journal when present; otherwise it stops the daemon, replaces the binary, and restarts it only when an update is available and the source is trusted. It does not start or stop the daemon when no update is needed, and it does not rewrite `config.toml`, the database, logs, the macOS LaunchAgent plist, or the Windows Registry.
+
+### Windows asynchronous replacement
+
+Replacing a running `.exe` is restricted on Windows, so the update hands the replacement off to a background helper and returns. Once that helper has been started, the command explicitly reports that the background replacement has been queued, exits `0`, and asks you to run `token-usage version` or `token-usage update --check` shortly to confirm the final version; it never claims completion. On macOS/POSIX the replacement is synchronous and atomic (same-directory backup + rename + fsync, with rollback on failure and journal recovery on the next `update` invocation).
 
 ## Configuration File
 

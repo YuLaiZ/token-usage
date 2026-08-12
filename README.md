@@ -21,7 +21,7 @@ A local LLM usage analytics tool for collecting, analyzing, and querying token u
 
 ### Installation
 
-Choose one of the three installation methods. Option A (manual binary installation) is recommended because it does not require Go and keeps the binary, configuration, and logs together under `~/.token-usage/`.
+Choose one of the installation methods below. Option A (manual binary installation) is recommended because it does not require Go and keeps the binary, configuration, and logs together under `~/.token-usage/`. Option D (official Release binary) is the only source that supports in-place self-update.
 
 #### Option A: Manual binary installation (recommended)
 
@@ -76,6 +76,43 @@ go build -o token-usage ./cmd/token-usage
 ./token-usage --help
 ./token-usage --version
 ```
+
+#### Option D: Official Release binary (enables self-update)
+
+Download the prebuilt binary for your platform from the [Releases page](https://github.com/YuLaiZ/token-usage/releases) and place it on `PATH`. The published assets are:
+
+- `token-usage-darwin-arm64` (macOS Apple Silicon)
+- `token-usage-darwin-amd64` (macOS Intel)
+- `token-usage-windows-amd64.exe` (Windows)
+
+macOS example:
+
+```bash
+curl -L -o token-usage https://github.com/YuLaiZ/token-usage/releases/latest/download/token-usage-darwin-arm64
+chmod +x token-usage
+sudo mv token-usage /usr/local/bin/token-usage
+token-usage version
+```
+
+On Windows, download `token-usage-windows-amd64.exe`, rename it to `token-usage.exe`, place it in a directory on `PATH`, and run `token-usage version` to confirm.
+
+A binary installed from an official Release can update itself in place:
+
+```bash
+token-usage update                  # update to the latest stable release
+token-usage update --check          # only check; writes no local files
+token-usage update --version v0.2.0 # update (or check) a specific release tag
+```
+
+See the [CLI Reference](docs/cli.md) for the full set of flags, exit codes, and side-effect boundaries.
+
+> **Development builds cannot self-update.** Binaries from `make build`, `make build-all`, or `go install` report `Version = dev` (or a pseudo-version); `update` treats such a source as untrusted and prints manual-install guidance instead of overwriting it.
+>
+> **Supported platforms for self-update:** `darwin/arm64`, `darwin/amd64`, and `windows/amd64` have official assets. On any other platform, `update` reports that there is no official asset and asks you to install manually.
+>
+> **Manual-upgrade boundary:** `update` only replaces the current binary when it is the official Release asset for the reported version — its SHA256 must match the official asset hash for that version. If the current binary is a `go install`/locally built/symlinked copy, or its version or hash do not match, `update` does not overwrite it and prints manual-install guidance instead.
+>
+> **Interrupted-update recovery:** the source gate applies to a new Release download. If a previous POSIX update left its restricted local transaction journal behind, a later `update` first restores that recorded transaction to a consistent state; it does not accept or download a new binary during recovery.
 
 ### First use
 
@@ -149,6 +186,14 @@ Dates are positional arguments: a single day is `YYYYMMDD`, and an inclusive ran
 | `version` | Multi-line detailed output: version, commit, build time, Go version, and platform. |
 
 > `version` and `--version` are purely static commands: they do not read configuration, open the database, initialize logging, or access the network. `internal/buildinfo` normalizes their version and build metadata, which `make build`, `make build-all`, and `make install` inject through `-ldflags`.
+
+### Self-update
+
+| Command | Purpose |
+|------|------|
+| `update` | Updates the current binary to the latest stable release when it is an official Release asset and its source is trusted; `--check` only checks, `--version vX.Y.Z[-rc.N]` targets a specific tag. |
+
+> Only a binary installed from an official Release can self-update; `make build`/`go install`/symlinked copies fall back to manual-install guidance. See the [CLI Reference](docs/cli.md) for flags, exit codes, side effects, and the Windows asynchronous-replacement note.
 
 ### Shell completion (optional)
 

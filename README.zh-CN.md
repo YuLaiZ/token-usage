@@ -21,7 +21,7 @@
 
 ### 安装
 
-三种安装方式任选其一。推荐方式 A（手动二进制安装），不依赖 Go 环境，二进制与配置/日志统一收纳在 `~/.token-usage/`。
+任选下列一种安装方式。推荐方式 A（手动二进制安装），不依赖 Go 环境，二进制与配置/日志统一收纳在 `~/.token-usage/`；方式 D（官方 Release 二进制）是唯一支持原地自更新的来源。
 
 #### 方式 A：手动二进制安装（推荐）
 
@@ -76,6 +76,43 @@ go build -o token-usage ./cmd/token-usage
 ./token-usage --help
 ./token-usage --version
 ```
+
+#### 方式 D：官方 Release 二进制（支持自更新）
+
+从 [Releases 页面](https://github.com/YuLaiZ/token-usage/releases) 下载对应平台的预编译二进制，放到 `PATH` 中。已发布的资产：
+
+- `token-usage-darwin-arm64`（macOS Apple Silicon）
+- `token-usage-darwin-amd64`（macOS Intel）
+- `token-usage-windows-amd64.exe`（Windows）
+
+macOS 示例：
+
+```bash
+curl -L -o token-usage https://github.com/YuLaiZ/token-usage/releases/latest/download/token-usage-darwin-arm64
+chmod +x token-usage
+sudo mv token-usage /usr/local/bin/token-usage
+token-usage version
+```
+
+Windows 上下载 `token-usage-windows-amd64.exe`，重命名为 `token-usage.exe`，放到 `PATH` 中的目录，运行 `token-usage version` 确认。
+
+从官方 Release 安装的二进制可原地自更新：
+
+```bash
+token-usage update                  # 更新到最新稳定版
+token-usage update --check          # 只检查，不写任何本地文件
+token-usage update --version v0.2.0 # 更新（或检查）指定版本 tag
+```
+
+完整标志、退出码与副作用边界见 [CLI 参考](docs/cli.zh-CN.md)。
+
+> **开发构建不能自动更新**：`make build`、`make build-all` 或 `go install` 产物的 `Version` 为 `dev`（或伪版本），`update` 会判定来源不可信并给出人工安装指引，不会原地覆盖。
+>
+> **自更新支持平台**：`darwin/arm64`、`darwin/amd64`、`windows/amd64` 有官方资产；其他平台 `update` 会提示「无官方资产，请手动安装」。
+>
+> **人工升级边界**：`update` 只在当前二进制是所报告版本的官方 Release 资产时才覆盖（当前二进制的 SHA256 必须等于该版本官方资产的 hash）。若当前二进制来自 `go install`/本地构建/软链，或版本/hash 不匹配，`update` 不会覆盖，而是输出人工安装指引。
+>
+> **中断更新恢复**：来源安全门约束的是新的 Release 下载。若此前 POSIX 更新遗留了受限的本地事务 journal，后续 `update` 会先把这笔已记录的事务恢复为一致状态；恢复期间不会接受或下载新的二进制。
 
 ### 首次使用
 
@@ -149,6 +186,14 @@ token-usage collect
 | `version` | 多行详细输出（version/commit/build_time/go/platform） |
 
 > `version`/`--version` 是纯静态命令：不读配置、不开数据库、不初始化日志、不访问网络。版本与构建元数据由 `internal/buildinfo` 规范化（`make build`/`make build-all`/`make install` 经 `-ldflags` 注入）。
+
+### 自更新
+
+| 命令 | 作用 |
+|------|------|
+| `update` | 当当前二进制是官方 Release 资产且来源可信时，自更新到最新稳定版；`--check` 只检查，`--version vX.Y.Z[-rc.N]` 指定版本 tag |
+
+> 只有从官方 Release 安装的二进制才能自更新；`make build`/`go install`/软链副本会回退到人工安装指引。标志、退出码、副作用与 Windows 异步替换说明见 [CLI 参考](docs/cli.zh-CN.md)。
 
 ### Shell 补全（可选）
 

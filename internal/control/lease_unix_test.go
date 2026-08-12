@@ -72,8 +72,17 @@ func TestNewLeasePipeHolder_NonZeroIndex_FDIs3PlusI(t *testing.T) {
 }
 
 // TestLeaseReaderFromEnv_ParsesFD 合法 fd 字符串 → 解析成功。
+// 用真实 os.Pipe 的 read end fd 构造 env：os.NewFile 包装后 Close 会关闭该 fd，
+// 必须指向测试自己创建的 fd（硬编码任意编号会误关进程内其他 fd，如 runtime
+// netpoll 的 epfd/eventfd，CI 上必崩、本地不崩的 fd 布局差异）。
 func TestLeaseReaderFromEnv_ParsesFD(t *testing.T) {
-	env := []string{envLeaseFD + "=5", "PATH=/usr/bin"}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer w.Close()
+	defer r.Close()
+	env := []string{envLeaseFD + "=" + strconv.Itoa(int(r.Fd())), "PATH=/usr/bin"}
 	reader, ok := leaseReaderFromEnv(env)
 	if !ok {
 		t.Fatal("合法 fd 应 ok=true")
@@ -81,7 +90,7 @@ func TestLeaseReaderFromEnv_ParsesFD(t *testing.T) {
 	if reader == nil {
 		t.Fatal("reader 不应为 nil")
 	}
-	defer reader.Close()
+	reader.Close() // 关闭的是测试自己的 pipe read end；后续 defer r.Close() 幂等。
 }
 
 // TestLeaseReaderFromEnv_RejectsInvalidFDs 非法 fd 值（<3、非数字、空）→ ok=false。
@@ -189,8 +198,16 @@ func TestLeasePipeHolder_CleanupIdempotent(t *testing.T) {
 }
 
 // TestParseParentLease_POSIX_ValidCombo POSIX 平台合法组合（instance + fd）→ ok=true。
+// fd 用真实 os.Pipe 的 read end（原因同 TestLeaseReaderFromEnv_ParsesFD：
+// reader.Close 会关闭该 fd，必须指向测试自己创建的 fd）。
 func TestParseParentLease_POSIX_ValidCombo(t *testing.T) {
-	env := []string{envInstance + "=abc", envLeaseFD + "=5", "PATH=/usr/bin"}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer w.Close()
+	defer r.Close()
+	env := []string{envInstance + "=abc", envLeaseFD + "=" + strconv.Itoa(int(r.Fd())), "PATH=/usr/bin"}
 	desc, ok := parseParentLease(env)
 	if !ok {
 		t.Fatal("POSIX 合法组合应 ok=true")
@@ -200,8 +217,9 @@ func TestParseParentLease_POSIX_ValidCombo(t *testing.T) {
 	}
 	if desc.reader == nil {
 		t.Error("reader 不应为 nil")
+	} else {
+		desc.reader.Close() // 关闭的是测试自己的 pipe read end；后续 defer r.Close() 幂等。
 	}
-	defer desc.reader.Close()
 }
 
 // TestParseParentLease_POSIX_HandleOnly_Fails POSIX 平台只出现 Windows 的 handle 变量 →

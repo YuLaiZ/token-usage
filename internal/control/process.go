@@ -157,6 +157,80 @@ func (s *Session) CleanupStaleMetadata(ctx context.Context, dataDir string) erro
 	return s.manager.deps.metadataCleaner.cleanup(dataDir)
 }
 
+// Stop 在 control lock 持有期内停止守护进程（供 update 等需要在锁内编排
+// Inspect → Stop → install → Start 的流程使用）。
+//
+// 语义与 stopLocked 完全一致（ready/PID/lease/daemon lock/超时）：
+//   - 未运行：幂等返回 nil；
+//   - 运行中：按平台停止 + 等 daemon lock 释放；
+//   - 超时：返回错误，不删 PID 伪装成功。
+//
+// 不再获取 control lock——调用方必须在 Manager.WithLock 回调内调用本方法，
+// 否则 stop 操作无锁保护。返回值只表达成功/失败（更新流程只需 success/failure），
+// StopResult 的 PID/WasRunning 细节被丢弃。
+func (s *Session) Stop(ctx context.Context, cfg *config.Config) error {
+	if s == nil {
+		return errors.New("进程控制会话不能为空")
+	}
+	if s.released {
+		return errSessionReleased
+	}
+	if s.manager == nil {
+		return errors.New("进程控制会话不能为空")
+	}
+	if cfg == nil {
+		return errors.New("有效配置不能为空")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := s.stopLocked(ctx, cfg)
+	return err
+}
+
+// StartWithExecutable 在 control lock 持有期内用显式 binPath 启动守护进程。
+//
+// 供 update 替换二进制后的「启动新版本」步骤使用：替换完成后目标二进制可能与当前进程不同，
+// 不能探测 os.Executable（会指向旧路径），故要求调用方传入新二进制绝对路径。
+// Windows 替换助手运行临时 helper.exe 时尤其不能重新拉起自身。
+//
+// 语义与 startLocked 完全一致（复用 startLockedWithBinPath 核心的 ready/PID/lease/
+// daemon lock/超时编排）。区别仅在于 binPath 来源：本方法用显式路径，startLocked 自动探测。
+//
+// 不再获取 control lock——调用方必须在 Manager.WithLock 回调内调用本方法。
+// 已运行的 daemon 视为成功（幂等，不 spawn）。
+func (s *Session) StartWithExecutable(ctx context.Context, cfg *config.Config, binPath string) error {
+	if s == nil {
+		return errors.New("进程控制会话不能为空")
+	}
+	if s.released {
+		return errSessionReleased
+	}
+	if s.manager == nil {
+		return errors.New("进程控制会话不能为空")
+	}
+	if cfg == nil {
+		return errors.New("有效配置不能为空")
+	}
+	if binPath == "" {
+		return errors.New("可执行文件路径不能为空")
+	}
+	if !filepath.IsAbs(binPath) {
+		return fmt.Errorf("可执行文件路径必须为绝对路径，当前 %q", binPath)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := s.startLockedWithBinPath(ctx, cfg, binPath)
+	return err
+}
+
 // ---- 内部编排 ----
 
 // inspect 共享判活 + PID 读取逻辑（Manager/Session 复用）。
@@ -207,7 +281,32 @@ func (m *Manager) inspect(ctx context.Context, cfg *config.Config) (RuntimeState
 }
 
 // startLocked 包内不加锁的 start 实现（公开 API 已持 control lock）。
+// 自动探测当前可执行文件路径（os.Executable）作为 spawn 目标——供 Manager.Start /
+// Manager.Restart 等「启动当前二进制」的场景使用。
 func (s *Session) startLocked(ctx context.Context, cfg *config.Config) (StartResult, error) {
+	if s == nil || s.manager == nil {
+		return StartResult{}, errors.New("进程控制会话不能为空")
+	}
+	if cfg == nil {
+		return StartResult{}, errors.New("有效配置不能为空")
+	}
+	// 探测当前可执行文件路径（os.Executable）。失败或为空时透传 buildSpawnOptions 的错误。
+	bin, err := os.Executable()
+	if err != nil {
+		return StartResult{}, fmt.Errorf("探测可执行文件路径失败: %w", err)
+	}
+	return s.startLockedWithBinPath(ctx, cfg, bin)
+}
+
+// startLockedWithBinPath 是 start 的共享核心：用显式 binPath 执行 inspect → 清理 → lease →
+// spawn → wait ready 全流程。binPath 由调用方负责（startLocked 探测 os.Executable；
+// Session.StartWithExecutable 接收更新后的新二进制路径）。
+//
+// 复用同一核心保证两条路径的 ready/PID/lease/daemon lock/超时语义完全一致——避免两份
+// 几乎相同的 spawn+ready 编排各自漂移。
+//
+// 在 control lock 持有期内执行（由调用方持锁）；不加 control lock。
+func (s *Session) startLockedWithBinPath(ctx context.Context, cfg *config.Config, binPath string) (StartResult, error) {
 	if s == nil || s.manager == nil {
 		return StartResult{}, errors.New("进程控制会话不能为空")
 	}
@@ -253,7 +352,9 @@ func (s *Session) startLocked(ctx context.Context, cfg *config.Config) (StartRes
 		return StartResult{}, fmt.Errorf("创建父子 lease 失败: %w", err)
 	}
 
-	opts, err := buildSpawnOptions(cfg)
+	// 构造层用显式 binPath（不再在此处探测 os.Executable）：startLocked 在调用前已探测；
+	// StartWithExecutable 由调用方传入更新后的新二进制路径。
+	opts, err := buildSpawnOptionsForBin(cfg, binPath)
 	if err != nil {
 		lease.cleanup() // spawn 准备失败也清理 lease。
 		return StartResult{}, err
@@ -602,7 +703,9 @@ func (productionMetadataCleaner) cleanup(dataDir string) error {
 // productionServiceMgr 由 serviceAdapter 实现（在 process_service.go，包装 service.Manager，
 // 避免本文件直接 import service）。
 
-// buildSpawnOptions 探测可执行文件路径并构造 spawnOptions（Args 固定 ["_run"]，日志重定向到 DataDir）。
+// buildSpawnOptions 是包装层：探测当前可执行文件路径（os.Executable）后委托给构造层。
+// 供 startLocked / Manager.Start / Manager.Restart 等沿用「当前二进制」的路径使用——
+// 这些场景下被启动的 daemon 就是当前进程对应的二进制，故自动探测即可。
 func buildSpawnOptions(cfg *config.Config) (spawnOptions, error) {
 	if cfg == nil {
 		return spawnOptions{}, errors.New("有效配置不能为空")
@@ -614,8 +717,27 @@ func buildSpawnOptions(cfg *config.Config) (spawnOptions, error) {
 	if bin == "" {
 		return spawnOptions{}, errors.New("当前可执行文件路径为空")
 	}
+	return buildSpawnOptionsForBin(cfg, bin)
+}
+
+// buildSpawnOptionsForBin 是构造层：用显式 binPath 组装 spawnOptions（Args 固定 ["_run"]，
+// 日志重定向到 DataDir）。不调用 os.Executable，binPath 由调用方负责。
+//
+// 供更新替换后显式启动「新二进制」的流程使用（Session.StartWithExecutable）——
+// 替换完成后目标二进制可能与当前进程不同，不能再探测 os.Executable（会指向旧路径）；
+// Windows 替换助手运行临时 helper.exe 时尤其不能重新拉起自身。故要求调用方传入绝对路径。
+func buildSpawnOptionsForBin(cfg *config.Config, binPath string) (spawnOptions, error) {
+	if cfg == nil {
+		return spawnOptions{}, errors.New("有效配置不能为空")
+	}
+	if binPath == "" {
+		return spawnOptions{}, errors.New("可执行文件路径不能为空")
+	}
+	if !filepath.IsAbs(binPath) {
+		return spawnOptions{}, fmt.Errorf("可执行文件路径必须为绝对路径，当前 %q", binPath)
+	}
 	return spawnOptions{
-		BinPath:    bin,
+		BinPath:    binPath,
 		Args:       []string{"_run"},
 		StdoutPath: filepath.Join(cfg.DataDir, "daemon.out.log"),
 		StderrPath: filepath.Join(cfg.DataDir, "daemon.err.log"),
