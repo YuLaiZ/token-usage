@@ -37,11 +37,12 @@ const defaultMaxBinaryBytes int64 = 256 << 20
 const defaultDownloadTimeout = 20 * time.Minute
 
 // stageFilePattern 是临时 stage 文件的默认命名模式，前缀固定以便清理。
-// Windows 上加 .exe 扩展名：版本探针需 exec.Command 执行 stage 文件，
-// Windows CreateProcess 对无 .exe 的 PE 在 ARM64 仿真下报 elevation required。
+// Windows 上加 .exe 扩展名且避开 "update" 字样：版本探针需 exec 执行 stage 文件，
+// 实测 Windows 安全策略会拦截文件名含 "update" 的可执行文件（返回
+// ERROR_ELEVATION_REQUIRED，复制/重命名后即正常，"token-usage-stage-*" 通过）。
 var stageFilePattern = func() string {
 	if runtime.GOOS == "windows" {
-		return ".token-usage-update-*.exe"
+		return "token-usage-stage-*.exe"
 	}
 	return ".token-usage-update-*"
 }()

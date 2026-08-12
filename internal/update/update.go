@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"runtime"
 
@@ -318,10 +319,14 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 		stageVer, verr := s.VersionProbe.ProbeVersion(ctx, stagePath)
 		result.StageVersion = stageVer
 		if verr != nil {
+			// 探针失败即拒绝安装：已下载的 stage 不再有用，best-effort 删除，
+			// 避免失败路径在目标目录残留大文件（实测 Windows 失败后残留 ~24MB）。
+			_ = os.Remove(stagePath)
 			result.Reason = fmt.Sprintf("stage 版本探针失败: %v；请手动安装", verr)
 			return result, nil
 		}
 		if stageVer != checked.TargetTag {
+			_ = os.Remove(stagePath)
 			result.Reason = fmt.Sprintf("stage 版本 %q 与目标 tag %q 不一致，拒绝安装；请手动安装", stageVer, checked.TargetTag)
 			return result, nil
 		}
