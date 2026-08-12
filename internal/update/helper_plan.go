@@ -21,7 +21,7 @@ import (
 //
 // 文件命名约定（base = target basename，nonce = 随机 hex）：
 //
-//	helper = "." + base + ".update-helper-" + nonce + ".exe"
+//	helper = "." + base + ".stage-helper-" + nonce + ".exe"
 //	plan   = "." + base + ".update-plan-"   + nonce
 //	stage  = "." + base + ".update-stage-"  + nonce
 //	backup = "." + base + ".update-backup-" + nonce
@@ -29,15 +29,17 @@ import (
 //
 // stage/backup 沿用 POSIX 事务的同名后缀（updateStageSuffix/updateBackupSuffix），
 // 保证两类事务文件命名一致、清理前缀统一；helper/plan/result 是 Windows helper 专属。
+// helper 后缀避开 "update"：helper.exe 会被 spawn 执行，而实测 Windows 安全策略
+// 拦截文件名含 "update" 的可执行文件（与 stage 同因，见 download.go）。
 
 // helperSuffix / planSuffix / resultSuffix 是 Windows helper 专属文件的后缀。
 // stage/backup 复用 install_common.go 的 updateStageSuffix / updateBackupSuffix。
 const (
-	helperSuffix = ".update-helper-" // helper.exe 后缀（接 nonce + ".exe"）
-	planSuffix   = ".update-plan-"   // plan 文件后缀（接 nonce）
+	helperSuffix = ".stage-helper-" // helper.exe 后缀（接 nonce + ".exe"）
+	planSuffix   = ".update-plan-"  // plan 文件后缀（接 nonce）
 	resultSuffix = ".update-result-" // result 文件后缀（接 nonce + ".json"）
-	helperExeExt = ".exe"            // Windows 可执行扩展名
-	resultExt    = ".json"           // result 文件扩展名
+	helperExeExt = ".exe"           // Windows 可执行扩展名
+	resultExt    = ".json"          // result 文件扩展名
 )
 
 // helperPlan 是 Windows staged replacement 的 helper 执行计划。
