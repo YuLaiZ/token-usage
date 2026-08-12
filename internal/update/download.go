@@ -29,6 +29,13 @@ const githubDownloadBase = "https://github.com/YuLaiZ/token-usage/releases/downl
 // 超过即删除 stage 并失败，防止恶意超大响应撑爆磁盘。
 const defaultMaxBinaryBytes int64 = 256 << 20
 
+// defaultDownloadTimeout 是下载器 HTTP 客户端的全局超时上限。
+// 清单查询（SHA256SUMS，<1KB）与二进制下载（~24MB）共用同一客户端；
+// 清单由服务端快速返回，实际超时只影响大文件慢网络下载。
+// 30s 在慢网络（VM/代理）上不够下载 24MB（实测 149KB/s 需 ~3min）。
+// 20 分钟覆盖到 ~20KB/s 的极慢网络，同时不让断开连接挂太久。
+const defaultDownloadTimeout = 20 * time.Minute
+
 // stageFilePattern 是临时 stage 文件的默认命名模式，前缀固定以便清理。
 // Windows 上加 .exe 扩展名：版本探针需 exec.Command 执行 stage 文件，
 // Windows CreateProcess 对无 .exe 的 PE 在 ARM64 仿真下报 elevation required。
@@ -92,7 +99,7 @@ type downloader struct {
 // temp 用 os.CreateTemp，downloadBase 为冻结的官方下载前缀。
 func NewDownloader(doer HTTPDoer) *downloader {
 	if doer == nil {
-		doer = newHTTPSOnlyClient(defaultHTTPTimeout)
+		doer = newHTTPSOnlyClient(defaultDownloadTimeout)
 	}
 	return &downloader{
 		http:         doer,
