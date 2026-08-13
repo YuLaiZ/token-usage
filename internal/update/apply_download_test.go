@@ -99,15 +99,20 @@ func TestApply_TrustedDownloadsStageViaAssetDownloader(t *testing.T) {
 	if stagePath == "" {
 		t.Fatal("stagePath 不应为空（已注入 AssetDownloader，应下载到真实 stage）")
 	}
-	content, rerr := os.ReadFile(stagePath)
-	if rerr != nil {
-		t.Fatalf("读取 stage 失败 %s: %v", stagePath, rerr)
+	// stage 内容须在 Install 内捕获：Apply 成功后外部 stage 已删（removeRegularFile）。
+	if len(installer.stageContents) != 1 || installer.stageContents[0] == nil {
+		t.Fatalf("应在 Install 内捕获 stage 内容，stageContents=%v", installer.stageContents)
 	}
+	content := installer.stageContents[0]
 	if string(content) != string(targetBin) {
 		t.Fatalf("stage 内容不匹配，got %q want %q", string(content), string(targetBin))
 	}
 	if filepath.Dir(stagePath) != filepath.Dir(got.BinaryPath) {
 		t.Errorf("stage 目录 %q 应与 target 同目录 %q", filepath.Dir(stagePath), filepath.Dir(got.BinaryPath))
+	}
+	// 外部 stage 文件应在 Apply 后被删除。
+	if _, err := os.Stat(stagePath); !os.IsNotExist(err) {
+		t.Errorf("外部 stage 应在 Apply 后删除: %s", stagePath)
 	}
 }
 

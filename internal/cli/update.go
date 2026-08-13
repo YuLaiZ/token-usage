@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	goruntime "runtime"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -102,6 +103,24 @@ func defaultUpdateServiceFactory(info buildinfo.Info, checkOnly bool) (UpdateSer
 		svc.Installer = buildUpdateInstaller()
 		svc.AssetDownloader = downloader
 		svc.VersionProbe = update.NewExecVersionProbe()
+
+		// 打开升级日志文件并注入 LogSink/LogPath + installer 的 writer/logDir。
+		// 日志打开失败是 best-effort：Apply 不依赖日志也能工作。
+		if home, herr := os.UserHomeDir(); herr == nil {
+			logDir := update.ResolveUpdateLogDir(home)
+			if f, logPath, oerr := update.OpenUpdateLogFile(logDir, time.Now()); oerr == nil {
+				svc.LogSink = f
+				svc.LogPath = logPath
+				// POSIX 安装器接收 logWriter 输出 [install] 行；Windows 安装器接收 logDir
+				// 重定向 helper stderr。经类型断言注入，使工厂无需知道安装器具体类型。
+				if s, ok := svc.Installer.(update.StepLogWriter); ok {
+					s.SetLogWriter(f)
+				}
+				if s, ok := svc.Installer.(update.HelperLogDirSetter); ok {
+					s.SetLogDir(logDir)
+				}
+			}
+		}
 	}
 	return svc, nil
 }
@@ -182,6 +201,11 @@ func runUpdate(cmd *cobra.Command, info buildinfo.Info) error {
 		return err
 	}
 
+	// 升级日志文件在工厂内打开，命令返回前关闭句柄（仅 *update.Service 有此方法）。
+	if rs, ok := svc.(*update.Service); ok {
+		defer rs.CloseLogSink()
+	}
+
 	ctx := cmdContext(cmd)
 
 	if checkOnly {
@@ -237,9 +261,16 @@ func runUpdateApply(ctx context.Context, cmd *cobra.Command, svc UpdateService, 
 	res, err := svc.Apply(ctx, update.ApplyOptions{TargetTag: versionFlag})
 	if err != nil {
 		fmt.Fprintf(errOut, "更新失败: %v\n", err)
+		if res.LogPath != "" {
+			fmt.Fprintf(out, "升级日志: %s\n", res.LogPath)
+		}
 		return err
 	}
-	return renderApplyResult(out, errOut, res)
+	renderErr := renderApplyResult(out, errOut, res)
+	if res.LogPath != "" {
+		fmt.Fprintf(out, "升级日志: %s\n", res.LogPath)
+	}
+	return renderErr
 }
 
 // renderApplyResult 把 ApplyResult 翻译为面向用户的中文提示。

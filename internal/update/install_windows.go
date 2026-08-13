@@ -5,9 +5,11 @@ package update
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -38,11 +40,18 @@ const (
 // selfIdentity 注入点用于测试（默认捕获真实自身身份）；零值可用（Install 回退到真实捕获）。
 type windowsInstaller struct {
 	selfIdentity func() (ProcessIdentity, error)
+	logDir       string // 升级日志目录（经 SetLogDir 注入，用于重定向 helper stderr）
 }
 
 // NewWindowsInstaller 构造 Windows staged replacement 安装器。
 // 供 CLI 装配层在 Windows 平台注入 Service.Installer。
 func NewWindowsInstaller() Installer { return &windowsInstaller{selfIdentity: CaptureCurrentIdentity} }
+
+// SetLogDir 注入升级日志目录，供 spawnUpdateHelper 重定向 helper stderr 到日志文件。
+// 实现 HelperLogDirSetter 接口，供 CLI 工厂经类型断言注入。空字符串=不重定向。
+func (inst *windowsInstaller) SetLogDir(dir string) {
+	inst.logDir = dir
+}
 
 // Platform 返回 "windows"。
 func (windowsInstaller) Platform() string { return "windows" }
@@ -121,7 +130,9 @@ func (inst windowsInstaller) Install(ctx context.Context, stagePath, oldBinPath,
 
 	// spawn helper.exe 隐藏进程：_update-helper --plan <planPath>。
 	// helper 从校验过的 plan.Parent 取父进程身份，按 PID + 创建时间等待其退出。
-	if err := spawnUpdateHelper(paths.Helper, paths.Plan); err != nil {
+	// logDir 非空时 helper stderr 重定向到升级日志文件（append），使 helper 的 [helper]
+	// 步骤日志落入同一文件。
+	if err := spawnUpdateHelper(paths.Helper, paths.Plan, inst.logDir); err != nil {
 		_ = cleanupTransactionFiles(paths.Stage, "", paths.Plan)
 		_ = removeRegularFile(paths.Helper)
 		return "", fmt.Errorf("spawn 后台 helper 失败: %w", err)
@@ -149,14 +160,34 @@ func CaptureCurrentIdentity() (ProcessIdentity, error) {
 
 // spawnUpdateHelper 拉起 helper.exe 的隐藏 _update-helper 内部命令。
 // CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW，detached（参考 daemon.SpawnDetached）。
-func spawnUpdateHelper(helperExe, planPath string) error {
+// logDir 非空时把 helper stderr 重定向到升级日志文件（append），使 helper 的 [helper]
+// 步骤日志与父进程的 [update] 日志落入同一文件。打开失败 best-effort 降级（不重定向）。
+func spawnUpdateHelper(helperExe, planPath, logDir string) error {
 	cmd := exec.Command(helperExe, "_update-helper", "--plan", planPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: windowsCREATE_NEW_PROCESS_GROUP | windowsCREATE_NO_WINDOW,
 		HideWindow:    true,
 	}
+
+	// best-effort 重定向 helper stderr 到升级日志文件。跨午夜极罕见情况下工厂与 spawn
+	// 各自解析日期可能产生两个日志文件，可接受。
+	var logFile *os.File
+	if logDir != "" {
+		if f, _, err := OpenUpdateLogFile(logDir, time.Now()); err == nil {
+			logFile = f
+			cmd.Stderr = f
+		}
+	}
+
 	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		return err
+	}
+	// Start 成功后关闭本次 spawn 复制的句柄（子进程已继承副本；父进程的 LogSink 不在此关闭）。
+	if logFile != nil {
+		_ = logFile.Close()
 	}
 	// 放弃 wait 权：helper 由系统收养，独立运行至父进程退出后完成替换。
 	_ = cmd.Process.Release()

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -38,6 +39,10 @@ import (
 type posixInstaller struct {
 	platform string // "darwin"/"linux"/其它非 windows
 
+	// logWriter 接收 [install] 步骤日志（经 SetLogWriter 注入，nil=静默）。
+	// 生产由 CLI 工厂注入升级日志文件；测试可注入 buffer 断言行内容。
+	logWriter io.Writer
+
 	// lastTxn 记录最近一次 Install 的事务状态，供 Commit/Rollback 使用。
 	// Install 成功后置位，Commit/Rollback 后清空。mu 保护并发访问。
 	mu      sync.Mutex
@@ -60,6 +65,12 @@ type posixTransaction struct {
 // platform 取 runtime.GOOS（darwin/linux 等）。供 CLI 装配层在非 windows 平台注入 Service.Installer。
 func NewPosixInstaller() Installer {
 	return &posixInstaller{platform: runtime.GOOS}
+}
+
+// SetLogWriter 注入步骤日志 writer（输出 [install] 行）。nil=静默（默认）。
+// 实现 StepLogWriter 接口，供 CLI 工厂经类型断言注入。
+func (p *posixInstaller) SetLogWriter(w io.Writer) {
+	p.logWriter = w
 }
 
 // Platform 返回安装器对应的 GOOS（"darwin"/"linux" 等）。
@@ -90,6 +101,7 @@ func (p *posixInstaller) Platform() string {
 //   - Install 成功 → StartWithExecutable(newBinPath)；Start 成功 → Commit；Start 失败 → Rollback。
 //   - Install 失败 → target 已是旧版本（或已内部 rollback），调用方重启 oldBinPath 即恢复旧版本。
 func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, targetBinPath string, wasRunning bool) (string, error) {
+	il := newStepLogger(p.logWriter, "install", nil)
 	// 入参校验：stagePath 必须存在且为普通文件，targetBinPath 必须存在（覆盖已有）。
 	if err := validateInstallInputs(stagePath, targetBinPath); err != nil {
 		return "", err
@@ -128,6 +140,7 @@ func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, tar
 	if err := backupTarget(targetBinPath, backupFile, oldHash); err != nil {
 		return "", fmt.Errorf("备份旧 target 失败: %w", err)
 	}
+	il.step("backup OK")
 
 	// 步骤 2：把外部 stage 复制到事务内部命名的 stageFile（同目录，保证后续 rename 原子）。
 	// 复制而非 rename 外部 stage——外部 stage 可能被调用方保留用于诊断或重试，
@@ -161,6 +174,7 @@ func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, tar
 	// 步骤 4：原子 rename stageFile → targetBinPath。
 	// 这是事务的提交点：rename 成功后 target 即为新版本。
 	// 任何无法确认的写入错误必须走恢复分支（见下方）。
+	il.step("replacing target")
 	if err := os.Rename(stageFile, targetBinPath); err != nil {
 		// rename 失败：target 仍是旧版本（rename 原子，不会半完成）。
 		// 清理事务文件，保留旧 target 不变。
@@ -211,6 +225,7 @@ func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, tar
 	}
 	p.mu.Unlock()
 
+	il.step("install OK: %s", filepath.Base(targetBinPath))
 	return targetBinPath, nil
 }
 
@@ -218,6 +233,7 @@ func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, tar
 // 清理失败不回滚已成功的新版本——返回可诊断的「更新完成、清理待处理」错误。
 // 多次调用安全（completed 标志防重复清理）。
 func (p *posixInstaller) Commit() error {
+	il := newStepLogger(p.logWriter, "install", nil)
 	p.mu.Lock()
 	txn := p.lastTxn
 	p.lastTxn = nil
@@ -229,6 +245,7 @@ func (p *posixInstaller) Commit() error {
 	if err := cleanupTransactionFiles("", txn.backup, txn.journal); err != nil {
 		return fmt.Errorf("更新完成，清理待处理: %w", err)
 	}
+	il.step("commit OK (cleaned backup/journal)")
 	return nil
 }
 
@@ -237,6 +254,7 @@ func (p *posixInstaller) Commit() error {
 // 多次调用安全（completed 标志防重复回滚）。
 // 无 lastTxn（Install 未成功或已 Commit/Rollback）时返回 nil（无操作）。
 func (p *posixInstaller) Rollback() error {
+	il := newStepLogger(p.logWriter, "install", nil)
 	p.mu.Lock()
 	txn := p.lastTxn
 	p.lastTxn = nil
@@ -245,6 +263,7 @@ func (p *posixInstaller) Rollback() error {
 		return nil
 	}
 	txn.completed = true
+	il.step("rolling back to backup")
 	return rollbackToBackup(txn.target, txn.backup, txn.oldHash, txn.journal)
 }
 

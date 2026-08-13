@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
@@ -52,6 +53,7 @@ type helperFixture struct {
 	sess    *fakeControlSession
 	mgr     *fakeControlManager
 	cfgLoad *recordingConfigLoader
+	logBuf  *bytes.Buffer
 }
 
 func newHelperFixture(t *testing.T, wasRunning bool) *helperFixture {
@@ -99,13 +101,14 @@ func newHelperFixture(t *testing.T, wasRunning bool) *helperFixture {
 		sess:    sess,
 		mgr:     mgr,
 		cfgLoad: &recordingConfigLoader{cfg: &config.Config{DataDir: "/data"}},
+		logBuf:  &bytes.Buffer{},
 	}
 }
 
-// runner 装配 helperRunner（用 fixture 的 seam）。
+// runner 装配 helperRunner（用 fixture 的 seam）。logBuf 捕获 [helper] 步骤日志。
 func (f *helperFixture) runner(t *testing.T) *helperRunner {
 	t.Helper()
-	r, err := NewHelperRunner(f.parent, f.mover, f.result, f.mgr, f.cfgLoad.load)
+	r, err := NewHelperRunner(f.parent, f.mover, f.result, f.mgr, f.cfgLoad.load, f.logBuf)
 	if err != nil {
 		t.Fatalf("NewHelperRunner: %v", err)
 	}
@@ -160,6 +163,13 @@ func TestHelperRunner_SuccessWasRunning(t *testing.T) {
 	if !res.Success {
 		t.Fatalf("result 应 Success=true，got %+v", res)
 	}
+	// [helper] 日志应含关键步骤。
+	logStr := f.logBuf.String()
+	for _, want := range []string{"[helper] started", "[helper] parent exited", "[helper] backup OK", "[helper] MoveFileEx OK", "[helper] hash verified", "[helper] daemon restarted", "[helper] result=ok"} {
+		if !strings.Contains(logStr, want) {
+			t.Errorf("日志应含 %q\n实际日志:\n%s", want, logStr)
+		}
+	}
 }
 
 // TestHelperRunner_SuccessNotRunning wasRunning=false：不重启 daemon。
@@ -200,6 +210,14 @@ func TestHelperRunner_ParentWaitFails(t *testing.T) {
 	}
 	if res.Error == "" {
 		t.Error("失败 result 应携带 Error")
+	}
+	// 失败路径终态日志应为 result=failure recorded（非 result=ok）。
+	logStr := f.logBuf.String()
+	if strings.Contains(logStr, "[helper] result=ok") {
+		t.Error("失败路径不应记 result=ok")
+	}
+	if !strings.Contains(logStr, "[helper] result=failure recorded") {
+		t.Errorf("失败路径应记 result=failure recorded\n实际:\n%s", logStr)
 	}
 }
 
@@ -314,10 +332,71 @@ func TestHelperRunner_InvalidPlanNoResult(t *testing.T) {
 	}
 }
 
+// TestHelperRunner_ResultWriteFailure 主替换已完成（succeed 路径）时 result 写入失败：
+// 主成功结果不变（替换已完成，Run 返回 nil），日志记 result write failed（非 result=ok）。
+// 证明 result 写入失败不回滚已完成替换，仅记日志供诊断。
+func TestHelperRunner_ResultWriteFailure(t *testing.T) {
+	f := newHelperFixture(t, false)
+	f.result.err = errors.New("disk full")
+	r := f.runner(t)
+
+	if err := r.Run(context.Background(), f.paths.Helper, f.paths.Plan); err != nil {
+		t.Fatalf("result 写入失败不应改变主成功结果，Run err=%v", err)
+	}
+	// target 已替换为新版本（替换已完成，result 写入失败不影响主结果）。
+	got, _ := os.ReadFile(f.paths.Target)
+	if !bytes.Equal(got, []byte("new-official-binary-v2")) {
+		t.Fatalf("target 应为新版本，got %q", string(got))
+	}
+	// 日志应记 result write failed（非 result=ok）。
+	logStr := f.logBuf.String()
+	if strings.Contains(logStr, "[helper] result=ok") {
+		t.Error("result 写入失败时不应记 result=ok")
+	}
+	if !strings.Contains(logStr, "[helper] result write failed") {
+		t.Errorf("应记 result write failed\n实际日志:\n%s", logStr)
+	}
+}
+
+// TestHelperRunner_LockAcquireFailureWritesResult WithLock 获取锁失败（不执行回调）时，
+// helper 必须补写失败 result，使下次 update 能消费该失败（父命令已报告 Deferred）。
+// target 不被替换，终态日志记 result=failure recorded。
+func TestHelperRunner_LockAcquireFailureWritesResult(t *testing.T) {
+	f := newHelperFixture(t, false)
+	f.mgr.lockErr = errors.New("lock timeout")
+	r := f.runner(t)
+
+	err := r.Run(context.Background(), f.paths.Helper, f.paths.Plan)
+	if err == nil {
+		t.Fatal("锁获取失败应返回 error")
+	}
+	// target 仍是旧版本（未进入 executeUnderLock，未替换）。
+	got, _ := os.ReadFile(f.paths.Target)
+	if !bytes.Equal(got, []byte("old-official-binary")) {
+		t.Fatalf("锁失败不应替换 target，got %q", string(got))
+	}
+	// 应写失败 result（未进入 WithLock 回调时补写）。
+	res := f.readResult(t)
+	if res.Success {
+		t.Fatal("result 应 Success=false")
+	}
+	if res.Error == "" {
+		t.Error("失败 result 应携带 Error")
+	}
+	// 终态日志应为 result=failure recorded（非 result=ok）。
+	logStr := f.logBuf.String()
+	if strings.Contains(logStr, "[helper] result=ok") {
+		t.Error("锁失败路径不应记 result=ok")
+	}
+	if !strings.Contains(logStr, "[helper] result=failure recorded") {
+		t.Errorf("应记 result=failure recorded\n实际:\n%s", logStr)
+	}
+}
+
 // TestNewHelperRunner_NilDeps 依赖为空 → 装配错误。
 func TestNewHelperRunner_NilDeps(t *testing.T) {
 	if _, err := NewHelperRunner(nil, realFileMover{}, newFakeResultWriter(), &fakeControlManager{},
-		(&recordingConfigLoader{cfg: &config.Config{}}).load); err == nil {
+		(&recordingConfigLoader{cfg: &config.Config{}}).load, nil); err == nil {
 		t.Error("nil parentWaiter 应返回错误")
 	}
 }
