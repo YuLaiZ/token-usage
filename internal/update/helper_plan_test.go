@@ -445,7 +445,7 @@ func TestIsHexNonce(t *testing.T) {
 }
 
 // TestCleanupHelperTempFiles_DeletesNonceBoundFiles 清理 helper 临时文件：
-// 删除 helper.exe/plan/stage/backup，保留 result（供下次 update --check 展示）。
+// 删除 helper.exe/plan/stage/backup，保留 result（供下次完整 update 在来源校验通过后消费）。
 func TestCleanupHelperTempFiles_DeletesNonceBoundFiles(t *testing.T) {
 	dir := t.TempDir()
 	const base = "token-usage"
@@ -466,7 +466,7 @@ func TestCleanupHelperTempFiles_DeletesNonceBoundFiles(t *testing.T) {
 			t.Errorf("临时文件 %s 应被删除", p)
 		}
 	}
-	// result 应保留（供下次 update --check 展示）。
+	// result 应保留（供下次完整 update 在来源校验通过后消费）。
 	if _, err := os.Stat(paths.Result); err != nil {
 		t.Errorf("result 文件应保留，stat err=%v", err)
 	}

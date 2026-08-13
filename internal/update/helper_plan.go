@@ -297,7 +297,7 @@ func validateHelperPlanFields(plan helperPlan) error {
 //
 // 严格安全：只删除 (selfDir, targetBasename, nonce) 派生的精确路径，且只删普通文件
 // （拒绝 symlink / 目录）；不存在的文件视为已清理（幂等）。绝不按前缀模糊匹配。
-// 不删除 result 文件——它供下一次 update --check 展示，由后续更新覆盖或人工查看。
+// 不删除 result 文件——它供下次完整 update（Apply）在来源校验通过后消费，由后续更新覆盖或人工查看。
 func CleanupHelperTempFiles(selfDir, targetBasename, nonce string) error {
 	if selfDir == "" || targetBasename == "" || nonce == "" {
 		return errors.New("清理 helper 临时文件的 selfDir/targetBasename/nonce 不能为空")

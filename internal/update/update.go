@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/control"
@@ -84,6 +86,16 @@ type Service struct {
 	// 未注入时 Apply 保持向后兼容：只到 ReadyToInstall，不下载（stagePath 为空，
 	// 由注入的 Installer 自行处理或测试注入 fake stagePath）。
 	AssetDownloader AssetDownloader
+
+	// LogSink 是升级步骤日志的写入目标（注入，nil=静默）。生产由 CLI 工厂打开
+	// update-YYYY-MM-DD.log 注入；测试注入 buffer 可断言行内容。Apply 各关键步骤
+	// 经 stepLogger 输出 [update] 行到此处。
+	LogSink io.Writer
+
+	// LogPath 是升级日志文件的完整路径（由 CLI 工厂注入为唯一来源，工厂打开文件时已知路径）。
+	// Apply 将其原样放入 ApplyResult.LogPath 供 CLI 提示用户日志位置；retainUpdateLogs
+	// 据其目录清理过期日志。
+	LogPath string
 
 	// downloaderInvoked 由 Apply 在「准备下载」分支置位，仅供测试断言「不可信时不下载」。
 	// 生产代码不读该字段。
@@ -191,6 +203,8 @@ type ApplyResult struct {
 	Recovered bool
 	// RecoveryState 仅在 Recovered=true 时有效。
 	RecoveryState RecoveryState
+	// LogPath 升级日志文件路径（注入 LogSink 时填充），供 CLI 提示用户日志位置。
+	LogPath string
 }
 
 // Check 只做判定第 1/2 步：解析当前版本 + 查询目标 Release + 比较。
@@ -237,11 +251,16 @@ func (s *Service) Check(ctx context.Context, opts CheckOptions) (CheckResult, er
 
 // Apply 执行恢复、完整判定与来源校验编排：
 //  1. 若有遗留 journal，先恢复已存在的本地事务，不接受新来源；
-//  2. Check：若无更新 → 直接返回（ProvenanceChecked=false）；
-//  3. 确有更新 → VerifyProvenance：不可信 → 返回人工安装指引（绝不下载）；
-//  4. 可信 → VersionProbe（默认 CLI 工厂必注入）：版本不一致 → 拒绝安装；
-//  5. 全部通过 → ReadyToInstall=true；
-//  6. 若注入 ControlManager + ConfigLoader：进入锁内编排
+//  2. Check：解析当前版本 + 查询目标 Release + 比较；
+//  3. VerifyProvenance（提前到 Check 后，无论 UpdateAvailable）：为 consume/sweep 提供可信门——
+//     可信时在 control lock 内消费上次 helper result + POSIX sweep；不可信/网络失败则跳过
+//     （consume 是 best-effort，不阻塞用户）；
+//  4. 若无更新 → 直接返回（可信时已消费了上次 result）；
+//  5. 确有更新且 provenance 失败 → 返回 error；
+//  6. 不可信 → 返回人工安装指引（绝不下载）；
+//  7. 可信 → VersionProbe（默认 CLI 工厂必注入）：版本不一致 → 拒绝安装；
+//  8. 全部通过 → ReadyToInstall=true；
+//  9. 若注入 ControlManager + ConfigLoader：进入锁内编排
 //     Inspect →（运行中）Stop → Install →（原先运行）StartWithExecutable，
 //     任何步骤失败均回滚至替换前运行状态（用旧二进制重启）。
 //
@@ -249,31 +268,70 @@ func (s *Service) Check(ctx context.Context, opts CheckOptions) (CheckResult, er
 // 锁内编排只调用 ControlSession 的 Inspect/Stop/StartWithExecutable——
 // 禁止调用 control.Manager.Start/Stop/Restart（它们各自 WithLock 会二次加锁死锁）。
 func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, error) {
+	if s == nil {
+		return ApplyResult{}, errors.New("Service 不能为空")
+	}
+	// 在入口初始化带 LogPath 的 result 与 stepLogger，使所有失败路径（包括早期
+	// recoverPendingJournal / Check / provenance error）都能返回带日志路径的结果，
+	// 并在返回前写入 [update] 失败日志，保证失败可诊断。
+	result := ApplyResult{LogPath: s.LogPath}
+	ul := newStepLogger(s.LogSink, "update", nil)
+
 	// 先处理已存在的遗留事务。它只使用 journal 中受限的同目录路径和已记录的
 	// hash 恢复本地一致性，不下载或执行新的来源；因此不能被当前进程的版本比较
 	// 或来源验证挡住。没有 journal 时该路径只做本地只读探测，不获取 control lock。
 	if outcome, handled, err := s.recoverPendingJournal(ctx); err != nil {
-		return ApplyResult{}, err
+		ul.step("recovery error: %v", err)
+		return result, err
 	} else if handled {
-		return ApplyResult{
-			Recovered:     outcome.Recovered,
-			RecoveryState: outcome.RecoveryState,
-		}, nil
+		result.Recovered = outcome.Recovered
+		result.RecoveryState = outcome.RecoveryState
+		return result, nil
 	}
 
 	// 先做 Check（含当前版本解析与目标查询）。
 	checked, err := s.Check(ctx, CheckOptions{TargetTag: opts.TargetTag})
 	if err != nil {
-		return ApplyResult{}, err
+		ul.step("check error: %v", err)
+		return result, err
 	}
-	result := ApplyResult{CheckResult: checked}
+	result.CheckResult = checked
 
-	// 无更新：直接返回，不做来源校验，不下载。
+	// 来源校验提前到 Check 后（无论 UpdateAvailable），为 consume/sweep 提供可信门。
+	// 这样"升级成功后再次 update"（已是最新）也能消费上次的 result。
+	// 无更新 + provenance 网络失败或不可信 → 跳过 consume，仍返回"已是最新"。
+	prov, perr := VerifyProvenance(ctx, s.ProvenanceDeps, s.CurrentVersion, s.ReleaseClient)
+	if perr == nil && prov.Trusted {
+		ul.step("provenance verified: trusted")
+		// 可信来源：在 control lock 内消费上次 helper result + POSIX sweep（best-effort）。
+		// 不可信来源不被新增的 consume/sweep 触碰（现有 recoverPendingJournal 属既有机制，
+		// 在此前已执行）。
+		s.consumeAndSweep(ctx, prov.BinaryPath, ul)
+		// 日志保留仅在来源可信后执行——不可信或 provenance 出错时不触碰旧日志。
+		if s.LogSink != nil && s.LogPath != "" {
+			retainUpdateLogs(filepath.Dir(s.LogPath), updateLogRetentionDays, time.Now())
+		}
+	} else if perr == nil {
+		ul.step("provenance untrusted: %s", prov.Reason)
+	}
+
+	// 无更新：直接返回。若来源可信，已在上面消费了上次 result。
+	// provenance 查询失败在无更新时不阻塞用户返回"已是最新"，但记录为 best-effort failure，
+	// 便于诊断 result 未被消费或清理被跳过的原因（有更新路径在下方按致命错误单独记录）。
 	if !checked.UpdateAvailable {
+		if perr != nil {
+			ul.step("provenance check failed (best-effort): %v", perr)
+		}
 		return result, nil
 	}
 
-	// 确有更新：解析目标平台资产名（用于结果展示与后续下载）。
+	// 确有更新：provenance 失败（nil deps 等编程错误）返回 error。
+	if perr != nil {
+		ul.step("provenance error: %v", perr)
+		return result, perr
+	}
+
+	// 解析目标平台资产名（用于结果展示与后续下载）。
 	goos, goarch := s.platform()
 	assetName, ok := AssetName(goos, goarch)
 	result.TargetAsset = assetName
@@ -281,14 +339,10 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 		// 平台不受支持：无法给出目标资产，视为不可信来源（保守拒绝）。
 		result.ProvenanceChecked = true
 		result.Reason = fmt.Sprintf("目标平台 %s/%s 无官方资产，请手动安装", goos, goarch)
+		ul.step("platform unsupported: %s/%s", goos, goarch)
 		return result, nil
 	}
 
-	// 来源校验：当前二进制是否为官方 Release 资产。
-	prov, perr := VerifyProvenance(ctx, s.ProvenanceDeps, s.CurrentVersion, s.ReleaseClient)
-	if perr != nil {
-		return ApplyResult{}, perr
-	}
 	result.ProvenanceChecked = true
 	result.ProvenanceTrusted = prov.Trusted
 	result.BinaryPath = prov.BinaryPath
@@ -301,6 +355,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 
 	// 可信：标记「准备下载」。
 	s.downloaderInvoked = true
+	ul.step("started: %s → %s", checked.CurrentTag, checked.TargetTag)
 
 	// 下载目标资产到 stage 文件（若注入 AssetDownloader）。
 	// expectedHash 取自目标 Release 的 SHA256SUMS（ManifestFetcher 是 tag 参数化的，
@@ -310,7 +365,11 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 	if derr != nil {
 		// 下载或清单查询失败：保守拒绝安装，写明原因。ReadyToInstall 保持 false。
 		result.Reason = fmt.Sprintf("下载目标资产失败，请手动安装: %v", derr)
+		ul.step("download failed: %v", derr)
 		return result, nil
+	}
+	if stagePath != "" {
+		ul.step("stage downloaded: %s", filepath.Base(stagePath))
 	}
 
 	// 默认 CLI 工厂注入的 stage --version 探针：用真实 stage 路径运行 --version，作为
@@ -323,13 +382,16 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 			// 避免失败路径在目标目录残留大文件（实测 Windows 失败后残留 ~24MB）。
 			_ = os.Remove(stagePath)
 			result.Reason = fmt.Sprintf("stage 版本探针失败: %v；请手动安装", verr)
+			ul.step("stage probe failed: %v", verr)
 			return result, nil
 		}
 		if stageVer != checked.TargetTag {
 			_ = os.Remove(stagePath)
 			result.Reason = fmt.Sprintf("stage 版本 %q 与目标 tag %q 不一致，拒绝安装；请手动安装", stageVer, checked.TargetTag)
+			ul.step("stage version mismatch: %s != %s", stageVer, checked.TargetTag)
 			return result, nil
 		}
+		ul.step("stage version probe: %s", stageVer)
 	}
 
 	// 全部通过：到达「准备安装」状态。
@@ -340,15 +402,30 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 	// 未注入任一依赖时只到 ReadyToInstall=true，不做锁内操作（保持向后兼容，便于分阶段接入）。
 	if s.ControlManager != nil && s.ConfigLoader != nil {
 		outcome, ierr := s.installUnderLockOutcome(ctx, stagePath, result.BinaryPath)
+		// Install 已把外部 stage 复制为内部 nonce 副本（POSIX copyStageWithMode /
+		// Windows copyFileWithMode），此后外部 stagePath 冗余——成功/失败路径都 best-effort 删除。
+		// Deferred 时 helper 用内部副本 paths.Stage，不引用外部 stagePath，删除亦安全。
+		if stagePath != "" {
+			_ = removeRegularFile(stagePath)
+		}
 		if ierr != nil {
 			// 锁内编排失败：保留 ReadyToInstall=true（来源校验已通过），返回错误供上层处理。
 			// Installed 与 Deferred 均保持 false。
+			ul.step("install failed: %v", ierr)
 			return result, ierr
 		}
 		result.Installed = outcome.Installed
 		result.Deferred = outcome.Deferred
 		result.Recovered = outcome.Recovered
 		result.RecoveryState = outcome.RecoveryState
+		if result.Installed {
+			ul.step("installed: %s", checked.TargetTag)
+		} else if result.Deferred {
+			ul.step("deferred to background helper")
+		}
+	} else if stagePath != "" {
+		// 未注入 control（向后兼容路径）：无 install 消费 stage，best-effort 清理。
+		_ = removeRegularFile(stagePath)
 	}
 	return result, nil
 }
@@ -720,4 +797,41 @@ func (s *Service) platform() (string, string) {
 		goarch = runtime.GOARCH
 	}
 	return goos, goarch
+}
+
+// consumeAndSweep 在可信来源确认后，消费上次 helper result 并清理 POSIX nonce 事务残留。
+// ControlManager != nil 时在 control lock 内执行（与 installUnderLockOutcome 的 WithLock
+// 顺序独立、非嵌套）；== nil 时直接执行。consume 经原子文件操作、POSIX sweep 无后台 helper
+// 竞态，无锁亦安全。best-effort：锁获取失败或清理失败不阻塞升级。
+//
+// 平台边界：consume 双平台执行（仅 Windows 产生 result，POSIX 无命中自动 no-op）；
+// sweep 仅 POSIX（s.platform() goos != windows，Windows 放弃跨事务 sweep）。
+func (s *Service) consumeAndSweep(ctx context.Context, target string, ul *stepLogger) {
+	run := func() {
+		consumePendingResult(target, ul)
+		goos, _ := s.platform()
+		if goos != "windows" {
+			if err := SweepStaleTempFiles(target); err != nil {
+				ul.step("sweep error: %v", err)
+			}
+		}
+	}
+	if s.ControlManager != nil {
+		if err := s.ControlManager.WithLock(ctx, func(sess ControlSession) error {
+			run()
+			return nil
+		}); err != nil {
+			ul.step("consume/sweep lock error: %v", err)
+		}
+	} else {
+		run()
+	}
+}
+
+// CloseLogSink 关闭升级日志 sink（若它实现了 io.Closer）。供 CLI 命令在返回前 defer 调用。
+// LogSink 未注入或不是 closer 时为 no-op。
+func (s *Service) CloseLogSink() {
+	if c, ok := s.LogSink.(io.Closer); ok {
+		_ = c.Close()
+	}
 }

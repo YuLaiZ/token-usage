@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -28,11 +29,12 @@ import (
 type fakeInstaller struct {
 	mu             sync.Mutex
 	calls          []recordedInstall
-	newBinPath     string // 成功时返回的新二进制路径（默认 = 入参 targetBinPath）
+	stageContents  [][]byte // 每次 Install 时捕获的 stage 文件内容（stagePath 非空且存在时）
+	newBinPath     string   // 成功时返回的新二进制路径（默认 = 入参 targetBinPath）
 	err            error
-	installAfter   string // 记录调用时刻的 orchestration 阶段标记（由 trace 对照）
-	useTargetAsNew bool   // true 时 newBinPath 取 targetBinPath（默认行为）
-	deferred       bool   // true 时返回 (targetBinPath, ErrDeferredToHelper) 模拟 Windows staged replacement
+	installAfter   string   // 记录调用时刻的 orchestration 阶段标记（由 trace 对照）
+	useTargetAsNew bool     // true 时 newBinPath 取 targetBinPath（默认行为）
+	deferred       bool     // true 时返回 (targetBinPath, ErrDeferredToHelper) 模拟 Windows staged replacement
 }
 
 type recordedInstall struct {
@@ -48,6 +50,16 @@ func (f *fakeInstaller) Install(ctx context.Context, stagePath, oldBinPath, targ
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, recordedInstall{stagePath: stagePath, oldBinPath: oldBinPath, targetBinPath: targetBinPath, wasRunning: wasRunning})
+	// 捕获 stage 内容（Apply 成功后会删外部 stage，须在 Install 内捕获而非事后读取）。
+	if stagePath != "" {
+		if content, rerr := os.ReadFile(stagePath); rerr == nil {
+			f.stageContents = append(f.stageContents, content)
+		} else {
+			f.stageContents = append(f.stageContents, nil)
+		}
+	} else {
+		f.stageContents = append(f.stageContents, nil)
+	}
 	if f.deferred {
 		// 模拟 Windows Installer：已 spawn 后台 helper，返回 sentinel。
 		return targetBinPath, ErrDeferredToHelper
@@ -325,8 +337,10 @@ func TestApply_InstallOrchestration_ConfigLoaderFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("ConfigLoader 失败应返回错误")
 	}
-	if mgr.calls != 0 {
-		t.Errorf("ConfigLoader 失败不应进入 control lock，WithLock calls=%d", mgr.calls)
+	// consume/sweep 在 install 之前用一次 WithLock（provenance 可信后）。installUnderLockOutcome
+	// 的 ConfigLoader 在其 WithLock 前调用并失败，故 install 的 WithLock 不应被调用。
+	if mgr.calls > 1 {
+		t.Errorf("ConfigLoader 失败不应进入 install control lock，WithLock calls=%d", mgr.calls)
 	}
 }
 

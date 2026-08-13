@@ -427,6 +427,80 @@ func verifyFileHash(path, expectedHex string) error {
 	return nil
 }
 
+// StepLogWriter 由需要接收步骤日志 writer 的安装器实现（如 POSIX 安装器输出 [install] 行）。
+// CLI 工厂经类型断言注入，使平台无关的工厂代码无需知道安装器具体类型。
+type StepLogWriter interface {
+	SetLogWriter(w io.Writer)
+}
+
+// HelperLogDirSetter 由需要日志目录的安装器实现（如 Windows 安装器重定向 helper stderr）。
+// CLI 工厂经类型断言注入，使平台无关的工厂代码无需知道安装器具体类型。
+type HelperLogDirSetter interface {
+	SetLogDir(dir string)
+}
+
+// consumePendingResult 扫描 target 所在目录的上次 helper result 文件，读取并记录到日志，
+// 然后删除（一次性消费）。仅在 VerifyProvenance 可信后调用——不可信来源不被触碰。
+//
+// result 文件命名：.<base>.update-result-<nonce>.json（仅 Windows helper 写入，
+// POSIX 无命中自动 no-op）。复用 helperResult 解析：
+//   - Success=true → 日志记"上次升级成功"；
+//   - Success=false → 日志记 Error / Rollback；
+//   - 解析失败也删（防止损坏 result 永久残留）。
+//
+// LogSink（经 stepLogger 的 writer）为 nil 时仅删不记。consume 是 best-effort 的：
+// 目录不存在、扫描失败均静默跳过。生产 result 经原子替换写入，consume 不会读到半份 JSON。
+func consumePendingResult(target string, l *stepLogger) {
+	dir := filepath.Dir(target)
+	base := filepath.Base(target)
+	resultPrefix := "." + base + resultSuffix
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, resultPrefix) || !strings.HasSuffix(name, resultExt) {
+			continue
+		}
+		info, ierr := e.Info()
+		if ierr != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		data, rerr := os.ReadFile(path)
+		if rerr == nil {
+			var res helperResult
+			if jerr := json.Unmarshal(data, &res); jerr == nil {
+				if res.Success {
+					l.step("consumed previous result: success")
+				} else {
+					detail := res.Error
+					if res.Rollback != "" {
+						detail = fmt.Sprintf("%s (rollback=%s)", res.Error, res.Rollback)
+					}
+					l.step("consumed previous result: failed: %s", detail)
+				}
+			} else {
+				l.step("consumed previous result: parse error, deleted")
+			}
+		}
+		// 无论读取/解析是否成功，都删除（一次性消费），防止残留。
+		_ = removeRegularFile(path)
+	}
+}
+
+// SweepStaleTempFiles 清理 target 同目录下的 POSIX nonce 事务残留（stage/backup/journal）。
+// 仅按精确前缀匹配普通文件，跳过目录/symlink（继承 cleanupUpdateTempByPrefix 语义）。
+// best-effort：扫描/删除失败不阻塞升级。
+//
+// 仅在 POSIX 平台调用（goos != windows）。Windows 放弃跨事务 sweep（control lock 不足以
+// 串行化 helper/cleanup，见方案设计 §2.3），故 Windows 事务文件不会被误删。
+func SweepStaleTempFiles(target string) error {
+	return cleanupUpdateTempByPrefix(filepath.Dir(target), updateTempPrefixesFor(target))
+}
+
 // validateInstallInputs 校验 Install 入参：stagePath 与 targetBinPath 非空、为绝对路径，
 // 且都是普通文件（非 symlink / 目录）。平台无关：POSIX 与 Windows 安装器共用。
 func validateInstallInputs(stagePath, targetBinPath string) error {

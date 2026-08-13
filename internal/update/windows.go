@@ -11,7 +11,7 @@ import (
 //   - 等待父进程（当前 token-usage CLI）退出，释放对旧 .exe 的句柄；
 //   - 用 MoveFileEx(MOVEFILE_REPLACE_EXISTING) 把下载的新 .exe 原子替换到位；
 //   - 启动新版本进程；
-//   - 把结果写入约定文件，供父进程在退出前/后读取并回显给用户。
+//   - 把结果写入约定文件，供下一次完整 update（Apply）在来源校验通过后消费。
 //
 // 这些操作涉及 Windows 系统 API 与真实进程句柄，必须在测试中以 fake 替换。
 // 所有 seam 均不暴露为用户可见的 flag / 环境变量 / 配置项。
@@ -36,7 +36,7 @@ type FileMover interface {
 	MoveReplace(from, to string) error
 }
 
-// ResultWriter 抽象「把更新结果写入约定文件供父进程读取」。
+// ResultWriter 抽象「把更新结果写入约定文件，供下一次完整 update（Apply）在来源校验通过后消费」。
 // 生产实现按固定路径（如 <data_dir>/update-result.json）写入；
 // 测试注入 fake 仅记录写入内容，不触碰真实文件系统。
 type ResultWriter interface {

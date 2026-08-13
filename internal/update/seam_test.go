@@ -374,9 +374,11 @@ func (m *fakeFileMover) MoveReplace(from, to string) error {
 }
 
 // fakeResultWriter 把结果写入内存 buffer，便于断言内容；可选地也写真实文件。
+// err 非空时 WriteResult 返回该错误（模拟写入失败），不记录内容。
 type fakeResultWriter struct {
 	mu      sync.Mutex
 	written map[string][]byte
+	err     error
 }
 
 func newFakeResultWriter() *fakeResultWriter {
@@ -386,6 +388,9 @@ func newFakeResultWriter() *fakeResultWriter {
 func (w *fakeResultWriter) WriteResult(path string, data []byte, mode fs.FileMode) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.err != nil {
+		return w.err
+	}
 	cp := make([]byte, len(data))
 	copy(cp, data)
 	w.written[path] = cp

@@ -1,8 +1,12 @@
 package update
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -439,4 +443,311 @@ type versionProbeFunc func(ctx context.Context, stagePath string) (string, error
 
 func (f versionProbeFunc) ProbeVersion(ctx context.Context, stagePath string) (string, error) {
 	return f(ctx, stagePath)
+}
+
+// ---- consume / sweep 时序与安全测试 ----
+
+// nonceFilePath 构造 target 同目录的 nonce 命名事务文件路径（辅助测试）。
+func nonceFilePath(binPath, suffix, nonce, ext string) string {
+	base := filepath.Base(binPath)
+	name := "." + base + suffix + nonce + ext
+	return filepath.Join(filepath.Dir(binPath), name)
+}
+
+// writeNonceFile 在 binPath 同目录创建一个 nonce 命名文件，返回路径。
+func writeNonceFile(t *testing.T, binPath, suffix, nonce, ext string, content []byte) string {
+	t.Helper()
+	p := nonceFilePath(binPath, suffix, nonce, ext)
+	if err := os.WriteFile(p, content, 0o600); err != nil {
+		t.Fatalf("write %s: %v", p, err)
+	}
+	return p
+}
+
+// TestApply_UntrustedNoConsumeSweep ：非官方安装（Trusted=false）不被新增的
+// consume/sweep 触碰。造 result + stage + backup 文件，Apply 后验证全部保留。
+func TestApply_UntrustedNoConsumeSweep(t *testing.T) {
+	svc := makeService(t)
+	const nonce = "aabbccddaabbccddaabbccddaabbccdd"
+
+	paths := []string{
+		writeNonceFile(t, svc.binPathForTest, resultSuffix, nonce, resultExt, []byte(`{"success":true}`)),
+		writeNonceFile(t, svc.binPathForTest, updateStageSuffix, nonce, "", []byte("stale")),
+		writeNonceFile(t, svc.binPathForTest, updateBackupSuffix, nonce, "", []byte("stale")),
+	}
+	t.Cleanup(func() {
+		for _, p := range paths {
+			_ = os.Remove(p)
+		}
+	})
+
+	// 破坏来源：manifest hash 不匹配本地二进制。
+	svc.ProvenanceDeps.Manifest = staticManifestFetcher(
+		buildSumsBody("token-usage-darwin-arm64", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+	)
+
+	var logBuf bytes.Buffer
+	svc.LogSink = &logBuf
+
+	got, err := svc.Apply(context.Background(), ApplyOptions{})
+	if err != nil {
+		t.Fatalf("Apply err=%v", err)
+	}
+	if got.ProvenanceTrusted {
+		t.Fatal("来源应不可信")
+	}
+
+	// 不可信 → 新增 consume/sweep 零执行 → 文件全部保留。
+	for _, p := range paths {
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			t.Errorf("不可信来源不应触碰事务文件: %s", p)
+		}
+	}
+	if strings.Contains(logBuf.String(), "consumed") {
+		t.Error("不可信来源不应 consume（日志不应含 consumed）")
+	}
+}
+
+// TestApply_WindowsGoosSweepSkippedConsumeRuns ：注入 Goos="windows" 模拟 Windows
+// 平台。第二次 Apply 的 consume 只读删 result，不删 plan/stage/backup（sweep 按 Goos 跳过）。
+func TestApply_WindowsGoosSweepSkippedConsumeRuns(t *testing.T) {
+	svc := makeService(t)
+	svc.Goos = "windows"
+	setTarget(svc, "v0.1.0") // 无更新：只走 consume/sweep，不进入 AssetName/download
+
+	const nonce = "11223344556677881122334455667788"
+	resultPath := writeNonceFile(t, svc.binPathForTest, resultSuffix, nonce, resultExt, []byte(`{"success":true}`))
+	planPath := writeNonceFile(t, svc.binPathForTest, planSuffix, nonce, "", []byte("plan"))
+	stagePath := writeNonceFile(t, svc.binPathForTest, updateStageSuffix, nonce, "", []byte("stage"))
+	backupPath := writeNonceFile(t, svc.binPathForTest, updateBackupSuffix, nonce, "", []byte("backup"))
+	t.Cleanup(func() {
+		for _, p := range []string{resultPath, planPath, stagePath, backupPath} {
+			_ = os.Remove(p)
+		}
+	})
+
+	var logBuf bytes.Buffer
+	svc.LogSink = &logBuf
+
+	got, err := svc.Apply(context.Background(), ApplyOptions{})
+	if err != nil {
+		t.Fatalf("Apply err=%v", err)
+	}
+	if got.UpdateAvailable {
+		t.Fatal("应无更新")
+	}
+
+	// result 被 consume 删除（consume 双平台执行）。
+	if _, err := os.Stat(resultPath); !os.IsNotExist(err) {
+		t.Error("result 应被 consume 删除")
+	}
+	// plan/stage/backup 保留（Windows sweep 被跳过，验证 sweep 按 Goos 跳过）。
+	for _, p := range []string{planPath, stagePath, backupPath} {
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			t.Errorf("Windows 平台 sweep 应跳过，文件应保留: %s", p)
+		}
+	}
+}
+
+// TestApply_ConsumePreservesCleanupPlan ：consume 删 result 后 plan 仍完好可读，
+// 验证 cleanup 路径派生（读 plan 取 nonce/targetBasename）不受 result 删除影响。
+func TestApply_ConsumePreservesCleanupPlan(t *testing.T) {
+	svc := makeService(t)
+	svc.Goos = "windows"
+	setTarget(svc, "v0.1.0")
+
+	const nonce = "aabbccddaabbccddaabbccddaabbccdd"
+	resultPath := writeNonceFile(t, svc.binPathForTest, resultSuffix, nonce, resultExt, []byte(`{"success":true}`))
+	planPath := nonceFilePath(svc.binPathForTest, planSuffix, nonce, "")
+	plan := helperPlan{
+		Nonce:          nonce,
+		TargetBasename: filepath.Base(svc.binPathForTest),
+		OldSHA256:      "1111111111111111111111111111111111111111111111111111111111111111",
+		NewSHA256:      "2222222222222222222222222222222222222222222222222222222222222222",
+		Parent:         ProcessIdentity{PID: 1, CreationTime: 1},
+	}
+	if err := writeHelperPlan(planPath, plan); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(resultPath)
+		_ = os.Remove(planPath)
+	})
+
+	if _, err := svc.Apply(context.Background(), ApplyOptions{}); err != nil {
+		t.Fatalf("Apply err=%v", err)
+	}
+
+	// result 被消费删除。
+	if _, err := os.Stat(resultPath); !os.IsNotExist(err) {
+		t.Error("result 应被 consume 删除")
+	}
+	// plan 完好可读，cleanup 路径派生不受 result 删除影响。
+	gotPlan, err := readHelperPlan(planPath)
+	if err != nil {
+		t.Fatalf("plan 应仍可读: %v", err)
+	}
+	if gotPlan.Nonce != nonce {
+		t.Errorf("plan nonce 不匹配: got %q want %q", gotPlan.Nonce, nonce)
+	}
+	if gotPlan.TargetBasename != filepath.Base(svc.binPathForTest) {
+		t.Errorf("plan target basename 不匹配: got %q", gotPlan.TargetBasename)
+	}
+}
+
+// TestApply_NoUpdateTrustedConsumesResult (P1 核心场景)：升级成功后再次 update
+// （无更新 + 可信），Apply 返回"已是最新"前 consume 删除 result 并记录"上次升级成功"。
+func TestApply_NoUpdateTrustedConsumesResult(t *testing.T) {
+	svc := makeService(t)
+	setTarget(svc, "v0.1.0") // 无更新
+
+	const nonce = "aabbccddaabbccddaabbccddaabbccdd"
+	resultPath := writeNonceFile(t, svc.binPathForTest, resultSuffix, nonce, resultExt, []byte(`{"success":true}`))
+	t.Cleanup(func() { _ = os.Remove(resultPath) })
+
+	var logBuf bytes.Buffer
+	svc.LogSink = &logBuf
+
+	got, err := svc.Apply(context.Background(), ApplyOptions{})
+	if err != nil {
+		t.Fatalf("Apply err=%v", err)
+	}
+	if got.UpdateAvailable {
+		t.Fatal("应无更新")
+	}
+	// result 被消费删除（证明无更新路径也执行 consume）。
+	if _, err := os.Stat(resultPath); !os.IsNotExist(err) {
+		t.Error("result 应被 consume 删除（无更新也消费）")
+	}
+	// 日志记录上次升级成功。
+	if !strings.Contains(logBuf.String(), "consumed previous result: success") {
+		t.Errorf("日志应记 consumed previous result: success\n实际:\n%s", logBuf.String())
+	}
+}
+
+// TestApply_ConsumeSafeScenarios ：consume 在 result 未写（无命中）或已原子写
+// （完整 JSON / 损坏 JSON）时均正确：不崩、不误删其他文件、损坏的也删除。
+func TestApply_ConsumeSafeScenarios(t *testing.T) {
+	const nonce = "aabbccddaabbccddaabbccddaabbccdd"
+
+	t.Run("no result file", func(t *testing.T) {
+		svc := makeService(t)
+		setTarget(svc, "v0.1.0")
+
+		var logBuf bytes.Buffer
+		svc.LogSink = &logBuf
+		_, err := svc.Apply(context.Background(), ApplyOptions{})
+		if err != nil {
+			t.Fatalf("Apply err=%v", err)
+		}
+		if strings.Contains(logBuf.String(), "consumed") {
+			t.Error("无 result 时不应 consume")
+		}
+	})
+
+	t.Run("corrupt result deleted", func(t *testing.T) {
+		svc := makeService(t)
+		setTarget(svc, "v0.1.0")
+
+		resultPath := writeNonceFile(t, svc.binPathForTest, resultSuffix, nonce, resultExt, []byte("not-json"))
+		t.Cleanup(func() { _ = os.Remove(resultPath) })
+
+		var logBuf bytes.Buffer
+		svc.LogSink = &logBuf
+		_, err := svc.Apply(context.Background(), ApplyOptions{})
+		if err != nil {
+			t.Fatalf("Apply err=%v", err)
+		}
+		// 损坏 result 被删除（防止永久残留）。
+		if _, err := os.Stat(resultPath); !os.IsNotExist(err) {
+			t.Error("损坏 result 应被删除")
+		}
+		if !strings.Contains(logBuf.String(), "parse error") {
+			t.Errorf("日志应记 parse error\n实际:\n%s", logBuf.String())
+		}
+	})
+
+	t.Run("failed result logged with error", func(t *testing.T) {
+		svc := makeService(t)
+		setTarget(svc, "v0.1.0")
+
+		resultPath := writeNonceFile(t, svc.binPathForTest, resultSuffix, nonce, resultExt,
+			[]byte(`{"success":false,"error":"MoveFileEx failed"}`))
+		t.Cleanup(func() { _ = os.Remove(resultPath) })
+
+		var logBuf bytes.Buffer
+		svc.LogSink = &logBuf
+		_, err := svc.Apply(context.Background(), ApplyOptions{})
+		if err != nil {
+			t.Fatalf("Apply err=%v", err)
+		}
+		if _, err := os.Stat(resultPath); !os.IsNotExist(err) {
+			t.Error("失败 result 也应被消费删除")
+		}
+		if !strings.Contains(logBuf.String(), "consumed previous result: failed") {
+			t.Errorf("日志应记 consumed previous result: failed\n实际:\n%s", logBuf.String())
+		}
+	})
+}
+
+// ---- Apply 分支回归测试 ----
+
+// TestApply_NilServiceNoPanic：nil Service 调用 Apply 返回错误，不 panic。
+func TestApply_NilServiceNoPanic(t *testing.T) {
+	var svc *Service
+	_, err := svc.Apply(context.Background(), ApplyOptions{})
+	if err == nil {
+		t.Fatal("nil Service 应返回错误")
+	}
+}
+
+// TestApply_NoUpdateProvenanceErrorBestEffort：无更新 + provenance 查询失败时，
+// 记 best-effort 日志并返回成功（"已是最新"），不作为致命错误。
+func TestApply_NoUpdateProvenanceErrorBestEffort(t *testing.T) {
+	svc := makeService(t)
+	setTarget(svc, "v0.1.0") // 无更新
+	// 破坏 provenance 依赖使其返回 error（Executable 为 nil → validate 失败）。
+	svc.ProvenanceDeps.Executable = nil
+
+	var logBuf bytes.Buffer
+	svc.LogSink = &logBuf
+
+	got, err := svc.Apply(context.Background(), ApplyOptions{})
+	if err != nil {
+		t.Fatalf("无更新 + provenance error 不应返回 error: %v", err)
+	}
+	if got.UpdateAvailable {
+		t.Fatal("应无更新")
+	}
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, "provenance check failed (best-effort)") {
+		t.Errorf("应记 best-effort provenance failure\n实际:\n%s", logStr)
+	}
+	if strings.Contains(logStr, "provenance error") {
+		t.Error("无更新路径不应记致命 provenance error")
+	}
+}
+
+// TestApply_UpdateAvailableProvenanceErrorFatal：有更新 + provenance 查询失败时，
+// 记致命日志并返回 error（不记 best-effort）。
+func TestApply_UpdateAvailableProvenanceErrorFatal(t *testing.T) {
+	svc := makeService(t)
+	// 默认目标 v0.2.0 > 当前 v0.1.0，有更新。
+	// 破坏 provenance 依赖使其返回 error。
+	svc.ProvenanceDeps.Executable = nil
+
+	var logBuf bytes.Buffer
+	svc.LogSink = &logBuf
+
+	_, err := svc.Apply(context.Background(), ApplyOptions{})
+	if err == nil {
+		t.Fatal("有更新 + provenance error 应返回 error")
+	}
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, "provenance error") {
+		t.Errorf("应记致命 provenance error\n实际:\n%s", logStr)
+	}
+	if strings.Contains(logStr, "best-effort") {
+		t.Error("有更新路径不应记 best-effort")
+	}
 }

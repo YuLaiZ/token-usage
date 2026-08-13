@@ -49,7 +49,7 @@ func runUpdateHelperCmd(ctx context.Context, planPath string) error {
 	}
 	cm := update.NewControlManager(mgr)
 
-	runner, err := update.NewHelperRunner(parent, mover, result, cm, loadConfig)
+	runner, err := update.NewHelperRunner(parent, mover, result, cm, loadConfig, os.Stderr)
 	if err != nil {
 		return fmt.Errorf("装配 helper runner 失败: %w", err)
 	}
