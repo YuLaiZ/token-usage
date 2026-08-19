@@ -21,7 +21,7 @@ A local LLM usage analytics tool for collecting, analyzing, and querying token u
 
 ### Installation
 
-Choose one of the installation methods below. Option A (official Release binary) is recommended: it requires no Go toolchain, works with one command, and is the only source that supports in-place self-update.
+Choose one of the installation methods below. Option A (official Release binary) is recommended: it requires no Go toolchain, installs the official Release binary with one command — the only source that supports in-place self-update. Everything is kept under `~/.token-usage` — configuration, database, logs, and the binary at `~/.token-usage/bin/token-usage` — exposed through your user PATH, with no sudo or administrator privileges needed.
 
 #### Option A: Official Release binary (recommended — enables self-update)
 
@@ -32,9 +32,19 @@ Install the token-usage CLI on this machine: download the official Release binar
 matching this platform (token-usage-darwin-arm64 for macOS Apple Silicon,
 token-usage-darwin-amd64 for macOS Intel, token-usage-windows-amd64.exe for Windows)
 from github.com/YuLaiZ/token-usage/releases, verify its SHA256 against the
-SHA256SUMS file of that release, install it into a directory on PATH (e.g.
-/usr/local/bin), and confirm with `token-usage version` (run `token-usage --help`
-to see the available commands).
+SHA256SUMS file of that release, install it as the real file
+~/.token-usage/bin/token-usage (Windows:
+%USERPROFILE%\.token-usage\bin\token-usage.exe), and add the bin directory
+(~/.token-usage/bin on macOS, %USERPROFILE%\.token-usage\bin on Windows) to the
+user PATH: on macOS append export PATH="$HOME/.token-usage/bin:$PATH" to the
+shell rc file (zsh: ~/.zshrc; bash: the first file login shells read); on
+Windows write the user Path value through a Microsoft.Win32.Registry direct
+write that preserves the REG_EXPAND_SZ value type and %VAR% literals — do not
+use setx or [Environment]::SetEnvironmentVariable — then broadcast
+WM_SETTINGCHANGE with lParam `Environment`. If the broadcast fails, sign out
+and back in before opening a new terminal. Then open a new terminal (on
+Windows, start a new window from the Start menu or taskbar) and confirm with
+`token-usage version` (run `token-usage --help` to see the available commands).
 ```
 
 Or run it manually:
@@ -43,10 +53,14 @@ Or run it manually:
 curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.sh | bash
 ```
 
-The script detects your architecture, downloads the newest official Release (prereleases included until a stable release exists), verifies its SHA256 against the official `SHA256SUMS`, and installs it to `/usr/local/bin`. To pin a specific release tag:
+The script detects your architecture, downloads the newest official Release (prereleases included), verifies its SHA256 against the official `SHA256SUMS`, installs it to `~/.token-usage/bin/token-usage` without sudo, automatically removes any leftover copy from the old installation layout (with manual-removal guidance when that directory is not writable, and with corresponding manual guidance in other cases — such as a directory occupying that path — or when deletion fails, without affecting the installation), and adds `~/.token-usage/bin` to your user PATH by appending a marker block to your shell rc file (zsh and bash only — zsh: `~/.zshrc`; bash: the first file login shells read — `~/.bash_profile` first, then `~/.bash_login`, then `~/.profile`; for other shells the script prints manual PATH guidance instead). Open a new terminal and run `token-usage version` to confirm.
+
+> Non-login interactive shells (some IDE integrated terminals read `~/.bashrc` instead of login files) do not load the login file; add `export PATH="$HOME/.token-usage/bin:$PATH"` there yourself if needed. Interactive zsh terminals always read `~/.zshrc`.
+
+To pin a specific release tag:
 
 ```bash
-TAG=v0.1.0-rc.1 curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.sh | TAG=v0.1.0-rc.12 bash
 ```
 
 Published assets:
@@ -55,22 +69,23 @@ Published assets:
 - `token-usage-darwin-amd64` (macOS Intel)
 - `token-usage-windows-amd64.exe` (Windows)
 
-Windows: download `token-usage-windows-amd64.exe` from the [Releases page](https://github.com/YuLaiZ/token-usage/releases), rename it to `token-usage.exe`, place it in a directory on `PATH`, and run `token-usage version` to confirm.
+Windows — or run it manually (save the script first, then execute it):
 
-Manual install on macOS (when you prefer not to pipe a script from the network):
-
-```bash
-# The `latest` link requires a stable release; while only prereleases are
-# published it returns 404. Use the newest tag from the Releases page
-# (the example below pins v0.1.0-rc.1):
-curl -L -o token-usage https://github.com/YuLaiZ/token-usage/releases/download/v0.1.0-rc.1/token-usage-darwin-arm64
-chmod +x token-usage
-sudo mv token-usage /usr/local/bin/token-usage
-token-usage --help
-token-usage version
+```powershell
+irm https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.ps1 -OutFile "$env:TEMP\install.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"
 ```
 
-A binary installed from an official Release can update itself in place:
+The script downloads the newest official Release, verifies its SHA256 against the official `SHA256SUMS`, installs it to `%USERPROFILE%\.token-usage\bin\token-usage.exe` without administrator privileges, and appends `%USERPROFILE%\.token-usage\bin` to the user PATH with a type-preserving registry write (the existing `REG_EXPAND_SZ` value type and `%VAR%` entries are kept as-is). Open a new terminal window from the Start menu or taskbar and run `token-usage version` to confirm. To pin a specific release tag, run the downloaded script with `-Tag`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1" -Tag v0.1.0-rc.12
+```
+
+> On an old TLS environment the first `irm` step still runs before the script, so the in-script TLS fallback cannot rescue it: run `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12` in the current session first, then run the download step.
+
+Manual install steps on Windows (download → SHA256 verify → put the binary into the bin directory → add it to the user PATH) are covered under Option B below.
+
+A binary installed from an official Release — by the script above, by the AI-agent instruction, or manually through Option B's official-asset path — can update itself in place: the binary is the real file on PATH at `~/.token-usage/bin`, which is exactly what the self-update source check requires.
 
 ```bash
 token-usage update                  # update to the latest stable release
@@ -86,44 +101,94 @@ See the [CLI Reference](docs/cli.md) for the full set of flags, exit codes, and 
 >
 > **Manual-upgrade boundary:** `update` only replaces the current binary when it is the official Release asset for the reported version — its SHA256 must match the official asset hash for that version. If the current binary is a `go install`/locally built/symlinked copy, or its version or hash do not match, `update` does not overwrite it and prints manual-install guidance instead.
 >
+> **Why no symlink into PATH:** the self-update source check requires the running executable to be the real binary file. A call through a symlink resolves to the symlink path and is rejected (the "symlinked copy" case in the boundary above). That is why this layout puts `~/.token-usage/bin` itself on PATH instead of placing a link in another directory.
+>
 > **Interrupted-update recovery:** the source gate applies to a new Release download. If a previous POSIX update left its restricted local transaction journal behind, a later `update` first restores that recorded transaction to a consistent state; it does not accept or download a new binary during recovery.
 
-#### Option B: Manual binary installation
+To uninstall or migrate from an earlier layout, see [Uninstall and migration](#uninstall-and-migration) below.
 
-**macOS**:
+#### Option B: Manual binary installation (same layout)
+
+Option B performs the same layout as Option A by hand — the binary at `~/.token-usage/bin/token-usage` (Windows: `%USERPROFILE%\.token-usage\bin\token-usage.exe`), with the bin directory added to your user PATH. The two sub-paths differ in upgrade semantics:
+
+- **Official Release asset** (downloaded and SHA256-verified below): equivalent to Option A, supports in-place self-update.
+- **Built from source** (`make build` / `go build`): reports `Version=dev` or a pseudo-version and cannot self-update; upgrade by rebuilding and replacing the file manually (see the development-build note above).
+
+**macOS — official Release asset**:
 
 ```bash
-# 1. Download or build the binary (choose one)
-#    a) Build from source
-git clone https://github.com/YuLaiZ/token-usage.git && cd token-usage
-make build                               # produces ./token-usage
-#    b) Or use a prebuilt binary when a release is available
-# 2. Move it into the managed directory and symlink it into PATH
+# The `latest` link requires a stable release; while only prereleases are
+# published it returns 404. Use the newest tag from the Releases page
+# (the example below pins v0.1.0-rc.12):
+curl -fsSL -o token-usage-darwin-arm64 https://github.com/YuLaiZ/token-usage/releases/download/v0.1.0-rc.12/token-usage-darwin-arm64
+curl -fsSL -o SHA256SUMS https://github.com/YuLaiZ/token-usage/releases/download/v0.1.0-rc.12/SHA256SUMS
+# Verify the SHA256 against the release's SHA256SUMS:
+shasum -a 256 -c SHA256SUMS --ignore-missing
+chmod u+x token-usage-darwin-arm64
 mkdir -p ~/.token-usage/bin
-mv token-usage ~/.token-usage/bin/
-ln -sf ~/.token-usage/bin/token-usage /usr/local/bin/token-usage
-# 3. Verify
-token-usage --help
-token-usage --version
+mv token-usage-darwin-arm64 ~/.token-usage/bin/token-usage
 ```
 
-**Windows** (Developer Mode or administrator privileges are required to create a symbolic link):
+Then add `~/.token-usage/bin` to your PATH: append this block to your shell rc file (zsh: `~/.zshrc`; bash: the first file login shells read — `~/.bash_profile` first, then `~/.bash_login`, then `~/.profile`):
+
+```sh
+# >>> token-usage path >>>
+export PATH="$HOME/.token-usage/bin:$PATH"
+# <<< token-usage path <<<
+```
+
+> Non-login interactive shells (some IDE integrated terminals read `~/.bashrc` instead of login files) do not load the login file; add `export PATH="$HOME/.token-usage/bin:$PATH"` there yourself if needed. Interactive zsh terminals always read `~/.zshrc`.
+
+Open a new terminal and verify with `token-usage --help` and `token-usage version`.
+
+**Windows — official Release asset**:
 
 ```powershell
-# 1. Download or build the binary (as above; make build-all produces dist\token-usage-windows-amd64.exe)
-# 2. Move it into the managed directory
+# Download from the newest tag on the Releases page (the example below pins
+# v0.1.0-rc.12), then verify the SHA256 against the release's SHA256SUMS:
+curl.exe -fsSL -o token-usage-windows-amd64.exe https://github.com/YuLaiZ/token-usage/releases/download/v0.1.0-rc.12/token-usage-windows-amd64.exe
+curl.exe -fsSL -o SHA256SUMS https://github.com/YuLaiZ/token-usage/releases/download/v0.1.0-rc.12/SHA256SUMS
+# Verify the SHA256 against the release's SHA256SUMS. Abort before installation
+# if the exact asset entry is absent or its expected hash does not match:
+$sumsEntry = Select-String -Path SHA256SUMS -Pattern '^[0-9a-fA-F]{64}  token-usage-windows-amd64\.exe$' | Select-Object -First 1
+if ($null -eq $sumsEntry) { throw 'SHA256SUMS has no hash for token-usage-windows-amd64.exe.' }
+$expected = ($sumsEntry.Line -split '\s+')[0].ToLowerInvariant()
+$actual = (Get-FileHash .\token-usage-windows-amd64.exe).Hash.ToLower()
+if ($actual -ne $expected) { throw "SHA256 MISMATCH: expected $expected, got $actual" }
+'SHA256 OK'
 New-Item -ItemType Directory -Force $env:USERPROFILE\.token-usage\bin | Out-Null
-Move-Item token-usage-windows-amd64.exe $env:USERPROFILE\.token-usage\bin\token-usage.exe
-# 3. Create a symlink in a PATH directory (mklink requires Developer Mode or administrator privileges)
-cmd /c mklink "$env:LOCALAPPDATA\Microsoft\WindowsApps\token-usage.exe" "$env:USERPROFILE\.token-usage\bin\token-usage.exe"
-# 4. Verify
-token-usage --help
-token-usage --version
+Move-Item token-usage-windows-amd64.exe $env:USERPROFILE\.token-usage\bin\token-usage.exe -Force
 ```
 
-> To upgrade, replace the binary under `~/.token-usage/bin/`; neither the macOS nor Windows symlink needs to be recreated.
->
-> Without Developer Mode or administrator privileges, `mklink` fails. As a temporary alternative, use `Copy-Item` instead of a symlink, but repeat the copy after every upgrade.
+Then append `%USERPROFILE%\.token-usage\bin` to the user PATH with a type-preserving registry write, which keeps the existing `REG_EXPAND_SZ` value type and `%VAR%` entries intact. The already-contained check below also matches existing unexpanded entries (e.g. `%USERPROFILE%\.token-usage\bin`) by expanding them first, mirroring the installer's semantics — expansion applies only to `REG_EXPAND_SZ` values. Do **not** use `setx` or `[Environment]::SetEnvironmentVariable`: `setx` truncates long values, and `SetEnvironmentVariable` rewrites the value as `REG_SZ` with `%VAR%` entries permanently expanded.
+
+```powershell
+$dir  = "$env:USERPROFILE\.token-usage\bin"
+$key  = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+$raw  = $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+$kind = if ($key.GetValueNames() -contains 'Path') { $key.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
+$norm = ($raw -split ';') | ForEach-Object {
+    $lit = $_.Trim().TrimEnd('\')
+    $exp = if ($kind -eq 'ExpandString') { [Environment]::ExpandEnvironmentVariables($_).Trim().TrimEnd('\') } else { $lit }
+    @($lit, $exp)
+}
+if ($norm -notcontains $dir) {
+    $new = if ([string]::IsNullOrEmpty($raw)) { $dir } else { $raw.TrimEnd(';') + ';' + $dir }
+    $key.SetValue('Path', $new, $kind)
+}
+$key.Close()
+```
+
+> A direct registry write does not broadcast the environment change: sign out and back in, then open a new terminal window from the Start menu or taskbar and verify with `token-usage --help` and `token-usage version`.
+
+**Built from source** (macOS or Windows):
+
+```bash
+git clone https://github.com/YuLaiZ/token-usage.git && cd token-usage
+make build   # produces ./token-usage (make build-all produces dist/token-usage-windows-amd64.exe)
+```
+
+Put the built binary into the bin directory and add it to your PATH exactly as in the official-asset steps above (`~/.token-usage/bin/token-usage` on macOS, `%USERPROFILE%\.token-usage\bin\token-usage.exe` on Windows). A source-built binary reports `Version=dev` or a pseudo-version and cannot self-update; to upgrade, rebuild and replace the file under the bin directory manually.
 
 #### Option C: `go install` (requires Go)
 
@@ -141,6 +206,56 @@ go build -o token-usage ./cmd/token-usage
 ./token-usage --help
 ./token-usage --version
 ```
+
+#### Uninstall and migration
+
+Uninstalling leaves no system-wide leftovers:
+
+1. Stop the daemon if it is running: `token-usage stop`.
+2. If autostart was ever enabled, first run `token-usage config set daemon.autostart false`. This removes the autostart definition (the `~/Library/LaunchAgents/<label>.plist` file on macOS, the Registry Run entry on Windows) so it does not keep pointing at a deleted binary and fail at every login.
+3. Delete the application directory: `rm -rf ~/.token-usage` (Windows: `Remove-Item -Recurse -Force $env:USERPROFILE\.token-usage`). The current terminal may still have the deleted binary cached; run `hash -r` and confirm `token-usage` no longer resolves, or simply open a new terminal and confirm.
+4. Remove the PATH configuration.
+
+   macOS: delete the marker block from your shell rc file:
+
+   ```sh
+   # >>> token-usage path >>>
+   export PATH="$HOME/.token-usage/bin:$PATH"
+   # <<< token-usage path <<<
+   ```
+
+   Windows: preferably remove the `bin` directory entry and write the remaining entries back with the same type-preserving `Microsoft.Win32.Registry` direct write used at install time (deleting the `Path` value outright if no other entries remain), keeping the `REG_EXPAND_SZ` value type and `%VAR%` literals. Like the install snippet, entry matching expands unexpanded entries first, but only for `REG_EXPAND_SZ` values, so an existing `%USERPROFILE%` entry is removed as well:
+
+   ```powershell
+   $dir  = "$env:USERPROFILE\.token-usage\bin"
+   $key  = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+   if ($key.GetValueNames() -contains 'Path') {
+       $raw  = $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+       $kind = $key.GetValueKind('Path')
+       $kept = ($raw -split ';') | Where-Object {
+           $lit = $_.Trim().TrimEnd('\')
+           $exp = if ($kind -eq 'ExpandString') { [Environment]::ExpandEnvironmentVariables($_).Trim().TrimEnd('\') } else { $lit }
+           $_ -and ($lit -ne $dir) -and ($exp -ne $dir)
+       }
+       if (@($kept).Count -gt 0) {
+           $key.SetValue('Path', ($kept -join ';'), $kind)
+       } else {
+           $key.DeleteValue('Path')
+           Write-Output 'No remaining entries; the Path value has been deleted.'
+       }
+   } else {
+       Write-Output 'Path value not found; nothing to clean up.'
+   }
+   $key.Close()
+   ```
+
+   or delete the `%USERPROFILE%\.token-usage\bin` entry through the modern "Edit environment variables for your account" dialog and verify the `Path` value type is still `REG_EXPAND_SZ` (the legacy list editor has a known issue of rewriting it as `REG_SZ`). Do **not** use `setx` or `[Environment]::SetEnvironmentVariable` — the former truncates values, the latter degrades the value type. After a direct registry write, sign out and back in (or confirm through the "Edit environment variables for your account" dialog) before new terminal windows pick up the change.
+5. If you ever followed the old symlink tutorial, also remove the leftover link: `/usr/local/bin/token-usage` on macOS, `%LOCALAPPDATA%\Microsoft\WindowsApps\token-usage.exe` on Windows.
+
+Migration notes:
+
+- If an older `token-usage` copy sits earlier on PATH (the old Windows tutorial put the exe in an arbitrary directory), locate it with `which token-usage` / `Get-Command token-usage` and remove it; an earlier entry shadows the new layout.
+- If autostart was enabled before you reinstalled, run `token-usage config set daemon.autostart true` once in a new terminal (after the PATH change has taken effect) so the definition is rebuilt at the new location. If the configuration file was deleted during uninstall, run `token-usage config init` first — `config set` fails when no configuration file exists.
 
 ### First use
 
