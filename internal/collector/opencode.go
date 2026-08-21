@@ -139,10 +139,7 @@ func (c *OpenCodeCollector) Collect(ctx context.Context, req CollectRequest, log
 	}
 	defer sourceDB.Close()
 
-	providerMapping, err := loadProviderMapping(c.cacheDir)
-	if err != nil {
-		return CollectResult{}, fmt.Errorf("加载 provider 映射失败: %w", err)
-	}
+	providerMapping := loadProviderMapping(c.cacheDir, logger)
 
 	sourceTx, err := sourceDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -704,21 +701,40 @@ func parseModelJSON(modelJSON string) (modelID, providerID string) {
 	return m.ID, m.ProviderID
 }
 
-// loadProviderMapping 加载 ~/.cache/opencode/models.json 中的 provider 映射
-func loadProviderMapping(cacheDir string) (map[string]string, error) {
+// loadProviderMapping 加载 ~/.cache/opencode/models.json 中的 provider 映射。
+// 兼容两种结构：旧扁平结构（provider ID → 显示名字符串）与新 provider 注册表
+// （provider ID → {id, name, models: {...}}，取顶层对象的 name 作显示名）。
+// 文件缺失/不可读/结构无法识别 → 返回空映射，不阻断采集：
+// 消息侧查不到映射时回退原始 provider 值。
+func loadProviderMapping(cacheDir string, logger *slog.Logger) map[string]string {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	modelsPath := filepath.Join(cacheDir, "models.json")
 	data, err := os.ReadFile(modelsPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return map[string]string{}, nil
+		return map[string]string{}
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		logger.Warn("opencode models.json 解析失败，provider 映射降级为空", "path", modelsPath, "error", err)
+		return map[string]string{}
+	}
+	mapping := make(map[string]string, len(raw))
+	for id, value := range raw {
+		var display string
+		if err := json.Unmarshal(value, &display); err == nil && strings.TrimSpace(display) != "" {
+			mapping[id] = display
+			continue
 		}
-		return nil, fmt.Errorf("读取 models.json 失败: %w", err)
+		var entry struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(value, &entry); err == nil && strings.TrimSpace(entry.Name) != "" {
+			mapping[id] = entry.Name
+		}
 	}
-	var mapping map[string]string
-	if err := json.Unmarshal(data, &mapping); err != nil {
-		return nil, fmt.Errorf("解析 models.json 失败: %w", err)
-	}
-	return mapping, nil
+	return mapping
 }
 
 func chunkStrings(s []string, size int) [][]string {

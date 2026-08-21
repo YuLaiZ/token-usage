@@ -62,10 +62,7 @@ func TestParseModelJSON_OnlyID(t *testing.T) {
 }
 
 func TestLoadProviderMapping_Normal(t *testing.T) {
-	mapping, err := loadProviderMapping("../../testdata")
-	if err != nil {
-		t.Fatalf("loadProviderMapping failed: %v", err)
-	}
+	mapping := loadProviderMapping("../../testdata", nil)
 
 	tests := []struct {
 		input    string
@@ -90,21 +87,73 @@ func TestLoadProviderMapping_Normal(t *testing.T) {
 	}
 }
 
-func TestLoadProviderMapping_MissingFile(t *testing.T) {
-	mapping, err := loadProviderMapping("/nonexistent/path")
-	if err != nil {
-		t.Fatalf("loadProviderMapping should not error on missing file: %v", err)
+// 新版 OpenCode 的 models.json 是 provider 注册表：顶层 provider ID →
+// {id, name, models: {...}} 对象；应取 name 作显示名。
+// 对象缺 name、value 为其他不可识别形态时跳过该条（消息侧回退原始值）。
+func TestLoadProviderMapping_RegistrySchema(t *testing.T) {
+	dir := t.TempDir()
+	content := `{
+		"zhipuai": {"id": "zhipuai", "name": "Zhipu AI", "models": {"glm-5": {"id": "glm-5"}}},
+		"anthropic": {"id": "anthropic", "models": {"claude": {"id": "claude"}}},
+		"broken": 42
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "models.json"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
 	}
+	mapping := loadProviderMapping(dir, nil)
+
+	if got := mapping["zhipuai"]; got != "Zhipu AI" {
+		t.Errorf(`mapping["zhipuai"] = %q, want "Zhipu AI"`, got)
+	}
+	if got, ok := mapping["anthropic"]; ok || got != "" {
+		t.Errorf(`mapping["anthropic"] = %q (present=%v), want absent (name missing)`, got, ok)
+	}
+	if got, ok := mapping["broken"]; ok || got != "" {
+		t.Errorf(`mapping["broken"] = %q (present=%v), want absent (unrecognized shape)`, got, ok)
+	}
+}
+
+// 新旧结构混排（扁平字符串与注册表对象共存）时逐条按形态分派。
+func TestLoadProviderMapping_MixedSchema(t *testing.T) {
+	dir := t.TempDir()
+	content := `{
+		"zhipu": "Zhipu GLM",
+		"zhipuai": {"id": "zhipuai", "name": "Zhipu AI", "models": {}}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "models.json"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	mapping := loadProviderMapping(dir, nil)
+
+	if got := mapping["zhipu"]; got != "Zhipu GLM" {
+		t.Errorf(`mapping["zhipu"] = %q, want "Zhipu GLM" (flat schema)`, got)
+	}
+	if got := mapping["zhipuai"]; got != "Zhipu AI" {
+		t.Errorf(`mapping["zhipuai"] = %q, want "Zhipu AI" (registry schema)`, got)
+	}
+}
+
+// 文件损坏（非法 JSON）降级为空映射，不返回错误、不阻断采集。
+func TestLoadProviderMapping_CorruptedFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "models.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	mapping := loadProviderMapping(dir, nil)
+	if len(mapping) != 0 {
+		t.Errorf("expected empty mapping for corrupted file, got %d entries", len(mapping))
+	}
+}
+
+func TestLoadProviderMapping_MissingFile(t *testing.T) {
+	mapping := loadProviderMapping("/nonexistent/path", nil)
 	if len(mapping) != 0 {
 		t.Errorf("expected empty mapping, got %d entries", len(mapping))
 	}
 }
 
 func TestLoadProviderMapping_UnknownProvider(t *testing.T) {
-	mapping, err := loadProviderMapping("../../testdata")
-	if err != nil {
-		t.Fatalf("loadProviderMapping failed: %v", err)
-	}
+	mapping := loadProviderMapping("../../testdata", nil)
 	got := mapping["unknown_provider"]
 	if got != "" {
 		t.Errorf("unknown provider should return empty, got %q", got)
