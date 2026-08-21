@@ -1,6 +1,6 @@
 ﻿# token-usage 官方安装脚本（Windows）。
 #
-# 功能：下载官方 Release 二进制（默认取最新发布，含预发布；可用 -Tag 指定版本）、
+# 功能：下载官方 Release 二进制（默认取最新稳定版；可用 -Tag 指定版本）、
 # 用官方 SHA256SUMS 校验、安装到 %USERPROFILE%\.token-usage\bin\token-usage.exe、
 # 验证版本，并把 bin 目录加入用户 PATH（注册表直写 HKCU\Environment，保留
 # REG_EXPAND_SZ 类型与 %VAR% 未展开原文，写入后广播 WM_SETTINGCHANGE）。
@@ -9,7 +9,7 @@
 # “下载内容直接交给 iex 执行”的一行命令形态不可解析，故不提供该形态）：
 #   irm https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.ps1 -OutFile "$env:TEMP\install.ps1"
 #   powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"
-#   powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1" -Tag v0.1.0-rc.12
+#   powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1" -Tag vX.Y.Z
 #
 # 兼容 Windows PowerShell 5.1 与 PowerShell 7+。所有失败统一 throw 而非 exit：
 # throw 产生可见的错误信息（含失败原因），且在 -File 形态下脚本以非零退出码
@@ -57,17 +57,16 @@ try {
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 } catch { }
 
-# ---- 版本解析：未指定 -Tag 时取最新 Release。----
-# 用列表端点 releases?per_page=1（含预发布）；不用 /releases/latest——它不返回 prerelease。
+# ---- 版本解析：未指定 -Tag 时取最新稳定版 Release。----
+# 用 /releases/latest；候选版必须通过 -Tag 显式指定。
 if (-not $Tag) {
     try {
-        $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=1" -TimeoutSec $QueryTimeoutSec -ErrorAction Stop
+        $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec $QueryTimeoutSec -ErrorAction Stop
     } catch {
-        throw "错误：无法获取最新 Release tag：$($_.Exception.Message)"
+        throw "错误：无法获取最新稳定版 Release tag：$($_.Exception.Message)"
     }
-    $latest = @($releases)[0]
     if ($null -eq $latest -or -not $latest.tag_name) {
-        throw "错误：无法获取最新 Release tag。"
+        throw "错误：无法获取最新稳定版 Release tag。"
     }
     $Tag = [string]$latest.tag_name
 }

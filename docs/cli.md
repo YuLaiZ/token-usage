@@ -82,13 +82,13 @@ token-usage version          # multi-line detailed output
 
 | Form | Output |
 |------|------|
-| `--version` (`-v`) | One line: `token-usage <version>\n`, for example `token-usage v0.1.0`; local development shows `token-usage dev`. |
+| `--version` (`-v`) | One line: `token-usage <version>\n`; local development shows `token-usage dev`. |
 | `version` | Strict five-line detailed output (with a trailing newline): `token-usage <version>` / `commit: <hash>` / `build_time: <time>` / `go: <go-version>` / `platform: <os>/<arch>`. |
 
 Example detailed output from a release build:
 
 ```text
-token-usage v0.1.0
+token-usage <version>
 commit: 59a8d55a1b2c
 build_time: 2026-07-30T10:00:00Z
 go: go1.26.4
@@ -431,7 +431,7 @@ token-usage update --version <tag>
 | `update --check` | Read-only check; creates no local files (no configuration directory, lock, log, database, or service definition). |
 | `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | Updates (or, with `--check`, only checks) the specified exact release tag. `--version` accepts a strict release tag (`v` prefix, `MAJOR.MINOR.PATCH`, optional `-rc.N`, no leading zeros); an invalid value errors before any network request. |
 
-`--check` and `--version` may be combined, for example `update --check --version v0.1.0-rc.1` checks a release candidate only.
+`--check` and `--version` may be combined; for example, `update --check --version vX.Y.Z-rc.N` checks a release candidate only.
 
 Flags:
 
@@ -442,7 +442,7 @@ Flags:
 
 ### Stable / release-candidate selection
 
-By default `update` resolves only the latest **stable** release and never selects a prerelease. A release candidate is consulted or installed only when you pass its tag explicitly with `--version` (for example `--version v0.1.0-rc.1`).
+By default `update` resolves only the latest **stable** release and never selects a prerelease. A release candidate is consulted or installed only when you pass its tag explicitly with `--version` (for example `--version vX.Y.Z-rc.N`).
 
 ### Trust and source verification
 

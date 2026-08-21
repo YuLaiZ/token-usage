@@ -82,13 +82,13 @@ token-usage version          # 多行详细输出
 
 | 形式 | 输出 |
 |------|------|
-| `--version`（`-v`） | 单行 `token-usage <version>\n`，如 `token-usage v0.1.0`；本地开发为 `token-usage dev` |
+| `--version`（`-v`） | 单行 `token-usage <version>\n`；本地开发为 `token-usage dev` |
 | `version` | 严格五行详细输出（末尾换行）：`token-usage <version>` / `commit: <hash>` / `build_time: <time>` / `go: <go版本>` / `platform: <os>/<arch>` |
 
 详细输出示例（release 构建）：
 
 ```text
-token-usage v0.1.0
+token-usage <version>
 commit: 59a8d55a1b2c
 build_time: 2026-07-30T10:00:00Z
 go: go1.26.4
@@ -431,7 +431,7 @@ token-usage update --version <tag>
 | `update --check` | 只读检查；不创建任何本地文件（不创建配置目录/锁/日志/数据库/服务定义）。 |
 | `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | 更新（或加 `--check` 后仅检查）指定精确版本 tag。`--version` 接受严格 Release tag（`v` 前缀、`MAJOR.MINOR.PATCH`、可选 `-rc.N`、无前导零）；非法值在任何网络请求前即报错。 |
 
-`--check` 与 `--version` 可组合，如 `update --check --version v0.1.0-rc.1` 只检查候选版。
+`--check` 与 `--version` 可组合，如 `update --check --version vX.Y.Z-rc.N` 只检查候选版。
 
 标志：
 
@@ -442,7 +442,7 @@ token-usage update --version <tag>
 
 ### 稳定版 / RC 选择
 
-默认 `update` 只解析最新**稳定版**，绝不选择 prerelease。只有用 `--version` 显式指定 rc tag（如 `--version v0.1.0-rc.1`）时才会查询/安装预发布版。
+默认 `update` 只解析最新**稳定版**，绝不选择 prerelease。只有用 `--version` 显式指定 rc tag（如 `--version vX.Y.Z-rc.N`）时才会查询/安装预发布版。
 
 ### 信任与来源校验
 

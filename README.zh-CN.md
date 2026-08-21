@@ -21,237 +21,58 @@
 
 ### 安装
 
-任选下列一种安装方式。推荐方式 A（官方 Release 二进制）：无需 Go 环境、一条命令即可安装官方 Release 二进制——唯一支持原地自更新的来源。所有文件统一收纳于 `~/.token-usage`——配置、数据库、日志与二进制（`~/.token-usage/bin/token-usage`）——经用户 PATH 暴露命令，安装与更新全程无需 sudo（Windows 无需管理员权限）。
+推荐方式 A（官方 Release 二进制，经官方脚本安装）：无需 Go 环境、无需 sudo 或管理员权限——也是唯一支持原地自更新的安装来源。所有文件统一收纳于 `~/.token-usage`（配置、数据库、日志与二进制 `~/.token-usage/bin`），经用户 PATH 暴露命令。
 
 #### 方式 A：官方 Release 二进制（推荐——支持自更新）
 
-**复制给 AI Agent**（它读到这段指令后自行完成安装）：
+**复制给 AI Agent**（它运行安装脚本并完成验证）：
 
 ```text
-请在本机安装 token-usage CLI：从 github.com/YuLaiZ/token-usage/releases 下载与当前
-平台匹配的官方 Release 二进制（macOS Apple Silicon 用 token-usage-darwin-arm64，
-macOS Intel 用 token-usage-darwin-amd64，Windows 用 token-usage-windows-amd64.exe），
-用该 Release 的 SHA256SUMS 校验 SHA256，安装为真实文件
-~/.token-usage/bin/token-usage（Windows 为
-%USERPROFILE%\.token-usage\bin\token-usage.exe），并把 bin 目录（macOS 为
-~/.token-usage/bin，Windows 为 %USERPROFILE%\.token-usage\bin）加入用户
-PATH：macOS 向 shell rc 文件追加 export PATH="$HOME/.token-usage/bin:$PATH"
-（zsh 写 ~/.zshrc；bash 写登录 shell 读取的第一个文件）；Windows 用
-Microsoft.Win32.Registry 保类型注册表直写用户 Path 值，保留 REG_EXPAND_SZ
-值类型与 %VAR% 原文——不得使用 setx 或 [Environment]::SetEnvironmentVariable——
-再广播 lParam 为 `Environment` 的 WM_SETTINGCHANGE；广播失败时，先注销并重新
-登录再新开终端。然后新开终端（Windows 从开始菜单/任务栏启动新窗口）运行
+在本机安装 token-usage CLI：运行与当前平台匹配的官方安装脚本——
+
+- macOS：curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.sh | bash
+- Windows PowerShell（两条命令）：
+  irm https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.ps1 -OutFile "$env:TEMP\install.ps1"
+  powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"
+
+脚本会下载最新官方 Release，按该 Release 的 SHA256SUMS 校验 SHA256，把二进制
+安装到 ~/.token-usage/bin 并配置用户 PATH。完成后新开终端运行
 token-usage version 确认（运行 token-usage --help 查看可用命令）。
 ```
 
 或手动执行命令：
 
+macOS：
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.sh | bash
 ```
 
-脚本自动检测 CPU 架构、下载最新官方 Release（含预发布）、按官方 `SHA256SUMS` 校验后无需 sudo 安装到 `~/.token-usage/bin/token-usage`，并自动清理旧布局安装位置的遗留副本（目录不可写时给出手动移除指引，该位置被目录占用或删除失败等其他情形打印对应人工处理指引，均不影响安装），再向 shell rc 文件追加 marker 块把 `~/.token-usage/bin` 加入用户 PATH（仅支持 zsh 与 bash——zsh 写 `~/.zshrc`；bash 写登录 shell 读取的第一个文件——`~/.bash_profile` 优先，其次 `.bash_login`、再次 `.profile`；其他 shell 下脚本会打印人工 PATH 配置指引）。新开终端运行 `token-usage version` 确认。
-
-> 非登录交互 shell 环境（部分 IDE 集成终端读取 `~/.bashrc` 而非登录文件）不会加载登录文件，需要时请自行补一行 `export PATH="$HOME/.token-usage/bin:$PATH"`；zsh 交互终端用户全部命中 `~/.zshrc`。
-
-指定版本：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.sh | TAG=v0.1.0-rc.12 bash
-```
-
-已发布的资产：
-
-- `token-usage-darwin-arm64`（macOS Apple Silicon）
-- `token-usage-darwin-amd64`（macOS Intel）
-- `token-usage-windows-amd64.exe`（Windows）
-
-Windows——或手动执行命令（先保存脚本再执行）：
+Windows——两条命令：先下载安装脚本，再执行（两行粘贴到同一 PowerShell 窗口依次运行）：
 
 ```powershell
-irm https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.ps1 -OutFile "$env:TEMP\install.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"
+irm https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.ps1 -OutFile "$env:TEMP\install.ps1"
+powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"
 ```
 
-脚本下载最新官方 Release、按官方 `SHA256SUMS` 校验后无需管理员权限安装到 `%USERPROFILE%\.token-usage\bin\token-usage.exe`，并以保类型注册表直写把 `%USERPROFILE%\.token-usage\bin` 追加到用户 PATH（保持既有 `REG_EXPAND_SZ` 值类型与 `%VAR%` 条目原文）。从开始菜单/任务栏启动新终端窗口，运行 `token-usage version` 确认。指定版本：对已下载的脚本以 `-Tag` 运行：
+脚本自动检测平台、下载最新稳定版官方 Release、按官方 `SHA256SUMS` 校验后无需 sudo/管理员权限安装到 `~/.token-usage/bin`（Windows 为 `%USERPROFILE%\.token-usage\bin`），配置用户 PATH，并处理旧布局遗留副本（macOS 自动删除；Windows 检测到残留时提示手动移除）。新开终端运行 `token-usage version` 确认。指定版本安装（包括 RC），以及 PATH 语义、旧 TLS 环境、非登录 shell 等细节见[安装指南](docs/install.zh-CN.md)。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1" -Tag v0.1.0-rc.12
-```
-
-> 旧 Windows 环境（TLS 1.2 以下）下第一步 `irm` 仍发生在脚本执行之前，脚本内的 TLS 兜底救不了它：请先在当前会话执行 `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12`，再运行第一步下载。
-
-Windows 手动安装步骤（下载 → SHA256 校验 → 把二进制放进 bin 目录 → 加入用户 PATH）见下方方式 B。
-
-从官方 Release 安装的二进制——无论经上方脚本、AI Agent 指令，还是方式 B 的官方资产路径手动安装——都可原地自更新：二进制是 PATH 上的真实文件，位于 `~/.token-usage/bin`，正是自更新来源校验所要求的形态。
+从官方 Release 安装的二进制可原地自更新：
 
 ```bash
 token-usage update                  # 更新到最新稳定版
 token-usage update --check          # 只检查，不写任何本地文件
-token-usage update --version v0.2.0 # 更新（或检查）指定版本 tag
+token-usage update --version vX.Y.Z # 更新（或检查）指定版本 tag
 ```
 
 完整标志、退出码与副作用边界见 [CLI 参考](docs/cli.zh-CN.md)。
 
-> **开发构建不能自动更新**：`make build`、`make build-all` 或 `go install` 产物的 `Version` 为 `dev`（或伪版本），`update` 会判定来源不可信并给出人工安装指引，不会原地覆盖。
->
-> **自更新支持平台**：`darwin/arm64`、`darwin/amd64`、`windows/amd64` 有官方资产；其他平台 `update` 会提示「无官方资产，请手动安装」。
->
-> **人工升级边界**：`update` 只在当前二进制是所报告版本的官方 Release 资产时才覆盖（当前二进制的 SHA256 必须等于该版本官方资产的 hash）。若当前二进制来自 `go install`/本地构建/软链，或版本/hash 不匹配，`update` 不会覆盖，而是输出人工安装指引。
->
-> **为何不软链进 PATH**：自更新来源校验要求当前可执行文件是真实二进制文件；经软链调用时解析到软链路径会被拒绝（即上方边界中的「软链副本」）。因此本布局直接把 `~/.token-usage/bin` 加入 PATH，而不是在其他目录放置链接。
->
-> **中断更新恢复**：来源安全门约束的是新的 Release 下载。若此前 POSIX 更新遗留了受限的本地事务 journal，后续 `update` 会先把这笔已记录的事务恢复为一致状态；恢复期间不会接受或下载新的二进制。
+#### 其他安装方式
 
-卸载或从旧布局迁移见下方[卸载与迁移](#卸载与迁移)。
+- [手动二进制安装（同布局）](docs/install.zh-CN.md#手动二进制安装同布局)：手动下载官方资产并做 SHA256 校验、自行配置 PATH——与方式 A 等价，含自更新。
+- [go install / 源码构建](docs/install.zh-CN.md)：需要 Go 环境；产物 `Version = dev` 或伪版本，不能自更新（见 CLI 参考的[信任与来源校验](docs/cli.zh-CN.md#信任与来源校验)）。
 
-#### 方式 B：手动二进制安装（同布局）
-
-方式 B 手动完成与方式 A 相同的布局——二进制位于 `~/.token-usage/bin/token-usage`（Windows 为 `%USERPROFILE%\.token-usage\bin\token-usage.exe`），bin 目录加入用户 PATH。两条子路径的升级语义不同：
-
-- **官方 Release 资产**（下方含 SHA256 校验的下载步骤）：与方式 A 等价，支持原地自更新。
-- **源码构建**（`make build` / `go build`）：`Version=dev` 或伪版本，不能自更新；升级=重新构建后手动替换文件（见上方开发构建警示）。
-
-**macOS——官方 Release 资产**：
-
-```bash
-# latest 链接需要稳定版存在；当前仅有预发布（prerelease）时它返回 404。
-# 请用 Releases 页面最新 tag 的下载链接（下方示例固定为 v0.1.0-rc.12）：
-curl -fsSL -o token-usage-darwin-arm64 https://github.com/YuLaiZ/token-usage/releases/download/v0.1.0-rc.12/token-usage-darwin-arm64
-curl -fsSL -o SHA256SUMS https://github.com/YuLaiZ/token-usage/releases/download/v0.1.0-rc.12/SHA256SUMS
-# 按该 Release 的 SHA256SUMS 校验 SHA256：
-shasum -a 256 -c SHA256SUMS --ignore-missing
-chmod u+x token-usage-darwin-arm64
-mkdir -p ~/.token-usage/bin
-mv token-usage-darwin-arm64 ~/.token-usage/bin/token-usage
-```
-
-再把 `~/.token-usage/bin` 加入 PATH：向 shell rc 文件追加以下块（zsh 写 `~/.zshrc`；bash 写登录 shell 读取的第一个文件——`~/.bash_profile` 优先，其次 `.bash_login`、再次 `.profile`）：
-
-```sh
-# >>> token-usage path >>>
-export PATH="$HOME/.token-usage/bin:$PATH"
-# <<< token-usage path <<<
-```
-
-> 非登录交互 shell 环境（部分 IDE 集成终端读取 `~/.bashrc` 而非登录文件）不会加载登录文件，需要时请自行补一行 `export PATH="$HOME/.token-usage/bin:$PATH"`；zsh 交互终端用户全部命中 `~/.zshrc`。
-
-新开终端，运行 `token-usage --help` 与 `token-usage version` 验证。
-
-**Windows——官方 Release 资产**：
-
-```powershell
-# 从 Releases 页面最新 tag 下载（下方示例固定为 v0.1.0-rc.12），
-# 再按该 Release 的 SHA256SUMS 校验 SHA256：
-curl.exe -fsSL -o token-usage-windows-amd64.exe https://github.com/YuLaiZ/token-usage/releases/download/v0.1.0-rc.12/token-usage-windows-amd64.exe
-curl.exe -fsSL -o SHA256SUMS https://github.com/YuLaiZ/token-usage/releases/download/v0.1.0-rc.12/SHA256SUMS
-# 按该 Release 的 SHA256SUMS 校验 SHA256：若没有本资产的精确条目或 hash 不匹配，
-# 必须在安装前中止：
-$sumsEntry = Select-String -Path SHA256SUMS -Pattern '^[0-9a-fA-F]{64}  token-usage-windows-amd64\.exe$' | Select-Object -First 1
-if ($null -eq $sumsEntry) { throw 'SHA256SUMS 中未找到 token-usage-windows-amd64.exe 的 hash。' }
-$expected = ($sumsEntry.Line -split '\s+')[0].ToLowerInvariant()
-$actual = (Get-FileHash .\token-usage-windows-amd64.exe).Hash.ToLower()
-if ($actual -ne $expected) { throw "SHA256 MISMATCH: 期望 $expected，实际 $actual" }
-'SHA256 OK'
-New-Item -ItemType Directory -Force $env:USERPROFILE\.token-usage\bin | Out-Null
-Move-Item token-usage-windows-amd64.exe $env:USERPROFILE\.token-usage\bin\token-usage.exe -Force
-```
-
-再用保类型注册表直写把 `%USERPROFILE%\.token-usage\bin` 追加到用户 PATH，保持既有 `REG_EXPAND_SZ` 值类型与 `%VAR%` 条目原文。下方「已含」检测会先把未展开条目（如 `%USERPROFILE%\.token-usage\bin`）展开后再匹配，与安装脚本语义一致——展开匹配仅对 `REG_EXPAND_SZ` 值生效。**不得**使用 `setx` 或 `[Environment]::SetEnvironmentVariable`：`setx` 会截断超长值，`SetEnvironmentVariable` 会把值以 `REG_SZ` 写回、`%VAR%` 条目被永久展开。
-
-```powershell
-$dir  = "$env:USERPROFILE\.token-usage\bin"
-$key  = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
-$raw  = $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-$kind = if ($key.GetValueNames() -contains 'Path') { $key.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
-$norm = ($raw -split ';') | ForEach-Object {
-    $lit = $_.Trim().TrimEnd('\')
-    $exp = if ($kind -eq 'ExpandString') { [Environment]::ExpandEnvironmentVariables($_).Trim().TrimEnd('\') } else { $lit }
-    @($lit, $exp)
-}
-if ($norm -notcontains $dir) {
-    $new = if ([string]::IsNullOrEmpty($raw)) { $dir } else { $raw.TrimEnd(';') + ';' + $dir }
-    $key.SetValue('Path', $new, $kind)
-}
-$key.Close()
-```
-
-> 注册表直写不会广播环境变更：请注销重登，再从开始菜单/任务栏启动新终端窗口，运行 `token-usage --help` 与 `token-usage version` 验证。
-
-**源码构建**（macOS 或 Windows）：
-
-```bash
-git clone https://github.com/YuLaiZ/token-usage.git && cd token-usage
-make build   # 产出 ./token-usage（make build-all 产 dist/token-usage-windows-amd64.exe）
-```
-
-把构建产物按上方官方资产步骤放进 bin 目录并加入 PATH（macOS 为 `~/.token-usage/bin/token-usage`，Windows 为 `%USERPROFILE%\.token-usage\bin\token-usage.exe`）。源码构建产物 `Version=dev` 或伪版本，不能自更新；升级=重新构建后手动替换 bin 目录下的文件。
-
-#### 方式 C：go install（需 Go 环境）
-
-```bash
-go install github.com/YuLaiZ/token-usage/cmd/token-usage@latest
-```
-
-二进制装到 `$GOBIN`（默认 `~/go/bin`），需自行确保该目录在 PATH 中。配置和日志仍在 `~/.token-usage/`。安装后可用 `token-usage --version` 验证。
-
-#### 方式 D：直接 go build（开发用）
-
-```bash
-git clone https://github.com/YuLaiZ/token-usage.git && cd token-usage
-go build -o token-usage ./cmd/token-usage
-./token-usage --help
-./token-usage --version
-```
-
-#### 卸载与迁移
-
-卸载后无系统级残留：
-
-1. 若守护进程正在运行，先停止：`token-usage stop`。
-2. 若开启过开机自启，先执行 `token-usage config set daemon.autostart false`：移除自启定义（macOS 的 `~/Library/LaunchAgents/<label>.plist` 文件、Windows 的注册表 Run 值），避免删除目录后定义继续指向已不存在的二进制、每次登录触发启动失败。
-3. 删除应用目录：`rm -rf ~/.token-usage`（Windows 为 `Remove-Item -Recurse -Force $env:USERPROFILE\.token-usage`）。当前终端的命令缓存可能仍指向已删二进制，执行 `hash -r` 后确认 `token-usage` 已不可用，或直接新开终端确认。
-4. 移除 PATH 配置。
-
-   macOS：删除 shell rc 文件中的 marker 块：
-
-   ```sh
-   # >>> token-usage path >>>
-   export PATH="$HOME/.token-usage/bin:$PATH"
-   # <<< token-usage path <<<
-   ```
-
-   Windows：优先用与安装时相同的保类型 `Microsoft.Win32.Registry` 注册表直写，移除 `bin` 目录条目后把剩余条目写回（若已无其他条目则直接删除 `Path` 值），保持既有 `REG_EXPAND_SZ` 值类型与 `%VAR%` 条目原文。与安装片段一致，条目匹配会先把未展开条目展开（仅对 `REG_EXPAND_SZ` 值生效），`%USERPROFILE%` 形态的既有条目同样会被移除：
-
-   ```powershell
-   $dir  = "$env:USERPROFILE\.token-usage\bin"
-   $key  = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
-   if ($key.GetValueNames() -contains 'Path') {
-       $raw  = $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-       $kind = $key.GetValueKind('Path')
-       $kept = ($raw -split ';') | Where-Object {
-           $lit = $_.Trim().TrimEnd('\')
-           $exp = if ($kind -eq 'ExpandString') { [Environment]::ExpandEnvironmentVariables($_).Trim().TrimEnd('\') } else { $lit }
-           $_ -and ($lit -ne $dir) -and ($exp -ne $dir)
-       }
-       if (@($kept).Count -gt 0) {
-           $key.SetValue('Path', ($kept -join ';'), $kind)
-       } else {
-           $key.DeleteValue('Path')
-           Write-Output '已无其他条目，Path 值已删除。'
-       }
-   } else {
-       Write-Output 'Path 值不存在，无需清理。'
-   }
-   $key.Close()
-   ```
-
-   或经现代「编辑用户环境变量」对话框删除 `%USERPROFILE%\.token-usage\bin` 条目，并在使用 UI 后核对 Path 值类型仍为 `REG_EXPAND_SZ`（旧式列表编辑器存在写回 `REG_SZ` 的已知问题）。**不得**使用 `setx` 或 `[Environment]::SetEnvironmentVariable`（前者截断、后者类型退化）。注册表直写后需注销重登（或经「编辑用户环境变量」对话框确定），新终端窗口方能生效。
-5. 曾按旧软链教程安装的，一并删除残留软链：macOS 的 `/usr/local/bin/token-usage`、Windows 的 `%LOCALAPPDATA%\Microsoft\WindowsApps\token-usage.exe`。
-
-迁移提示：
-
-- 若 PATH 中更靠前位置存在旧 `token-usage` 副本（旧 Windows 教程曾把 exe 放进任意目录），用 `which token-usage` / `Get-Command token-usage` 定位并移除，避免遮蔽新布局。
-- 曾开启过开机自启的用户，重装后在新终端（PATH 生效后）执行一次 `token-usage config set daemon.autostart true`，确保定义重建指向新位置；若配置文件已随卸载删除，先执行 `token-usage config init`（配置文件不存在时 `config set` 会直接报错）。
+卸载或从旧布局迁移见[卸载与迁移](docs/install.zh-CN.md#卸载与迁移)。
 
 ### 首次使用
 
@@ -321,7 +142,7 @@ token-usage collect
 
 | 命令 | 作用 |
 |------|------|
-| `--version`（或 `-v`） | 单行短输出 `token-usage <version>`（如 `token-usage v0.1.0`，本地开发为 `token-usage dev`） |
+| `--version`（或 `-v`） | 单行短输出 `token-usage <version>`；本地开发为 `token-usage dev` |
 | `version` | 多行详细输出（version/commit/build_time/go/platform） |
 
 > `version`/`--version` 是纯静态命令：不读配置、不开数据库、不初始化日志、不访问网络。版本与构建元数据由 `internal/buildinfo` 规范化（`make build`/`make build-all`/`make install` 经 `-ldflags` 注入）。
@@ -549,7 +370,7 @@ go test -race ./...
 
 `make build`/`make build-all`/`make install` 经 `-ldflags -X` 注入 `internal/buildinfo` 包的 `Version`/`Commit`/`BuildTime`（默认 `VERSION=dev`），供 `--version`/`version` 子命令展示。直接 `go build` 未注入时 version 为 `dev`、build_time 为 `unknown`，commit 会在 Go 写入 VCS 信息时回退为 revision；直接 `go run` 使用临时缓存可执行文件，可能没有 VCS 信息而显示 `commit: unknown`，不适合作为构建元数据验证方式。
 
-详细架构设计见 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)，CLI 命令参考见 [docs/cli.zh-CN.md](docs/cli.zh-CN.md)。
+安装细节见 [docs/install.zh-CN.md](docs/install.zh-CN.md)，详细架构设计见 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)，CLI 命令参考见 [docs/cli.zh-CN.md](docs/cli.zh-CN.md)。
 
 ## 贡献
 
