@@ -23,7 +23,7 @@ import (
 )
 
 func main() {
-	tag := flag.String("tag", "", "发布的版本 tag（必填，如 v0.1.0-rc.1）")
+	tag := flag.String("tag", "", "发布的版本 tag（必填，如 vX.Y.Z 或 vX.Y.Z-rc.N）")
 	notes := flag.String("notes", "", "手写版本说明文件路径（必填，含 <!-- en --> / <!-- zh --> 标记）")
 	repo := flag.String("repo", "", "owner/repo（必填，对应 GITHUB_REPOSITORY）")
 	prevTag := flag.String("prev-tag", "", "前一个 release tag（首发留空）")

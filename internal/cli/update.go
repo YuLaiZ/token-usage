@@ -166,8 +166,8 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 		Long: "检查并更新 token-usage 自身到最新稳定版或指定版本。\n\n" +
 			"  token-usage update            更新到最新稳定版（来源校验通过后替换二进制并恢复 daemon）\n" +
 			"  token-usage update --check    只检查是否有新版本，不做任何修改\n" +
-			"  token-usage update --version v0.2.0   更新到指定版本\n" +
-			"  token-usage update --check --version v0.2.0-rc.1   只检查指定候选版\n\n" +
+			"  token-usage update --version vX.Y.Z   更新到指定版本\n" +
+			"  token-usage update --check --version vX.Y.Z-rc.N   只检查指定候选版\n\n" +
 			"--version 接受严格 Release tag（vMAJOR.MINOR.PATCH 或 vMAJOR.MINOR.PATCH-rc.N）。\n" +
 			"来源不可信（如本地构建、go install）时不自动覆盖，改为输出人工安装指引。",
 		Args: cobra.NoArgs,
@@ -176,7 +176,7 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 		},
 	}
 	cmd.Flags().Bool("check", false, "只检查是否有可更新版本，不执行更新")
-	cmd.Flags().String("version", "", "指定目标版本 tag（如 v0.2.0 或 v0.2.0-rc.1）")
+	cmd.Flags().String("version", "", "指定目标版本 tag（如 vX.Y.Z 或 vX.Y.Z-rc.N）")
 	return cmd
 }
 

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # token-usage 官方安装脚本（macOS）。
 #
-# 自动检测 CPU 架构、下载官方 Release 二进制（默认取最新发布，含预发布）、
+# 自动检测 CPU 架构、下载最新稳定版官方 Release 二进制、
 # 用官方 SHA256SUMS 校验、安装到 ~/.token-usage/bin 并验证版本。
 # 默认布局下自动把安装目录写入登录 shell 的 PATH 配置（幂等 marker 块），
 # 并检测清理旧布局遗留的 /usr/local/bin 副本、提示自启定义迁移。
 # 用法（README 一句话安装）：
 #   curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.sh | bash
 # 可选环境变量：
-#   TAG=v0.1.0-rc.12                  指定版本（默认自动取最新发布）
+#   TAG=vX.Y.Z                  指定版本（默认自动取最新稳定版）
 #   INSTALL_DIR=/path                 安装目录（默认 ~/.token-usage/bin；测试用）
 #   LEGACY_BIN=/path/to/token-usage   旧布局副本检测路径（默认 /usr/local/bin/token-usage；仅供受控测试使用）
 set -euo pipefail
@@ -27,17 +27,20 @@ case "${os}-${arch}" in
   Darwin-x86_64|Darwin-amd64) asset="token-usage-darwin-amd64" ;;
   *)
     echo "错误：官方资产仅支持 macOS（Apple Silicon / Intel）；当前为 ${os}-${arch}。" >&2
-    echo 'Windows 用户可在 PowerShell 中执行：irm https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.ps1 -OutFile "$env:TEMP\install.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"；其他平台请从源码构建。' >&2
+    echo 'Windows 用户可在 PowerShell 中依次执行两条命令：' >&2
+    echo '  irm https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.ps1 -OutFile "$env:TEMP\install.ps1"' >&2
+    echo '  powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"' >&2
+    echo '其他平台请从源码构建。' >&2
     exit 1
     ;;
 esac
 
-# 未显式指定版本时，从 GitHub API 取最新 Release tag（列表按发布时间倒序，含预发布）。
+# 未显式指定版本时，从 GitHub API 的 latest 端点取最新稳定版 tag。
 if [ -z "${TAG}" ]; then
-  TAG="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=1" \
+  TAG="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
     | grep -m1 '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
   if [ -z "${TAG}" ]; then
-    echo "错误：无法获取最新 Release tag。" >&2
+    echo "错误：无法获取最新稳定版 Release tag。" >&2
     exit 1
   fi
 fi
