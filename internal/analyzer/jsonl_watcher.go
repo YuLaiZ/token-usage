@@ -160,6 +160,8 @@ func (w *JSONLWatcher) Run(ctx context.Context) error {
 						}
 						return fmt.Errorf("动态注册目录 %s 失败: %w", event.Name, addErr)
 					}
+					// 运行期新目录接管是低频事件，单条保留排查线索。
+					w.logger.Debug("watching new directory", "dir", event.Name)
 					continue
 				}
 			}
@@ -214,6 +216,8 @@ func (w *JSONLWatcher) registerRoots(ctx context.Context) error {
 			return fmt.Errorf("注册监控根目录 %s: %w", root, err)
 		}
 	}
+	// 注册结果是启动必经的批量预期路径，逐目录打印只会刷屏；数量才是有效信息。
+	w.logger.Debug("watching directories", "count", len(w.watched))
 	return nil
 }
 
@@ -290,7 +294,6 @@ func (w *JSONLWatcher) addWatch(path string) error {
 		return fmt.Errorf("监听目录 %s: %w", path, err)
 	}
 	w.watched[path] = struct{}{}
-	w.logger.Debug("watching directory", "dir", path)
 	return nil
 }
 

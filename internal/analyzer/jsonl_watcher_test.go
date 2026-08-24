@@ -3,14 +3,83 @@ package analyzer
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/collector"
 )
+
+// captureLogHandler 收集全部日志记录，供断言日志聚合行为。
+type captureLogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *captureLogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *captureLogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+func (h *captureLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *captureLogHandler) WithGroup(name string) slog.Handler       { return h }
+
+func (h *captureLogHandler) messages() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	msgs := make([]string, 0, len(h.records))
+	for _, r := range h.records {
+		msgs = append(msgs, r.Message)
+	}
+	return msgs
+}
+
+// 目录注册只输出一条 count 汇总，不再逐目录打印。
+func TestJSONLWatcher_RegistrationSummarySingleLog(t *testing.T) {
+	tmpDir := t.TempDir()
+	for _, name := range []string{"proj-a", "proj-b", "proj-c"} {
+		if err := os.MkdirAll(filepath.Join(tmpDir, name), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+
+	handler := &captureLogHandler{}
+	watcher, err := NewJSONLWatcher(
+		[]string{tmpDir}, "claude", 50*time.Millisecond,
+		func(string, collector.CollectRequest) {}, slog.New(handler))
+	if err != nil {
+		t.Fatalf("NewJSONLWatcher: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	go watcher.Run(ctx)
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	watcher.Stop()
+
+	var summaries, perDir int
+	for _, msg := range handler.messages() {
+		if msg == "watching directories" {
+			summaries++
+		}
+		if msg == "watching directory" {
+			perDir++
+		}
+	}
+	if summaries != 1 {
+		t.Errorf("期望恰好 1 条 watching directories 汇总，实际 %d 条: %v", summaries, handler.messages())
+	}
+	if perDir != 0 {
+		t.Errorf("不应再逐目录打印 watching directory，实际 %d 条", perDir)
+	}
+}
 
 func TestJSONLWatcher_DetectsNewFile(t *testing.T) {
 	tmpDir := t.TempDir()
