@@ -31,11 +31,11 @@ func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 	cmd := newQueryCmd()
 
 	wantShort := map[string]string{
-		"client":   "按客户端分组（默认）",
-		"model":    "按模型分组",
-		"project":  "按项目分组",
-		"sessions": "查看会话明细",
-		"summary":  "查看总览摘要",
+		"client":   "Group by client (default) / 按客户端分组（默认）",
+		"model":    "Group by model / 按模型分组",
+		"project":  "Group by project / 按项目分组",
+		"sessions": "View session details / 查看会话明细",
+		"summary":  "View summary / 查看总览摘要",
 	}
 
 	got := map[string]bool{}

@@ -16,7 +16,7 @@ import (
 func newStopCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "stop",
-		Short: "停止守护进程",
+		Short: "Stop the daemon / 停止守护进程",
 		Long: "停止当前运行的守护进程。\n\n" +
 			"仅停止当前进程，不修改开机自启定义：下次登录/重启是否自启仍由 config 的\n" +
 			"daemon.autostart 决定。如需关闭自启，请使用 config 命令设置 daemon.autostart=false。",

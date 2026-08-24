@@ -66,7 +66,7 @@ var configSetApplyFactory = func() (configSetApplyFunc, error) {
 func newConfigSetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set <key> <value>",
-		Short: "设置单项配置(dotted key,脚本友好)",
+		Short: "Set one config value (dotted key, script-friendly) / 设置单项配置(dotted key,脚本友好)",
 		Long: "设置单项配置（dotted key，脚本友好）。\n\n" +
 			"写入由 configapp.ApplyConfig 在进程控制锁内原子完成：读取最新配置、校验 revision、\n" +
 			"写盘、同步自启定义、清理旧 data_dir 残留，并生成结构化动作建议。\n\n" +

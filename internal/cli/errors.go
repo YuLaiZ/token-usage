@@ -14,7 +14,7 @@ import (
 func newErrorsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "errors [YYYYMMDD]",
-		Short: "查看采集异常",
+		Short: "View collection errors / 查看采集异常",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// 参数解析先于 DB 打开，非法日期在打开库之前即报错。

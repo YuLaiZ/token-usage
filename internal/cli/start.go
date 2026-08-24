@@ -57,7 +57,7 @@ var controlManagerFactory = func() (controlStartStopper, error) {
 func newStartCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "start",
-		Short: "后台启动守护进程（立即返回，nginx 风格）",
+		Short: "Start the daemon in the background (nginx-style) / 后台启动守护进程（立即返回，nginx 风格）",
 		Long: "后台启动守护进程（立即返回，nginx 风格）。\n\n" +
 			"启动的是当前运行的守护进程（采集/分析的实时监控进程），\n" +
 			"与开机自启定义分离：开机自启由 config 的 daemon.autostart 决定，\n" +

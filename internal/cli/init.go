@@ -29,7 +29,7 @@ import (
 func newInitCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
-		Short: "初始化配置和数据库",
+		Short: "Initialize config and database / 初始化配置和数据库",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := os.UserHomeDir()

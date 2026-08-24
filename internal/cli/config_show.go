@@ -15,7 +15,7 @@ import (
 func newConfigShowCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "show",
-		Short: "显示运行时生效配置",
+		Short: "Show effective runtime config / 显示运行时生效配置",
 		Long: "显示运行时生效的 effective 配置(只读,纯 TOML)。\n\n" +
 			"输出内容:\n" +
 			"- 即 effective 配置:展开 ~ 前缀路径、补齐默认值与 registry 默认路径后的值;\n" +

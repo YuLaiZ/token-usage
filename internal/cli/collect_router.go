@@ -20,7 +20,7 @@ import (
 func newCollectRouterCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "router",
-		Short: "为指定客户端全量回填 router 归因",
+		Short: "Backfill router attribution for one client / 为指定客户端全量回填 router 归因",
 		Long: `为指定客户端全量回填 router 归因。
 
 全表读取该客户端配置的 router 日志，回填其全部历史 messages 的归因字段。

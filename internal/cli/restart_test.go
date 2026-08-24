@@ -24,10 +24,10 @@ func TestRestartCmd_NoArgs(t *testing.T) {
 	}
 }
 
-// TestRestartCmd_Short restart Short 应为「重启当前守护进程」。
+// TestRestartCmd_Short restart Short 应为双语并列。
 func TestRestartCmd_Short(t *testing.T) {
 	cmd := newRestartCmd()
-	if cmd.Short != "重启当前守护进程" {
+	if cmd.Short != "Restart the daemon / 重启当前守护进程" {
 		t.Errorf("restart Short=%q want %q", cmd.Short, "重启当前守护进程")
 	}
 }

@@ -16,7 +16,7 @@ import (
 func newStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "查看守护进程运行状态与配置摘要",
+		Short: "Show daemon status and config summary / 查看守护进程运行状态与配置摘要",
 		Long: "查看守护进程运行状态与配置摘要。\n\n" +
 			"「运行状态」反映当前守护进程（采集/分析的实时监控进程）是否在运行，\n" +
 			"与开机自启定义分离：开机自启反映「下次登录/重启是否自动启动」，\n" +

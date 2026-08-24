@@ -16,7 +16,7 @@ import (
 func newVersionCmd(info buildinfo.Info) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "查看版本与构建信息",
+		Short: "Show version and build info / 查看版本与构建信息",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Fprint(cmd.OutOrStdout(), info.Detail())

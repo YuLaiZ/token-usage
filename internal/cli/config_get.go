@@ -11,7 +11,7 @@ import (
 func newConfigGetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <key>",
-		Short: "读取单项配置(dotted key)",
+		Short: "Read one config value (dotted key) / 读取单项配置(dotted key)",
 		Long: "读取单项配置（dotted key，脚本友好）。\n\n" +
 			"读取的是「用户配置层」：即配置文件中显式写入的值，不展开 ~ 、不补默认路径、\n" +
 			"不 clamp 数值字段。因此未在文件中显式配置的字段会返回其零值（如 poll_interval 返回 0）。\n\n" +

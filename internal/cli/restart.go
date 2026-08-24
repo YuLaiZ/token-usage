@@ -23,7 +23,7 @@ import (
 func newRestartCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "restart",
-		Short: "重启当前守护进程",
+		Short: "Restart the daemon / 重启当前守护进程",
 		Long: "重启当前守护进程（在单次进程控制锁内停旧起新）。\n\n" +
 			"仅重启当前运行的守护进程，不修改 config、plist 或注册表等自启定义：\n" +
 			"下次登录/重启是否自启仍由 config 的 daemon.autostart 决定。\n\n" +

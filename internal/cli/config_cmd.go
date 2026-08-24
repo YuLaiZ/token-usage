@@ -7,7 +7,7 @@ import (
 func newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "配置管理(交互编辑 / 初始化 / 读写单项)",
+		Short: "Manage configuration (interactive TUI / init / get / set) / 配置管理(交互编辑 / 初始化 / 读写单项)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runConfigTUIContext(cmdContext(cmd))

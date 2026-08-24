@@ -19,7 +19,7 @@ import (
 func newCollectRetryCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "retry",
-		Short: "重试失败的采集记录",
+		Short: "Retry failed collection records / 重试失败的采集记录",
 		Long: `重试 collection_errors 中未解决的失败采集记录。
 
 按 (date, source) 分组查询未解决错误，逐组按日期重新采集；

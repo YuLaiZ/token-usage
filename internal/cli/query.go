@@ -27,7 +27,7 @@ const (
 func newQueryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "query [YYYYMMDD|YYYYMMDD-YYYYMMDD]",
-		Short: "查询 token 使用统计",
+		Short: "Query token usage statistics / 查询 token 使用统计",
 		Long:  "查询 token 使用统计。可附加一个位置参数：单个日期 YYYYMMDD 或日期范围 YYYYMMDD-YYYYMMDD；缺省时默认今天。",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -36,11 +36,11 @@ func newQueryCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(
-		newQuerySubCmd("client", "按客户端分组（默认）", viewClient),
-		newQuerySubCmd("model", "按模型分组", viewModel),
-		newQuerySubCmd("project", "按项目分组", viewProject),
-		newQuerySubCmd("sessions", "查看会话明细", viewSessions),
-		newQuerySubCmd("summary", "查看总览摘要", viewSummary),
+		newQuerySubCmd("client", "Group by client (default) / 按客户端分组（默认）", viewClient),
+		newQuerySubCmd("model", "Group by model / 按模型分组", viewModel),
+		newQuerySubCmd("project", "Group by project / 按项目分组", viewProject),
+		newQuerySubCmd("sessions", "View session details / 查看会话明细", viewSessions),
+		newQuerySubCmd("summary", "View summary / 查看总览摘要", viewSummary),
 	)
 
 	return cmd

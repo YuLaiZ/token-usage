@@ -161,7 +161,7 @@ func buildUpdateControlManager() (update.ControlManager, error) {
 func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "update",
-		Short:        "更新 token-usage 到最新或指定版本",
+		Short:        "Update token-usage to the latest or a given version / 更新 token-usage 到最新或指定版本",
 		SilenceUsage: true,
 		Long: "检查并更新 token-usage 自身到最新稳定版或指定版本。\n\n" +
 			"  token-usage update            更新到最新稳定版（来源校验通过后替换二进制并恢复 daemon）\n" +

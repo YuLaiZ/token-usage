@@ -25,7 +25,7 @@ import (
 func newCollectAllCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "all",
-		Short: "全量扫描历史消息并回填 router 归因",
+		Short: "Scan full history and backfill router attribution / 全量扫描历史消息并回填 router 归因",
 		Long: `全量扫描所有已启用客户端的历史消息，并对配置了 router 的客户端做全量归因回填。
 
 两阶段编排：

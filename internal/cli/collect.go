@@ -32,7 +32,7 @@ import (
 func newCollectCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "collect [YYYYMMDD|YYYYMMDD-YYYYMMDD]",
-		Short: "采集 token 使用数据（默认含 router）",
+		Short: "Collect token usage data (router included by default) / 采集 token 使用数据（默认含 router）",
 		Long: `采集 token 使用数据。
 
 不带子命令时按日期（今天或位置参数指定日期）对所有已启用客户端做一次增量采集，
