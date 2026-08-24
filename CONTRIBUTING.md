@@ -90,10 +90,10 @@ English is the default public documentation. The Chinese versions are complete c
 
 ## Commit Messages
 
-Use a concise, one-sentence **Chinese** commit message. Do not use Conventional Commit prefixes such as `feat` or `fix`, and do not add multi-line commit bodies or `Co-authored-by` trailers.
+Use a concise, one-sentence **English** commit message. Do not use Conventional Commit prefixes such as `feat` or `fix`, and do not add multi-line commit bodies or `Co-authored-by` trailers.
 
 ```bash
-git commit -m "补充贡献指南"
+git commit -m "Add the contribution guide"
 ```
 
 ## Pull Requests

@@ -384,7 +384,7 @@ For installation details, see [docs/install.md](docs/install.md); for detailed a
 Issues and pull requests are welcome. Read the [Contributing Guide](CONTRIBUTING.md) before opening a PR. In particular:
 
 1. Ensure the relevant tests pass: `go test ./...`.
-2. Use a one-sentence Chinese commit message without prefixes such as `feat` or `fix`.
+2. Use a one-sentence English commit message without prefixes such as `feat` or `fix`.
 3. Keep each PR focused on one change topic.
 
 ## License

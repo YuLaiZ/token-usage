@@ -90,10 +90,10 @@ make release-verify VERSION=vX.Y.Z[-rc.N]
 
 ## Git 提交信息
 
-使用简洁的一句话**中文**提交信息。不要使用 `feat`、`fix` 等 Conventional Commit 前缀，不要添加多行提交正文或 `Co-authored-by` trailer。
+使用简洁的一句话**英文**提交信息。不要使用 `feat`、`fix` 等 Conventional Commit 前缀，不要添加多行提交正文或 `Co-authored-by` trailer。
 
 ```bash
-git commit -m "补充贡献指南"
+git commit -m "Add the contribution guide"
 ```
 
 ## Pull Request

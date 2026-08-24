@@ -382,7 +382,7 @@ go test -race ./...
 欢迎提交 Issue 和 Pull Request。提交 PR 前请阅读[贡献指南](CONTRIBUTING.zh-CN.md)，并确保：
 
 1. 确保相关模块测试通过：`go test ./...`
-2. 提交信息用中文一句话描述，不加 `feat`/`fix` 等前缀
+2. 提交信息用英文一句话描述，不加 `feat`/`fix` 等前缀
 3. 一个 PR 聚焦一个改动主题
 
 ## 许可证
