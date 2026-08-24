@@ -117,6 +117,9 @@ func TestCollect_SubcommandsRejectPositionalArgs(t *testing.T) {
 }
 
 // TestCollect_SubcommandsRejectForceFlag 子命令上 --force 应是 unknown flag。
+// 用 ParseFlags 直接在子命令上解析断言：不调 Execute——Execute 会把孤儿子命令
+// 重定向到根执行（cobra ExecuteC 语义），实际跑的是 collect 父命令（--force 是
+// 其 LocalFlag，被合法解析），断言会随 RunE 的环境成败漂移。
 func TestCollect_SubcommandsRejectForceFlag(t *testing.T) {
 	parent := newCollectCmd()
 	for _, name := range []string{"all", "router", "retry"} {
@@ -124,11 +127,10 @@ func TestCollect_SubcommandsRejectForceFlag(t *testing.T) {
 		if sub == nil {
 			t.Fatalf("collect 缺少子命令 %q", name)
 		}
-		sub.SilenceUsage = true
-		sub.SilenceErrors = true
-		sub.SetArgs([]string{"--force"})
-		err := sub.Execute()
-		if err == nil {
+		if sub.Flags().Lookup("force") != nil || sub.PersistentFlags().Lookup("force") != nil {
+			t.Errorf("子命令 %q 不应注册 --force", name)
+		}
+		if err := sub.ParseFlags([]string{"--force"}); err == nil {
 			t.Errorf("子命令 %q 应拒绝 --force（unknown flag）", name)
 		}
 	}
