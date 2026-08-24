@@ -412,7 +412,10 @@ func zcodeCachePathFromDB(dbPath string) string {
 }
 
 // loadZCodeProviderMap 读 bots-model-cache.v2.json，返回 provider_id→name 映射。
-// 只解码 id/name（apiKey 等敏感字段不在 struct 中，json.Unmarshal 忽略未知字段）。
+// 兼容两种 schema：version 1 的顶层 providers[].id/name；version 2 起顶层 providers
+// 字段移除，provider 显示名挪到 workspaceConfigOptions.{workspace::tab}.configOptions[]
+// .options[].modelProviderId/modelProviderName。两路同一次 Unmarshal 合并解析。
+// 只解码需要字段（apiKey 等敏感字段不在 struct 中，json.Unmarshal 忽略未知字段）。
 // 文件不存在/解析失败返回空 map（不 fatal，Collect 时 fallback provider_id 原值）。
 func loadZCodeProviderMap(cachePath string) map[string]string {
 	m := make(map[string]string)
@@ -425,6 +428,14 @@ func loadZCodeProviderMap(cachePath string) map[string]string {
 			ID   string `json:"id"`
 			Name string `json:"name"`
 		} `json:"providers"`
+		WorkspaceConfigOptions map[string]struct {
+			ConfigOptions []struct {
+				Options []struct {
+					ModelProviderID   string `json:"modelProviderId"`
+					ModelProviderName string `json:"modelProviderName"`
+				} `json:"options"`
+			} `json:"configOptions"`
+		} `json:"workspaceConfigOptions"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return m
@@ -432,6 +443,15 @@ func loadZCodeProviderMap(cachePath string) map[string]string {
 	for _, p := range doc.Providers {
 		if p.ID != "" {
 			m[p.ID] = p.Name
+		}
+	}
+	for _, ws := range doc.WorkspaceConfigOptions {
+		for _, opt := range ws.ConfigOptions {
+			for _, model := range opt.Options {
+				if model.ModelProviderID != "" {
+					m[model.ModelProviderID] = model.ModelProviderName
+				}
+			}
 		}
 	}
 	return m

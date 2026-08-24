@@ -827,6 +827,139 @@ func TestLoadZCodeProviderMap_NoAPIKeyLeak(t *testing.T) {
 	}
 }
 
+// version 2 schema：顶层无 providers，显示名在 workspaceConfigOptions 内。
+// 结构按本机真实 bots-model-cache.v2.json 构造。
+func writeZCodeCacheV2JSON(t *testing.T, path string) {
+	t.Helper()
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir cache 父目录失败: %v", err)
+	}
+	doc := map[string]any{
+		"version":   2,
+		"updatedAt": 1784696250197,
+		"workspaceConfigOptions": map[string]any{
+			"/ws/one::glm": map[string]any{
+				"workspacePath": "/ws/one",
+				"provider":      "glm",
+				"configOptions": []map[string]any{
+					{
+						"id":   "model",
+						"name": "Model",
+						"type": "select",
+						"options": []map[string]any{
+							{
+								"value":             "builtin:bigmodel-coding-plan/GLM-5.2",
+								"name":              "GLM-5.2",
+								"modelProviderId":   "builtin:bigmodel-coding-plan",
+								"modelProviderName": "Bigmodel - Coding Plan",
+							},
+							{
+								"value":             "9848d583-72b9-457d-b6f2-a54c487c5cc7/deepseek-v4-flash",
+								"name":              "deepseek-v4-flash",
+								"modelProviderId":   "9848d583-72b9-457d-b6f2-a54c487c5cc7",
+								"modelProviderName": "DeepSeek",
+							},
+						},
+					},
+					{
+						"id":   "mode",
+						"name": "Mode",
+						"type": "select",
+						"options": []map[string]any{
+							// 同 provider 重复出现，映射应保持一致（后写同值幂等）。
+							{
+								"value":             "builtin:bigmodel-coding-plan/GLM-5-Turbo",
+								"modelProviderId":   "builtin:bigmodel-coding-plan",
+								"modelProviderName": "Bigmodel - Coding Plan",
+							},
+						},
+					},
+				},
+			},
+			"/ws/two::custom": map[string]any{
+				"workspacePath": "/ws/two",
+				"provider":      "custom",
+				"configOptions": []map[string]any{
+					{
+						"id": "model",
+						"options": []map[string]any{
+							{
+								"value":             "da4546b5-af0c-49ed-8114-afa42d53af65/glm-5.2",
+								"modelProviderId":   "da4546b5-af0c-49ed-8114-afa42d53af65",
+								"modelProviderName": "Zhipu GLM 小狼",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal cache json 失败: %v", err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatalf("write cache json 失败: %v", err)
+	}
+}
+
+func TestLoadZCodeProviderMap_Version2WorkspaceOptions(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "bots-model-cache.v2.json")
+	writeZCodeCacheV2JSON(t, tmp)
+
+	m := loadZCodeProviderMap(tmp)
+	if len(m) != 3 {
+		t.Fatalf("期望 3 项（重复 provider 幂等），实际 %d: %v", len(m), m)
+	}
+	if m["builtin:bigmodel-coding-plan"] != "Bigmodel - Coding Plan" {
+		t.Errorf("bigmodel name = %q, want 'Bigmodel - Coding Plan'", m["builtin:bigmodel-coding-plan"])
+	}
+	if m["9848d583-72b9-457d-b6f2-a54c487c5cc7"] != "DeepSeek" {
+		t.Errorf("deepseek name = %q, want 'DeepSeek'", m["9848d583-72b9-457d-b6f2-a54c487c5cc7"])
+	}
+	if m["da4546b5-af0c-49ed-8114-afa42d53af65"] != "Zhipu GLM 小狼" {
+		t.Errorf("zhipu name = %q, want 'Zhipu GLM 小狼'", m["da4546b5-af0c-49ed-8114-afa42d53af65"])
+	}
+}
+
+// v1 providers 与 v2 workspaceConfigOptions 并存时两路合并、互不覆盖冲突。
+func TestLoadZCodeProviderMap_MixedSchemasMerge(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "bots-model-cache.v2.json")
+	writeZCodeCacheV2JSON(t, tmp)
+
+	// 追加 v1 providers 字段（与 v2 不同 id）。
+	raw, err := os.ReadFile(tmp)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	doc["providers"] = []map[string]any{
+		{"id": "legacy-provider", "name": "Legacy Provider"},
+	}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	m := loadZCodeProviderMap(tmp)
+	if len(m) != 4 {
+		t.Fatalf("期望 4 项（3 v2 + 1 v1），实际 %d: %v", len(m), m)
+	}
+	if m["legacy-provider"] != "Legacy Provider" {
+		t.Errorf("legacy name = %q, want 'Legacy Provider'", m["legacy-provider"])
+	}
+	if m["builtin:bigmodel-coding-plan"] != "Bigmodel - Coding Plan" {
+		t.Errorf("v2 bigmodel name = %q", m["builtin:bigmodel-coding-plan"])
+	}
+}
+
 func TestZcodeCachePathFromDB(t *testing.T) {
 	got := zcodeCachePathFromDB("/Users/me/.zcode/cli/db/db.sqlite")
 	want := "/Users/me/.zcode/v2/bots-model-cache.v2.json"
