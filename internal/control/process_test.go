@@ -461,7 +461,7 @@ func TestInspect_NotRunning(t *testing.T) {
 	f.dlock.inner.running = false
 	m := newTestProcessManager(t, t.TempDir(), f)
 
-	st, err := m.Inspect(context.Background(), newConfigWith("/data"))
+	st, err := m.Inspect(context.Background(), newConfigWith(t.TempDir()))
 	if err != nil {
 		t.Fatalf("Inspect err=%v", err)
 	}
@@ -479,7 +479,7 @@ func TestInspect_RunningWithPID(t *testing.T) {
 	f.pid.pid = 1234
 	m := newTestProcessManager(t, t.TempDir(), f)
 
-	st, err := m.Inspect(context.Background(), newConfigWith("/data"))
+	st, err := m.Inspect(context.Background(), newConfigWith(t.TempDir()))
 	if err != nil {
 		t.Fatalf("Inspect err=%v", err)
 	}
@@ -498,7 +498,7 @@ func TestInspect_RunningButPIDMissing(t *testing.T) {
 	f.pid.pid = 0
 	m := newTestProcessManager(t, t.TempDir(), f)
 
-	st, err := m.Inspect(context.Background(), newConfigWith("/data"))
+	st, err := m.Inspect(context.Background(), newConfigWith(t.TempDir()))
 	if err != nil {
 		t.Fatalf("Inspect 应容忍 PID 缺失，err=%v", err)
 	}
@@ -534,7 +534,7 @@ func TestInspect_PhaseMatched_PIDInstanceID全匹配(t *testing.T) {
 	}
 	m := newTestProcessManager(t, t.TempDir(), f)
 
-	st, err := m.Inspect(context.Background(), newConfigWith("/data"))
+	st, err := m.Inspect(context.Background(), newConfigWith(t.TempDir()))
 	if err != nil {
 		t.Fatalf("Inspect err=%v", err)
 	}
@@ -562,7 +562,7 @@ func TestInspect_PhaseMatched_catchUpFailed_FailuresCopied(t *testing.T) {
 	}
 	m := newTestProcessManager(t, t.TempDir(), f)
 
-	st, err := m.Inspect(context.Background(), newConfigWith("/data"))
+	st, err := m.Inspect(context.Background(), newConfigWith(t.TempDir()))
 	if err != nil {
 		t.Fatalf("Inspect err=%v", err)
 	}
@@ -580,7 +580,7 @@ func TestInspect_PhaseMissing_RuntimeStateMissing(t *testing.T) {
 	// 默认 fakeStateReader: readErr=errNoRuntimeState
 	m := newTestProcessManager(t, t.TempDir(), f)
 
-	st, err := m.Inspect(context.Background(), newConfigWith("/data"))
+	st, err := m.Inspect(context.Background(), newConfigWith(t.TempDir()))
 	if err != nil {
 		t.Fatalf("Inspect err=%v", err)
 	}
@@ -606,7 +606,7 @@ func TestInspect_PhaseMissing_PIDFileMismatch(t *testing.T) {
 	f.state.state = runmeta.RuntimeState{PID: 9999, InstanceID: "inst-a", MonitorReady: true}
 	m := newTestProcessManager(t, t.TempDir(), f)
 
-	st, err := m.Inspect(context.Background(), newConfigWith("/data"))
+	st, err := m.Inspect(context.Background(), newConfigWith(t.TempDir()))
 	if err != nil {
 		t.Fatalf("Inspect err=%v", err)
 	}
@@ -626,7 +626,7 @@ func TestInspect_PhaseMissing_InstanceIDMismatch(t *testing.T) {
 	f.state.state = runmeta.RuntimeState{PID: 3333, InstanceID: "inst-old", MonitorReady: true}
 	m := newTestProcessManager(t, t.TempDir(), f)
 
-	st, err := m.Inspect(context.Background(), newConfigWith("/data"))
+	st, err := m.Inspect(context.Background(), newConfigWith(t.TempDir()))
 	if err != nil {
 		t.Fatalf("Inspect err=%v", err)
 	}
@@ -643,7 +643,7 @@ func TestInspect_PhaseMissing_PIDMetadataUnavailable(t *testing.T) {
 	f.pid.pid = 0 // PID 文件缺失
 	m := newTestProcessManager(t, t.TempDir(), f)
 
-	st, err := m.Inspect(context.Background(), newConfigWith("/data"))
+	st, err := m.Inspect(context.Background(), newConfigWith(t.TempDir()))
 	if err != nil {
 		t.Fatalf("Inspect 应容忍 PID 缺失, err=%v", err)
 	}
@@ -664,7 +664,7 @@ func TestStart_LockOrderTrace(t *testing.T) {
 	// spawn 后下一次轮询六项 ready 条件全部满足（确定性，无真实 sleep）。
 	enableStartReady(f, 5050, 0, 1, 0, "pending")
 	m := newTestProcessManager(t, t.TempDir(), f)
-	loader := &tracedConfigLoader{trace: f.trace, cfg: newConfigWith("/data")}
+	loader := &tracedConfigLoader{trace: f.trace, cfg: newConfigWith(t.TempDir())}
 
 	if _, err := m.Start(context.Background(), loader.load); err != nil {
 		t.Fatalf("Start err=%v", err)
@@ -696,7 +696,7 @@ func TestStop_LockOrderTrace(t *testing.T) {
 	f.dlock.inner.readyAfter = 1
 	f.dlock.inner.runningWhenReady = false
 	m := newTestProcessManager(t, t.TempDir(), f)
-	loader := &tracedConfigLoader{trace: f.trace, cfg: newConfigWith("/data")}
+	loader := &tracedConfigLoader{trace: f.trace, cfg: newConfigWith(t.TempDir())}
 
 	if _, err := m.Stop(context.Background(), loader.load); err != nil {
 		t.Fatalf("Stop err=%v", err)
@@ -724,7 +724,7 @@ func TestStart_LoaderCalledExactlyOnce(t *testing.T) {
 	calls := 0
 	loader := func() (*config.Config, error) {
 		calls++
-		return newConfigWith("/data"), nil
+		return newConfigWith(t.TempDir()), nil
 	}
 
 	if _, err := m.Start(context.Background(), loader); err != nil {
@@ -743,7 +743,7 @@ func TestStart_AlreadyRunningNoSpawn(t *testing.T) {
 	f.dlock.inner.running = true
 	f.pid.pid = 7777
 	m := newTestProcessManager(t, t.TempDir(), f)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	res, err := m.Start(context.Background(), loader)
 	if err != nil {
@@ -765,7 +765,7 @@ func TestStart_NotRunningSpawnsAndWaits(t *testing.T) {
 	f := newFakeDeps()
 	enableStartReady(f, 9898, 0, 1, 0, "pending")
 	m := newTestProcessManager(t, t.TempDir(), f)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	res, err := m.Start(context.Background(), loader)
 	if err != nil {
@@ -788,7 +788,7 @@ func TestStart_PidMissingWhileLockHeld(t *testing.T) {
 	f.dlock.inner.running = true
 	f.pid.pid = 0
 	m := newTestProcessManager(t, t.TempDir(), f)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	_, err := m.Start(context.Background(), loader)
 	if err == nil {
@@ -811,7 +811,7 @@ func TestStart_SpawnTimeoutKillsChild(t *testing.T) {
 	m := newTestProcessManager(t, t.TempDir(), f)
 	m.deps.startReadyTimeout = 500 * time.Millisecond
 	m.deps.pollInterval = 100 * time.Millisecond
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	_, err := m.Start(context.Background(), loader)
 	if err == nil {
@@ -829,7 +829,7 @@ func TestStop_NotRunningIdempotent(t *testing.T) {
 	f := newFakeDeps()
 	f.dlock.inner.running = false
 	m := newTestProcessManager(t, t.TempDir(), f)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	res, err := m.Stop(context.Background(), loader)
 	if err != nil {
@@ -856,7 +856,7 @@ func TestStop_RunningPosixManual_Sigterm(t *testing.T) {
 	f.dlock.inner.readyAfter = 1
 	f.dlock.inner.runningWhenReady = false
 	m := newTestProcessManager(t, t.TempDir(), f)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	res, err := m.Stop(context.Background(), loader)
 	if err != nil {
@@ -887,7 +887,7 @@ func TestStop_RunningManaged_BootoutThenSigtermIfNeeded(t *testing.T) {
 	f.dlock.inner.readyAfter = 2
 	f.dlock.inner.runningWhenReady = false
 	m := newTestProcessManager(t, t.TempDir(), f)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	res, err := m.Stop(context.Background(), loader)
 	if err != nil {
@@ -918,7 +918,7 @@ func TestStop_RunningManaged_BootoutOnly(t *testing.T) {
 	f.dlock.inner.readyAfter = 1
 	f.dlock.inner.runningWhenReady = false
 	m := newTestProcessManager(t, t.TempDir(), f)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	res, err := m.Stop(context.Background(), loader)
 	if err != nil {
@@ -948,7 +948,7 @@ func TestStop_Timeout_DoesNotFakeSuccess(t *testing.T) {
 	m := newTestProcessManager(t, t.TempDir(), f)
 	m.deps.stopWaitTimeout = 500 * time.Millisecond
 	m.deps.pollInterval = 100 * time.Millisecond
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	_, err := m.Stop(context.Background(), loader)
 	if err == nil {
@@ -970,7 +970,7 @@ func TestSession_Inspect_InLock(t *testing.T) {
 	f.dlock.inner.running = true
 	f.pid.pid = 2020
 	m := newTestProcessManager(t, t.TempDir(), f)
-	cfg := newConfigWith("/data")
+	cfg := newConfigWith(t.TempDir())
 
 	var st RuntimeState
 	err := m.WithLock(context.Background(), func(s *Session) error {
@@ -1030,7 +1030,7 @@ func TestStop_Windows_UsesExactPID(t *testing.T) {
 	f.dlock.inner.readyAfter = 1
 	f.dlock.inner.runningWhenReady = false
 	m := newTestProcessManager(t, t.TempDir(), f)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	_, err := m.Stop(context.Background(), loader)
 	if err != nil {
@@ -1181,7 +1181,7 @@ func TestRestart_LockOrderTrace(t *testing.T) {
 	// startLocked.remove 清掉后，read#3+ (waitForStartReady) 返回新 child PID 6464 + 匹配 state。
 	enableStartReadyRestart(f, 6464, 2, 2)
 	m := newRestartManager(t, t.TempDir(), f)
-	loader := &tracedConfigLoader{trace: f.trace, cfg: newConfigWith("/data")}
+	loader := &tracedConfigLoader{trace: f.trace, cfg: newConfigWith(t.TempDir())}
 
 	res, err := m.Restart(context.Background(), loader.load)
 	if err != nil {
@@ -1231,7 +1231,7 @@ func countOccur(slice []string, s string) int {
 func TestRestart_NotRunningNoSpawn(t *testing.T) {
 	f := newRestartFakeDeps([]bool{false}) // inspect 立即 false
 	m := newRestartManager(t, t.TempDir(), f)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	_, err := m.Restart(context.Background(), loader)
 	if !errors.Is(err, ErrRestartNotRunning) {
@@ -1253,7 +1253,7 @@ func TestRestart_StopFailsNoSpawn(t *testing.T) {
 	f.service.statusResult = false
 	f.kill.err = errors.New("sigterm boom") // stop 发信号失败
 	m := newRestartManager(t, t.TempDir(), f)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	_, err := m.Restart(context.Background(), loader)
 	if err == nil {
@@ -1281,7 +1281,7 @@ func TestRestart_StartFailsPreservesError(t *testing.T) {
 	m := newRestartManager(t, t.TempDir(), f)
 	m.deps.startReadyTimeout = 500 * time.Millisecond
 	m.deps.pollInterval = 100 * time.Millisecond
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	_, err := m.Restart(context.Background(), loader)
 	if err == nil {
@@ -1314,7 +1314,7 @@ func TestRestart_NoConfigPlistRegistryWrites(t *testing.T) {
 	// read#3+ (waitForStartReady) 返回新 child PID 6464 + 匹配 state。
 	enableStartReadyRestart(f, 6464, 2, 2)
 	m := newRestartManager(t, t.TempDir(), f)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	res, err := m.Restart(context.Background(), loader)
 	if err != nil {
@@ -1347,7 +1347,7 @@ func TestRestart_SuccessReturnsOldAndNewPID(t *testing.T) {
 	// startLocked.remove 清掉后，read#3+ (waitForStartReady) 返回新 child PID 7777 + 匹配 state。
 	enableStartReadyRestart(f, 7777, 2, 2)
 	m := newRestartManager(t, t.TempDir(), f)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	res, err := m.Restart(context.Background(), loader)
 	if err != nil {

@@ -68,6 +68,11 @@ func productionOpenResources(cfg *config.Config) (RuntimeResources, error) {
 	if err != nil {
 		return RuntimeResources{}, fmt.Errorf("初始化日志失败: %w", err)
 	}
+	// logger 就绪后接管 fd 1/2（unix）：panic 等直接写 stderr 的兜底输出并入
+	// 当日结构化日志文件。restore 丢弃——daemon 生命周期即进程生命周期。
+	// Windows 为 no-op（平台局限见 stdfd_windows.go）。
+	_ = logger.MirrorStdOutput()
+	cleanupLegacyFallbackLogs(cfg.DataDir)
 	usageDB, err := db.Open(filepath.Join(cfg.DataDir, "usage.db"))
 	if err != nil {
 		logger.Close()
@@ -85,6 +90,15 @@ func productionOpenResources(cfg *config.Config) (RuntimeResources, error) {
 			return nil
 		},
 	}, nil
+}
+
+// cleanupLegacyFallbackLogs 迁移清理旧版兜底输出文件（DataDir 下的
+// daemon.out/err.log 与 launchd.out/err.log）：新版兜底输出已统一并入
+// logs/ 下的结构化日志文件与固定 fallback 文件。幂等：不存在时忽略。
+func cleanupLegacyFallbackLogs(dataDir string) {
+	for _, name := range []string{"daemon.out.log", "daemon.err.log", "launchd.out.log", "launchd.err.log"} {
+		_ = os.Remove(filepath.Join(dataDir, name))
+	}
 }
 
 // Run 是守护进程的核心：

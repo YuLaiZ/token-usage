@@ -8,6 +8,10 @@ import "github.com/YuLaiZ/token-usage/internal/service"
 // daemonServiceLabel 与 service.Label 一致（服务标识），独立常量避免 control 直接暴露 service 常量。
 const daemonServiceLabel = service.Label
 
+// daemonFallbackLogName 与 service.FallbackLogFileName 一致（daemon 兜底输出文件名，
+// 单一真相源在 logger 包）。process.go 经此别名引用，保持 service import 集中在本文件。
+const daemonFallbackLogName = service.FallbackLogFileName
+
 // serviceAdapter 把 service.Manager 适配到 control.serviceManagerLike。
 //
 // service 接口分为：

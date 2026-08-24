@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
@@ -359,6 +360,10 @@ func (s *Session) startLockedWithBinPath(ctx context.Context, cfg *config.Config
 		lease.cleanup() // spawn 准备失败也清理 lease。
 		return StartResult{}, err
 	}
+	if err := ensureFallbackLogFile(cfg); err != nil {
+		lease.cleanup()
+		return StartResult{}, err
+	}
 	opts.lease = lease
 
 	proc, err := s.manager.deps.spawner.spawn(opts)
@@ -389,7 +394,7 @@ func (s *Session) startLockedWithBinPath(ctx context.Context, cfg *config.Config
 		}
 		_ = proc.Release()
 		lease.cleanup()
-		timeoutErr := fmt.Errorf("守护进程启动超时，请检查 %s/daemon.err.log: %w", cfg.DataDir, err)
+		timeoutErr := fmt.Errorf("守护进程启动超时，请检查 %s 下的日志: %w", fallbackLogFilePath(cfg), err)
 		if killErr != nil {
 			killErr = fmt.Errorf("终止未就绪子进程 PID %d 失败: %w", childPID, killErr)
 		}
@@ -739,9 +744,84 @@ func buildSpawnOptionsForBin(cfg *config.Config, binPath string) (spawnOptions, 
 	return spawnOptions{
 		BinPath:    binPath,
 		Args:       []string{"_run"},
-		StdoutPath: filepath.Join(cfg.DataDir, "daemon.out.log"),
-		StderrPath: filepath.Join(cfg.DataDir, "daemon.err.log"),
+		StdoutPath: fallbackLogFilePath(cfg),
+		StderrPath: fallbackLogFilePath(cfg),
 	}, nil
+}
+
+// fallbackLogDir 返回兜底日志目录，与 service.EffectiveLogDir 同一推导：用户层
+// cfg 的 log.dir / data_dir 可能未展开 ~（start 可能在 effective 解析前持用户层
+// 配置），不展开会被 MkdirAll 当作相对路径在当前工作目录误建目录。
+// 空 log.dir 回退 data_dir/logs（与 runtimecfg.ResolveEffectiveConfig 默认一致）。
+func fallbackLogDir(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	if dir := strings.TrimSpace(cfg.Log.Dir); dir != "" {
+		return expandTildePath(dir)
+	}
+	return filepath.Join(expandTildePath(cfg.DataDir), "logs")
+}
+
+// expandTildePath 展开 ~ 或 ~/... 前缀为 $HOME。
+// 与 service.expandTilde 等价的包内副本——沿用 service 包「复制而非为单一工具
+// 函数改动 config 公共 API」的先例，避免引入新的跨包依赖。
+func expandTildePath(path string) string {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	return filepath.Join(home, path[2:])
+}
+
+// fallbackLogFilePath 是 daemon 兜底输出（logger 初始化前的极早期输出、
+// Windows 全周期输出）的目标文件：logs/ 下固定 fallback 文件，与结构化日志
+// 同目录。不用带日期的结构化文件名——plist/spawn 的静态路径若含日期，
+// 跨天后 spec 比对会每日假 drift；固定文件名无跨天歧义，daemon 完成日志
+// 初始化后由 unix 侧 fd 接管把正常运行与 panic 并入当日结构化文件。
+func fallbackLogFilePath(cfg *config.Config) string {
+	return filepath.Join(fallbackLogDir(cfg), daemonFallbackLogName)
+}
+
+// fallbackRotateThreshold 是兜底输出文件在 spawn 前触发轮转的大小阈值。
+// 崩溃堆栈为 KB 级，1 MiB 足以容纳多轮排查信息；轮转保留一份 .old，
+// 文件占用上限约 2×阈值。
+const fallbackRotateThreshold = 1 << 20
+
+// ensureFallbackLogFile 在 spawn 前确保兜底日志目录存在，并按大小轮转 fallback
+// 文件。容量治理分工：logger.cleanup 的 mtime 清理只覆盖闲置遗留；活跃写入的
+// 增长（Windows 全周期输出、反复 start + 崩溃循环）由本处在每次 start/update
+// spawn 前轮转兜住——此刻上一代 daemon 已退出、无进程持有该文件句柄，
+// Windows 上 rename 打开中文件的限制不适用。log.dir 允许自定义任意尚不存在的路径；
+// 子进程内 logger.Init 的 MkdirAll 在时序上来不及，父进程 OpenFile 会先失败。
+// start 本身是写操作，此处目录创建/轮转不违反只读契约。
+func ensureFallbackLogFile(cfg *config.Config) error {
+	dir := fallbackLogDir(cfg)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("创建日志目录 %s 失败: %w", dir, err)
+	}
+	fb := fallbackLogFilePath(cfg)
+	info, err := os.Stat(fb)
+	if err != nil || info.Size() <= fallbackRotateThreshold {
+		return nil
+	}
+	// 不预删旧档，直接 rename 覆盖已存在的 .old：消除代码自身的预删丢失窗口
+	// （不再出现「旧档已删、rename 未成」）。原子性仅 unix 保证——Go 标准库
+	// 明确非 Unix 平台的 os.Rename 不保证原子，故不承诺 Windows 上的原子覆盖、
+	// 也不承诺失败时两文件必然原状；本代码只承诺不主动制造丢失窗口。
+	// 失败返回错误阻断本次 start——rename 在无进程持有句柄时的失败意味着
+	// 权限/占用类异常环境，随后 spawn 对同一文件的 OpenFile 也会失败，
+	// 提前以清晰错误退出优于静默放弃容量上限。
+	if err := os.Rename(fb, fb+".old"); err != nil {
+		return fmt.Errorf("轮转超限兜底日志 %s 失败: %w", fb, err)
+	}
+	return nil
 }
 
 // buildServiceOptions 构造 serviceOptions（自启服务检测用）。Label 与 Args 固定。

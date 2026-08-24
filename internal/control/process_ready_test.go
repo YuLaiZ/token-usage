@@ -88,7 +88,7 @@ func TestStart_ReadyConditions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f, m := readyBaseline(t, childPID)
 			tc.breakIt(f)
-			loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+			loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 			_, err := m.Start(context.Background(), loader)
 			if err == nil {
@@ -114,7 +114,7 @@ func TestStart_Ready_SamePIDDifferentInstanceID(t *testing.T) {
 	// runtime-state 也指向旧代（与 PID 文件一致，但都不是本次 instanceID）。
 	f.state.readyState.PID = childPID
 	f.state.readyState.InstanceID = "old-generation-inst"
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	_, err := m.Start(context.Background(), loader)
 	if err == nil {
@@ -141,7 +141,7 @@ func TestStart_Ready_RuntimeStateStaleGenerationLateArrival(t *testing.T) {
 		MonitorReady: true,
 		CatchUp:      "succeeded",
 	}
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	_, err := m.Start(context.Background(), loader)
 	if err == nil {
@@ -164,7 +164,7 @@ func TestStart_Ready_CatchUpPhases_Accepted(t *testing.T) {
 			f := newFakeDeps()
 			enableStartReady(f, childPID, 0, 1, 0, phase)
 			m := newTestProcessManager(t, t.TempDir(), f)
-			loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+			loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 			res, err := m.Start(context.Background(), loader)
 			if err != nil {
@@ -192,7 +192,7 @@ func TestRestart_NewChildMonitorReadyHandshake(t *testing.T) {
 	f.pid.pid = 3333
 	enableStartReadyRestart(f, 7777, 2, 2)
 	m := newRestartManager(t, t.TempDir(), f)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	res, err := m.Restart(context.Background(), loader)
 	if err != nil {
@@ -231,7 +231,7 @@ func TestStart_Timeout_DoesNotCleanupOtherGeneration(t *testing.T) {
 	m := newTestProcessManager(t, t.TempDir(), f)
 	m.deps.startReadyTimeout = 100 * time.Millisecond
 	m.deps.pollInterval = 20 * time.Millisecond
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	_, err := m.Start(context.Background(), loader)
 	if err == nil {
@@ -272,7 +272,7 @@ func TestStart_Timeout_CleanupOwnedWhenOwnershipMatches(t *testing.T) {
 	m := newTestProcessManager(t, t.TempDir(), f)
 	m.deps.startReadyTimeout = 100 * time.Millisecond
 	m.deps.pollInterval = 20 * time.Millisecond
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	_, err := m.Start(context.Background(), loader)
 	if err == nil {
@@ -298,7 +298,7 @@ func TestStart_Environment_NoResidualLeaseVars(t *testing.T) {
 	enableStartReady(f, 5700, 0, 1, 0, "pending")
 	ls := newLeaseTrackingSpawn(5700)
 	m := newTestProcessManagerWithLeaseTracking(t, t.TempDir(), f, ls)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	if _, err := m.Start(context.Background(), loader); err != nil {
 		t.Fatalf("Start err=%v", err)
@@ -393,7 +393,7 @@ func TestStart_ReadyHoldsControlLock_BlocksConcurrentApplyConfig(t *testing.T) {
 	applyMgr.deps.now = time.Now
 	applyMgr.deps.sleep = func(time.Duration) { goruntime.Gosched() }
 
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	var wg sync.WaitGroup
 	wg.Add(1)

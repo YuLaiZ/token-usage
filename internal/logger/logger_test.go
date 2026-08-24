@@ -174,3 +174,30 @@ func TestRotatingWriter_WriteAfterCloseFails(t *testing.T) {
 		t.Fatalf("Write after Close must not reopen file: %q", content)
 	}
 }
+
+// fallback 文件无日期文件名，按 mtime 纳入 max_days 保留策略：
+// 超龄（mtime 早于 cutoff）删除、活跃（mtime 新）保留——避免 Windows 手动
+// start 全周期写入时无限增长。
+func TestCleanup_PrunesStaleFallbackLogByMtime(t *testing.T) {
+	dir := t.TempDir()
+	fb := filepath.Join(dir, FallbackLogFileName)
+	if err := os.WriteFile(fb, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	stale := time.Now().AddDate(0, 0, -10)
+	if err := os.Chtimes(fb, stale, stale); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	cleanup(dir, 7)
+	if _, err := os.Stat(fb); !os.IsNotExist(err) {
+		t.Errorf("超龄 fallback 文件应被清理，stat err=%v", err)
+	}
+
+	if err := os.WriteFile(fb, []byte("active"), 0o644); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	cleanup(dir, 7)
+	if _, err := os.Stat(fb); err != nil {
+		t.Errorf("活跃（mtime 新）fallback 文件应保留: %v", err)
+	}
+}

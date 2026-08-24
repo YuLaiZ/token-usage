@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/logger"
 )
 
 // Label 是所有平台共用的服务标识。
@@ -24,7 +25,32 @@ type Options struct {
 	Label   string   // 服务标识，固定 com.yulaiz.token-usage
 	BinPath string   // os.Executable() 探测到的二进制绝对路径
 	DataDir string   // 配置/日志目录，用于服务文件里的日志重定向
+	LogDir  string   // 展开后的日志目录：daemon 兜底输出重定向目标所在（plist StandardOut/ErrorPath）
 	Args    []string // 固定 ["_run"]（指向 Hidden 内部命令）
+}
+
+// FallbackLogFileName 是 daemon 兜底输出文件名（logs/ 目录内固定 bootstrap 文件）。
+// 不随日期变化：plist/spawn 的静态路径若含日期，跨天后 spec 比对会每日假 drift。
+// 值以 logger 包为单一真相源（logger 的 cleanup 按 mtime 清理该文件）。
+const FallbackLogFileName = logger.FallbackLogFileName
+
+// FallbackLogFilePath 返回 Options 对应的兜底输出文件完整路径。
+func FallbackLogFilePath(opts Options) string {
+	return filepath.Join(opts.LogDir, FallbackLogFileName)
+}
+
+// EffectiveLogDir 从 config 推导展开后的日志目录（用户层 cfg 的 log.dir 展开 ~；
+// 为空时按 data_dir/logs 推导）。供 buildOptionsChecked 与 CLI 只读漂移检测共用，
+// 保证两处构造的 Options 指向同一目录。
+func EffectiveLogDir(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	dir := strings.TrimSpace(cfg.Log.Dir)
+	if dir == "" {
+		return filepath.Join(expandTilde(cfg.DataDir), "logs")
+	}
+	return expandTilde(dir)
 }
 
 // AutoStartStatus 只表达「下次登录/开机的自启定义」状态，不含当前进程信息。
@@ -199,6 +225,7 @@ func buildOptionsChecked(cfg *config.Config) (Options, error) {
 		Label:   Label,
 		BinPath: bin,
 		DataDir: expandTilde(cfg.DataDir),
+		LogDir:  EffectiveLogDir(cfg),
 		Args:    []string{"_run"},
 	}, nil
 }

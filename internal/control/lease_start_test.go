@@ -92,7 +92,7 @@ func TestStart_CreatesLeaseAndPassesToSpawner(t *testing.T) {
 	enableStartReady(f, 7070, 0, 1, 0, "pending")
 	ls := newLeaseTrackingSpawn(7070)
 	m := newTestProcessManagerWithLeaseTracking(t, t.TempDir(), f, ls)
-	loader := &tracedConfigLoader{trace: f.trace, cfg: newConfigWith("/data")}
+	loader := &tracedConfigLoader{trace: f.trace, cfg: newConfigWith(t.TempDir())}
 
 	if _, err := m.Start(context.Background(), loader.load); err != nil {
 		t.Fatalf("Start err=%v", err)
@@ -115,7 +115,7 @@ func TestStart_HoldsControlLockUntilReady(t *testing.T) {
 	enableStartReady(f, 8080, 0, 1, 0, "pending")
 	ls := newLeaseTrackingSpawn(8080)
 	m := newTestProcessManagerWithLeaseTracking(t, t.TempDir(), f, ls)
-	loader := &tracedConfigLoader{trace: f.trace, cfg: newConfigWith("/data")}
+	loader := &tracedConfigLoader{trace: f.trace, cfg: newConfigWith(t.TempDir())}
 
 	if _, err := m.Start(context.Background(), loader.load); err != nil {
 		t.Fatalf("Start err=%v", err)
@@ -145,7 +145,7 @@ func TestStart_LeaseCloseWriteIdempotentAfterReady(t *testing.T) {
 	enableStartReady(f, 9090, 0, 1, 0, "pending")
 	ls := newLeaseTrackingSpawn(9090)
 	m := newTestProcessManagerWithLeaseTracking(t, t.TempDir(), f, ls)
-	loader := &tracedConfigLoader{trace: f.trace, cfg: newConfigWith("/data")}
+	loader := &tracedConfigLoader{trace: f.trace, cfg: newConfigWith(t.TempDir())}
 
 	if _, err := m.Start(context.Background(), loader.load); err != nil {
 		t.Fatalf("Start err=%v", err)
@@ -172,7 +172,7 @@ func TestStart_LeaseCleanupOnReadyFail(t *testing.T) {
 	m := newTestProcessManagerWithLeaseTracking(t, t.TempDir(), f, ls)
 	m.deps.startReadyTimeout = 100 * time.Millisecond
 	m.deps.pollInterval = 20 * time.Millisecond
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	_, err := m.Start(context.Background(), loader)
 	if err == nil {
@@ -201,7 +201,7 @@ func TestStart_LeaseCreatedBeforeConfigLoadForRestart(t *testing.T) {
 	enableStartReady(f, 1414, 0, 1, 0, "pending")
 	ls := newLeaseTrackingSpawn(1414)
 	m := newTestProcessManagerWithLeaseTracking(t, t.TempDir(), f, ls)
-	loader := func() (*config.Config, error) { return newConfigWith("/data"), nil }
+	loader := func() (*config.Config, error) { return newConfigWith(t.TempDir()), nil }
 
 	if _, err := m.Start(context.Background(), loader); err != nil {
 		t.Fatalf("Start err=%v", err)

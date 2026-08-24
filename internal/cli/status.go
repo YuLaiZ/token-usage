@@ -89,7 +89,8 @@ func printAutoStartStatus(out io.Writer, cfg *config.Config, mgr service.AutoSta
 			boolText(cfg.Daemon.AutoStart), err)
 		return
 	}
-	opts := service.Options{Label: service.Label, BinPath: bin, DataDir: cfg.DataDir, Args: []string{"_run"}}
+	opts := service.Options{Label: service.Label, BinPath: bin, DataDir: cfg.DataDir,
+		LogDir: service.EffectiveLogDir(cfg), Args: []string{"_run"}}
 
 	st, err := mgr.Status(opts)
 	if err != nil {

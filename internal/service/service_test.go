@@ -283,3 +283,43 @@ func TestBuildOptions_AbsolutePathUnchanged(t *testing.T) {
 		t.Errorf("DataDir=%q want /var/lib/token-usage（绝对路径不应改动）", opts.DataDir)
 	}
 }
+
+// EffectiveLogDir：用户层 log.dir 展开 ~；空值按 data_dir/logs 推导（与
+// runtimecfg 默认一致），保证 buildOptionsChecked 与 CLI 只读漂移检测同目录。
+func TestEffectiveLogDir(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home: %v", err)
+	}
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want string
+	}{
+		{
+			name: "展开 ~ 前缀",
+			cfg:  &config.Config{DataDir: "/d", Log: config.LogConfig{Dir: "~/custom-logs"}},
+			want: filepath.Join(home, "custom-logs"),
+		},
+		{
+			name: "空值回退 data_dir/logs",
+			cfg:  &config.Config{DataDir: "/d", Log: config.LogConfig{Dir: ""}},
+			want: "/d/logs",
+		},
+		{
+			name: "绝对路径原样",
+			cfg:  &config.Config{DataDir: "/d", Log: config.LogConfig{Dir: "/var/log/tu"}},
+			want: "/var/log/tu",
+		},
+		{
+			name: "nil cfg 返回空",
+			cfg:  nil,
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		if got := EffectiveLogDir(tt.cfg); got != tt.want {
+			t.Errorf("%s: EffectiveLogDir = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}

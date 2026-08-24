@@ -44,7 +44,9 @@ func guiDomain() string {
 // KeepAlive: Crashed=true + SuccessfulExit=false（崩溃才重启，正常退出不拉起）。
 // ThrottleStartInterval=10 防止配置错误时快速重启循环。
 // ProgramArguments[0]=BinPath，[1:]=Args。
-// StandardOutPath/StandardErrorPath 重定向到 <DataDir>/launchd.{out,err}.log。
+// StandardOutPath/StandardErrorPath 重定向到 LogDir 下固定 fallback 文件：
+// 仅承载 daemon 日志初始化前的极早期输出（初始化后 unix 侧 fd 接管并入当日
+// 结构化文件）；固定文件名避免含日期路径的每日假 drift。
 func buildPlist(opts Options) string {
 	args := append([]string{opts.BinPath}, opts.Args...)
 	var b strings.Builder
@@ -63,8 +65,9 @@ func buildPlist(opts Options) string {
 	b.WriteString("\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n")
 	b.WriteString("\t</dict>\n")
 	b.WriteString("\t<key>ThrottleStartInterval</key>\n\t<integer>10</integer>\n")
-	b.WriteString("\t<key>StandardOutPath</key>\n\t<string>" + plistEscape(filepath.Join(opts.DataDir, "launchd.out.log")) + "</string>\n")
-	b.WriteString("\t<key>StandardErrorPath</key>\n\t<string>" + plistEscape(filepath.Join(opts.DataDir, "launchd.err.log")) + "</string>\n")
+	fallback := FallbackLogFilePath(opts)
+	b.WriteString("\t<key>StandardOutPath</key>\n\t<string>" + plistEscape(fallback) + "</string>\n")
+	b.WriteString("\t<key>StandardErrorPath</key>\n\t<string>" + plistEscape(fallback) + "</string>\n")
 	b.WriteString(`</dict>` + "\n")
 	b.WriteString(`</plist>` + "\n")
 	return b.String()
@@ -170,7 +173,9 @@ func decodeStringArray(dec *xml.Decoder) ([]string, error) {
 
 // Enable 写 plist 文件到 ~/Library/LaunchAgents/，**不 bootstrap**、不启动进程。
 // 只维护 definition：登录时由 launchd 自动加载 LaunchAgents，不主动 bootstrap。
-// 已存在的 plist 被覆盖（幂等）。MkdirAll 确保 LaunchAgents 目录存在。
+// 已存在的 plist 被覆盖（幂等）。MkdirAll 确保 LaunchAgents 目录与兜底日志目录存在
+// （Enable 是写路径，此处创建目录不违反 Status 的只读契约；log.dir 允许自定义
+// 尚不存在的路径，launchd 按 plist 路径打开 stdio 时目录必须已存在）。
 func (launchdManager) Enable(opts Options) error {
 	p, err := plistPath()
 	if err != nil {
@@ -178,6 +183,9 @@ func (launchdManager) Enable(opts Options) error {
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
 		return fmt.Errorf("创建 LaunchAgents 目录失败: %w", err)
+	}
+	if err := os.MkdirAll(opts.LogDir, 0755); err != nil {
+		return fmt.Errorf("创建兜底日志目录 %s 失败: %w", opts.LogDir, err)
 	}
 	if err := fileutil.ReplaceCompleteFile(p, []byte(buildPlist(opts)), 0644); err != nil {
 		return fmt.Errorf("写入 plist 失败: %w", err)
@@ -273,7 +281,6 @@ func specMatchesPlist(opts Options, plistArgs []string, stdoutPath, stderrPath s
 			return false
 		}
 	}
-	wantStdout := filepath.Join(opts.DataDir, "launchd.out.log")
-	wantStderr := filepath.Join(opts.DataDir, "launchd.err.log")
-	return stdoutPath == wantStdout && stderrPath == wantStderr
+	want := FallbackLogFilePath(opts)
+	return stdoutPath == want && stderrPath == want
 }

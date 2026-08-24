@@ -152,8 +152,10 @@ func snapshotTree(t *testing.T, home string) map[string]struct{} {
 
 // assertNoDaemonArtifacts 断言 after 相比 before 不新增任何「重量级 daemon 运行产物」。
 //
-// 重量级产物（禁止创建）：usage.db、logs/、daemon.out.log、daemon.err.log、
+// 重量级产物（禁止创建）：usage.db、logs/、daemon-fallback.log（daemon 兜底输出）、
 // token-usage.pid（PID 协议文件）、token-usage.runtime.json、plist/Registry 项。
+// 旧版 daemon.out/err.log 已随兜底输出合并进 logs/ 而不再产生（黑名单保留
+// daemon-fallback.log 覆盖等价新产物）。
 //
 // 允许的 control 基础设施（非 daemon 运行产物）：
 //   - .token-usage/ 配置目录（control.NewManager 创建）；
@@ -168,8 +170,7 @@ func assertNoDaemonArtifacts(t *testing.T, home string, before, after map[string
 	t.Helper()
 	// 重量级 daemon 运行产物黑名单（按 basename 命中即违规，无论在哪个子目录）。
 	heavyArtifacts := map[string]bool{
-		"daemon.out.log":           true,
-		"daemon.err.log":           true,
+		"daemon-fallback.log":      true,
 		"token-usage.pid":          true,
 		"token-usage.runtime.json": true,
 		"usage.db":                 true,
