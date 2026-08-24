@@ -144,15 +144,37 @@ type jsonlEntry struct {
 	Cwd         string `json:"cwd"`
 	CustomTitle string `json:"custom-title"`
 	Message     *struct {
-		ID      string `json:"id"`
-		Role    string `json:"role"`
-		Model   string `json:"model"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		Usage *tokenUsage `json:"usage"`
+		ID      string          `json:"id"`
+		Role    string          `json:"role"`
+		Model   string          `json:"model"`
+		Content json.RawMessage `json:"content"`
+		Usage   *tokenUsage     `json:"usage"`
 	} `json:"message"`
+}
+
+// claudeContentBlock 是 message.content 数组元素中采集关心的字段。
+type claudeContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// normalizeClaudeContent 归一 message.content 的双形态，返回 (blocks, stringForm, err)：
+// 数组形态（assistant 消息）原样解析为 block 列表；字符串形态（user 消息直接
+// 携带纯文本）等价转换为单文本块并置 stringForm；其它形态返回错误，由调用方
+// 按行失败汇总处理，保留对未来上游形态漂移的兜底能力。
+func normalizeClaudeContent(raw json.RawMessage) (blocks []claudeContentBlock, stringForm bool, err error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	var parsed []claudeContentBlock
+	if uerr := json.Unmarshal(raw, &parsed); uerr == nil {
+		return parsed, false, nil
+	}
+	var text string
+	if uerr := json.Unmarshal(raw, &text); uerr == nil {
+		return []claudeContentBlock{{Type: "text", Text: text}}, true, nil
+	}
+	return nil, false, fmt.Errorf("无法解析的 message.content 形态: %.80s", raw)
 }
 
 type tokenUsage struct {
@@ -199,6 +221,25 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 			}
 			badLines++
 			continue
+		}
+		// content 双形态归一校验：数字、对象等未知形态与行 Unmarshal 失败同等
+		// 对待，维持按文件汇总的兜底路径。字符串形态行此前整体 Unmarshal 失败、
+		// 从未参与元数据推断或消息产出，识别后必须保持同等不可见：其携带的
+		// entrypoint/cwd/timestamp 一旦参与推断会改变 client/directory/project
+		// 归类与时间戳边界，在 (client,id) 主键下对既有库形成重复行、聚合翻倍。
+		if entry.Message != nil {
+			_, stringForm, cerr := normalizeClaudeContent(entry.Message.Content)
+			if cerr != nil {
+				if badLines == 0 {
+					firstBadLine = line
+					firstBadErr = cerr
+				}
+				badLines++
+				continue
+			}
+			if stringForm {
+				continue
+			}
 		}
 		entries = append(entries, entry)
 	}

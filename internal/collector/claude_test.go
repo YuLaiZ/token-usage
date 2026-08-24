@@ -2,12 +2,14 @@ package collector
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/model"
@@ -119,6 +121,167 @@ func TestClaudeParseNoFailuresNoSummary(t *testing.T) {
 	}
 	if handler.HasMessage("行解析失败") {
 		t.Errorf("全部合法时不应有行解析失败汇总: %v", handler.Messages())
+	}
+}
+
+// content 双形态归一：数组原样、字符串转单文本块并置 stringForm、数字报错、
+// null 等价无内容。
+func TestClaudeNormalizeContentForms(t *testing.T) {
+	blocks, stringForm, err := normalizeClaudeContent(json.RawMessage(`[{"type":"text","text":"hi"},{"type":"tool_use"}]`))
+	if err != nil {
+		t.Fatalf("数组形态应解析成功: %v", err)
+	}
+	if stringForm {
+		t.Error("数组形态 stringForm 应为 false")
+	}
+	if len(blocks) != 2 || blocks[0].Type != "text" || blocks[0].Text != "hi" || blocks[1].Type != "tool_use" {
+		t.Fatalf("数组形态 blocks = %+v", blocks)
+	}
+
+	blocks, stringForm, err = normalizeClaudeContent(json.RawMessage(`"ok"`))
+	if err != nil {
+		t.Fatalf("字符串形态应解析成功: %v", err)
+	}
+	if !stringForm {
+		t.Error("字符串形态 stringForm 应为 true")
+	}
+	if len(blocks) != 1 || blocks[0].Type != "text" || blocks[0].Text != "ok" {
+		t.Fatalf("字符串形态应转为单文本块: %+v", blocks)
+	}
+
+	if _, stringForm, err = normalizeClaudeContent(json.RawMessage(`123`)); err == nil || stringForm {
+		t.Fatal("数字形态应返回错误且 stringForm=false")
+	}
+	if _, stringForm, err = normalizeClaudeContent(json.RawMessage(`{"k":1}`)); err == nil || stringForm {
+		t.Fatal("对象形态应返回错误且 stringForm=false")
+	}
+	if blocks, stringForm, err = normalizeClaudeContent(json.RawMessage(`null`)); err != nil || stringForm || blocks != nil {
+		t.Fatalf("null 应等价无内容: blocks=%v stringForm=%v err=%v", blocks, stringForm, err)
+	}
+	if blocks, stringForm, err = normalizeClaudeContent(nil); err != nil || stringForm || blocks != nil {
+		t.Fatalf("缺失应等价无内容: blocks=%v stringForm=%v err=%v", blocks, stringForm, err)
+	}
+}
+
+// TestClaudeStringContentRowsStayInert：字符串 content 行的兼容识别只消除按文件
+// 汇总噪音，对解析产出必须保持与识别前完全一致——这些行此前整体 Unmarshal
+// 失败，其 entrypoint/cwd/timestamp 从未参与元数据推断；若参与会翻转
+// client/directory/project 归类与时间戳边界，并在 (client,id) 主键下对既有库
+// 造成重复行。fixture 中字符串 user 行是唯一携带 entrypoint/cwd 的行，正是
+// 分类翻转的反例样本：断言归类与时间戳全部维持识别前的默认结果。
+func TestClaudeStringContentRowsStayInert(t *testing.T) {
+	_, path := copyFixtureToTempDir(t, "string-content.jsonl")
+
+	handler := &testLogHandler{}
+	result, err := parseClaudeMessageFile(path, nil, slog.New(handler))
+	if err != nil {
+		t.Fatalf("parseClaudeMessageFile 失败: %v", err)
+	}
+	if handler.HasMessage("line parse failed") {
+		t.Fatalf("字符串 content 行不应触发行解析失败汇总: %v", handler.Messages())
+	}
+
+	firstTS := parseMillisOrFail(t, "2026-06-02T09:35:20.100Z")
+	lastTS := parseMillisOrFail(t, "2026-06-02T09:36:15.900Z")
+	for i, m := range result.Messages {
+		if m.Client != model.ClientClaudeCode {
+			t.Errorf("messages[%d].Client = %q, want %q（字符串行不得改变归类）", i, m.Client, model.ClientClaudeCode)
+		}
+		if m.Directory != "" || m.Project != "" {
+			t.Errorf("messages[%d] 目录/项目应保持空（识别前无元数据来源）: directory=%q project=%q", i, m.Directory, m.Project)
+		}
+	}
+	if len(result.Sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(result.Sessions))
+	}
+	s := result.Sessions[0]
+	if s.Client != model.ClientClaudeCode || s.Directory != "" || s.Project != "" {
+		t.Errorf("session 归类应维持识别前默认: %+v", s)
+	}
+	if s.FirstTS != firstTS || s.LastTS != lastTS {
+		t.Errorf("session first/last 应仅来自 assistant 行: got %d/%d want %d/%d",
+			s.FirstTS, s.LastTS, firstTS, lastTS)
+	}
+}
+
+func parseMillisOrFail(t *testing.T, ts string) int64 {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		t.Fatalf("解析时间戳 %q: %v", ts, err)
+	}
+	return parsed.UnixMilli()
+}
+
+// 未知 content 形态（数字）与坏行同等对待：计入按文件汇总，不逐行打印。
+func TestClaudeUnknownContentFormSummarizedPerFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "unknown-content.jsonl")
+	content := `{"type":"user","message":{"role":"user","content":"合法字符串形态"}}
+{"type":"user","message":{"role":"user","content":123}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := &testLogHandler{}
+	if _, err := parseClaudeMessageFile(path, nil, slog.New(handler)); err != nil {
+		t.Fatalf("parseClaudeMessageFile 失败: %v", err)
+	}
+	var summary *slog.Record
+	for i, r := range handler.Records() {
+		if strings.Contains(r.Message, "行解析失败") {
+			summary = &handler.Records()[i]
+		}
+	}
+	if summary == nil {
+		t.Fatalf("数字形态必须计入行解析失败汇总: %v", handler.Messages())
+	}
+	attrs := map[string]string{}
+	summary.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = fmt.Sprint(a.Value.Any())
+		return true
+	})
+	if attrs["count"] != "1" {
+		t.Errorf("count = %q, want 1（字符串行不得计入）", attrs["count"])
+	}
+	if attrs["first_line"] != "2" {
+		t.Errorf("first_line = %q, want 2", attrs["first_line"])
+	}
+}
+
+// 真实文件回归：user 行 content 为纯字符串（用户输入路径、简短回复）是上游
+// 合法形态。兼容解析后不再触发行解析失败汇总；user 行按既有设计不入库，
+// messages 仅来自 assistant 行，落库数据与兼容前一致。
+func TestClaudeStringContentFixtureParsesCleanly(t *testing.T) {
+	projectsDir, path := copyFixtureToTempDir(t, "string-content.jsonl")
+
+	handler := &testLogHandler{}
+	result, err := parseClaudeMessageFile(path, nil, slog.New(handler))
+	if err != nil {
+		t.Fatalf("parseClaudeMessageFile 失败: %v", err)
+	}
+	if handler.HasMessage("行解析失败") {
+		t.Fatalf("字符串 content 行不应触发行解析失败汇总: %v", handler.Messages())
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("messages = %d, want 2（仅 assistant 行入库，user 行不入库）", len(result.Messages))
+	}
+	if result.Messages[0].ID != "msg-string-a" || result.Messages[1].ID != "msg-string-b" {
+		t.Fatalf("messages 顺序异常: %+v", result.Messages)
+	}
+	if len(result.Sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(result.Sessions))
+	}
+
+	// Collect 端到端：字符串行被静默接受，结果与 parse 层一致。
+	collector := newClaudeCollectorCfg(t, projectsDir)
+	collectResult, err := collector.Collect(context.Background(), CollectRequest{}, slog.New(handler))
+	if err != nil {
+		t.Fatalf("Collect 失败: %v", err)
+	}
+	if len(collectResult.Messages) != 2 {
+		t.Fatalf("Collect messages = %d, want 2", len(collectResult.Messages))
 	}
 }
 
