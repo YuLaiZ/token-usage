@@ -3,6 +3,7 @@ package analyzer
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -84,6 +85,47 @@ func TestSQLitePoller_DetectsChange(t *testing.T) {
 
 	if atomic.LoadInt32(&triggered) == 0 {
 		t.Error("expected at least one trigger after file change")
+	}
+}
+
+// TestSQLitePoller_DatabaseChangedLoggedAtDebug：变化触发是活跃 DB 每个 tick
+// 必然发生的预期心跳，必须以 Debug 而非 Info 记录，避免默认 info 级别刷屏。
+func TestSQLitePoller_DatabaseChangedLoggedAtDebug(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	os.WriteFile(dbPath, []byte("initial"), 0644)
+
+	handler := &captureLogHandler{}
+	requests := make(chan struct{}, 4)
+	poller := NewSQLitePoller(
+		dbPath,
+		"test_client",
+		collector.CollectRequest{Incremental: true},
+		50*time.Millisecond,
+		func(string, collector.CollectRequest) { requests <- struct{}{} },
+		slog.New(handler),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	go poller.Run(ctx)
+	time.Sleep(80 * time.Millisecond)
+
+	os.WriteFile(dbPath, []byte("updated"), 0644)
+
+	select {
+	case <-requests:
+	case <-time.After(800 * time.Millisecond):
+		t.Fatal("timeout waiting for poller callback")
+	}
+	cancel()
+	poller.Stop()
+
+	if !handler.hasRecordAt(slog.LevelDebug, "database changed, triggering collection") {
+		t.Errorf("database changed 必须以 Debug 记录: %v", handler.messages())
+	}
+	if handler.hasRecordAt(slog.LevelInfo, "database changed, triggering collection") {
+		t.Errorf("database changed 不得以 Info 记录: %v", handler.messages())
 	}
 }
 

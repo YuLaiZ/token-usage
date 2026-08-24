@@ -40,6 +40,18 @@ func (h *captureLogHandler) messages() []string {
 	return msgs
 }
 
+// hasRecordAt 斤断指定 msg 是否以恰好该级别记录过。
+func (h *captureLogHandler) hasRecordAt(level slog.Level, message string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		if r.Level == level && r.Message == message {
+			return true
+		}
+	}
+	return false
+}
+
 // 目录注册只输出一条 count 汇总，不再逐目录打印。
 func TestJSONLWatcher_RegistrationSummarySingleLog(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -184,6 +196,54 @@ func TestJSONLWatcher_PassesChangedFile(t *testing.T) {
 
 	cancel()
 	watcher.Stop()
+}
+
+// TestJSONLWatcher_DebounceTriggeredLoggedAtDebug：debounce 触发是活跃会话的
+// 常态心跳（每个 debounce 窗口一条），属预期行为，必须以 Debug 而非 Info 记录。
+func TestJSONLWatcher_DebounceTriggeredLoggedAtDebug(t *testing.T) {
+	tmpDir := t.TempDir()
+	projDir := filepath.Join(tmpDir, "my-project")
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	handler := &captureLogHandler{}
+	triggered := make(chan struct{}, 4)
+	watcher, err := NewJSONLWatcher(
+		[]string{tmpDir},
+		"claude",
+		50*time.Millisecond, // debounce
+		func(string, collector.CollectRequest) { triggered <- struct{}{} },
+		slog.New(handler),
+	)
+	if err != nil {
+		t.Fatalf("NewJSONLWatcher: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	go watcher.Run(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	if err := os.WriteFile(filepath.Join(projDir, "session-debug.jsonl"),
+		[]byte(`{"type":"message"}`), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case <-triggered:
+	case <-time.After(800 * time.Millisecond):
+		t.Fatal("timeout waiting for debounce callback")
+	}
+	cancel()
+	watcher.Stop()
+
+	if !handler.hasRecordAt(slog.LevelDebug, "debounce triggered") {
+		t.Errorf("debounce triggered 必须以 Debug 记录: %v", handler.messages())
+	}
+	if handler.hasRecordAt(slog.LevelInfo, "debounce triggered") {
+		t.Errorf("debounce triggered 不得以 Info 记录: %v", handler.messages())
+	}
 }
 
 func TestJSONLWatcher_DetectsNewSubdir(t *testing.T) {

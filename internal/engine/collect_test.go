@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -43,6 +44,34 @@ func msg(id, client, date string) model.Message {
 
 func collectTestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// levelCaptureHandler 收集全部日志记录及其级别，供断言日志级别行为。
+type levelCaptureHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *levelCaptureHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *levelCaptureHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+func (h *levelCaptureHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *levelCaptureHandler) WithGroup(name string) slog.Handler       { return h }
+
+// hasRecordAt 断言指定 msg 是否以恰好该级别记录过。
+func (h *levelCaptureHandler) hasRecordAt(level slog.Level, message string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		if r.Level == level && r.Message == message {
+			return true
+		}
+	}
+	return false
 }
 
 func testDeps(enabled bool, collectors ...collector.Collector) *Deps {
@@ -205,6 +234,89 @@ func TestRunCollect_OneCollectorFailureMakesAggregateIncomplete(t *testing.T) {
 	if result.Complete() || result.Attempted != 2 || result.Succeeded != 1 ||
 		result.Err == nil || !strings.Contains(result.Err.Error(), "claude failed") {
 		t.Fatalf("partial success must fail aggregate: %+v", result)
+	}
+}
+
+// TestRunCollect_HeartbeatLoggedAtDebug：每次采集必打的「开始采集」/「采集完成」
+// 是预期心跳，多触发源叠加下单日可达万级，必须以 Debug 而非 Info 记录。
+func TestRunCollect_HeartbeatLoggedAtDebug(t *testing.T) {
+	usageDB, _ := db.Open(":memory:")
+	defer usageDB.Close()
+	c := fixedResultCollector("claude", collector.CollectResult{
+		Messages: []model.Message{msg("m1", model.ClientClaudeCode, "2026-06-23")},
+	})
+	handler := &levelCaptureHandler{}
+	result := RunCollect(context.Background(), testDeps(true, c), usageDB,
+		slog.New(handler), io.Discard, "claude",
+		collector.CollectRequest{Dates: []string{"2026-06-23"}}, false, false)
+	if !result.Complete() {
+		t.Fatalf("result = %+v", result)
+	}
+	if !handler.hasRecordAt(slog.LevelDebug, "开始采集") {
+		t.Error("开始采集 必须以 Debug 记录")
+	}
+	if handler.hasRecordAt(slog.LevelInfo, "开始采集") {
+		t.Error("开始采集 不得以 Info 记录")
+	}
+	if !handler.hasRecordAt(slog.LevelDebug, "采集完成") {
+		t.Error("采集完成 必须以 Debug 记录")
+	}
+	if handler.hasRecordAt(slog.LevelInfo, "采集完成") {
+		t.Error("采集完成 不得以 Info 记录")
+	}
+}
+
+// TestRunCollect_RouterHeartbeatLoggedAtDebug：router 专用路径的「router 采集完成」
+// 与 client 路径心跳同级语义，必须以 Debug 记录。
+func TestRunCollect_RouterHeartbeatLoggedAtDebug(t *testing.T) {
+	usageDB, _ := db.Open(":memory:")
+	defer usageDB.Close()
+	router := newFakeRouter()
+	router.result = collector.RouterCollectResult{
+		Logs: []model.RouterLog{{
+			RequestID: "r1", MessageID: "m1", RouterName: "cc_switch", AppType: "claude",
+		}},
+	}
+	deps := &Deps{
+		cfg:     &config.Config{Clients: map[string]config.Client{"claude": {Enabled: true, Router: "cc_switch"}}},
+		routers: map[string]collector.RouterAdapter{"cc_switch": router},
+	}
+	handler := &levelCaptureHandler{}
+	result := RunCollect(context.Background(), deps, usageDB,
+		slog.New(handler), io.Discard, "claude",
+		collector.CollectRequest{Source: collector.CollectSourceRouter}, false, false)
+	if !result.Complete() {
+		t.Fatalf("result = %+v", result)
+	}
+	if !handler.hasRecordAt(slog.LevelDebug, "router 采集完成") {
+		t.Error("router 采集完成 必须以 Debug 记录")
+	}
+	if handler.hasRecordAt(slog.LevelInfo, "router 采集完成") {
+		t.Error("router 采集完成 不得以 Info 记录")
+	}
+}
+
+// TestRunCollect_SkipCollectedStaysInfo（反向断言）：「已采集，跳过」仅 CLI 手工
+// collect 以 skipCollected 触发（daemon 恒为 false），频次天然低，保持 Info 不降级。
+func TestRunCollect_SkipCollectedStaysInfo(t *testing.T) {
+	usageDB, _ := db.Open(":memory:")
+	defer usageDB.Close()
+	if err := db.MarkCollected(context.Background(), usageDB, "2026-07-01", "claude", 0); err != nil {
+		t.Fatal(err)
+	}
+	c := fixedResultCollector("claude", collector.CollectResult{})
+	handler := &levelCaptureHandler{}
+	result := RunCollect(context.Background(), testDeps(true, c), usageDB,
+		slog.New(handler), io.Discard, "claude",
+		collector.CollectRequest{Dates: []string{"2026-07-01"}}, false, true /*skipCollected*/)
+	if !result.Complete() {
+		t.Fatalf("result = %+v", result)
+	}
+	if !handler.hasRecordAt(slog.LevelInfo, "已采集，跳过") {
+		t.Error("已采集，跳过 必须保持 Info")
+	}
+	if handler.hasRecordAt(slog.LevelDebug, "已采集，跳过") {
+		t.Error("已采集，跳过 不应降为 Debug")
 	}
 }
 

@@ -92,7 +92,8 @@ func NewJSONLWatcher(dirs []string, clientName string, debounceDuration time.Dur
 	// 创建 debounce，回调触发上报。
 	// key 是变化的文件绝对路径，直接作为 ChangedFile 传递。
 	w.debounce = NewDebounce(debounceDuration, func(key string) {
-		w.logger.Info("debounce triggered", "file", key)
+		// debounce 触发是活跃会话的常态心跳，属预期行为，降 Debug 保留排查轨迹。
+		w.logger.Debug("debounce triggered", "file", key)
 		w.submit(w.clientName, collector.CollectRequest{ChangedFile: key})
 	})
 

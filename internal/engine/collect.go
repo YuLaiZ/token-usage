@@ -92,7 +92,8 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 			continue
 		}
 
-		log.Info("开始采集", "client", c.Name(), "dates", creq.Dates,
+		// 每次采集每 client 必打的开始心跳，属预期行为，降 Debug 保留排查轨迹。
+		log.Debug("开始采集", "client", c.Name(), "dates", creq.Dates,
 			"changed_file", creq.ChangedFile, "incremental", creq.Incremental)
 		collected, err := c.Collect(ctx, creq, log)
 		if err != nil {
@@ -166,7 +167,8 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 
 		result.Succeeded++
 		msgCount := len(collected.Messages)
-		log.Info("采集完成", "client", c.Name(), "messages", msgCount)
+		// 成功采集的完成心跳与「开始采集」成对，同降 Debug。
+		log.Debug("采集完成", "client", c.Name(), "messages", msgCount)
 		if out != nil {
 			fmt.Fprintf(out, "✓ %s: 采集 %d 条消息/API 请求\n", c.Name(), msgCount)
 		}
@@ -410,7 +412,8 @@ func runRouterOnlyCollect(
 	}
 
 	result.Succeeded++
-	log.Info("router 采集完成", "client", client, "logs", len(routerResult.Logs))
+	// router 轮完成心跳与 client 路径「采集完成」同级别语义，同降 Debug。
+	log.Debug("router 采集完成", "client", client, "logs", len(routerResult.Logs))
 	if out != nil {
 		fmt.Fprintf(out, "✓ %s: router 回填 %d 条归因\n", client, len(routerResult.Logs))
 	}

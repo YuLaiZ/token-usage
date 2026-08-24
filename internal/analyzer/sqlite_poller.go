@@ -119,7 +119,8 @@ func (p *SQLitePoller) Run(ctx context.Context) {
 				}
 				// 文件集合指纹只做变化检测：检测到变化后原样上报构造期 request，
 				// 增量/路由语义由 request 携带，sync cursor 由 collector 内部维护。
-				p.logger.Info("database changed, triggering collection", "request", p.request)
+				// 变化触发是活跃源的每个 tick 必然事件，属预期心跳，降 Debug 保留排查轨迹。
+				p.logger.Debug("database changed, triggering collection", "request", p.request)
 				p.submit(p.clientName, p.request)
 			}
 		}
