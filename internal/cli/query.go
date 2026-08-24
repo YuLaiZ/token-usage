@@ -11,6 +11,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/querier"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // queryView 标识 query 命令的互斥视图。裸 query 与 query client 共用 viewClient。
@@ -28,8 +29,11 @@ func newQueryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "query [YYYYMMDD|YYYYMMDD-YYYYMMDD]",
 		Short: "Query token usage statistics / 查询 token 使用统计",
-		Long:  "查询 token 使用统计。可附加一个位置参数：单个日期 YYYYMMDD 或日期范围 YYYYMMDD-YYYYMMDD；缺省时默认今天。",
-		Args:  cobra.MaximumNArgs(1),
+		Long: ui.Bi(
+			"Query token usage statistics. Accepts one optional positional arg: a single date YYYYMMDD or a range YYYYMMDD-YYYYMMDD; defaults to today.",
+			"查询 token 使用统计。可附加一个位置参数：单个日期 YYYYMMDD 或日期范围 YYYYMMDD-YYYYMMDD；缺省时默认今天。",
+		),
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runQuery(cmd, args, viewClient)
 		},
@@ -52,8 +56,11 @@ func newQuerySubCmd(name, short string, view queryView) *cobra.Command {
 	return &cobra.Command{
 		Use:   name + " [YYYYMMDD|YYYYMMDD-YYYYMMDD]",
 		Short: short,
-		Long:  short + "。可附加一个位置参数：单个日期 YYYYMMDD 或日期范围 YYYYMMDD-YYYYMMDD；缺省时默认今天。",
-		Args:  cobra.MaximumNArgs(1),
+		Long: short + " " + ui.Bi(
+			"Accepts one optional positional arg: a single date YYYYMMDD or a range YYYYMMDD-YYYYMMDD; defaults to today.",
+			"。可附加一个位置参数：单个日期 YYYYMMDD 或日期范围 YYYYMMDD-YYYYMMDD；缺省时默认今天。",
+		),
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runQuery(cmd, args, view)
 		},
@@ -80,13 +87,13 @@ func runQueryWithDeps(
 
 	cfg, err := load()
 	if err != nil {
-		return fmt.Errorf("加载配置失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 	}
 
 	dbPath := filepath.Join(cfg.DataDir, "usage.db")
 	usageDB, err := open(dbPath)
 	if err != nil {
-		return fmt.Errorf("打开数据库失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to open database", "打开数据库失败"), err)
 	}
 	defer usageDB.Close()
 
@@ -129,7 +136,7 @@ func executeQueryDates(ctx context.Context, out io.Writer, usageDB *db.DB, dates
 	}
 
 	if err != nil {
-		return fmt.Errorf("查询失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
 	}
 
 	fmt.Fprintln(out, result)
@@ -143,21 +150,24 @@ func showErrorWarnings(out io.Writer, usageDB *db.DB, dates []string) error {
 func showErrorWarningsContext(ctx context.Context, out io.Writer, usageDB *db.DB, dates []string) error {
 	errs, err := db.GetErrorsContext(ctx, usageDB, db.ErrorFilter{Dates: dates, Unresolved: true})
 	if err != nil {
-		return fmt.Errorf("查询采集异常失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to query collection errors", "查询采集异常失败"), err)
 	}
 	if len(errs) == 0 {
 		return nil
 	}
 
-	fmt.Fprintf(out, "\n⚠️  采集异常（%d 条）：\n", len(errs))
+	fmt.Fprintf(out, "\n⚠️  %s：\n", ui.Bi(
+		fmt.Sprintf("collection errors (%d)", len(errs)),
+		fmt.Sprintf("采集异常（%d 条）", len(errs)),
+	))
 	for _, e := range errs {
 		msg := truncateRunes(e.Message, 50)
 		fmt.Fprintf(out, "  - %s (%s): %s", e.Source, e.Date, msg)
 		if e.RetryCount > 0 {
-			fmt.Fprintf(out, "，已重试 %d 次", e.RetryCount)
+			fmt.Fprintf(out, "，%s", ui.Bi(fmt.Sprintf("retried %d times", e.RetryCount), fmt.Sprintf("已重试 %d 次", e.RetryCount)))
 		}
 		fmt.Fprintln(out)
 	}
-	fmt.Fprintln(out, "  运行 `token-usage errors` 查看详情，`token-usage collect retry` 重试")
+	fmt.Fprintln(out, ui.Bi("  Run `token-usage errors` for details, `token-usage collect retry` to retry", "  运行 `token-usage errors` 查看详情，`token-usage collect retry` 重试"))
 	return nil
 }

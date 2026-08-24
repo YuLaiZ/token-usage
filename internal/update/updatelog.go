@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // updatelog.go 实现升级日志的路径解析、append 打开、7 天保留与 nil 安全的 stepLogger。
@@ -43,12 +45,12 @@ func resolveUpdateLogPath(dir string, now time.Time) string {
 // 供 CLI 工厂（打开 LogSink）和 Windows spawnUpdateHelper（重定向 helper stderr）复用。
 func OpenUpdateLogFile(dir string, now time.Time) (*os.File, string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, "", fmt.Errorf("创建升级日志目录失败: %w", err)
+		return nil, "", fmt.Errorf("%s: %w", ui.Bi("failed to create update log directory", "创建升级日志目录失败"), err)
 	}
 	path := resolveUpdateLogPath(dir, now)
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		return nil, "", fmt.Errorf("打开升级日志文件失败: %w", err)
+		return nil, "", fmt.Errorf("%s: %w", ui.Bi("failed to open update log file", "打开升级日志文件失败"), err)
 	}
 	return f, path, nil
 }

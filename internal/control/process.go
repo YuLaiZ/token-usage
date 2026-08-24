@@ -23,6 +23,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/daemon"
 	"github.com/YuLaiZ/token-usage/internal/runmeta"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // ---- 公开 API ----
@@ -31,7 +32,7 @@ import (
 // 不加 control lock（只读快照，调用方可在锁外或锁内调）。
 func (m *Manager) Inspect(ctx context.Context, cfg *config.Config) (RuntimeState, error) {
 	if m == nil {
-		return RuntimeState{}, errors.New("进程控制管理器不能为空")
+		return RuntimeState{}, errors.New(ui.Bi("process control manager must not be nil", "进程控制管理器不能为空"))
 	}
 	return m.inspect(ctx, cfg)
 }
@@ -48,12 +49,12 @@ func (m *Manager) Inspect(ctx context.Context, cfg *config.Config) (RuntimeState
 func (m *Manager) Start(ctx context.Context, load ConfigLoader) (StartResult, error) {
 	var res StartResult
 	if load == nil {
-		return res, errors.New("配置加载函数不能为空")
+		return res, errors.New(ui.Bi("config loader must not be nil", "配置加载函数不能为空"))
 	}
 	err := m.WithLock(ctx, func(s *Session) error {
 		cfg, err := load()
 		if err != nil {
-			return fmt.Errorf("加载配置失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 		}
 		res, err = s.startLocked(ctx, cfg)
 		return err
@@ -71,12 +72,12 @@ func (m *Manager) Start(ctx context.Context, load ConfigLoader) (StartResult, er
 func (m *Manager) Stop(ctx context.Context, load ConfigLoader) (StopResult, error) {
 	var res StopResult
 	if load == nil {
-		return res, errors.New("配置加载函数不能为空")
+		return res, errors.New(ui.Bi("config loader must not be nil", "配置加载函数不能为空"))
 	}
 	err := m.WithLock(ctx, func(s *Session) error {
 		cfg, err := load()
 		if err != nil {
-			return fmt.Errorf("加载配置失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 		}
 		res, err = s.stopLocked(ctx, cfg)
 		return err
@@ -99,12 +100,12 @@ func (m *Manager) Stop(ctx context.Context, load ConfigLoader) (StopResult, erro
 func (m *Manager) Restart(ctx context.Context, load ConfigLoader) (RestartResult, error) {
 	var res RestartResult
 	if load == nil {
-		return res, errors.New("配置加载函数不能为空")
+		return res, errors.New(ui.Bi("config loader must not be nil", "配置加载函数不能为空"))
 	}
 	err := m.WithLock(ctx, func(s *Session) error {
 		cfg, err := load()
 		if err != nil {
-			return fmt.Errorf("加载配置失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 		}
 
 		// 先 Inspect：未运行直接返回 ErrRestartNotRunning（restart 前提是「在运行」）。
@@ -139,7 +140,7 @@ func (m *Manager) Restart(ctx context.Context, load ConfigLoader) (RestartResult
 // Inspect 在 Session 内调用，复用依赖（不加 control lock，只读）。
 func (s *Session) Inspect(ctx context.Context, cfg *config.Config) (RuntimeState, error) {
 	if s == nil || s.manager == nil {
-		return RuntimeState{}, errors.New("进程控制会话不能为空")
+		return RuntimeState{}, errors.New(ui.Bi("process control session must not be nil", "进程控制会话不能为空"))
 	}
 	return s.manager.inspect(ctx, cfg)
 }
@@ -147,7 +148,7 @@ func (s *Session) Inspect(ctx context.Context, cfg *config.Config) (RuntimeState
 // CleanupStaleMetadata 在 Session 内清理 stale PID/runtime-state（锁内，避免与并发操作竞争）。
 func (s *Session) CleanupStaleMetadata(ctx context.Context, dataDir string) error {
 	if s == nil || s.manager == nil {
-		return errors.New("进程控制会话不能为空")
+		return errors.New(ui.Bi("process control session must not be nil", "进程控制会话不能为空"))
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -171,16 +172,16 @@ func (s *Session) CleanupStaleMetadata(ctx context.Context, dataDir string) erro
 // StopResult 的 PID/WasRunning 细节被丢弃。
 func (s *Session) Stop(ctx context.Context, cfg *config.Config) error {
 	if s == nil {
-		return errors.New("进程控制会话不能为空")
+		return errors.New(ui.Bi("process control session must not be nil", "进程控制会话不能为空"))
 	}
 	if s.released {
 		return errSessionReleased
 	}
 	if s.manager == nil {
-		return errors.New("进程控制会话不能为空")
+		return errors.New(ui.Bi("process control session must not be nil", "进程控制会话不能为空"))
 	}
 	if cfg == nil {
-		return errors.New("有效配置不能为空")
+		return errors.New(ui.Bi("valid config must not be nil", "有效配置不能为空"))
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -205,22 +206,22 @@ func (s *Session) Stop(ctx context.Context, cfg *config.Config) error {
 // 已运行的 daemon 视为成功（幂等，不 spawn）。
 func (s *Session) StartWithExecutable(ctx context.Context, cfg *config.Config, binPath string) error {
 	if s == nil {
-		return errors.New("进程控制会话不能为空")
+		return errors.New(ui.Bi("process control session must not be nil", "进程控制会话不能为空"))
 	}
 	if s.released {
 		return errSessionReleased
 	}
 	if s.manager == nil {
-		return errors.New("进程控制会话不能为空")
+		return errors.New(ui.Bi("process control session must not be nil", "进程控制会话不能为空"))
 	}
 	if cfg == nil {
-		return errors.New("有效配置不能为空")
+		return errors.New(ui.Bi("valid config must not be nil", "有效配置不能为空"))
 	}
 	if binPath == "" {
-		return errors.New("可执行文件路径不能为空")
+		return errors.New(ui.Bi("executable path must not be empty", "可执行文件路径不能为空"))
 	}
 	if !filepath.IsAbs(binPath) {
-		return fmt.Errorf("可执行文件路径必须为绝对路径，当前 %q", binPath)
+		return fmt.Errorf("%s: %q", ui.Bi("executable path must be absolute, got", "可执行文件路径必须为绝对路径，当前"), binPath)
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -243,10 +244,10 @@ func (s *Session) StartWithExecutable(ctx context.Context, cfg *config.Config, b
 // instanceID 仍不参与 Inspect 判活（已运行路径幂等，不要求本次 start 启动）。
 func (m *Manager) inspect(ctx context.Context, cfg *config.Config) (RuntimeState, error) {
 	if m == nil {
-		return RuntimeState{}, errors.New("进程控制管理器不能为空")
+		return RuntimeState{}, errors.New(ui.Bi("process control manager must not be nil", "进程控制管理器不能为空"))
 	}
 	if cfg == nil {
-		return RuntimeState{}, errors.New("有效配置不能为空")
+		return RuntimeState{}, errors.New(ui.Bi("valid config must not be nil", "有效配置不能为空"))
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -286,15 +287,15 @@ func (m *Manager) inspect(ctx context.Context, cfg *config.Config) (RuntimeState
 // Manager.Restart 等「启动当前二进制」的场景使用。
 func (s *Session) startLocked(ctx context.Context, cfg *config.Config) (StartResult, error) {
 	if s == nil || s.manager == nil {
-		return StartResult{}, errors.New("进程控制会话不能为空")
+		return StartResult{}, errors.New(ui.Bi("process control session must not be nil", "进程控制会话不能为空"))
 	}
 	if cfg == nil {
-		return StartResult{}, errors.New("有效配置不能为空")
+		return StartResult{}, errors.New(ui.Bi("valid config must not be nil", "有效配置不能为空"))
 	}
 	// 探测当前可执行文件路径（os.Executable）。失败或为空时透传 buildSpawnOptions 的错误。
 	bin, err := os.Executable()
 	if err != nil {
-		return StartResult{}, fmt.Errorf("探测可执行文件路径失败: %w", err)
+		return StartResult{}, fmt.Errorf("%s: %w", ui.Bi("failed to resolve executable path", "探测可执行文件路径失败"), err)
 	}
 	return s.startLockedWithBinPath(ctx, cfg, bin)
 }
@@ -309,10 +310,10 @@ func (s *Session) startLocked(ctx context.Context, cfg *config.Config) (StartRes
 // 在 control lock 持有期内执行（由调用方持锁）；不加 control lock。
 func (s *Session) startLockedWithBinPath(ctx context.Context, cfg *config.Config, binPath string) (StartResult, error) {
 	if s == nil || s.manager == nil {
-		return StartResult{}, errors.New("进程控制会话不能为空")
+		return StartResult{}, errors.New(ui.Bi("process control session must not be nil", "进程控制会话不能为空"))
 	}
 	if cfg == nil {
-		return StartResult{}, errors.New("有效配置不能为空")
+		return StartResult{}, errors.New(ui.Bi("valid config must not be nil", "有效配置不能为空"))
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -336,7 +337,7 @@ func (s *Session) startLockedWithBinPath(ctx context.Context, cfg *config.Config
 	// 未运行：daemon lock 已确认无存活实例，可安全清理上代遗留的
 	// PID/runtime-state 及其已知 temp，避免 ready 握手误读旧代元数据。
 	if err := s.manager.deps.metadataCleaner.cleanup(cfg.DataDir); err != nil {
-		return StartResult{}, fmt.Errorf("清理残留运行元数据失败: %w", err)
+		return StartResult{}, fmt.Errorf("%s: %w", ui.Bi("failed to clean up leftover run metadata", "清理残留运行元数据失败"), err)
 	}
 
 	// 父进程 lease：在持有 control lock 时创建 lease pipe + instanceID，
@@ -350,7 +351,7 @@ func (s *Session) startLockedWithBinPath(ctx context.Context, cfg *config.Config
 	}
 	lease, err := newLeaseContext(gen())
 	if err != nil {
-		return StartResult{}, fmt.Errorf("创建父子 lease 失败: %w", err)
+		return StartResult{}, fmt.Errorf("%s: %w", ui.Bi("failed to create parent-child lease", "创建父子 lease 失败"), err)
 	}
 
 	// 构造层用显式 binPath（不再在此处探测 os.Executable）：startLocked 在调用前已探测；
@@ -369,7 +370,7 @@ func (s *Session) startLockedWithBinPath(ctx context.Context, cfg *config.Config
 	proc, err := s.manager.deps.spawner.spawn(opts)
 	if err != nil {
 		lease.cleanup()
-		return StartResult{}, fmt.Errorf("启动守护进程失败: %w", err)
+		return StartResult{}, fmt.Errorf("%s: %w", ui.Bi("failed to start daemon", "启动守护进程失败"), err)
 	}
 	// child 已成功继承 read end；父进程立即关闭自己的副本，只保留 write end 到 ready。
 	// read end 的所有权由 control 层单点管理，避免 spawn helper 先关、失败清理再按已复用
@@ -394,12 +395,12 @@ func (s *Session) startLockedWithBinPath(ctx context.Context, cfg *config.Config
 		}
 		_ = proc.Release()
 		lease.cleanup()
-		timeoutErr := fmt.Errorf("守护进程启动超时，请检查 %s 下的日志: %w", fallbackLogFilePath(cfg), err)
+		timeoutErr := fmt.Errorf("%s: %w", ui.Bi(fmt.Sprintf("daemon start timed out, check logs under %s", fallbackLogFilePath(cfg)), fmt.Sprintf("守护进程启动超时，请检查 %s 下的日志", fallbackLogFilePath(cfg))), err)
 		if killErr != nil {
-			killErr = fmt.Errorf("终止未就绪子进程 PID %d 失败: %w", childPID, killErr)
+			killErr = fmt.Errorf("%s: %w", ui.Bi(fmt.Sprintf("failed to terminate not-ready child PID %d", childPID), fmt.Sprintf("终止未就绪子进程 PID %d 失败", childPID)), killErr)
 		}
 		if cleanupErr != nil {
-			cleanupErr = fmt.Errorf("清理未就绪子进程元数据失败: %w", cleanupErr)
+			cleanupErr = fmt.Errorf("%s: %w", ui.Bi("failed to clean up not-ready child metadata", "清理未就绪子进程元数据失败"), cleanupErr)
 		}
 		return StartResult{}, errors.Join(timeoutErr, killErr, cleanupErr)
 	}
@@ -442,7 +443,7 @@ func (m *Manager) waitForStartReady(ctx context.Context, cfg *config.Config, exp
 			return nil
 		}
 		if !m.deps.now().Before(deadline) {
-			return fmt.Errorf("等待守护进程就绪超时（期望 PID %d instanceID %s）", expectPID, expectInstanceID)
+			return errors.New(ui.Bi(fmt.Sprintf("timed out waiting for daemon ready (expected PID %d instanceID %s)", expectPID, expectInstanceID), fmt.Sprintf("等待守护进程就绪超时（期望 PID %d instanceID %s）", expectPID, expectInstanceID)))
 		}
 		m.deps.sleep(interval)
 	}
@@ -488,10 +489,10 @@ func (m *Manager) startReadyOwnershipOurs(cfg *config.Config, expectPID int, exp
 // stopLocked 包内不加锁的 stop 实现（公开 API 已持 control lock）。
 func (s *Session) stopLocked(ctx context.Context, cfg *config.Config) (StopResult, error) {
 	if s == nil || s.manager == nil {
-		return StopResult{}, errors.New("进程控制会话不能为空")
+		return StopResult{}, errors.New(ui.Bi("process control session must not be nil", "进程控制会话不能为空"))
 	}
 	if cfg == nil {
-		return StopResult{}, errors.New("有效配置不能为空")
+		return StopResult{}, errors.New(ui.Bi("valid config must not be nil", "有效配置不能为空"))
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -507,7 +508,7 @@ func (s *Session) stopLocked(ctx context.Context, cfg *config.Config) (StopResul
 	if !st.Running {
 		// daemon lock 已确认未运行，可幂等清理任意 stale PID/runtime-state。
 		if err := s.manager.deps.metadataCleaner.cleanup(cfg.DataDir); err != nil {
-			return StopResult{WasRunning: false}, fmt.Errorf("清理残留运行元数据失败: %w", err)
+			return StopResult{WasRunning: false}, fmt.Errorf("%s: %w", ui.Bi("failed to clean up leftover run metadata", "清理残留运行元数据失败"), err)
 		}
 		return StopResult{WasRunning: false}, nil
 	}
@@ -528,7 +529,7 @@ func (s *Session) stopLocked(ctx context.Context, cfg *config.Config) (StopResul
 	}
 	// lock 已释放后才允许清理强杀或异常退出遗留的双文件元数据。
 	if err := s.manager.deps.metadataCleaner.cleanup(cfg.DataDir); err != nil {
-		return StopResult{PID: pid, WasRunning: true}, fmt.Errorf("守护进程已停止，但清理运行元数据失败: %w", err)
+		return StopResult{PID: pid, WasRunning: true}, fmt.Errorf("%s: %w", ui.Bi("daemon stopped, but failed to clean up run metadata", "守护进程已停止，但清理运行元数据失败"), err)
 	}
 
 	return StopResult{PID: pid, WasRunning: true}, nil
@@ -553,7 +554,7 @@ func (m *Manager) stopDaemonByPlatform(ctx context.Context, cfg *config.Config, 
 		// macOS 无条件尝试 bootout 当前 job（保留定义）。是否 loaded 与 plist 是否存在
 		// 都不是进程存活真相；StopCurrent 对「job 未加载」幂等返回 nil。
 		if err := m.deps.serviceMgr.stopCurrent(opts); err != nil {
-			return fmt.Errorf("停止托管守护进程失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to stop managed daemon", "停止托管守护进程失败"), err)
 		}
 		// bootout 后查 lock；仍持有说明 bootout 未停掉手工 daemon（plist 存在但 job 未加载场景），
 		// 需对准确 PID 发 SIGTERM 补刀。
@@ -562,7 +563,7 @@ func (m *Manager) stopDaemonByPlatform(ctx context.Context, cfg *config.Config, 
 				if !m.deps.daemonLock.isRunning(cfg) {
 					return nil
 				}
-				return fmt.Errorf("发送停止信号失败: %w", err)
+				return fmt.Errorf("%s: %w", ui.Bi("failed to send stop signal", "发送停止信号失败"), err)
 			}
 		}
 		return nil
@@ -572,7 +573,7 @@ func (m *Manager) stopDaemonByPlatform(ctx context.Context, cfg *config.Config, 
 		if !m.deps.daemonLock.isRunning(cfg) {
 			return nil
 		}
-		return fmt.Errorf("发送停止信号失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to send stop signal", "发送停止信号失败"), err)
 	}
 	return nil
 }
@@ -713,14 +714,14 @@ func (productionMetadataCleaner) cleanup(dataDir string) error {
 // 这些场景下被启动的 daemon 就是当前进程对应的二进制，故自动探测即可。
 func buildSpawnOptions(cfg *config.Config) (spawnOptions, error) {
 	if cfg == nil {
-		return spawnOptions{}, errors.New("有效配置不能为空")
+		return spawnOptions{}, errors.New(ui.Bi("valid config must not be nil", "有效配置不能为空"))
 	}
 	bin, err := os.Executable()
 	if err != nil {
-		return spawnOptions{}, fmt.Errorf("探测可执行文件路径失败: %w", err)
+		return spawnOptions{}, fmt.Errorf("%s: %w", ui.Bi("failed to resolve executable path", "探测可执行文件路径失败"), err)
 	}
 	if bin == "" {
-		return spawnOptions{}, errors.New("当前可执行文件路径为空")
+		return spawnOptions{}, errors.New(ui.Bi("current executable path is empty", "当前可执行文件路径为空"))
 	}
 	return buildSpawnOptionsForBin(cfg, bin)
 }
@@ -733,13 +734,13 @@ func buildSpawnOptions(cfg *config.Config) (spawnOptions, error) {
 // Windows 替换助手运行临时 helper.exe 时尤其不能重新拉起自身。故要求调用方传入绝对路径。
 func buildSpawnOptionsForBin(cfg *config.Config, binPath string) (spawnOptions, error) {
 	if cfg == nil {
-		return spawnOptions{}, errors.New("有效配置不能为空")
+		return spawnOptions{}, errors.New(ui.Bi("valid config must not be nil", "有效配置不能为空"))
 	}
 	if binPath == "" {
-		return spawnOptions{}, errors.New("可执行文件路径不能为空")
+		return spawnOptions{}, errors.New(ui.Bi("executable path must not be empty", "可执行文件路径不能为空"))
 	}
 	if !filepath.IsAbs(binPath) {
-		return spawnOptions{}, fmt.Errorf("可执行文件路径必须为绝对路径，当前 %q", binPath)
+		return spawnOptions{}, fmt.Errorf("%s: %q", ui.Bi("executable path must be absolute, got", "可执行文件路径必须为绝对路径，当前"), binPath)
 	}
 	return spawnOptions{
 		BinPath:    binPath,
@@ -804,7 +805,7 @@ const fallbackRotateThreshold = 1 << 20
 func ensureFallbackLogFile(cfg *config.Config) error {
 	dir := fallbackLogDir(cfg)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("创建日志目录 %s 失败: %w", dir, err)
+		return fmt.Errorf("%s: %w", ui.Bi(fmt.Sprintf("failed to create log directory %s", dir), fmt.Sprintf("创建日志目录 %s 失败", dir)), err)
 	}
 	fb := fallbackLogFilePath(cfg)
 	info, err := os.Stat(fb)
@@ -819,7 +820,7 @@ func ensureFallbackLogFile(cfg *config.Config) error {
 	// 权限/占用类异常环境，随后 spawn 对同一文件的 OpenFile 也会失败，
 	// 提前以清晰错误退出优于静默放弃容量上限。
 	if err := os.Rename(fb, fb+".old"); err != nil {
-		return fmt.Errorf("轮转超限兜底日志 %s 失败: %w", fb, err)
+		return fmt.Errorf("%s: %w", ui.Bi(fmt.Sprintf("failed to rotate oversized fallback log %s", fb), fmt.Sprintf("轮转超限兜底日志 %s 失败", fb)), err)
 	}
 	return nil
 }

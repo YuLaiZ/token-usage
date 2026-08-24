@@ -13,6 +13,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/engine"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // newCollectAllCmd 构造 `collect all` 子命令：两阶段全采。
@@ -26,7 +27,20 @@ func newCollectAllCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "all",
 		Short: "Scan full history and backfill router attribution / 全量扫描历史消息并回填 router 归因",
-		Long: `全量扫描所有已启用客户端的历史消息，并对配置了 router 的客户端做全量归因回填。
+		Long: ui.Bi(`Scan the full history of all enabled clients and backfill router attribution for clients with a router configured.
+
+Two-phase orchestration:
+  1. messages phase: full collection client by client (Dates=nil triggers a full scan);
+     a single client failure does not block the others.
+  2. router phase: after every client has attempted the messages phase, run
+     RunRouterBackfill for each router-configured client. A client whose messages
+     phase failed still attempts router (naturally backfills 0 rows when the
+     database has no messages).
+
+Any phase failure exits non-zero; completed data is not rolled back.
+
+--client X limits the full collection to one client (inherited from the collect parent).
+`, `全量扫描所有已启用客户端的历史消息，并对配置了 router 的客户端做全量归因回填。
 
 两阶段编排：
   1. messages 阶段：逐个 client 全量采集（Dates=nil 触发 collector 全扫）；
@@ -38,7 +52,7 @@ func newCollectAllCmd() *cobra.Command {
 任一阶段有失败则退出非零，已完成数据不回滚。
 
 --client X 限定单 client 全采（继承自 collect 父命令）。
-`,
+`),
 		Args: cobra.NoArgs,
 		RunE: runCollectAllCmd,
 	}
@@ -62,7 +76,7 @@ func runCollectAllCmd(cmd *cobra.Command, args []string) error {
 	} else {
 		selected = enabledClientNames(cfg)
 		if len(selected) == 0 {
-			return fmt.Errorf("没有已启用的客户端，未执行采集")
+			return fmt.Errorf("%s", ui.Bi("no enabled clients; collection skipped", "没有已启用的客户端，未执行采集"))
 		}
 	}
 
@@ -88,10 +102,10 @@ func runCollectAll(ctx context.Context, deps *engine.Deps, cfg *config.Config, u
 		return err
 	}
 	if cfg == nil {
-		return fmt.Errorf("有效配置不能为空")
+		return fmt.Errorf("%s", ui.Bi("valid config must not be empty", "有效配置不能为空"))
 	}
 	if len(selected) == 0 {
-		return fmt.Errorf("没有已启用的客户端，未执行采集")
+		return fmt.Errorf("%s", ui.Bi("no enabled clients; collection skipped", "没有已启用的客户端，未执行采集"))
 	}
 
 	// 稳定排序：对输入也排一次，保证顺序与配置表书写顺序无关。
@@ -150,7 +164,7 @@ func runCollectAll(ctx context.Context, deps *engine.Deps, cfg *config.Config, u
 		for _, f := range failures {
 			parts = append(parts, fmt.Sprintf("%s/%s: %v", f.client, f.stage, f.err))
 		}
-		return fmt.Errorf("采集失败汇总:\n  %s", strings.Join(parts, "\n  "))
+		return fmt.Errorf("%s:\n  %s", ui.Bi("collection failure summary", "采集失败汇总"), strings.Join(parts, "\n  "))
 	}
 	return nil
 }

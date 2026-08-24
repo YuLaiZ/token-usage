@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // readAll 读取 path 全部字节。
@@ -53,13 +54,16 @@ func LoadUserConfigSnapshot(path string) (UserSnapshot, error) {
 		if os.IsNotExist(err) {
 			return UserSnapshot{Exists: false}, nil
 		}
-		return UserSnapshot{Exists: true}, fmt.Errorf("读取配置文件失败: %w", err)
+		return UserSnapshot{Exists: true}, fmt.Errorf("%s: %w", ui.Bi("failed to read config file", "读取配置文件失败"), err)
 	}
 
 	// 空文件（仅含空白）单独判错：viper 会把空 TOML 当成合法空配置，
 	// 这会让「文件缺失」与「空文件」语义混淆——config set / TUI 据此判断是否提示先 config init。
 	if strings.TrimSpace(string(raw)) == "" {
-		return UserSnapshot{Exists: true}, fmt.Errorf("配置文件 %s 为空（无有效配置），请先执行 `token-usage config init`", path)
+		return UserSnapshot{Exists: true}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("config file %s is empty (no valid config); run `token-usage config init` first", path),
+			fmt.Sprintf("配置文件 %s 为空（无有效配置），请先执行 `token-usage config init`", path),
+		))
 	}
 
 	cfg, perr := parseUserConfig(raw)
@@ -76,11 +80,11 @@ func parseUserConfig(raw []byte) (*config.Config, error) {
 	v := viper.New()
 	v.SetConfigType("toml")
 	if err := v.ReadConfig(bytes.NewReader(raw)); err != nil {
-		return nil, fmt.Errorf("解析配置文件失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to parse config file", "解析配置文件失败"), err)
 	}
 	var cfg config.Config
 	if err := v.UnmarshalExact(&cfg); err != nil {
-		return nil, fmt.Errorf("解析配置文件失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to parse config file", "解析配置文件失败"), err)
 	}
 	initMaps(&cfg)
 	return &cfg, nil

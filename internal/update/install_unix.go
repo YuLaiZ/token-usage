@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // install_unix.go 实现 POSIX 平台的事务性安装器（darwin/linux/其它非 windows）。
@@ -125,20 +127,20 @@ func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, tar
 	// 计算旧 target hash（事务前快照，用于 backup 校验与恢复判定）。
 	oldHash, err := fileSHA256(targetBinPath)
 	if err != nil {
-		return "", fmt.Errorf("事务前校验旧 target hash 失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to verify old target hash before transaction", "事务前校验旧 target hash 失败"), err)
 	}
 
 	// 计算新 stage hash（DownloadAsset 已校验过，这里重新计算用于 journal 记录
 	// 与恢复时的状态判定——避免依赖外部传入的 hash）。
 	newHash, err := fileSHA256(stagePath)
 	if err != nil {
-		return "", fmt.Errorf("事务前校验新 stage hash 失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to verify new stage hash before transaction", "事务前校验新 stage hash 失败"), err)
 	}
 
 	// 步骤 1：备份旧 target 到 backup（优先 hard link，否则 copy+sync+verify）。
 	// 目标文件始终保留（备份用 link 或 copy，不 move 旧 target）。
 	if err := backupTarget(targetBinPath, backupFile, oldHash); err != nil {
-		return "", fmt.Errorf("备份旧 target 失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to back up old target", "备份旧 target 失败"), err)
 	}
 	il.step("backup OK")
 
@@ -147,11 +149,11 @@ func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, tar
 	// 不应在事务中破坏它。复制后校验 hash 与 newHash 一致（防止复制过程中损坏）。
 	if err := copyStageWithMode(stagePath, stageFile); err != nil {
 		_ = cleanupTransactionFiles("", backupFile, journalFile)
-		return "", fmt.Errorf("复制 stage 到事务文件失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to copy stage to transaction file", "复制 stage 到事务文件失败"), err)
 	}
 	if err := verifyFileHash(stageFile, newHash); err != nil {
 		_ = cleanupTransactionFiles(stageFile, backupFile, journalFile)
-		return "", fmt.Errorf("事务 stage 校验失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("transaction stage verification failed", "事务 stage 校验失败"), err)
 	}
 
 	// 步骤 3：写 journal(prepared)——记录三 basename + 旧新 hash + nonce + 原 daemon 运行态。
@@ -168,7 +170,7 @@ func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, tar
 	}
 	if err := writeJournal(journalFile, rec); err != nil {
 		_ = cleanupTransactionFiles(stageFile, backupFile, journalFile)
-		return "", fmt.Errorf("写 journal(prepared) 失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to write journal(prepared)", "写 journal(prepared) 失败"), err)
 	}
 
 	// 步骤 4：原子 rename stageFile → targetBinPath。
@@ -180,7 +182,7 @@ func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, tar
 		// 清理事务文件，保留旧 target 不变。
 		cleanupErr := cleanupTransactionFiles(stageFile, backupFile, journalFile)
 		return "", errors.Join(
-			fmt.Errorf("原子替换 stage → target 失败: %w", err),
+			fmt.Errorf("%s: %w", ui.Bi("atomic rename of stage → target failed", "原子替换 stage → target 失败"), err),
 			cleanupErr,
 		)
 	}
@@ -193,7 +195,7 @@ func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, tar
 	if err := syncAfterRename(targetBinPath); err != nil {
 		rollbackErr := rollbackToBackup(targetBinPath, backupFile, oldHash, journalFile)
 		return "", errors.Join(
-			fmt.Errorf("替换后 fsync 失败（持久化未确认）: %w", err),
+			fmt.Errorf("%s: %w", ui.Bi("fsync failed after replacement (persistence unconfirmed)", "替换后 fsync 失败（持久化未确认）"), err),
 			rollbackErr,
 		)
 	}
@@ -204,7 +206,7 @@ func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, tar
 	if err := updateJournalPhase(journalFile, phaseInstalled); err != nil {
 		rollbackErr := rollbackToBackup(targetBinPath, backupFile, oldHash, journalFile)
 		return "", errors.Join(
-			fmt.Errorf("更新 journal(installed) 失败: %w", err),
+			fmt.Errorf("%s: %w", ui.Bi("failed to update journal(installed)", "更新 journal(installed) 失败"), err),
 			rollbackErr,
 		)
 	}
@@ -243,7 +245,7 @@ func (p *posixInstaller) Commit() error {
 	}
 	txn.completed = true
 	if err := cleanupTransactionFiles("", txn.backup, txn.journal); err != nil {
-		return fmt.Errorf("更新完成，清理待处理: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("update completed, cleanup pending", "更新完成，清理待处理"), err)
 	}
 	il.step("commit OK (cleaned backup/journal)")
 	return nil
@@ -284,7 +286,7 @@ func backupTarget(target, backupPath, expectedOldHash string) error {
 	}
 	// hard link 失败（ENOTSUP/EPERM/跨设备等）→ 回退 copy + sync + verify。
 	if err := copyFileWithMode(target, backupPath); err != nil {
-		return fmt.Errorf("复制 backup 失败（hard link 不支持）: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to copy backup (hard link unsupported)", "复制 backup 失败（hard link 不支持）"), err)
 	}
 	if err := verifyFileHash(backupPath, expectedOldHash); err != nil {
 		return err
@@ -297,7 +299,7 @@ func backupTarget(target, backupPath, expectedOldHash string) error {
 func copyStageWithMode(src, dst string) error {
 	srcInfo, err := os.Lstat(src)
 	if err != nil {
-		return fmt.Errorf("读取 stage 元信息失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to stat stage file", "读取 stage 元信息失败"), err)
 	}
 	return copyFile(src, dst, srcInfo.Mode())
 }
@@ -309,7 +311,7 @@ func syncAfterRename(target string) error {
 	// 文件 fsync：打开 target、fsync、关闭。
 	f, err := os.Open(target)
 	if err != nil {
-		return fmt.Errorf("fsync 前打开 target 失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to open target before fsync", "fsync 前打开 target 失败"), err)
 	}
 	syncErr := f.Sync()
 	closeErr := f.Close()
@@ -348,25 +350,25 @@ func syncDirBestEffort(dir string) {
 func rollbackToBackup(target, backupPath, expectedOldHash, journalPath string) error {
 	// 校验 backup 一致性。
 	if err := verifyFileHash(backupPath, expectedOldHash); err != nil {
-		return fmt.Errorf("回滚前 backup 校验失败，保留文件供人工处理: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("backup verification failed before rollback; files kept for manual handling", "回滚前 backup 校验失败，保留文件供人工处理"), err)
 	}
 	// 用 backup 覆盖 target：copy（不 move backup，保留诊断）。
 	backupInfo, err := os.Lstat(backupPath)
 	if err != nil {
-		return fmt.Errorf("回滚前读取 backup 元信息失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to stat backup before rollback", "回滚前读取 backup 元信息失败"), err)
 	}
 	if err := copyFile(backupPath, target, backupInfo.Mode()); err != nil {
-		return fmt.Errorf("回滚覆盖 target 失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to overwrite target during rollback", "回滚覆盖 target 失败"), err)
 	}
 	// fsync 恢复后的 target（尽力持久化）。
 	syncDirBestEffort(filepath.Dir(target))
 	// 校验恢复后的 target hash。
 	if err := verifyFileHash(target, expectedOldHash); err != nil {
-		return fmt.Errorf("回滚后 target 校验失败，保留文件供人工处理: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("target verification failed after rollback; files kept for manual handling", "回滚后 target 校验失败，保留文件供人工处理"), err)
 	}
 	// 回滚成功：清理 backup 与 journal（target 已确认为旧版本，事务文件不再需要）。
 	if err := cleanupTransactionFiles("", backupPath, journalPath); err != nil {
-		return fmt.Errorf("回滚成功但清理事务文件失败（待人工清理）: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("rollback succeeded but cleaning transaction files failed (manual cleanup needed)", "回滚成功但清理事务文件失败（待人工清理）"), err)
 	}
 	return nil
 }
@@ -396,8 +398,10 @@ func (p *posixInstaller) RecoverJournal(target string) (RecoveryOutcome, error) 
 	rec, ok, err := readJournal(journalPath)
 	if err != nil || !ok {
 		// journal 解析失败或字段缺失 → 模糊 journal，绝不删除，要求人工处理。
-		return RecoveryOutcome{State: RecoveryStateManual}, fmt.Errorf(
-			"遗留 journal 解析失败，保留文件要求人工处理: %s（错误: %v）", journalPath, err)
+		return RecoveryOutcome{State: RecoveryStateManual}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("failed to parse leftover journal; files kept for manual handling: %s (error: %v)", journalPath, err),
+			fmt.Sprintf("遗留 journal 解析失败，保留文件要求人工处理: %s（错误: %v）", journalPath, err),
+		))
 	}
 
 	targetDir := filepath.Dir(target)
@@ -406,8 +410,10 @@ func (p *posixInstaller) RecoverJournal(target string) (RecoveryOutcome, error) 
 
 	targetHash, targetErr := fileSHA256(target)
 	if targetErr != nil && !errors.Is(targetErr, fs.ErrNotExist) {
-		return RecoveryOutcome{State: RecoveryStateManual}, fmt.Errorf(
-			"读取遗留事务 target hash 失败，保留文件要求人工处理: %w", targetErr)
+		return RecoveryOutcome{State: RecoveryStateManual}, fmt.Errorf("%s: %w", ui.Bi(
+			"failed to read leftover transaction target hash; files kept for manual handling",
+			"读取遗留事务 target hash 失败，保留文件要求人工处理",
+		), targetErr)
 	}
 	targetExists := targetErr == nil
 
@@ -428,9 +434,12 @@ func (p *posixInstaller) RecoverJournal(target string) (RecoveryOutcome, error) 
 
 	// 其它任何状态（target 存在但 hash 既非 old 也非 new、backup/stage 异常等）：
 	// 绝不猜测删除或覆盖，保留全部文件要求人工处理。
-	return RecoveryOutcome{State: RecoveryStateManual}, fmt.Errorf(
-		"遗留 journal 状态无法识别（target hash=%s，期望 old=%s new=%s），保留文件要求人工处理",
-		targetHash, rec.OldSHA256, rec.NewSHA256)
+	return RecoveryOutcome{State: RecoveryStateManual}, fmt.Errorf("%s", ui.Bi(
+		fmt.Sprintf("leftover journal state unrecognized (target hash=%s, expected old=%s new=%s); files kept for manual handling",
+			targetHash, rec.OldSHA256, rec.NewSHA256),
+		fmt.Sprintf("遗留 journal 状态无法识别（target hash=%s，期望 old=%s new=%s），保留文件要求人工处理",
+			targetHash, rec.OldSHA256, rec.NewSHA256),
+	))
 }
 
 // recoverState1NewInstalled 处理「target 已是 newHash」状态：
@@ -446,7 +455,7 @@ func recoverState1NewInstalled(target, backupPath, stagePath, journalPath string
 				WasRunning:    rec.WasRunning,
 				NewBinPath:    target,
 				RestartDaemon: true,
-			}, fmt.Errorf("新版本已落地，清理遗留事务文件失败（需人工清理）: %w", cleanupErr)
+			}, fmt.Errorf("%s: %w", ui.Bi("new version already in place; failed to clean up leftover transaction files (manual cleanup needed)", "新版本已落地，清理遗留事务文件失败（需人工清理）"), cleanupErr)
 		}
 		return RecoveryOutcome{
 			State:         RecoveryStateNewInstalled,
@@ -456,8 +465,10 @@ func recoverState1NewInstalled(target, backupPath, stagePath, journalPath string
 		}, nil
 	}
 	// backup 缺失或 hash 不一致：无法完全确认状态，保守要求人工处理。
-	return RecoveryOutcome{State: RecoveryStateManual}, fmt.Errorf(
-		"新版本已落地但 backup 不一致（hash 校验失败），保留文件要求人工处理")
+	return RecoveryOutcome{State: RecoveryStateManual}, fmt.Errorf("%s", ui.Bi(
+		"new version already in place but backup is inconsistent (hash verification failed); files kept for manual handling",
+		"新版本已落地但 backup 不一致（hash 校验失败），保留文件要求人工处理",
+	))
 }
 
 // recoverState2OldIntact 处理「target 仍是 oldHash、stage 尚在」状态：
@@ -471,7 +482,7 @@ func recoverState2OldIntact(target, backupPath, stagePath, journalPath string, r
 			WasRunning:    rec.WasRunning,
 			NewBinPath:    target,
 			RestartDaemon: rec.WasRunning,
-		}, fmt.Errorf("旧版本完好，清理遗留事务文件失败（需人工清理）: %w", cleanupErr)
+		}, fmt.Errorf("%s: %w", ui.Bi("old version intact; failed to clean up leftover transaction files (manual cleanup needed)", "旧版本完好，清理遗留事务文件失败（需人工清理）"), cleanupErr)
 	}
 	return RecoveryOutcome{
 		State:         RecoveryStateOldIntact,
@@ -487,18 +498,24 @@ func recoverState3TargetMissing(target, backupPath, stagePath, journalPath strin
 	backupHash, berr := fileSHA256(backupPath)
 	if berr != nil || backupHash != rec.OldSHA256 {
 		// backup 不一致或缺失：无法恢复，要求人工处理。
-		return RecoveryOutcome{State: RecoveryStateManual}, fmt.Errorf(
-			"target 缺失且 backup 不可用（%v），保留文件要求人工处理", berr)
+		return RecoveryOutcome{State: RecoveryStateManual}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("target is missing and backup is unusable (%v); files kept for manual handling", berr),
+			fmt.Sprintf("target 缺失且 backup 不可用（%v），保留文件要求人工处理", berr),
+		))
 	}
 	// 从 backup 恢复旧 target：copy backup → target（不 move backup，保留用于诊断）。
 	if err := copyFileWithMode(backupPath, target); err != nil {
-		return RecoveryOutcome{State: RecoveryStateManual}, fmt.Errorf(
-			"从 backup 恢复旧 target 失败，保留文件要求人工处理: %w", err)
+		return RecoveryOutcome{State: RecoveryStateManual}, fmt.Errorf("%s: %w", ui.Bi(
+			"failed to restore old target from backup; files kept for manual handling",
+			"从 backup 恢复旧 target 失败，保留文件要求人工处理",
+		), err)
 	}
 	// 校验恢复后的 target hash == oldHash。
 	if err := verifyFileHash(target, rec.OldSHA256); err != nil {
-		return RecoveryOutcome{State: RecoveryStateManual}, fmt.Errorf(
-			"恢复后 target hash 校验失败，保留文件要求人工处理: %w", err)
+		return RecoveryOutcome{State: RecoveryStateManual}, fmt.Errorf("%s: %w", ui.Bi(
+			"restored target hash verification failed; files kept for manual handling",
+			"恢复后 target hash 校验失败，保留文件要求人工处理",
+		), err)
 	}
 	// 恢复成功：清理事务文件。
 	cleanupErr := cleanupTransactionFiles(stagePath, backupPath, journalPath)
@@ -508,7 +525,7 @@ func recoverState3TargetMissing(target, backupPath, stagePath, journalPath strin
 			WasRunning:    rec.WasRunning,
 			NewBinPath:    target,
 			RestartDaemon: true,
-		}, fmt.Errorf("旧 target 已恢复，清理遗留事务文件失败（需人工清理）: %w", cleanupErr)
+		}, fmt.Errorf("%s: %w", ui.Bi("old target restored; failed to clean up leftover transaction files (manual cleanup needed)", "旧 target 已恢复，清理遗留事务文件失败（需人工清理）"), cleanupErr)
 	}
 	// 旧版本已恢复，按 wasRunning 标记调用方应重启旧 daemon。
 	return RecoveryOutcome{

@@ -13,6 +13,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/buildinfo"
 	"github.com/YuLaiZ/token-usage/internal/control"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 	"github.com/YuLaiZ/token-usage/internal/update"
 )
 
@@ -31,7 +32,7 @@ import (
 //     完成「替换二进制 + 按原运行态重启 daemon」。
 //
 // --version 在任何工厂/网络调用之前由 update.ParseVersion 严格校验（v 前缀、数字段、
-// 可选 rc.N），非法值立即返回清晰错误并写 stderr，杜绝非法输入触发网络请求。
+// 可选 rc.N），非法值立即返回清晰错误（由 cobra 单次输出），杜绝非法输入触发网络请求。
 
 // UpdateService 是 update 命令对 update.Service 的窄依赖，仅暴露 Check 与 Apply 两个方法。
 // 用接口而非 *update.Service，使 CLI 测试可注入 stub 覆盖所有结果合同，
@@ -42,10 +43,10 @@ type UpdateService interface {
 }
 
 var (
-	errRequestedUpdateVersionMissing = errors.New("指定的更新版本不存在")
-	errUpdateSourceUntrusted         = errors.New("当前来源无法安全覆盖")
-	errUpdateVerificationFailed      = errors.New("自动更新校验未通过")
-	errUpdateIncomplete              = errors.New("自动更新未完成")
+	errRequestedUpdateVersionMissing = errors.New(ui.Bi("requested update version not found", "指定的更新版本不存在"))
+	errUpdateSourceUntrusted         = errors.New(ui.Bi("current install source cannot be safely overwritten", "当前来源无法安全覆盖"))
+	errUpdateVerificationFailed      = errors.New(ui.Bi("self-update verification failed", "自动更新校验未通过"))
+	errUpdateIncomplete              = errors.New(ui.Bi("self-update incomplete", "自动更新未完成"))
 )
 
 // updateServiceFactory 装配 update 命令所需的 UpdateService。
@@ -147,11 +148,11 @@ func (osFileReader) ReadFile(name string) ([]byte, error) { return os.ReadFile(n
 func buildUpdateControlManager() (update.ControlManager, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("获取用户主目录失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to get user home directory", "获取用户主目录失败"), err)
 	}
 	mgr, err := control.NewManager(home)
 	if err != nil {
-		return nil, fmt.Errorf("创建进程控制管理器失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to create process control manager", "创建进程控制管理器失败"), err)
 	}
 	return update.NewControlManager(mgr), nil
 }
@@ -163,20 +164,27 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 		Use:          "update",
 		Short:        "Update token-usage to the latest or a given version / 更新 token-usage 到最新或指定版本",
 		SilenceUsage: true,
-		Long: "检查并更新 token-usage 自身到最新稳定版或指定版本。\n\n" +
-			"  token-usage update            更新到最新稳定版（来源校验通过后替换二进制并恢复 daemon）\n" +
-			"  token-usage update --check    只检查是否有新版本，不做任何修改\n" +
-			"  token-usage update --version vX.Y.Z   更新到指定版本\n" +
-			"  token-usage update --check --version vX.Y.Z-rc.N   只检查指定候选版\n\n" +
-			"--version 接受严格 Release tag（vMAJOR.MINOR.PATCH 或 vMAJOR.MINOR.PATCH-rc.N）。\n" +
-			"来源不可信（如本地构建、go install）时不自动覆盖，改为输出人工安装指引。",
+		Long: ui.Bi("Check and update token-usage itself to the latest stable or a given version.\n\n"+
+			"  token-usage update            Update to the latest stable version (replaces the binary and restores the daemon after provenance checks pass)\n"+
+			"  token-usage update --check    Only check for a newer version; make no changes\n"+
+			"  token-usage update --version vX.Y.Z   Update to the given version\n"+
+			"  token-usage update --check --version vX.Y.Z-rc.N   Only check the given pre-release\n\n"+
+			"--version accepts a strict release tag (vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N).\n"+
+			"If the source is untrusted (e.g. local build, go install) it never overwrites automatically and prints manual install instructions instead.",
+			"检查并更新 token-usage 自身到最新稳定版或指定版本。\n\n"+
+				"  token-usage update            更新到最新稳定版（来源校验通过后替换二进制并恢复 daemon）\n"+
+				"  token-usage update --check    只检查是否有新版本，不做任何修改\n"+
+				"  token-usage update --version vX.Y.Z   更新到指定版本\n"+
+				"  token-usage update --check --version vX.Y.Z-rc.N   只检查指定候选版\n\n"+
+				"--version 接受严格 Release tag（vMAJOR.MINOR.PATCH 或 vMAJOR.MINOR.PATCH-rc.N）。\n"+
+				"来源不可信（如本地构建、go install）时不自动覆盖，改为输出人工安装指引。"),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUpdate(cmd, info)
 		},
 	}
-	cmd.Flags().Bool("check", false, "只检查是否有可更新版本，不执行更新")
-	cmd.Flags().String("version", "", "指定目标版本 tag（如 vX.Y.Z 或 vX.Y.Z-rc.N）")
+	cmd.Flags().Bool("check", false, ui.Bi("Only check for a newer version; do not update", "只检查是否有可更新版本，不执行更新"))
+	cmd.Flags().String("version", "", ui.Bi("Target release tag (e.g. vX.Y.Z or vX.Y.Z-rc.N)", "指定目标版本 tag（如 vX.Y.Z 或 vX.Y.Z-rc.N）"))
 	return cmd
 }
 
@@ -187,18 +195,17 @@ func runUpdate(cmd *cobra.Command, info buildinfo.Info) error {
 	checkOnly, _ := cmd.Flags().GetBool("check")
 	versionFlag, _ := cmd.Flags().GetString("version")
 
-	// --version 在任何网络/工厂调用之前严格校验，非法值立即清晰报错。
+	// --version 在任何网络/工厂调用之前严格校验；失败文本由 cobra 统一输出
+	//（Error: …），命令只返回带上下文的 error，不再手写 stderr（防 cause 双打）。
 	if versionFlag != "" {
 		if _, err := update.ParseVersion(versionFlag); err != nil {
-			fmt.Fprintf(errOut, "无效的 --version %q: %v\n", versionFlag, err)
-			return fmt.Errorf("无效的 --version %q: %w", versionFlag, err)
+			return fmt.Errorf("%s %q: %w", ui.Bi("invalid --version", "无效的 --version"), versionFlag, err)
 		}
 	}
 
 	svc, err := updateServiceFactory(info, checkOnly)
 	if err != nil {
-		fmt.Fprintf(errOut, "装配更新服务失败: %v\n", err)
-		return err
+		return fmt.Errorf("%s: %w", ui.Bi("failed to assemble update service", "装配更新服务失败"), err)
 	}
 
 	// 升级日志文件在工厂内打开，命令返回前关闭句柄（仅 *update.Service 有此方法）。
@@ -209,19 +216,18 @@ func runUpdate(cmd *cobra.Command, info buildinfo.Info) error {
 	ctx := cmdContext(cmd)
 
 	if checkOnly {
-		return runUpdateCheck(ctx, cmd, svc, versionFlag, out, errOut)
+		return runUpdateCheck(ctx, svc, versionFlag, out)
 	}
 	return runUpdateApply(ctx, cmd, svc, versionFlag, out, errOut)
 }
 
 // runUpdateCheck 执行只读判定并展示结果。
 // NoStableRelease 是正常结果；指定 tag 不存在则返回错误，避免脚本把拼写错误当作成功。
-// 面向用户的提示写 stdout；服务调用错误返回非 0 退出码并写 stderr。
-func runUpdateCheck(ctx context.Context, cmd *cobra.Command, svc UpdateService, versionFlag string, out, errOut io.Writer) error {
+// 面向用户的提示写 stdout；服务调用错误返回带上下文的 error（cobra 单次输出）。
+func runUpdateCheck(ctx context.Context, svc UpdateService, versionFlag string, out io.Writer) error {
 	res, err := svc.Check(ctx, update.CheckOptions{TargetTag: versionFlag})
 	if err != nil {
-		fmt.Fprintf(errOut, "检查更新失败: %v\n", err)
-		return err
+		return fmt.Errorf("%s: %w", ui.Bi("failed to check for updates", "检查更新失败"), err)
 	}
 	return renderCheckResult(out, res)
 }
@@ -230,26 +236,26 @@ func runUpdateCheck(ctx context.Context, cmd *cobra.Command, svc UpdateService, 
 func renderCheckResult(out io.Writer, res update.CheckResult) error {
 	switch {
 	case res.NoStableRelease:
-		fmt.Fprintln(out, "当前还没有可用的稳定 Release，请稍后再试或访问项目主页确认。")
+		fmt.Fprintln(out, ui.Bi("No stable release available yet; try again later or check the project homepage.", "当前还没有可用的稳定 Release，请稍后再试或访问项目主页确认。"))
 		return nil
 	case res.VersionNotFound:
-		fmt.Fprintln(out, "指定的版本不存在，请用有效的 Release tag 重试。")
+		fmt.Fprintln(out, ui.Bi("The requested version does not exist; retry with a valid release tag.", "指定的版本不存在，请用有效的 Release tag 重试。"))
 		return errRequestedUpdateVersionMissing
 	case res.UpdateAvailable:
-		fmt.Fprintf(out, "发现可更新版本：%s → %s\n", res.CurrentTag, res.TargetTag)
-		fmt.Fprintln(out, "运行 `token-usage update` 执行更新。")
+		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Update available", "发现可更新版本"), res.CurrentTag, res.TargetTag)
+		fmt.Fprintln(out, ui.Bi("Run `token-usage update` to apply it.", "运行 `token-usage update` 执行更新。"))
 		return nil
 	default:
 		// UpdateAvailable=false 且无领域标记：已是最新（含 CurrentTag/TargetTag 相等的显式情况）。
 		current := res.CurrentTag
 		if current == "" {
-			current = "（未知）"
+			current = ui.Bi("(unknown)", "（未知）")
 		}
 		target := res.TargetTag
 		if target == "" {
 			target = current
 		}
-		fmt.Fprintf(out, "已是最新版本（%s）\n", target)
+		fmt.Fprintf(out, "%s（%s）\n", ui.Bi("Already up to date", "已是最新版本"), target)
 		return nil
 	}
 }
@@ -260,15 +266,15 @@ func renderCheckResult(out io.Writer, res update.CheckResult) error {
 func runUpdateApply(ctx context.Context, cmd *cobra.Command, svc UpdateService, versionFlag string, out, errOut io.Writer) error {
 	res, err := svc.Apply(ctx, update.ApplyOptions{TargetTag: versionFlag})
 	if err != nil {
-		fmt.Fprintf(errOut, "更新失败: %v\n", err)
+		// 失败 cause 由 cobra 单次输出；升级日志路径是 stdout 补充提示，保留。
 		if res.LogPath != "" {
-			fmt.Fprintf(out, "升级日志: %s\n", res.LogPath)
+			fmt.Fprintf(out, "%s: %s\n", ui.Bi("Update log", "升级日志"), res.LogPath)
 		}
-		return err
+		return fmt.Errorf("%s: %w", ui.Bi("update failed", "更新失败"), err)
 	}
 	renderErr := renderApplyResult(out, errOut, res)
 	if res.LogPath != "" {
-		fmt.Fprintf(out, "升级日志: %s\n", res.LogPath)
+		fmt.Fprintf(out, "%s: %s\n", ui.Bi("Update log", "升级日志"), res.LogPath)
 	}
 	return renderErr
 }
@@ -288,40 +294,40 @@ func renderApplyResult(out, errOut io.Writer, res update.ApplyResult) error {
 	case res.Recovered:
 		return renderRecoveredApplyResult(out, res)
 	case res.NoStableRelease:
-		fmt.Fprintln(out, "当前还没有可用的稳定 Release，请稍后再试或访问项目主页确认。")
+		fmt.Fprintln(out, ui.Bi("No stable release available yet; try again later or check the project homepage.", "当前还没有可用的稳定 Release，请稍后再试或访问项目主页确认。"))
 		return nil
 	case res.VersionNotFound:
-		fmt.Fprintln(out, "指定的版本不存在，请用有效的 Release tag 重试。")
+		fmt.Fprintln(out, ui.Bi("The requested version does not exist; retry with a valid release tag.", "指定的版本不存在，请用有效的 Release tag 重试。"))
 		return errRequestedUpdateVersionMissing
 	case res.ProvenanceChecked && !res.ProvenanceTrusted:
 		// 来源不可信：绝不自动覆盖。给出目标版本与人工安装指引。
-		fmt.Fprintf(out, "发现可更新版本：%s → %s\n", res.CurrentTag, res.TargetTag)
-		fmt.Fprintln(out, "当前来源无法安全覆盖，请手动安装：")
+		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Update available", "发现可更新版本"), res.CurrentTag, res.TargetTag)
+		fmt.Fprintln(out, ui.Bi("Current install source cannot be safely overwritten; install manually:", "当前来源无法安全覆盖，请手动安装："))
 		printManualInstallGuide(out, res.TargetTag)
 		if res.Reason != "" {
-			fmt.Fprintf(errOut, "原因：%s\n", res.Reason)
+			fmt.Fprintf(errOut, "%s：%s\n", ui.Bi("Reason", "原因"), res.Reason)
 		}
 		return errUpdateSourceUntrusted
 	case res.Installed:
-		fmt.Fprintf(out, "已更新并恢复 daemon：%s → %s\n", res.CurrentTag, res.TargetTag)
-		fmt.Fprintln(out, "可用 `token-usage version` 确认当前版本。")
+		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Updated and daemon restored", "已更新并恢复 daemon"), res.CurrentTag, res.TargetTag)
+		fmt.Fprintln(out, ui.Bi("Run `token-usage version` to confirm the current version.", "可用 `token-usage version` 确认当前版本。"))
 		return nil
 	case res.Deferred:
-		fmt.Fprintf(out, "后台替换已排队：%s → %s\n", res.CurrentTag, res.TargetTag)
-		fmt.Fprintln(out, "请稍后运行 `token-usage version` 或 `token-usage update --check` 确认最终版本。")
+		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Background replacement queued", "后台替换已排队"), res.CurrentTag, res.TargetTag)
+		fmt.Fprintln(out, ui.Bi("Later run `token-usage version` or `token-usage update --check` to confirm the final version.", "请稍后运行 `token-usage version` 或 `token-usage update --check` 确认最终版本。"))
 		return nil
 	case res.ReadyToInstall:
 		// 已通过来源校验但没有完成安装，也没有确认 helper 已接管；不能把它归类为成功。
-		fmt.Fprintf(out, "已确认可更新：%s → %s\n", res.CurrentTag, res.TargetTag)
-		fmt.Fprintln(out, "自动更新尚未完成，请检查错误信息或手动安装。")
+		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Update confirmed available", "已确认可更新"), res.CurrentTag, res.TargetTag)
+		fmt.Fprintln(out, ui.Bi("The self-update has not completed; check the error or install manually.", "自动更新尚未完成，请检查错误信息或手动安装。"))
 		return errUpdateIncomplete
 	case res.UpdateAvailable:
 		// 确有更新但未到达 ReadyToInstall（被 stage 探针拒绝等）：保守提示人工安装。
-		fmt.Fprintf(out, "发现可更新版本：%s → %s\n", res.CurrentTag, res.TargetTag)
-		fmt.Fprintln(out, "本次未能完成自动更新，请手动安装：")
+		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Update available", "发现可更新版本"), res.CurrentTag, res.TargetTag)
+		fmt.Fprintln(out, ui.Bi("Automatic update could not complete this time; install manually:", "本次未能完成自动更新，请手动安装："))
 		printManualInstallGuide(out, res.TargetTag)
 		if res.Reason != "" {
-			fmt.Fprintf(errOut, "原因：%s\n", res.Reason)
+			fmt.Fprintf(errOut, "%s：%s\n", ui.Bi("Reason", "原因"), res.Reason)
 		}
 		return errUpdateVerificationFailed
 	default:
@@ -330,7 +336,7 @@ func renderApplyResult(out, errOut io.Writer, res update.ApplyResult) error {
 		if target == "" {
 			target = res.CurrentTag
 		}
-		fmt.Fprintf(out, "已是最新版本（%s）\n", target)
+		fmt.Fprintf(out, "%s（%s）\n", ui.Bi("Already up to date", "已是最新版本"), target)
 		return nil
 	}
 }
@@ -340,17 +346,17 @@ func renderApplyResult(out, errOut io.Writer, res update.ApplyResult) error {
 func renderRecoveredApplyResult(out io.Writer, res update.ApplyResult) error {
 	switch res.RecoveryState {
 	case update.RecoveryStateNewInstalled:
-		fmt.Fprintln(out, "检测到上次更新中断，已恢复完成：新版本已落地，并已按原运行态恢复 daemon。")
-		fmt.Fprintln(out, "请运行 token-usage version 确认当前版本。")
+		fmt.Fprintln(out, ui.Bi("Detected an interrupted update; recovery complete: the new version is in place and the daemon has been restored to its prior running state.", "检测到上次更新中断，已恢复完成：新版本已落地，并已按原运行态恢复 daemon。"))
+		fmt.Fprintln(out, ui.Bi("Run token-usage version to confirm the current version.", "请运行 token-usage version 确认当前版本。"))
 		return nil
 	case update.RecoveryStateOldIntact, update.RecoveryStateOldRestored:
-		fmt.Fprintln(out, "检测到上次更新中断，已恢复到旧版本，并已按原运行态恢复 daemon。")
-		fmt.Fprintln(out, "本次未安装目标版本，可重新运行 token-usage update 重试。")
+		fmt.Fprintln(out, ui.Bi("Detected an interrupted update; rolled back to the previous version and restored the daemon to its prior running state.", "检测到上次更新中断，已恢复到旧版本，并已按原运行态恢复 daemon。"))
+		fmt.Fprintln(out, ui.Bi("The target version was not installed this time; re-run token-usage update to retry.", "本次未安装目标版本，可重新运行 token-usage update 重试。"))
 		return errUpdateIncomplete
 	default:
 		// 当前恢复流程只会将上述三种状态标记为 Recovered。保留非零回退，避免未来
 		// 新增状态被误报为成功。
-		fmt.Fprintln(out, "遗留更新事务已处理，但无法确定恢复结果；请检查当前版本后重试。")
+		fmt.Fprintln(out, ui.Bi("The leftover update transaction was handled but the recovery outcome is unclear; check the current version and retry.", "遗留更新事务已处理，但无法确定恢复结果；请检查当前版本后重试。"))
 		return errUpdateIncomplete
 	}
 }
@@ -361,7 +367,7 @@ func printManualInstallGuide(out io.Writer, targetTag string) {
 	if targetTag == "" {
 		targetTag = "<version>"
 	}
-	fmt.Fprintf(out, "  1. 访问 https://github.com/YuLaiZ/token-usage/releases/tag/%s\n", targetTag)
-	fmt.Fprintln(out, "  2. 下载对应平台的二进制资产，替换当前 token-usage 可执行文件")
-	fmt.Fprintln(out, "  3. 运行 `token-usage version` 确认新版本")
+	fmt.Fprintf(out, ui.Bi("  1. Visit", "  1. 访问")+" https://github.com/YuLaiZ/token-usage/releases/tag/%s\n", targetTag)
+	fmt.Fprintln(out, ui.Bi("  2. Download the binary asset for your platform and replace the current token-usage executable", "  2. 下载对应平台的二进制资产，替换当前 token-usage 可执行文件"))
+	fmt.Fprintln(out, ui.Bi("  3. Run `token-usage version` to confirm the new version", "  3. 运行 `token-usage version` 确认新版本"))
 }

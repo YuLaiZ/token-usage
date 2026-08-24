@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // process_identity.go 实现「按显式进程身份（PID + 创建时间）等待进程退出」的平台无关决策。
@@ -83,14 +85,20 @@ func WaitProcessIdentity(ctx context.Context, probe ProcessProbe, identity Proce
 			return nil // 步骤2：进程已不存在，安全继续。
 		}
 		// 步骤3：access denied 等，无法确认身份 → 失败。
-		return fmt.Errorf("打开进程 %d 失败: %w", identity.PID, err)
+		return fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("failed to open process %d", identity.PID),
+			fmt.Sprintf("打开进程 %d 失败", identity.PID),
+		), err)
 	}
 	defer handle.Close()
 
 	ct, err := handle.CreationTime()
 	if err != nil {
 		// 步骤4：查询创建时间失败 → 失败（无法确认身份）。
-		return fmt.Errorf("查询进程 %d 创建时间失败: %w", identity.PID, err)
+		return fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("failed to query creation time of process %d", identity.PID),
+			fmt.Sprintf("查询进程 %d 创建时间失败", identity.PID),
+		), err)
 	}
 	if ct != identity.CreationTime {
 		// 步骤5：PID 已被复用，原进程已退出 → 安全继续。
@@ -99,7 +107,10 @@ func WaitProcessIdentity(ctx context.Context, probe ProcessProbe, identity Proce
 
 	// 步骤6：身份匹配，等句柄 signaled。
 	if err := handle.Wait(ctx); err != nil {
-		return fmt.Errorf("等待进程 %d 退出失败: %w", identity.PID, err)
+		return fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("failed to wait for process %d to exit", identity.PID),
+			fmt.Sprintf("等待进程 %d 退出失败", identity.PID),
+		), err)
 	}
 	return nil
 }

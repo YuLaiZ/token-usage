@@ -89,8 +89,9 @@ func TestRunStop_StoppedContract(t *testing.T) {
 	}
 }
 
-// TestRunStop_RealFailureToStderr 真实失败 → stderr，退出非 0。
-func TestRunStop_RealFailureToStderr(t *testing.T) {
+// TestRunStop_RealFailureReturnsContextError 真实失败 → 返回带上下文的 error
+// （cobra 统一输出），命令自身不再手写 stderr（防 cause 双打）。
+func TestRunStop_RealFailureReturnsContextError(t *testing.T) {
 	orig := controlManagerFactory
 	defer func() { controlManagerFactory = orig }()
 	stopErr := errStartBoom // 复用哨兵
@@ -106,7 +107,10 @@ func TestRunStop_RealFailureToStderr(t *testing.T) {
 	if err == nil {
 		t.Fatal("真实失败应退出非 0")
 	}
-	if !strings.Contains(errOut.String(), "停止守护进程失败") {
-		t.Errorf("失败应写 stderr，实际 stderr: %q", errOut.String())
+	if !strings.Contains(err.Error(), "停止守护进程失败") || !strings.Contains(err.Error(), errStartBoom.Error()) {
+		t.Errorf("返回 error 应含上下文与 cause: %v", err)
+	}
+	if errOut.String() != "" {
+		t.Errorf("命令不得手写 stderr（由 cobra 统一输出）: %q", errOut.String())
 	}
 }

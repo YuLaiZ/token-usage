@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/YuLaiZ/token-usage/internal/fileutil"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // install_common.go 实现 POSIX 事务性安装的平台无关部分：事务记录结构、
@@ -133,7 +134,7 @@ type TransactionHandler interface {
 func generateNonce() (string, error) {
 	var buf [16]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		return "", fmt.Errorf("生成事务 nonce 失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to generate transaction nonce", "生成事务 nonce 失败"), err)
 	}
 	return hex.EncodeToString(buf[:]), nil
 }
@@ -165,7 +166,7 @@ func journalFilePath(target, nonce string) string {
 func writeJournal(path string, rec journalRecord) error {
 	data, err := json.Marshal(rec)
 	if err != nil {
-		return fmt.Errorf("序列化 journal 失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to marshal journal", "序列化 journal 失败"), err)
 	}
 	// journal 用 fileutil 原子写（0600 权限），保证 journal 自身的完整替换语义。
 	// 这里复用 fileutil 是合理的：journal 不需要 backup/rollback 语义，
@@ -182,14 +183,14 @@ func readJournal(path string) (journalRecord, bool, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return journalRecord{}, false, nil
 		}
-		return journalRecord{}, false, fmt.Errorf("读取 journal 失败: %w", err)
+		return journalRecord{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to read journal", "读取 journal 失败"), err)
 	}
 	var rec journalRecord
 	if err := json.Unmarshal(data, &rec); err != nil {
-		return journalRecord{}, false, fmt.Errorf("解析 journal 失败: %w", err)
+		return journalRecord{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to parse journal", "解析 journal 失败"), err)
 	}
 	if rec.Nonce == "" || rec.TargetBasename == "" {
-		return journalRecord{}, false, fmt.Errorf("journal 缺少必填字段 nonce/target_basename")
+		return journalRecord{}, false, fmt.Errorf("%s", ui.Bi("journal is missing required fields nonce/target_basename", "journal 缺少必填字段 nonce/target_basename"))
 	}
 	return rec, true, nil
 }
@@ -202,7 +203,10 @@ func updateJournalPhase(path string, phase journalPhase) error {
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("journal 不存在，无法更新阶段: %s", path)
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("journal does not exist; cannot update phase: %s", path),
+			fmt.Sprintf("journal 不存在，无法更新阶段: %s", path),
+		))
 	}
 	rec.Phase = phase
 	return writeJournal(path, rec)
@@ -213,7 +217,10 @@ func updateJournalPhase(path string, phase journalPhase) error {
 func fileSHA256(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("读取文件计算 SHA256 失败 %s: %w", path, err)
+		return "", fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("failed to read file %s for SHA256", path),
+			fmt.Sprintf("读取文件计算 SHA256 失败 %s", path),
+		), err)
 	}
 	return sha256HexBytes(data), nil
 }
@@ -234,7 +241,7 @@ func findLeftoverJournal(target string) (string, bool, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", false, nil
 		}
-		return "", false, fmt.Errorf("扫描遗留 journal 失败: %w", err)
+		return "", false, fmt.Errorf("%s: %w", ui.Bi("failed to scan for leftover journal", "扫描遗留 journal 失败"), err)
 	}
 	for _, e := range entries {
 		name := e.Name()
@@ -266,7 +273,10 @@ func cleanupTransactionFiles(stagePath, backupPath, journalPath string) error {
 			continue
 		}
 		if err := removeRegularFile(p); err != nil {
-			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("清理事务文件失败 %s: %w", p, err))
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("%s: %w", ui.Bi(
+				fmt.Sprintf("failed to clean up transaction file %s", p),
+				fmt.Sprintf("清理事务文件失败 %s", p),
+			), err))
 		}
 	}
 	return cleanupErr
@@ -283,7 +293,10 @@ func removeRegularFile(path string) error {
 		return err
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("拒绝删除非普通文件 %s（mode %s）", path, info.Mode())
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("refusing to delete non-regular file %s (mode %s)", path, info.Mode()),
+			fmt.Sprintf("拒绝删除非普通文件 %s（mode %s）", path, info.Mode()),
+		))
 	}
 	return os.Remove(path)
 }
@@ -295,14 +308,17 @@ func removeRegularFile(path string) error {
 // 忽略文件不存在。用于恢复流程的「丢弃 stage/backup/journal」场景。
 func cleanupUpdateTempByPrefix(dir string, prefixes []string) error {
 	if strings.TrimSpace(dir) == "" {
-		return errors.New("事务清理目录不能为空")
+		return errors.New(ui.Bi("transaction cleanup directory must not be empty", "事务清理目录不能为空"))
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("读取事务清理目录失败 %q: %w", dir, err)
+		return fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("failed to read transaction cleanup directory %q", dir),
+			fmt.Sprintf("读取事务清理目录失败 %q", dir),
+		), err)
 	}
 	var cleanupErr error
 	for _, e := range entries {
@@ -373,22 +389,28 @@ func writeJournalFile(path string, data []byte) error {
 func copyFile(src, dst string, mode fs.FileMode) error {
 	srcF, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("打开源文件失败 %s: %w", src, err)
+		return fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("failed to open source file %s", src),
+			fmt.Sprintf("打开源文件失败 %s", src),
+		), err)
 	}
 	defer srcF.Close()
 
 	dstF, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
-		return fmt.Errorf("创建目标文件失败 %s: %w", dst, err)
+		return fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("failed to create destination file %s", dst),
+			fmt.Sprintf("创建目标文件失败 %s", dst),
+		), err)
 	}
 	// 用 defer 保证关闭，但需捕获 close 错误（写入未确认）。
 	writeErr := func() error {
 		defer dstF.Close()
 		if _, err := io.Copy(dstF, srcF); err != nil {
-			return fmt.Errorf("复制内容失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to copy content", "复制内容失败"), err)
 		}
 		if err := dstF.Sync(); err != nil {
-			return fmt.Errorf("fsync 目标文件失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to fsync destination file", "fsync 目标文件失败"), err)
 		}
 		return nil
 	}()
@@ -399,7 +421,7 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 	}
 	// OpenFile 已按 mode 创建，但 umask 可能影响；显式 chmod 确保权限精确。
 	if err := os.Chmod(dst, mode); err != nil {
-		return fmt.Errorf("chmod 目标文件失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to chmod destination file", "chmod 目标文件失败"), err)
 	}
 	return nil
 }
@@ -409,7 +431,7 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 func copyFileWithMode(src, dst string) error {
 	srcInfo, err := os.Lstat(src)
 	if err != nil {
-		return fmt.Errorf("读取源文件元信息失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to stat source file", "读取源文件元信息失败"), err)
 	}
 	return copyFile(src, dst, srcInfo.Mode())
 }
@@ -422,7 +444,10 @@ func verifyFileHash(path, expectedHex string) error {
 		return err
 	}
 	if got != expectedHex {
-		return fmt.Errorf("文件 hash 校验失败 %s: got %s want %s", path, got, expectedHex)
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("file hash verification failed for %s: got %s want %s", path, got, expectedHex),
+			fmt.Sprintf("文件 hash 校验失败 %s: got %s want %s", path, got, expectedHex),
+		))
 	}
 	return nil
 }
@@ -505,30 +530,48 @@ func SweepStaleTempFiles(target string) error {
 // 且都是普通文件（非 symlink / 目录）。平台无关：POSIX 与 Windows 安装器共用。
 func validateInstallInputs(stagePath, targetBinPath string) error {
 	if stagePath == "" {
-		return errors.New("stagePath 不能为空")
+		return errors.New(ui.Bi("stagePath must not be empty", "stagePath 不能为空"))
 	}
 	if targetBinPath == "" {
-		return errors.New("targetBinPath 不能为空")
+		return errors.New(ui.Bi("targetBinPath must not be empty", "targetBinPath 不能为空"))
 	}
 	if !filepath.IsAbs(stagePath) {
-		return fmt.Errorf("stagePath 必须为绝对路径，当前 %q", stagePath)
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("stagePath must be an absolute path, got %q", stagePath),
+			fmt.Sprintf("stagePath 必须为绝对路径，当前 %q", stagePath),
+		))
 	}
 	if !filepath.IsAbs(targetBinPath) {
-		return fmt.Errorf("targetBinPath 必须为绝对路径，当前 %q", targetBinPath)
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("targetBinPath must be an absolute path, got %q", targetBinPath),
+			fmt.Sprintf("targetBinPath 必须为绝对路径，当前 %q", targetBinPath),
+		))
 	}
 	stageInfo, err := os.Lstat(stagePath)
 	if err != nil {
-		return fmt.Errorf("stage 文件不可读 %s: %w", stagePath, err)
+		return fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("stage file not readable at %s", stagePath),
+			fmt.Sprintf("stage 文件不可读 %s", stagePath),
+		), err)
 	}
 	if !stageInfo.Mode().IsRegular() {
-		return fmt.Errorf("stage 文件不是普通文件 %s（mode %s）", stagePath, stageInfo.Mode())
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("stage file %s is not a regular file (mode %s)", stagePath, stageInfo.Mode()),
+			fmt.Sprintf("stage 文件不是普通文件 %s（mode %s）", stagePath, stageInfo.Mode()),
+		))
 	}
 	targetInfo, err := os.Lstat(targetBinPath)
 	if err != nil {
-		return fmt.Errorf("target 文件不可读 %s: %w", targetBinPath, err)
+		return fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("target file not readable at %s", targetBinPath),
+			fmt.Sprintf("target 文件不可读 %s", targetBinPath),
+		), err)
 	}
 	if !targetInfo.Mode().IsRegular() {
-		return fmt.Errorf("target 文件不是普通文件 %s（mode %s）", targetBinPath, targetInfo.Mode())
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("target file %s is not a regular file (mode %s)", targetBinPath, targetInfo.Mode()),
+			fmt.Sprintf("target 文件不是普通文件 %s（mode %s）", targetBinPath, targetInfo.Mode()),
+		))
 	}
 	return nil
 }

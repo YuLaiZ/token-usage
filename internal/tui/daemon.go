@@ -6,6 +6,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // daemonPage 守护进程页:开机自启 toggle + poll_interval textinput,cursor 切换聚焦。
@@ -22,17 +24,17 @@ type daemonPage struct {
 func newDaemonPage(app *App) *daemonPage {
 	ti := textinput.New()
 	ti.SetValue(strconv.Itoa(app.draft.Daemon.PollInterval))
-	ti.Placeholder = "30 (默认)"
+	ti.Placeholder = "30 (" + ui.Bi("default", "默认") + ")"
 	p := &daemonPage{
 		app:    app,
 		input:  ti,
-		toggle: NewToggle("开机自启", app.draft.Daemon.AutoStart).SetFocus(true),
+		toggle: NewToggle(ui.Bi("Auto-start", "开机自启"), app.draft.Daemon.AutoStart).SetFocus(true),
 		cursor: -1, // 默认 toggle 聚焦
 	}
 	return p
 }
 
-func (p *daemonPage) title() string { return "守护进程" }
+func (p *daemonPage) title() string { return ui.Bi("Daemon", "守护进程") }
 func (p *daemonPage) Init() tea.Cmd { return nil }
 
 // setValue 设置 textinput 值(测试用)。
@@ -95,12 +97,24 @@ func (p *daemonPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (p *daemonPage) commit() error {
 	n, err := strconv.Atoi(p.input.Value())
 	if err != nil {
-		p.feedback = "轮询间隔必须是整数(0 表示使用默认值)"
-		return fmt.Errorf("daemon.poll_interval %q 非法: %w", p.input.Value(), err)
+		p.feedback = ui.Bi(
+			"Poll interval must be an integer (0 means the default)",
+			"轮询间隔必须是整数(0 表示使用默认值)",
+		)
+		return fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("daemon.poll_interval %q invalid", p.input.Value()),
+			fmt.Sprintf("daemon.poll_interval %q 非法", p.input.Value()),
+		), err)
 	}
 	if n < 0 {
-		p.feedback = "轮询间隔不能为负数(0 表示使用默认值)"
-		return fmt.Errorf("daemon.poll_interval 不能为负数(当前 %d)", n)
+		p.feedback = ui.Bi(
+			"Poll interval must not be negative (0 means the default)",
+			"轮询间隔不能为负数(0 表示使用默认值)",
+		)
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("daemon.poll_interval must not be negative (got %d)", n),
+			fmt.Sprintf("daemon.poll_interval 不能为负数(当前 %d)", n),
+		))
 	}
 	// 校验通过:整体写入,清空错误反馈。
 	p.app.draft.Daemon.PollInterval = n
@@ -110,14 +124,19 @@ func (p *daemonPage) commit() error {
 }
 
 func (p *daemonPage) View() string {
-	s := "守护进程\n\n"
-	s += "  " + p.toggle.View() + "   (空格切换)\n"
-	s += "    轮询间隔(秒): " + p.input.View() + "\n"
+	s := ui.Bi("Daemon", "守护进程") + "\n\n"
+	s += "  " + p.toggle.View() + "   (" + ui.Bi("space toggles", "空格切换") + ")\n"
+	s += "    " + ui.Bi("Poll interval (s):", "轮询间隔(秒):") + " " + p.input.View() + "\n"
 	if p.feedback != "" {
 		s += "\n  ⚠ " + p.feedback + "\n"
 	}
-	s += "\n  开机自启仅影响下次登录/开机,不会启动或停止当前正在运行的 daemon\n"
-	s += "  首次使用请先 token-usage collect all 初始化历史数据，再开启本项\n"
-	s += "\n  esc 应用到草稿并返回(主菜单 s 保存写盘)\n"
+	s += "\n  " + ui.Bi(
+		"Auto-start only affects the next login/boot; it does not start or stop the currently running daemon",
+		"开机自启仅影响下次登录/开机,不会启动或停止当前正在运行的 daemon") + "\n"
+	s += "  " + ui.Bi(
+		"For first use, run token-usage collect all to initialize history data before enabling this",
+		"首次使用请先 token-usage collect all 初始化历史数据，再开启本项") + "\n"
+	s += "\n  " + ui.Bi("esc Apply to draft and return (main-menu s saves to disk)",
+		"esc 应用到草稿并返回(主菜单 s 保存写盘)") + "\n"
 	return s
 }

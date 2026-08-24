@@ -11,16 +11,21 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/control"
 	"github.com/YuLaiZ/token-usage/internal/service"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 func newStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show daemon status and config summary / 查看守护进程运行状态与配置摘要",
-		Long: "查看守护进程运行状态与配置摘要。\n\n" +
-			"「运行状态」反映当前守护进程（采集/分析的实时监控进程）是否在运行，\n" +
-			"与开机自启定义分离：开机自启反映「下次登录/重启是否自动启动」，\n" +
-			"由 config 的 daemon.autostart 决定，与当前是否运行相互独立。",
+		Long: ui.Bi("Show daemon status and a config summary.\n\n"+
+			"\"Running status\" reflects whether the current daemon (the live collection/analysis monitor) is running,\n"+
+			"separate from the autostart definition: autostart reflects \"whether it auto-starts on next login/reboot\",\n"+
+			"decided by daemon.autostart in config, independent of whether it is currently running.",
+			"查看守护进程运行状态与配置摘要。\n\n"+
+				"「运行状态」反映当前守护进程（采集/分析的实时监控进程）是否在运行，\n"+
+				"与开机自启定义分离：开机自启反映「下次登录/重启是否自动启动」，\n"+
+				"由 config 的 daemon.autostart 决定，与当前是否运行相互独立。"),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runStatus(cmd)
@@ -34,7 +39,7 @@ func runStatus(cmd *cobra.Command) error {
 
 	cfg, err := loadConfig()
 	if err != nil {
-		return fmt.Errorf("加载配置失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 	}
 
 	mgr, err := controlManagerFactory()
@@ -49,20 +54,20 @@ func runStatus(cmd *cobra.Command) error {
 
 	if st.Running {
 		if st.PID > 0 {
-			fmt.Fprintf(out, "● 守护进程运行中（PID %d）\n", st.PID)
+			fmt.Fprintf(out, "● %s（PID %d）\n", ui.Bi("daemon running", "守护进程运行中"), st.PID)
 		} else {
-			fmt.Fprintln(out, "● 守护进程运行中")
+			fmt.Fprintln(out, "● "+ui.Bi("daemon running", "守护进程运行中"))
 		}
 		// 启动阶段只在 daemon lock 判 Running 后解释 runtime-state，
 		// 不参与 autostart 漂移判断。catch_up=succeeded 不打印额外行（仅运行中即足）。
 		printStartupPhase(out, st)
 	} else {
-		fmt.Fprintln(out, "○ 守护进程未运行")
+		fmt.Fprintln(out, "○ "+ui.Bi("daemon not running", "守护进程未运行"))
 	}
 
 	// 配置摘要
-	fmt.Fprintf(out, "数据目录: %s\n", cfg.DataDir)
-	fmt.Fprintf(out, "轮询间隔: %ds\n", cfg.Daemon.PollInterval)
+	fmt.Fprintf(out, "%s: %s\n", ui.Bi("Data directory", "数据目录"), cfg.DataDir)
+	fmt.Fprintf(out, "%s: %ds\n", ui.Bi("Poll interval", "轮询间隔"), cfg.Daemon.PollInterval)
 
 	// 开机自启状态（只读漂移检测，不触发 Sync）
 	printAutoStartStatus(out, cfg, service.NewAutoStartManager())
@@ -85,8 +90,8 @@ func runStatus(cmd *cobra.Command) error {
 func printAutoStartStatus(out io.Writer, cfg *config.Config, mgr service.AutoStartManager) {
 	bin, err := executableForStatus()
 	if err != nil {
-		fmt.Fprintf(out, "开机自启: %s（检测失败: 获取当前可执行文件路径: %v）\n",
-			boolText(cfg.Daemon.AutoStart), err)
+		fmt.Fprintf(out, "%s: %s（%s: %s: %v）\n",
+			ui.Bi("Autostart", "开机自启"), boolText(cfg.Daemon.AutoStart), ui.Bi("detection failed", "检测失败"), ui.Bi("failed to get current executable path", "获取当前可执行文件路径"), err)
 		return
 	}
 	opts := service.Options{Label: service.Label, BinPath: bin, DataDir: cfg.DataDir,
@@ -95,30 +100,30 @@ func printAutoStartStatus(out io.Writer, cfg *config.Config, mgr service.AutoSta
 	st, err := mgr.Status(opts)
 	if err != nil {
 		// 平台不支持或检测失败：打印 autostart 配置值，不报错
-		fmt.Fprintf(out, "开机自启: %s（检测失败: %v）\n", boolText(cfg.Daemon.AutoStart), err)
+		fmt.Fprintf(out, "%s: %s（%s: %v）\n", ui.Bi("Autostart", "开机自启"), boolText(cfg.Daemon.AutoStart), ui.Bi("detection failed", "检测失败"), err)
 		return
 	}
 
 	switch {
 	case cfg.Daemon.AutoStart && st.Exists && st.SpecMatches:
 		// 状态 1：定义存在且完全一致
-		fmt.Fprintln(out, "开机自启: 已启用")
+		fmt.Fprintln(out, ui.Bi("Autostart: enabled", "开机自启: 已启用"))
 
 	case cfg.Daemon.AutoStart && !st.Exists:
 		// 状态 2：用户开自启但定义缺失 → 漂移
-		fmt.Fprintln(out, "⚠ 配置与实际状态不一致：autostart=开 但自启定义缺失，建议重新保存配置")
+		fmt.Fprintln(out, "⚠ "+ui.Bi("config and actual state mismatch: autostart=on but the autostart definition is missing; re-saving the config is recommended", "配置与实际状态不一致：autostart=开 但自启定义缺失，建议重新保存配置"))
 
 	case cfg.Daemon.AutoStart && st.Exists && !st.SpecMatches:
 		// 状态 3：定义存在但内容不一致（漂移）
-		fmt.Fprintln(out, "⚠ 配置与实际状态不一致：autostart=开 但自启定义内容不一致，建议重新保存配置")
+		fmt.Fprintln(out, "⚠ "+ui.Bi("config and actual state mismatch: autostart=on but the autostart definition differs; re-saving the config is recommended", "配置与实际状态不一致：autostart=开 但自启定义内容不一致，建议重新保存配置"))
 
 	case !cfg.Daemon.AutoStart && st.Exists:
 		// 状态 4：用户关自启但定义仍存在（残留）
-		fmt.Fprintln(out, "⚠ 配置与实际状态不一致：autostart=关 但自启定义仍存在，建议重新保存配置")
+		fmt.Fprintln(out, "⚠ "+ui.Bi("config and actual state mismatch: autostart=off but an autostart definition still exists; re-saving the config is recommended", "配置与实际状态不一致：autostart=关 但自启定义仍存在，建议重新保存配置"))
 
 	default:
 		// 状态 5：!AutoStart && !Exists → 已收敛
-		fmt.Fprintln(out, "开机自启: 未启用")
+		fmt.Fprintln(out, ui.Bi("Autostart: disabled", "开机自启: 未启用"))
 	}
 }
 
@@ -126,9 +131,9 @@ var executableForStatus = os.Executable
 
 func boolText(b bool) string {
 	if b {
-		return "开"
+		return ui.Bi("on", "开")
 	}
-	return "关"
+	return ui.Bi("off", "关")
 }
 
 // printStartupPhase 在 daemon 运行中时打印启动阶段（一行，紧随运行行）。
@@ -151,27 +156,27 @@ func printStartupPhase(out io.Writer, st control.RuntimeState) {
 	// PhaseAvailable=false：阶段不可信，按 PID 元数据是否可用分别降级。
 	if !st.PhaseAvailable {
 		if st.PID > 0 {
-			fmt.Fprintln(out, "启动阶段: 未知")
+			fmt.Fprintln(out, ui.Bi("Startup phase: unknown", "启动阶段: 未知"))
 		} else {
-			fmt.Fprintln(out, "PID 元数据不可用")
+			fmt.Fprintln(out, ui.Bi("PID metadata unavailable", "PID 元数据不可用"))
 		}
 		return
 	}
 	// monitor_ready 未就绪：监听初始化中（先于补采，无论 CatchUp 取值）。
 	if !st.MonitorReady {
-		fmt.Fprintln(out, "启动阶段: 监听初始化中")
+		fmt.Fprintln(out, ui.Bi("Startup phase: monitors initializing", "启动阶段: 监听初始化中"))
 		return
 	}
 	// monitor_ready 已就绪：按补采阶段展示。
 	switch st.CatchUp {
 	case "pending", "running":
-		fmt.Fprintln(out, "启动阶段: 监听已就绪，正在补采")
+		fmt.Fprintln(out, ui.Bi("Startup phase: monitors ready, catching up", "启动阶段: 监听已就绪，正在补采"))
 	case "succeeded":
 		// 补采成功：无额外阶段行（运行中即足）。
 	case "failed":
-		fmt.Fprintf(out, "启动阶段: 补采部分失败（%d），请执行 `token-usage errors`\n", st.CatchUpFailures)
+		fmt.Fprintf(out, "%s（%d），%s\n", ui.Bi("Startup phase: catch-up partially failed", "启动阶段: 补采部分失败"), st.CatchUpFailures, ui.Bi("run `token-usage errors`", "请执行 `token-usage errors`"))
 	default:
 		// 未知 CatchUp 值：降级为阶段未知，不猜测新阶段。
-		fmt.Fprintln(out, "启动阶段: 未知")
+		fmt.Fprintln(out, ui.Bi("Startup phase: unknown", "启动阶段: 未知"))
 	}
 }

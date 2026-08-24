@@ -8,7 +8,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
+
+// detailLabelColWidth 客户端详情页 label 列宽:按双语化后最长项
+// "paths.sessions_dir"(18)与"Router / 绑定路由"(显示宽度 17)取整加余量。
+const detailLabelColWidth = 20
 
 // 客户端列表页
 type clientsPage struct {
@@ -26,7 +31,7 @@ func newClientsPage(app *App) *clientsPage {
 	return &clientsPage{app: app, names: names}
 }
 
-func (p *clientsPage) title() string { return "客户端" }
+func (p *clientsPage) title() string { return ui.Bi("Clients", "客户端") }
 func (p *clientsPage) Init() tea.Cmd { return nil }
 
 func (p *clientsPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -81,16 +86,17 @@ func (p *clientsPage) View() string {
 		if c.Enabled {
 			mark = "●"
 		}
-		router := "无"
+		router := ui.Bi("None", "无")
 		if c.Router != "" {
 			router = c.Router
 		}
-		s += fmt.Sprintf("%s%s %-10s 路由: %s\n", cur, mark, name, router)
+		s += fmt.Sprintf("%s%s %s %s %s\n", cur, mark, pad(name, 10), ui.Bi("Router:", "路由:"), router)
 	}
 	if len(p.names) == 0 {
-		s += "  (无已配置客户端)\n"
+		s += "  (" + ui.Bi("no configured clients", "无已配置客户端") + ")\n"
 	}
-	s += "\n  回车 编辑   空格 切换启用   esc 返回\n"
+	s += "\n  " + ui.Bi("enter Edit", "回车 编辑") + "   " + ui.Bi("space Toggle enabled", "空格 切换启用") +
+		"   " + ui.Bi("esc Back", "esc 返回") + "\n"
 	return s
 }
 
@@ -123,7 +129,7 @@ func newClientDetailPage(app *App, name string) *clientDetailPage {
 		name:   name,
 		cursor: -1, // 默认 toggle 聚焦
 	}
-	p.toggle = NewToggle("启用", c.Enabled).SetFocus(true)
+	p.toggle = NewToggle(ui.Bi("Enabled", "启用"), c.Enabled).SetFocus(true)
 	// 路由字段:只读选择,从「无 + RegisteredRouters」枚举。
 	// choices[0]=""(无), 其余为 RegisteredRouters()。
 	// 仅支持归因回填的客户端提供该字段;其余客户端(CC Switch 不识别)不展示,
@@ -133,7 +139,7 @@ func newClientDetailPage(app *App, name string) *clientDetailPage {
 		routerChoices := append([]string{""}, runtimecfg.RegisteredRouters()...)
 		ti := textinput.New()
 		ti.SetValue(c.Router)
-		field := detailField{label: "绑定路由", input: ti, isRouter: true, choices: routerChoices}
+		field := detailField{label: ui.Bi("Router", "绑定路由"), input: ti, isRouter: true, choices: routerChoices}
 		field.choiceIdx = routerChoiceIndex(c.Router, routerChoices)
 		p.fields = append(p.fields, field)
 	}
@@ -161,7 +167,9 @@ func routerChoiceIndex(router string, choices []string) int {
 	return 0
 }
 
-func (p *clientDetailPage) title() string { return "编辑客户端: " + p.name }
+func (p *clientDetailPage) title() string {
+	return ui.Bi("Edit client", "编辑客户端") + ": " + p.name
+}
 func (p *clientDetailPage) Init() tea.Cmd { return nil }
 
 func (p *clientDetailPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -313,12 +321,12 @@ func (p *clientDetailPage) commit() error {
 }
 
 func (p *clientDetailPage) View() string {
-	s := "编辑客户端: " + p.name + "\n\n"
+	s := ui.Bi("Edit client", "编辑客户端") + ": " + p.name + "\n\n"
 	tc := "  "
 	if p.cursor == -1 {
 		tc = "▸ "
 	}
-	s += tc + p.toggle.View() + "   (空格切换)\n"
+	s += tc + p.toggle.View() + "   (" + ui.Bi("space toggles", "空格切换") + ")\n"
 	for i, f := range p.fields {
 		cur := "  "
 		if i == p.cursor {
@@ -326,11 +334,12 @@ func (p *clientDetailPage) View() string {
 		}
 		hint := ""
 		if f.isRouter {
-			hint = "   (空格/回车选择)"
+			hint = "   (" + ui.Bi("space/enter selects", "空格/回车选择") + ")"
 		}
-		s += cur + pad(f.label, 18) + f.input.View() + hint + "\n"
+		s += cur + pad(f.label, detailLabelColWidth) + f.input.View() + hint + "\n"
 	}
-	s += "\n  esc 应用到草稿并返回(主菜单 s 保存写盘)\n"
+	s += "\n  " + ui.Bi("esc Apply to draft and return (main-menu s saves to disk)",
+		"esc 应用到草稿并返回(主菜单 s 保存写盘)") + "\n"
 	return s
 }
 

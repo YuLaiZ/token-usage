@@ -84,7 +84,7 @@ func (c *ClaudeCollector) Collect(ctx context.Context, req CollectRequest, logge
 		}
 		part, err := parseClaudeMessageFile(file, dateSet, logger)
 		if err != nil {
-			logger.Warn("Claude JSONL 文件解析失败，跳过", "file", file, "error", err)
+			logger.Warn("Claude JSONL file parse failed, skipped", "file", file, "error", err)
 			result.PartialErr = errors.Join(result.PartialErr, fmt.Errorf("%s: %w", file, err))
 			continue
 		}
@@ -244,7 +244,7 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 		entries = append(entries, entry)
 	}
 	if badLines > 0 {
-		logger.Debug("Claude JSONL 行解析失败，跳过",
+		logger.Debug("Claude JSONL line parse failed, skipped",
 			"file", filePath, "count", badLines, "first_line", firstBadLine, "error", firstBadErr)
 	}
 	if err := scanner.Err(); err != nil {
@@ -305,7 +305,7 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 		}
 		timestamp, perr := time.Parse(time.RFC3339, entry.Timestamp)
 		if perr != nil {
-			logger.Debug("Claude assistant 消息时间戳无效，跳过",
+			logger.Debug("Claude assistant message timestamp invalid, skipped",
 				"file", filePath, "message_id", entry.Message.ID, "timestamp", entry.Timestamp, "error", perr)
 			continue
 		}

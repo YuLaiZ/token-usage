@@ -1333,7 +1333,7 @@ func TestCodex_StateDBFailure_LogsWarn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Collect failed: %v", err)
 	}
-	if !handler.HasRecord(slog.LevelWarn, "Codex state DB 查询失败，跳过") {
+	if !handler.HasRecord(slog.LevelWarn, "Codex state DB query failed, skipped") {
 		t.Fatalf("missing state DB warn record: %v", handler.Messages())
 	}
 }

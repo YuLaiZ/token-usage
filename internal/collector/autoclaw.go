@@ -130,7 +130,7 @@ func (c *AutoClawCollector) Collect(ctx context.Context, req CollectRequest, log
 				// ctx 取消：直接返回 ctx.Err，不降级为 PartialErr
 				return result, parseErr
 			}
-			logger.Warn("AutoClaw JSONL 文件解析部分失败，保留已解析消息并记错误", "file", file, "error", parseErr)
+			logger.Warn("AutoClaw JSONL file partially parsed, keeping parsed messages and recording error", "file", file, "error", parseErr)
 			result.PartialErr = errors.Join(result.PartialErr, fmt.Errorf("%s: %w", file, parseErr))
 			// parseErr 时 parser 仍返回已解析的 pmsgs（部分结果保留），继续处理这些消息再记 PartialErr（不 continue 丢弃）。
 		}
@@ -432,7 +432,7 @@ func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, log
 
 		var msg autoclawMessage
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
-			logger.Debug("AutoClaw JSONL 行解析失败，跳过",
+			logger.Debug("AutoClaw JSONL line parse failed, skipped",
 				"file", path, "line", lineNum, "error", err)
 			continue
 		}
@@ -455,7 +455,7 @@ func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, log
 
 		// 顶层 id 为空跳过（防空 id 写入 (client,"") 主键互相覆盖）
 		if msg.ID == "" {
-			logger.Debug("AutoClaw 消息顶层 id 为空，跳过",
+			logger.Debug("AutoClaw message top-level id empty, skipped",
 				"file", path, "line", lineNum)
 			continue
 		}
@@ -475,7 +475,7 @@ func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, log
 		}
 		if ts <= 0 {
 			// message.timestamp=0 且顶层 RFC3339 失败 → 跳过（不产 TS=0 脏消息）
-			logger.Debug("AutoClaw assistant 消息时间戳无效，跳过",
+			logger.Debug("AutoClaw assistant message timestamp invalid, skipped",
 				"file", path, "line", lineNum, "id", msg.ID)
 			continue
 		}

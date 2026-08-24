@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // DefaultConfigPath 返回默认配置路径 ~/.token-usage/config.toml。
@@ -14,7 +16,7 @@ import (
 func DefaultConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("获取用户主目录失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to get user home directory", "获取用户主目录失败"), err)
 	}
 	return ConfigPath(home), nil
 }
@@ -25,20 +27,23 @@ func DefaultConfigPath() (string, error) {
 func LoadUserConfig(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("读取配置文件失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to read config file", "读取配置文件失败"), err)
 	}
 	if strings.TrimSpace(string(raw)) == "" {
-		return nil, fmt.Errorf("配置文件 %s 为空（无有效配置）", path)
+		return nil, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("config file %s is empty (no valid config)", path),
+			fmt.Sprintf("配置文件 %s 为空（无有效配置）", path),
+		))
 	}
 
 	v := viper.New()
 	v.SetConfigType("toml")
 	if err := v.ReadConfig(bytes.NewReader(raw)); err != nil {
-		return nil, fmt.Errorf("读取配置文件失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to read config file", "读取配置文件失败"), err)
 	}
 	var cfg Config
 	if err := v.UnmarshalExact(&cfg); err != nil {
-		return nil, fmt.Errorf("解析配置文件失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to parse config file", "解析配置文件失败"), err)
 	}
 	initMaps(&cfg)
 	return &cfg, nil

@@ -137,12 +137,12 @@ func (c *startupCoordinator) submitOne(ctx context.Context, clientName string, r
 		// ctx 取消/超时：不是采集失败，停止后续请求。
 		// DeadlineExceeded 与 Canceled 同等处理：两者都代表「本次运行生命周期结束」而非采集错误，
 		// 失败计数应保持干净（final state 的 catch_up_failures 只反映真实采集失败）。
-		c.log.Info("startup catch-up 因 ctx 取消停止后续请求",
+		c.log.Info("startup catch-up stopped by ctx cancellation",
 			"client", clientName, "kind", kind, "error", err)
 		return true
 	}
 	*failures++
-	c.log.Error("startup catch-up 失败",
+	c.log.Error("startup catch-up failed",
 		"client", clientName, "kind", kind, "incremental", req.Incremental, "source", req.Source, "error", err)
 	return false
 }
@@ -182,7 +182,7 @@ func (c *startupCoordinator) run(ctx context.Context, ready <-chan struct{}, fat
 		monitorReady: true,
 		catchUp:      phasePending,
 	}); err != nil {
-		c.log.Error("写 runtime-state(ready/pending) 失败，回传 fatal，取消 analyzer",
+		c.log.Error("failed to write runtime-state(ready/pending), returning fatal and cancelling analyzer",
 			"error", err)
 		select {
 		case fatalCh <- err:
@@ -199,7 +199,7 @@ func (c *startupCoordinator) run(ctx context.Context, ready <-chan struct{}, fat
 		monitorReady: true,
 		catchUp:      phaseRunning,
 	}); err != nil {
-		c.log.Error("写 runtime-state(running) 失败，继续 catch-up",
+		c.log.Error("failed to write runtime-state(running), continuing catch-up",
 			"phase", phaseRunning, "error", err)
 	}
 
@@ -223,7 +223,7 @@ func (c *startupCoordinator) run(ctx context.Context, ready <-chan struct{}, fat
 		catchUp:         phase,
 		catchUpFailures: failures,
 	}); err != nil {
-		c.log.Error("写 runtime-state(final) 失败，daemon 继续",
+		c.log.Error("failed to write runtime-state(final), daemon continues",
 			"phase", phase, "failures", failures, "error", err)
 	}
 }

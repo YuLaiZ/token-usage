@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // Windows 进程创建标志（与 internal/daemon/spawn_windows.go 一致）。
@@ -81,11 +83,11 @@ func (inst windowsInstaller) Install(ctx context.Context, stagePath, oldBinPath,
 	// 旧 / 新 hash：旧供 helper backup 校验与回滚，新供替换后 target 校验。
 	oldHash, err := fileSHA256(targetBinPath)
 	if err != nil {
-		return "", fmt.Errorf("事务前校验旧 target hash 失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to verify old target hash before transaction", "事务前校验旧 target hash 失败"), err)
 	}
 	newHash, err := fileSHA256(stagePath)
 	if err != nil {
-		return "", fmt.Errorf("事务前校验新 stage hash 失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to verify new stage hash before transaction", "事务前校验新 stage hash 失败"), err)
 	}
 
 	// 捕获父进程（自身）身份。顺序硬约束：先捕获身份 → 写入 plan.Parent → 再 spawn helper。
@@ -96,16 +98,16 @@ func (inst windowsInstaller) Install(ctx context.Context, stagePath, oldBinPath,
 	}
 	parentIdentity, err := identityProvider()
 	if err != nil {
-		return "", fmt.Errorf("捕获父进程身份失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to capture parent process identity", "捕获父进程身份失败"), err)
 	}
 
 	// 把下载的 stage 复制为 nonce 派生的 stage 文件（helper 只认 nonce 派生路径，杜绝路径注入）。
 	if err := copyFileWithMode(stagePath, paths.Stage); err != nil {
-		return "", fmt.Errorf("复制 stage 到 helper 派生路径失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to copy stage to helper-derived path", "复制 stage 到 helper 派生路径失败"), err)
 	}
 	if err := verifyFileHash(paths.Stage, newHash); err != nil {
 		_ = removeRegularFile(paths.Stage)
-		return "", fmt.Errorf("helper stage 校验失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("helper stage verification failed", "helper stage 校验失败"), err)
 	}
 
 	// 写 helper 计划（0600 原子写）。Parent 携带捕获的父进程身份，plan 写后不再改写。
@@ -119,13 +121,13 @@ func (inst windowsInstaller) Install(ctx context.Context, stagePath, oldBinPath,
 	}
 	if err := writeHelperPlan(paths.Plan, plan); err != nil {
 		_ = removeRegularFile(paths.Stage)
-		return "", fmt.Errorf("写 helper 计划失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to write helper plan", "写 helper 计划失败"), err)
 	}
 
 	// 复制当前 target 为 helper.exe（helper 自身是当前二进制的独立副本，可独立运行）。
 	if err := copyFileWithMode(targetBinPath, paths.Helper); err != nil {
 		_ = cleanupTransactionFiles(paths.Stage, "", paths.Plan)
-		return "", fmt.Errorf("复制 helper.exe 失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to copy helper.exe", "复制 helper.exe 失败"), err)
 	}
 
 	// spawn helper.exe 隐藏进程：_update-helper --plan <planPath>。
@@ -135,7 +137,7 @@ func (inst windowsInstaller) Install(ctx context.Context, stagePath, oldBinPath,
 	if err := spawnUpdateHelper(paths.Helper, paths.Plan, inst.logDir); err != nil {
 		_ = cleanupTransactionFiles(paths.Stage, "", paths.Plan)
 		_ = removeRegularFile(paths.Helper)
-		return "", fmt.Errorf("spawn 后台 helper 失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to spawn background helper", "spawn 后台 helper 失败"), err)
 	}
 
 	// helper 已接管：返回 sentinel，installUnderLock 据此跳过 Start/Commit/Rollback。
@@ -150,7 +152,7 @@ func CaptureCurrentIdentity() (ProcessIdentity, error) {
 	pid := windows.GetCurrentProcessId()
 	var creation, exit, kernel, user windows.Filetime
 	if err := windows.GetProcessTimes(windows.CurrentProcess(), &creation, &exit, &kernel, &user); err != nil {
-		return ProcessIdentity{}, fmt.Errorf("GetProcessTimes(自身) 失败: %w", err)
+		return ProcessIdentity{}, fmt.Errorf("%s: %w", ui.Bi("GetProcessTimes(self) failed", "GetProcessTimes(自身) 失败"), err)
 	}
 	return ProcessIdentity{
 		PID:          pid,

@@ -136,7 +136,7 @@ func (c *CodexCollector) Collect(ctx context.Context, req CollectRequest, logger
 			threads, err = readThreads(ctx, dbPath)
 		}
 		if err != nil {
-			logger.Warn("Codex state DB 查询失败，跳过", "db_path", dbPath, "error", err)
+			logger.Warn("Codex state DB query failed, skipped", "db_path", dbPath, "error", err)
 			partialErr = errors.Join(partialErr, fmt.Errorf("%s: %w", dbPath, err))
 			continue
 		}
@@ -152,13 +152,13 @@ func (c *CodexCollector) Collect(ctx context.Context, req CollectRequest, logger
 			if err != nil {
 				wrapped := fmt.Errorf("%s: %w", th.RolloutPath, err)
 				partialErr = errors.Join(partialErr, wrapped)
-				logger.Warn("Codex rollout_path 访问失败，跳过", "rollout_path", th.RolloutPath, "error", err)
+				logger.Warn("Codex rollout_path access failed, skipped", "rollout_path", th.RolloutPath, "error", err)
 				continue
 			}
 			if !info.Mode().IsRegular() {
 				wrapped := fmt.Errorf("%s 不是普通文件", th.RolloutPath)
 				partialErr = errors.Join(partialErr, wrapped)
-				logger.Warn("Codex rollout_path 不是普通文件，跳过", "rollout_path", th.RolloutPath)
+				logger.Warn("Codex rollout_path not a regular file, skipped", "rollout_path", th.RolloutPath)
 				continue
 			}
 			part, perr := parseCodexRolloutContext(ctx, th.RolloutPath, th, dateSet)
@@ -167,7 +167,7 @@ func (c *CodexCollector) Collect(ctx context.Context, req CollectRequest, logger
 					return result, perr
 				}
 				partialErr = errors.Join(partialErr, fmt.Errorf("%s: %w", th.RolloutPath, perr))
-				logger.Warn("Codex rollout 解析失败，跳过", "rollout_path", th.RolloutPath, "error", perr)
+				logger.Warn("Codex rollout parse failed, skipped", "rollout_path", th.RolloutPath, "error", perr)
 				continue
 			}
 			result.Messages = append(result.Messages, part.Messages...)
@@ -236,7 +236,7 @@ func (c *CodexCollector) collectExistingJSONL(ctx context.Context, logger *slog.
 			}
 			wrapped := fmt.Errorf("%s: %w", path, err)
 			result.PartialErr = errors.Join(result.PartialErr, wrapped)
-			logger.Warn("Codex 现存 rollout 解析失败，跳过", "rollout_path", path, "error", err)
+			logger.Warn("Codex existing rollout parse failed, skipped", "rollout_path", path, "error", err)
 			continue
 		}
 		result.Messages = append(result.Messages, part.Messages...)

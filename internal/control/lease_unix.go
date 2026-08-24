@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // leaseReaderFromEnv 从 env 解析 POSIX 父 lease：读取 TOKEN_USAGE_LEASE_FD，打开对应 fd
@@ -98,7 +100,7 @@ func (h *leasePipeHolder) appendEnv(env []string) []string {
 func newLeasePipeHolder(extraFilesIndex int) (*leasePipeHolder, error) {
 	r, w, err := os.Pipe()
 	if err != nil {
-		return nil, fmt.Errorf("创建 lease pipe 失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to create lease pipe", "创建 lease pipe 失败"), err)
 	}
 	return &leasePipeHolder{
 		readFile:        r,

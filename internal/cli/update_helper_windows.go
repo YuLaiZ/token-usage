@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/control"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 	"github.com/YuLaiZ/token-usage/internal/update"
 )
 
@@ -34,24 +35,24 @@ const cleanupWaitTimeout = 2 * time.Minute
 func runUpdateHelperCmd(ctx context.Context, planPath string) error {
 	selfExe, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("解析 helper 自身路径失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to resolve helper own path", "解析 helper 自身路径失败"), err)
 	}
 
 	// 装配 Windows seam + control.Manager + ConfigLoader。
 	parent, mover, result := update.NewWindowsHelperSeams()
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("获取用户主目录失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to get user home directory", "获取用户主目录失败"), err)
 	}
 	mgr, err := control.NewManager(home)
 	if err != nil {
-		return fmt.Errorf("创建进程控制管理器失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to create process control manager", "创建进程控制管理器失败"), err)
 	}
 	cm := update.NewControlManager(mgr)
 
 	runner, err := update.NewHelperRunner(parent, mover, result, cm, loadConfig, os.Stderr)
 	if err != nil {
-		return fmt.Errorf("装配 helper runner 失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to assemble helper runner", "装配 helper runner 失败"), err)
 	}
 
 	if err := runner.Run(ctx, selfExe, planPath); err != nil {
@@ -70,7 +71,7 @@ func runUpdateHelperCmd(ctx context.Context, planPath string) error {
 	// 杜绝 helper PID 被复用后 cleanup 误等无关进程。
 	helperID, err := update.CaptureCurrentIdentity()
 	if err != nil {
-		return fmt.Errorf("捕获 helper 自身身份失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to capture helper own identity", "捕获 helper 自身身份失败"), err)
 	}
 	return spawnUpdateCleanup(validated.Paths.Target, validated.Paths.Plan, helperID.PID, helperID.CreationTime)
 }
@@ -79,11 +80,11 @@ func runUpdateHelperCmd(ctx context.Context, planPath string) error {
 func runUpdateCleanupCmd(ctx context.Context, planPath string, helperPID int, helperCreationTime uint64) error {
 	selfExe, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("解析 cleanup 自身路径失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to resolve cleanup own path", "解析 cleanup 自身路径失败"), err)
 	}
 	validated, err := update.ValidateCleanupPlan(selfExe, planPath)
 	if err != nil {
-		return fmt.Errorf("校验 cleanup 计划失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to validate cleanup plan", "校验 cleanup 计划失败"), err)
 	}
 
 	// 按 helper 身份（PID + 创建时间）等待其退出（helper.exe 运行时无法删除）。
@@ -96,7 +97,7 @@ func runUpdateCleanupCmd(ctx context.Context, planPath string, helperPID int, he
 	waitCtx, cancel := context.WithTimeout(ctx, cleanupWaitTimeout)
 	defer cancel()
 	if err := update.WaitProcessIdentity(waitCtx, probe, identity); err != nil {
-		return fmt.Errorf("等待 helper 退出失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to wait for helper exit", "等待 helper 退出失败"), err)
 	}
 	return update.CleanupHelperTempFiles(filepath.Dir(validated.Paths.Target), validated.Plan.TargetBasename, validated.Plan.Nonce)
 }
@@ -114,7 +115,7 @@ func spawnUpdateCleanup(newTarget, planPath string, helperPID uint32, helperCrea
 		HideWindow:    true,
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("spawn cleanup 失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to spawn cleanup", "spawn cleanup 失败"), err)
 	}
 	_ = cmd.Process.Release()
 	return nil

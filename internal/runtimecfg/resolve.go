@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // DefaultPathProvider 把 client/router 的默认路径规则抽象为可注入接口。
@@ -43,13 +44,16 @@ type ResolveEnv struct {
 // 把非法配置带入 daemon、collector 或 service。
 func ResolveEffectiveConfig(user *config.Config, env ResolveEnv) (*config.Config, error) {
 	if env.DefaultPaths == nil {
-		return nil, fmt.Errorf("ResolveEnv.DefaultPaths 不能为 nil（解析有效配置需要默认路径 provider）")
+		return nil, fmt.Errorf("%s", ui.Bi("ResolveEnv.DefaultPaths must not be nil (resolving effective config requires a default path provider)", "ResolveEnv.DefaultPaths 不能为 nil（解析有效配置需要默认路径 provider）"))
 	}
 	if env.Home == "" || !filepath.IsAbs(env.Home) {
-		return nil, fmt.Errorf("ResolveEnv.Home 必须是非空绝对路径，当前 %q", env.Home)
+		return nil, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("ResolveEnv.Home must be a non-empty absolute path, got %q", env.Home),
+			fmt.Sprintf("ResolveEnv.Home 必须是非空绝对路径，当前 %q", env.Home),
+		))
 	}
 	if env.GOOS == "" {
-		return nil, fmt.Errorf("ResolveEnv.GOOS 不能为空")
+		return nil, fmt.Errorf("%s", ui.Bi("ResolveEnv.GOOS must not be empty", "ResolveEnv.GOOS 不能为空"))
 	}
 	if err := ValidateUserConfig(user); err != nil {
 		return nil, err
@@ -66,7 +70,7 @@ func ResolveEffectiveConfig(user *config.Config, env ResolveEnv) (*config.Config
 	applyCoreDefaults(eff)
 
 	if err := env.DefaultPaths.ApplyDefaults(eff, env.Home, env.GOOS); err != nil {
-		return nil, fmt.Errorf("应用默认路径失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to apply default paths", "应用默认路径失败"), err)
 	}
 	return eff, nil
 }
@@ -84,7 +88,10 @@ func LoadEffectiveConfig(path string, env ResolveEnv) (*config.Config, error) {
 		return nil, err
 	}
 	if !snap.Exists {
-		return nil, fmt.Errorf("配置文件 %s 不存在，请先执行 `token-usage config init`", path)
+		return nil, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("config file %s not found; run `token-usage config init` first", path),
+			fmt.Sprintf("配置文件 %s 不存在，请先执行 `token-usage config init`", path),
+		))
 	}
 	if err := ValidateUserConfig(snap.Config); err != nil {
 		return nil, err
@@ -120,10 +127,10 @@ func ValidateUserConfigForWrite(user *config.Config) error {
 
 func validateUserConfig(user *config.Config, forWrite bool) error {
 	if user == nil {
-		return fmt.Errorf("配置不能为 nil")
+		return fmt.Errorf("%s", ui.Bi("config must not be nil", "配置不能为 nil"))
 	}
 	if user.DataDir != "" && strings.TrimSpace(user.DataDir) == "" {
-		return fmt.Errorf("data_dir 不能只包含空白字符")
+		return fmt.Errorf("%s", ui.Bi("data_dir must not be whitespace-only", "data_dir 不能只包含空白字符"))
 	}
 	for name := range user.Clients {
 		if !isRegisteredClient(name) {
@@ -131,7 +138,10 @@ func validateUserConfig(user *config.Config, forWrite bool) error {
 		}
 		for key := range user.Clients[name].Paths {
 			if !isValidClientPathKey(name, key) {
-				return fmt.Errorf("未注册的 path key %q（client %q 受支持: %v）", key, name, RegisteredClientPathKeys(name))
+				return fmt.Errorf("%s", ui.Bi(
+					fmt.Sprintf("unregistered path key %q (client %q supports: %v)", key, name, RegisteredClientPathKeys(name)),
+					fmt.Sprintf("未注册的 path key %q（client %q 受支持: %v）", key, name, RegisteredClientPathKeys(name)),
+				))
 			}
 		}
 		if r := user.Clients[name].Router; r != "" {
@@ -139,7 +149,10 @@ func validateUserConfig(user *config.Config, forWrite bool) error {
 				return errNotRegistered("router", r)
 			}
 			if forWrite && !ClientSupportsRouter(name) {
-				return fmt.Errorf("client %q 不支持 router 归因（当前仅 %v 支持）；请移除 clients.%s.router 或留空", name, RouterCapableClients(), name)
+				return fmt.Errorf("%s", ui.Bi(
+					fmt.Sprintf("client %q does not support router attribution (currently supported: %v); remove clients.%s.router or leave it empty", name, RouterCapableClients(), name),
+					fmt.Sprintf("client %q 不支持 router 归因（当前仅 %v 支持）；请移除 clients.%s.router 或留空", name, RouterCapableClients(), name),
+				))
 			}
 		}
 	}
@@ -149,20 +162,32 @@ func validateUserConfig(user *config.Config, forWrite bool) error {
 		}
 	}
 	if !isRegisteredLogLevel(user.Log.Level) {
-		return fmt.Errorf("未注册的 log level %q（受支持: %v）", user.Log.Level, RegisteredLogLevels())
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("unregistered log level %q (supported: %v)", user.Log.Level, RegisteredLogLevels()),
+			fmt.Sprintf("未注册的 log level %q（受支持: %v）", user.Log.Level, RegisteredLogLevels()),
+		))
 	}
 	if user.Daemon.PollInterval < 0 {
-		return fmt.Errorf("daemon.poll_interval 不能为负数（0 表示使用默认值，当前 %d）", user.Daemon.PollInterval)
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("daemon.poll_interval must not be negative (0 means use the default, got %d)", user.Daemon.PollInterval),
+			fmt.Sprintf("daemon.poll_interval 不能为负数（0 表示使用默认值，当前 %d）", user.Daemon.PollInterval),
+		))
 	}
 	if user.Log.MaxDays < 0 {
-		return fmt.Errorf("log.max_days 不能为负数（0 表示使用默认值，当前 %d）", user.Log.MaxDays)
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("log.max_days must not be negative (0 means use the default, got %d)", user.Log.MaxDays),
+			fmt.Sprintf("log.max_days 不能为负数（0 表示使用默认值，当前 %d）", user.Log.MaxDays),
+		))
 	}
 	for key, val := range user.ProviderAliases {
 		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("provider_aliases 的 key 不能为空")
+			return fmt.Errorf("%s", ui.Bi("provider_aliases keys must not be empty", "provider_aliases 的 key 不能为空"))
 		}
 		if strings.TrimSpace(val) == "" {
-			return fmt.Errorf("provider_aliases[%q] 的 value 不能为空", key)
+			return fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("provider_aliases[%q] value must not be empty", key),
+				fmt.Sprintf("provider_aliases[%q] 的 value 不能为空", key),
+			))
 		}
 	}
 	return nil

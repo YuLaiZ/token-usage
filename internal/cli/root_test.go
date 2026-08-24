@@ -1,10 +1,13 @@
 package cli
 
 import (
-	"github.com/spf13/cobra"
+	"bytes"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // TestRootCommand_HasSubcommands 收口：root 必须列出且仅列出
@@ -113,5 +116,96 @@ func checkShortBilingual(t *testing.T, c *cobra.Command, han *regexp.Regexp) {
 	}
 	for _, sub := range c.Commands() {
 		checkShortBilingual(t, sub, han)
+	}
+}
+
+// TestHelpOutputBilingualLongAndFlagsButEnglishSkeleton 收口：--help 输出中
+// 自定义文案（Long、flag usage）必须双语，cobra 框架骨架（Usage/Flags 布局）
+// 保持英文。
+func TestHelpOutputBilingualLongAndFlagsButEnglishSkeleton(t *testing.T) {
+	cases := []struct {
+		args          []string
+		wantBilingual []string // 双语断言片段：英文与中文各取代表
+	}{
+		{[]string{"start", "--help"}, []string{"returns immediately", "后台启动守护进程"}},
+		{[]string{"collect", "--help"}, []string{"client X limits to one client", "限定单客户端"}},
+	}
+	han := regexp.MustCompile(`\p{Han}`)
+	for _, tc := range cases {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			root := NewRootCmd()
+			root.SetArgs(tc.args)
+			var buf bytes.Buffer
+			root.SetOut(&buf)
+			root.SetErr(&buf)
+			if err := root.Execute(); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			got := buf.String()
+			for _, want := range tc.wantBilingual {
+				if !strings.Contains(got, want) {
+					t.Errorf("--help 输出缺少 %q:\n%s", want, got)
+				}
+			}
+			// 自定义 flag usage 双语：collect --client 描述含中文与英文。
+			if strings.Join(tc.args, " ") == "collect --help" {
+				if !strings.Contains(got, "--client") || !han.MatchString(got) {
+					t.Errorf("--client usage 应为双语:\n%s", got)
+				}
+			}
+			// cobra 骨架保持英文。
+			for _, skeleton := range []string{"Usage:", "Flags:"} {
+				if !strings.Contains(got, skeleton) {
+					t.Errorf("--help 骨架 %q 缺失（应保持英文骨架）:\n%s", skeleton, got)
+				}
+			}
+		})
+	}
+}
+
+// TestFailureCausePrintedOnce 收口：start/stop/restart/update 失败时，cause
+// 文本在完整 cobra 输出（含 Error: 行与 usage）中恰好出现一次——命令不得
+// 手写 stderr 后再返回同一错误（双打）。
+func TestFailureCausePrintedOnce(t *testing.T) {
+	restoreCfg := injectStartConfig(startCfgEnabled(), nil)
+	defer restoreCfg()
+	orig := controlManagerFactory
+	defer func() { controlManagerFactory = orig }()
+	controlManagerFactory = func() (controlStartStopper, error) {
+		return &stubControlStartStop{
+			startErr:   errStartBoom,
+			stopErr:    errors.New("stop boom"),
+			restartErr: errors.New("restart boom"),
+		}, nil
+	}
+	// update --version 非法值校验先于工厂调用，真实校验路径不会用到 stub；
+	// --check 失败路径经工厂注入确定性错误。
+	withStubUpdateService(t, &stubUpdateService{checkErr: errors.New("update check boom")})
+
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		cause string
+	}{
+		{"start", []string{"start"}, "start boom"},
+		{"stop", []string{"stop"}, "stop boom"},
+		{"restart", []string{"restart"}, "restart boom"},
+		{"update invalid version", []string{"update", "--version", "invalid"}, "missing the v prefix"},
+		{"update check failure", []string{"update", "--check"}, "update check boom"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := NewRootCmd()
+			root.SetArgs(tc.args)
+			var out, errOut bytes.Buffer
+			root.SetOut(&out)
+			root.SetErr(&errOut)
+			if err := root.Execute(); err == nil {
+				t.Fatal("expected command failure")
+			}
+			combined := out.String() + errOut.String()
+			if n := strings.Count(combined, tc.cause); n != 1 {
+				t.Errorf("失败 cause %q 出现 %d 次，应恰好一次（cobra 单次输出）:\n%s", tc.cause, n, combined)
+			}
+		})
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/engine"
 	"github.com/YuLaiZ/token-usage/internal/logger"
 	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // cmdContext 返回 cobra 命令的 context；若命令未挂到根（如单测直接 newStartCmd().RunE），
@@ -45,7 +46,7 @@ var newDepsFactory = engine.NewDeps
 func defaultResolveEnv() (runtimecfg.ResolveEnv, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return runtimecfg.ResolveEnv{}, fmt.Errorf("获取用户主目录失败: %w", err)
+		return runtimecfg.ResolveEnv{}, fmt.Errorf("%s: %w", ui.Bi("failed to get user home directory", "获取用户主目录失败"), err)
 	}
 	return runtimecfg.ResolveEnv{Home: home, GOOS: goruntime.GOOS, DefaultPaths: runtimecfg.NewStandardProvider()}, nil
 }
@@ -71,16 +72,16 @@ func loadConfig() (*config.Config, error) {
 func loadRuntime() (*runtime, func(), error) {
 	cfg, err := loadConfig()
 	if err != nil {
-		return nil, nil, fmt.Errorf("加载配置失败: %w", err)
+		return nil, nil, fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 	}
 	log, err := logger.Init(cfg.Log.Level, cfg.Log.Dir, cfg.Log.MaxDays)
 	if err != nil {
-		return nil, nil, fmt.Errorf("初始化日志失败: %w", err)
+		return nil, nil, fmt.Errorf("%s: %w", ui.Bi("failed to init logger", "初始化日志失败"), err)
 	}
 	usageDB, err := dbOpener(filepath.Join(cfg.DataDir, "usage.db"))
 	if err != nil {
 		logger.Close()
-		return nil, nil, fmt.Errorf("打开数据库失败: %w", err)
+		return nil, nil, fmt.Errorf("%s: %w", ui.Bi("failed to open database", "打开数据库失败"), err)
 	}
 	cleanup := func() {
 		usageDB.Close()

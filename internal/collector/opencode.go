@@ -717,7 +717,7 @@ func loadProviderMapping(cacheDir string, logger *slog.Logger) map[string]string
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
-		logger.Warn("opencode models.json 解析失败，provider 映射降级为空", "path", modelsPath, "error", err)
+		logger.Warn("opencode models.json parse failed, provider mapping degraded to empty", "path", modelsPath, "error", err)
 		return map[string]string{}
 	}
 	mapping := make(map[string]string, len(raw))

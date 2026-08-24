@@ -7,6 +7,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // aliasesPage provider_aliases 页:list key→value,a 新增/d 删除/enter 编辑 value。
@@ -31,9 +33,9 @@ func newAliasesPage(app *App) *aliasesPage {
 	p := &aliasesPage{app: app}
 	p.refreshKeys()
 	p.keyInput = textinput.New()
-	p.keyInput.Placeholder = "provider key"
+	p.keyInput.Placeholder = ui.Bi("provider key", "provider 键")
 	p.valInput = textinput.New()
-	p.valInput.Placeholder = "display name"
+	p.valInput.Placeholder = ui.Bi("display name", "显示名称")
 	return p
 }
 
@@ -46,7 +48,7 @@ func (p *aliasesPage) refreshKeys() {
 	sort.Strings(p.keys)
 }
 
-func (p *aliasesPage) title() string { return "Provider 别名" }
+func (p *aliasesPage) title() string { return ui.Bi("Provider aliases", "Provider 别名") }
 func (p *aliasesPage) Init() tea.Cmd { return nil }
 
 // add 新增或覆盖 alias(key→value)。key/value 均 trim 后非空才写入。
@@ -56,7 +58,7 @@ func (p *aliasesPage) add(key, val string) bool {
 	k := strings.TrimSpace(key)
 	v := strings.TrimSpace(val)
 	if k == "" || v == "" {
-		p.feedback = "key 和 value 不能为空"
+		p.feedback = ui.Bi("key and value must not be empty", "key 和 value 不能为空")
 		return false
 	}
 	overwrite := false
@@ -69,9 +71,9 @@ func (p *aliasesPage) add(key, val string) bool {
 	p.app.draft.ProviderAliases[k] = v
 	p.refreshKeys()
 	if overwrite {
-		p.feedback = fmt.Sprintf("已覆盖 %s", k)
+		p.feedback = ui.Bi(fmt.Sprintf("overwritten %s", k), fmt.Sprintf("已覆盖 %s", k))
 	} else {
-		p.feedback = fmt.Sprintf("已新增 %s", k)
+		p.feedback = ui.Bi(fmt.Sprintf("added %s", k), fmt.Sprintf("已新增 %s", k))
 	}
 	return true
 }
@@ -81,12 +83,12 @@ func (p *aliasesPage) add(key, val string) bool {
 // 与 cloneConfig 对齐(避免 nil↔empty 转换触发 dirty 误报)。
 func (p *aliasesPage) deleteKey(key string) bool {
 	if _, ok := p.app.draft.ProviderAliases[key]; !ok {
-		p.feedback = "无可删除的项"
+		p.feedback = ui.Bi("nothing to delete", "无可删除的项")
 		return false
 	}
 	delete(p.app.draft.ProviderAliases, key)
 	p.refreshKeys()
-	p.feedback = fmt.Sprintf("已删除 %s", key)
+	p.feedback = ui.Bi(fmt.Sprintf("deleted %s", key), fmt.Sprintf("已删除 %s", key))
 	return true
 }
 
@@ -95,15 +97,15 @@ func (p *aliasesPage) deleteKey(key string) bool {
 func (p *aliasesPage) editValue(key, val string) bool {
 	v := strings.TrimSpace(val)
 	if v == "" {
-		p.feedback = "value 不能为空"
+		p.feedback = ui.Bi("value must not be empty", "value 不能为空")
 		return false
 	}
 	if _, ok := p.app.draft.ProviderAliases[key]; ok {
 		p.app.draft.ProviderAliases[key] = v
-		p.feedback = fmt.Sprintf("已更新 %s", key)
+		p.feedback = ui.Bi(fmt.Sprintf("updated %s", key), fmt.Sprintf("已更新 %s", key))
 		return true
 	}
-	p.feedback = "键不存在"
+	p.feedback = ui.Bi("key not found", "键不存在")
 	return false
 }
 
@@ -206,7 +208,7 @@ func (p *aliasesPage) delegateInput(msg tea.Msg) *aliasesPage {
 }
 
 func (p *aliasesPage) View() string {
-	s := "Provider 别名\n\n"
+	s := ui.Bi("Provider aliases", "Provider 别名") + "\n\n"
 	for i, k := range p.keys {
 		cur := "  "
 		if i == p.cursor && p.cursor < len(p.keys) {
@@ -215,16 +217,17 @@ func (p *aliasesPage) View() string {
 		s += cur + k + " → " + p.app.draft.ProviderAliases[k] + "\n"
 	}
 	if len(p.keys) == 0 {
-		s += "  (无别名)\n"
+		s += "  (" + ui.Bi("no aliases", "无别名") + ")\n"
 	}
 	if p.mode == 1 {
-		s += "\n  新增 key: " + p.keyInput.View() + "\n"
+		s += "\n  " + ui.Bi("new key", "新增 key") + ": " + p.keyInput.View() + "\n"
 	} else if p.mode == 2 {
-		s += "\n  " + p.editKey + " 的 value: " + p.valInput.View() + "\n"
+		s += "\n  " + ui.Bi("value of "+p.editKey, p.editKey+" 的 value") + ": " + p.valInput.View() + "\n"
 	}
 	if p.feedback != "" {
 		s += "\n  " + p.feedback + "\n"
 	}
-	s += "\n  a 新增   d 删除   enter 编辑   esc 返回\n"
+	s += "\n  " + ui.Bi("a Add", "a 新增") + "   " + ui.Bi("d Delete", "d 删除") + "   " +
+		ui.Bi("enter Edit", "enter 编辑") + "   " + ui.Bi("esc Back", "esc 返回") + "\n"
 	return s
 }

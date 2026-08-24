@@ -1,6 +1,10 @@
 package tui
 
 import (
+	"strings"
+
+	"github.com/mattn/go-runewidth"
+
 	"errors"
 	"fmt"
 	"reflect"
@@ -10,6 +14,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/configapp"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // ApplyFunc 是 TUI 保存的唯一依赖:把 (expectedRevision, currentUser 草稿) 应用到磁盘。
@@ -52,8 +57,8 @@ type committer interface {
 	commit() error
 }
 
-// noChangesMsg 无 dirty 且无 syncPending 时按 s 的提示。
-const noChangesMsg = "没有待保存的更改"
+// noChangesMsg 无 dirty 且无 syncPending 时按 s 的提示(const 不能调 ui.Bi,字面量保持「English / 中文」格式)。
+const noChangesMsg = "No pending changes / 没有待保存的更改"
 
 // saveMsg 保存完成消息(由 save() 返回的 tea.Cmd 产生, App.Update 处理)。
 type saveMsg struct {
@@ -73,13 +78,13 @@ type saveSkippedMsg struct{}
 // 进入 TUI 时 draft/display/diskRevision 必须来自同一次 snapshot 读取。
 func Run(draft, display *config.Config, diskRevision []byte, apply ApplyFunc) error {
 	if draft == nil {
-		return errors.New("TUI 用户配置不能为空")
+		return errors.New(ui.Bi("TUI user config must not be nil", "TUI 用户配置不能为空"))
 	}
 	if display == nil {
-		return errors.New("TUI 有效配置不能为空")
+		return errors.New(ui.Bi("TUI display config must not be nil", "TUI 有效配置不能为空"))
 	}
 	if apply == nil {
-		return errors.New("TUI 保存回调不能为空")
+		return errors.New(ui.Bi("TUI apply callback must not be nil", "TUI 保存回调不能为空"))
 	}
 	a := &App{
 		draft:        draft,
@@ -117,7 +122,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case saveMsg:
 		return a, a.handleSaveMsg(m)
 	case saveSkippedMsg:
-		a.statusMsg = "正在保存,请稍候"
+		a.statusMsg = ui.Bi("Saving in progress, please wait", "正在保存,请稍候")
 		return a, nil
 	case tea.KeyMsg:
 		// 确认层优先:拦截所有按键(d=放弃退出 / s=保存并退出 / esc或其他=返回编辑)。
@@ -145,7 +150,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // saving=true → 提示保存进行中,不退出。dirty → 进确认层。clean → tea.Quit。
 func (a *App) handleExitKey(m tea.KeyMsg) tea.Cmd {
 	if a.saving {
-		a.statusMsg = "保存进行中,请稍候"
+		a.statusMsg = ui.Bi("Save in progress, please wait", "保存进行中,请稍候")
 		return nil
 	}
 	if a.dirty() {
@@ -164,7 +169,7 @@ func (a *App) handleConfirmQuitKey(m tea.KeyMsg) tea.Cmd {
 	case "d":
 		// saving 保护:保存进行中即便确认层「放弃」也不得退出。
 		if a.saving {
-			a.statusMsg = "保存进行中,请稍候"
+			a.statusMsg = ui.Bi("Save in progress, please wait", "保存进行中,请稍候")
 			return nil
 		}
 		// 放弃并退出:直接退出,不保存。
@@ -203,16 +208,19 @@ func (a *App) handleSaveMsg(sm saveMsg) tea.Cmd {
 
 	// revision conflict: 配置已被其他进程修改。保留 draft 和 dirty, 提示重新载入。
 	if errors.Is(sm.err, configapp.ErrConfigChangedExternally) {
-		a.statusMsg = "配置已被其他进程修改，请退出后重新进入以载入最新配置（TUI 不会自动覆盖外部改动）"
+		a.statusMsg = ui.Bi(
+			"The config was modified by another process; exit and re-enter to load the latest version (the TUI never overwrites external changes)",
+			"配置已被其他进程修改，请退出后重新进入以载入最新配置（TUI 不会自动覆盖外部改动）",
+		)
 		a.quitAfterSave = false
 		return nil
 	}
 
 	if !sm.result.ConfigApplied {
 		// 写入前/校验/revision 失败: 基线/revision 不变, draft 保持 dirty。
-		msg := "保存失败"
+		msg := ui.Bi("Save failed", "保存失败")
 		if sm.err != nil {
-			msg = "保存失败:" + sm.err.Error()
+			msg = ui.Bi("Save failed", "保存失败") + ": " + sm.err.Error()
 		}
 		a.statusMsg = msg
 		a.quitAfterSave = false
@@ -233,7 +241,7 @@ func (a *App) handleSaveMsg(sm saveMsg) tea.Cmd {
 
 	// 组合 statusMsg: 优先用 ApplyConfigResult 的结构化信息(SuccessMessage/SuggestedSteps/
 	// ExplanatoryNotes), 再叠加自启同步失败提示。
-	a.statusMsg = a.composeSaveStatus(sm) + "\n（按 q 退出，或继续编辑）"
+	a.statusMsg = a.composeSaveStatus(sm) + "\n" + ui.Bi("(Press q to quit, or keep editing)", "（按 q 退出，或继续编辑）")
 
 	// quitAfterSave 衔接: 干净成功(ConfigApplied=true 且无 PartialErrors)才退出。
 	// AutoStart 失败(syncPending)或 PartialErrors 都视为非干净成功,清 quitAfterSave 留编辑器。
@@ -254,23 +262,26 @@ func (a *App) composeSaveStatus(sm saveMsg) string {
 	if sm.result.SuccessMessage != "" {
 		parts = append(parts, sm.result.SuccessMessage)
 	} else {
-		parts = append(parts, "已保存")
+		parts = append(parts, ui.Bi("Saved", "已保存"))
 	}
 	if a.syncPending {
-		parts = append(parts, "自启定义同步失败:"+sm.result.AutoStart.Err.Error()+"（下次按 s 重试）")
+		parts = append(parts, ui.Bi(
+			"Auto-start definition sync failed: "+sm.result.AutoStart.Err.Error()+" (press s to retry)",
+			"自启定义同步失败:"+sm.result.AutoStart.Err.Error()+"（下次按 s 重试）",
+		))
 	}
 	// 非自启 PartialErrors 也展示(自启的已在 syncPending 分支覆盖)。
 	for _, e := range sm.result.PartialErrors {
 		if isAutoStartErr(e, sm.result.AutoStart.Err) {
 			continue
 		}
-		parts = append(parts, "部分失败:"+e.Error())
+		parts = append(parts, ui.Bi("Partial failure: "+e.Error(), "部分失败:"+e.Error()))
 	}
 	for _, n := range sm.result.ExplanatoryNotes {
 		parts = append(parts, n)
 	}
 	if len(sm.result.SuggestedSteps) > 0 {
-		parts = append(parts, "建议:")
+		parts = append(parts, ui.Bi("Suggested steps:", "建议:"))
 		for _, s := range sm.result.SuggestedSteps {
 			parts = append(parts, "  "+s)
 		}
@@ -298,12 +309,12 @@ func (a *App) View() string {
 		return ""
 	}
 	top := a.stack[len(a.stack)-1]
-	header := lipgloss.NewStyle().Bold(true).Render("token-usage 配置")
+	header := lipgloss.NewStyle().Bold(true).Render(ui.Bi("token-usage config", "token-usage 配置"))
 	if a.dirty() {
-		header += "   ⚠ 未保存改动"
+		header += "   ⚠ " + ui.Bi("Unsaved changes", "未保存改动")
 	}
 	if a.syncPending {
-		header += "   ↻ 同步待重试"
+		header += "   ↻ " + ui.Bi("Sync retry pending", "同步待重试")
 	}
 	body := top.View()
 	if a.statusMsg != "" {
@@ -311,9 +322,42 @@ func (a *App) View() string {
 	}
 	// 确认层覆盖:dirty 退出时显示三选项(d 放弃退出 / s 保存并退出 / esc 返回)。
 	if a.confirmQuit {
-		body += "\n有未保存的改动,确认退出?\n  d 放弃并退出   s 保存并退出   esc/其他 返回编辑\n"
+		body += "\n" + ui.Bi("Unsaved changes, quit anyway?", "有未保存的改动,确认退出?") + "\n" +
+			"  d " + ui.Bi("Discard and quit", "放弃并退出") +
+			"   s " + ui.Bi("Save and quit", "保存并退出") +
+			"   esc/" + ui.Bi("other Back to edit", "其他 返回编辑") + "\n"
 	}
-	return header + "\n\n" + body
+	return wrapViewLines(header+"\n\n"+body, a.width)
+}
+
+// wrapViewLines 是终端宽度兜底：双语化后说明/帮助等长行在窄终端必须按显示
+// 宽度折行，否则被终端硬截断；含 ANSI 转义的行经 WrapANSI 按可见文本计宽
+// 折行。前导缩进统一前置到每段（按剩余宽度折行，prefix+段 ≤ width）。
+// width 未知（WindowSizeMsg 未到达，如测试）时不处理。
+func wrapViewLines(view string, width int) string {
+	if width <= 0 {
+		return view
+	}
+	var b strings.Builder
+	for i, line := range strings.Split(view, "\n") {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		prefix := line[:len(line)-len(strings.TrimLeft(line, " "))]
+		prefixW := runewidth.StringWidth(prefix)
+		if prefixW >= width {
+			b.WriteString(line)
+			continue
+		}
+		// WrapANSI 对含样式转义的行（如 header）同样按可见文本显示宽度折行。
+		for j, seg := range ui.WrapANSI(strings.TrimLeft(line, " "), width-prefixW) {
+			if j > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(prefix + seg)
+		}
+	}
+	return b.String()
 }
 
 func (a *App) push(p page) { a.stack = append(a.stack, p) }
@@ -369,7 +413,7 @@ func (a *App) save() tea.Cmd {
 			return saveMsg{
 				snapshot:   snapshot,
 				generation: generation,
-				err:        fmt.Errorf("TUI 保存回调不能为空"),
+				err:        fmt.Errorf("%s", ui.Bi("TUI apply callback must not be nil", "TUI 保存回调不能为空")),
 			}
 		}
 		result, err := apply(saveRevision, snapshot)

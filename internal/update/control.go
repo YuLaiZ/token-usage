@@ -6,6 +6,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/control"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // control.go 定义 update 流程对进程控制层的窄依赖：
@@ -66,10 +67,10 @@ type controlAdapter struct {
 // control.Manager.WithLock 的超时/取消/fn 透传/失败仍释放锁语义原样保留。
 func (a *controlAdapter) WithLock(ctx context.Context, fn func(ControlSession) error) error {
 	if a == nil || a.mgr == nil {
-		return fmt.Errorf("controlAdapter 未装配 control.Manager")
+		return fmt.Errorf("%s", ui.Bi("controlAdapter has no control.Manager wired", "controlAdapter 未装配 control.Manager"))
 	}
 	if fn == nil {
-		return fmt.Errorf("进程控制锁回调不能为空")
+		return fmt.Errorf("%s", ui.Bi("process control lock callback must not be nil", "进程控制锁回调不能为空"))
 	}
 	return a.mgr.WithLock(ctx, func(s *control.Session) error {
 		// *control.Session 此时已满足 ControlSession，无需包装直接传入。

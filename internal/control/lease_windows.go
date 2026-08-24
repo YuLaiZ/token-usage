@@ -19,6 +19,8 @@ import (
 	"strconv"
 	"syscall"
 	"unsafe"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // leaseReaderFromEnv 从 env 解析 Windows 父 lease：读取 TOKEN_USAGE_LEASE_HANDLE，
@@ -97,13 +99,13 @@ func newLeasePipeHolderWindows() (*leasePipeHolderWindows, error) {
 		InheritHandle: 1, // read 端可继承
 	}
 	if err := syscall.CreatePipe(&rH, &wH, &sa, 0); err != nil {
-		return nil, fmt.Errorf("创建 lease pipe 失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to create lease pipe", "创建 lease pipe 失败"), err)
 	}
 	// write 端强制 non-inheritable：避免 child 意外继承 write handle（会破坏 lease 单向语义）。
 	if err := setHandleNonInheritable(wH); err != nil {
 		_ = syscall.CloseHandle(rH)
 		_ = syscall.CloseHandle(wH)
-		return nil, fmt.Errorf("设置 write handle non-inheritable 失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to set write handle non-inheritable", "设置 write handle non-inheritable 失败"), err)
 	}
 	return &leasePipeHolderWindows{readHandle: rH, writeHandle: wH}, nil
 }

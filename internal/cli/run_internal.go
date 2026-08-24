@@ -16,6 +16,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/control"
 	"github.com/YuLaiZ/token-usage/internal/daemon"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // newInternalRunCmd 创建 Hidden 内部命令 _run：被 start/launchd 拉起的守护进程主体。
@@ -44,7 +45,7 @@ import (
 func newInternalRunCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:    "_run",
-		Short:  "内部命令（守护进程主体，由 start/launchd 拉起，不直接调用）",
+		Short:  ui.Bi("Internal command (daemon body, spawned by start/launchd; do not invoke directly)", "内部命令（守护进程主体，由 start/launchd 拉起，不直接调用）"),
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -75,11 +76,11 @@ func runDaemon(parentCtx context.Context) (retErr error) {
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("获取用户主目录失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to get user home directory", "获取用户主目录失败"), err)
 	}
 	mgr, err := control.NewManager(home)
 	if err != nil {
-		return fmt.Errorf("创建进程控制管理器失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to create process control manager", "创建进程控制管理器失败"), err)
 	}
 
 	desc, hasParentLease := control.ParseParentLease(os.Environ())
@@ -116,7 +117,7 @@ func runDaemon(parentCtx context.Context) (retErr error) {
 		defer func() {
 			if releaseErr := opts.OnDaemonLockCommit(); releaseErr != nil &&
 				!errors.Is(retErr, releaseErr) {
-				retErr = errors.Join(retErr, fmt.Errorf("释放进程控制锁失败: %w", releaseErr))
+				retErr = errors.Join(retErr, fmt.Errorf("%s: %w", ui.Bi("failed to release process control lock", "释放进程控制锁失败"), releaseErr))
 			}
 		}()
 	}
@@ -129,7 +130,7 @@ func runDaemon(parentCtx context.Context) (retErr error) {
 	// 父 lease 路径下，daemon.Run 因 ErrParentLeaseLost（EOF 先到）取消是预期行为：
 	// child 不写 PID/runtime-state、退出码 0（不视为 daemon 启动失败）。
 	if hasParentLease && errors.Is(runErr, daemon.ErrParentLeaseLost) {
-		slog.Info("_run 因父进程 control lease 丢失取消启动（不进入 daemon.Run）", "err", runErr)
+		slog.Info("_run startup cancelled due to lost parent control lease (daemon.Run not entered)", "err", runErr)
 		return nil
 	}
 	return runErr
@@ -184,11 +185,11 @@ func prepareIndependentRun(ctx context.Context, mgr *control.Manager) (*config.C
 			// launchd 防护分支：没有父 lease 的 _run（launchd/注册表直接拉起）
 			// 获取不到 control lock 时，成功退出且不进入 daemon.Run，避免与正在进行的控制操作冲突，
 			// 并在 macOS 上避免 launchd KeepAlive 立即重拉。
-			slog.Info("_run 等待进程控制锁超时，退出以避免与正在进行的控制操作冲突（不进入 daemon.Run）",
+			slog.Info("_run timed out waiting for control lock, exiting to avoid conflicting with an in-flight control operation (daemon.Run not entered)",
 				"err", err)
 			return nil, daemon.RunOptions{}, true, nil
 		}
-		return nil, daemon.RunOptions{}, false, fmt.Errorf("获取进程控制锁失败: %w", err)
+		return nil, daemon.RunOptions{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to acquire process control lock", "获取进程控制锁失败"), err)
 	}
 
 	// 锁内加载 raw config + resolve effective。
@@ -223,7 +224,7 @@ var configLoaderForRun = loadConfigForRun
 func loadConfigForRun() (*config.Config, error) {
 	cfg, err := loadConfig()
 	if err != nil {
-		return nil, fmt.Errorf("加载配置失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 	}
 	return cfg, nil
 }

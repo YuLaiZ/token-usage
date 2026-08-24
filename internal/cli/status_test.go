@@ -102,11 +102,11 @@ func TestPrintAutoStartStatus_PlatformUnsupported(t *testing.T) {
 }
 
 func TestBoolText(t *testing.T) {
-	if boolText(true) != "开" {
-		t.Error("boolText(true) 应为 开")
+	if boolText(true) != "on / 开" {
+		t.Error("boolText(true) 应为 on / 开")
 	}
-	if boolText(false) != "关" {
-		t.Error("boolText(false) 应为 关")
+	if boolText(false) != "off / 关" {
+		t.Error("boolText(false) 应为 off / 关")
 	}
 }
 

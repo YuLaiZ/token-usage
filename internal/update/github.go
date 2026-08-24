@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // github.go 实现 GitHub Release 查询客户端。
@@ -52,11 +54,11 @@ const defaultMaxReleaseBody = 4 << 20 // 4 MiB
 // ErrNoStableRelease 表示 latest 端点无稳定 Release（404）。
 // 这是面向用户的领域结果，调用方应给出「没有稳定 Release」的明确提示，
 // 而非当作网络故障重试。
-var ErrNoStableRelease = errors.New("没有可用的稳定 Release")
+var ErrNoStableRelease = errors.New(ui.Bi("no stable release available", "没有可用的稳定 Release"))
 
 // ErrVersionNotFound 表示请求的精确 tag 不存在（tags 端点 404）。
 // 这是用户错误（输入了不存在的版本号），调用方应提示「指定版本不存在」。
-var ErrVersionNotFound = errors.New("指定的版本不存在")
+var ErrVersionNotFound = errors.New(ui.Bi("specified version not found", "指定的版本不存在"))
 
 // githubReleaseClient 是 ReleaseClient 的生产实现：经 HTTPDoer 访问冻结的 GitHub API。
 // baseURL / userAgent / maxBody 均为可注入字段，便于测试用 httptest.Server 覆盖。
@@ -110,7 +112,10 @@ func (c *githubReleaseClient) FetchRelease(ctx context.Context, tag string) (*Re
 	// 解析 tag 为结构化版本，供 prerelease 一致性校验。
 	ver, verr := ParseVersion(rel.Tag)
 	if verr != nil {
-		return nil, fmt.Errorf("release tag %q 解析失败: %w", rel.Tag, verr)
+		return nil, fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("failed to parse release tag %q", rel.Tag),
+			fmt.Sprintf("release tag %q 解析失败", rel.Tag),
+		), verr)
 	}
 	rel.Version = ver
 	// 显式 tag 端点要求回显与请求一致；latest 端点以 JSON tag_name 为权威。
@@ -130,14 +135,14 @@ func (c *githubReleaseClient) FetchRelease(ctx context.Context, tag string) (*Re
 func (c *githubReleaseClient) fetch(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("构造请求失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to build request", "构造请求失败"), err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", c.userAgent)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("请求 GitHub Release 失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to request GitHub release", "请求 GitHub Release 失败"), err)
 	}
 	defer resp.Body.Close()
 
@@ -149,17 +154,23 @@ func (c *githubReleaseClient) fetch(ctx context.Context, url string) ([]byte, er
 		return nil, ErrVersionNotFound
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("GitHub Release 查询返回非成功状态 %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("GitHub release query returned non-success status %d", resp.StatusCode),
+			fmt.Sprintf("GitHub Release 查询返回非成功状态 %d", resp.StatusCode),
+		))
 	}
 
 	// 限制响应体大小：超过 maxBody+1 即拒绝（+1 让 LimitReader 能探测到超限）。
 	lr := io.LimitReader(resp.Body, c.maxBody+1)
 	body, err := io.ReadAll(lr)
 	if err != nil {
-		return nil, fmt.Errorf("读取响应体失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to read response body", "读取响应体失败"), err)
 	}
 	if int64(len(body)) > c.maxBody {
-		return nil, fmt.Errorf("响应体超过上限 %d 字节", c.maxBody)
+		return nil, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("response body exceeds the limit of %d bytes", c.maxBody),
+			fmt.Sprintf("响应体超过上限 %d 字节", c.maxBody),
+		))
 	}
 	return body, nil
 }
@@ -198,10 +209,10 @@ type githubAssetJSON struct {
 func decodeRelease(data []byte) (*Release, error) {
 	var raw githubReleaseJSON
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("解析 Release JSON 失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to parse release JSON", "解析 Release JSON 失败"), err)
 	}
 	if raw.TagName == "" {
-		return nil, errors.New("release 缺少 tag_name 字段")
+		return nil, errors.New(ui.Bi("release is missing the tag_name field", "release 缺少 tag_name 字段"))
 	}
 	assets := make(map[string]Asset, len(raw.Assets))
 	for _, a := range raw.Assets {

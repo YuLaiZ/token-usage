@@ -9,6 +9,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/control"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // helper_runner.go 实现 Windows staged replacement 的后台 helper 编排逻辑。
@@ -53,7 +54,7 @@ func NewHelperRunner(
 	logWriter io.Writer,
 ) (*helperRunner, error) {
 	if parentWaiter == nil || fileMover == nil || resultWriter == nil || controlMgr == nil || configLoader == nil {
-		return nil, errors.New("helperRunner 所有依赖不能为空")
+		return nil, errors.New(ui.Bi("all helperRunner dependencies must not be nil", "helperRunner 所有依赖不能为空"))
 	}
 	return &helperRunner{
 		parentWaiter: parentWaiter,
@@ -74,7 +75,7 @@ func (r *helperRunner) Run(ctx context.Context, selfExe, planPath string) error 
 	// 1. 校验计划。
 	validated, verr := validateHelperPlan(selfExe, planPath)
 	if verr != nil {
-		return fmt.Errorf("helper 计划校验失败: %w", verr)
+		return fmt.Errorf("%s: %w", ui.Bi("helper plan validation failed", "helper 计划校验失败"), verr)
 	}
 	return r.execute(ctx, validated)
 }
@@ -86,7 +87,7 @@ func (r *helperRunner) execute(ctx context.Context, validated validatedHelperPla
 
 	// 2. 等待父进程退出（据 plan 中的显式身份，杜绝 PID 复用 TOCTOU）。
 	if err := r.parentWaiter.WaitParentExit(ctx, plan.Parent); err != nil {
-		r.fail(paths.Result, fmt.Errorf("等待父进程失败: %w", err), "")
+		r.fail(paths.Result, fmt.Errorf("%s: %w", ui.Bi("failed to wait for parent process", "等待父进程失败"), err), "")
 		return err
 	}
 	r.helperLog.step("parent exited")
@@ -94,12 +95,13 @@ func (r *helperRunner) execute(ctx context.Context, validated validatedHelperPla
 	// 3. 加载有效配置（control lock 内复用）。
 	cfg, err := r.configLoader()
 	if err != nil {
-		r.fail(paths.Result, fmt.Errorf("加载有效配置失败: %w", err), "")
+		r.fail(paths.Result, fmt.Errorf("%s: %w", ui.Bi("failed to load effective config", "加载有效配置失败"), err), "")
 		return err
 	}
 	if cfg == nil {
-		r.fail(paths.Result, errors.New("加载有效配置返回 nil"), "")
-		return errors.New("加载有效配置返回 nil")
+		nilCfgErr := errors.New(ui.Bi("loading effective config returned nil", "加载有效配置返回 nil"))
+		r.fail(paths.Result, nilCfgErr, "")
+		return nilCfgErr
 	}
 
 	// 4. control lock 内完成 daemon 检查 + 替换 + 重启。
@@ -113,7 +115,7 @@ func (r *helperRunner) execute(ctx context.Context, validated validatedHelperPla
 		return r.executeUnderLock(ctx, sess, cfg, plan, paths)
 	})
 	if lockErr != nil && !lockEntered {
-		r.fail(paths.Result, fmt.Errorf("获取 control lock 失败: %w", lockErr), "")
+		r.fail(paths.Result, fmt.Errorf("%s: %w", ui.Bi("failed to acquire control lock", "获取 control lock 失败"), lockErr), "")
 		return lockErr
 	}
 	return lockErr
@@ -132,20 +134,23 @@ func (r *helperRunner) executeUnderLock(ctx context.Context, sess ControlSession
 	// a. 确认 daemon 未在停止后意外运行。
 	st, ierr := sess.Inspect(ctx, cfg)
 	if ierr != nil {
-		r.fail(paths.Result, fmt.Errorf("锁内 Inspect 失败: %w", ierr), "")
-		return fmt.Errorf("锁内 Inspect 失败: %w", ierr)
+		inspectErr := fmt.Errorf("%s: %w", ui.Bi("Inspect failed under lock", "锁内 Inspect 失败"), ierr)
+		r.fail(paths.Result, inspectErr, "")
+		return inspectErr
 	}
 	if st.Running {
 		// daemon 在停止后意外重启：为安全起见放弃替换（避免与运行中的 daemon 冲突）。
-		r.fail(paths.Result, errors.New("daemon 在停止后意外运行，放弃替换"), "")
-		return errors.New("daemon 运行中，放弃替换")
+		runningErr := errors.New(ui.Bi("daemon is unexpectedly running after stop; aborting replacement", "daemon 在停止后意外运行，放弃替换"))
+		r.fail(paths.Result, runningErr, "")
+		return errors.New(ui.Bi("daemon is running; aborting replacement", "daemon 运行中，放弃替换"))
 	}
 	r.helperLog.step("daemon wasRunning=%v", plan.WasRunning)
 
 	// b. 备份旧 target → backup，校验旧 hash。
 	if err := backupForHelper(paths.Target, paths.Backup, plan.OldSHA256); err != nil {
-		r.fail(paths.Result, fmt.Errorf("备份旧 target 失败: %w", err), "")
-		return fmt.Errorf("备份旧 target 失败: %w", err)
+		backupErr := fmt.Errorf("%s: %w", ui.Bi("failed to back up old target", "备份旧 target 失败"), err)
+		r.fail(paths.Result, backupErr, "")
+		return backupErr
 	}
 	r.helperLog.step("backup OK")
 
@@ -153,16 +158,16 @@ func (r *helperRunner) executeUnderLock(ctx context.Context, sess ControlSession
 	if err := r.fileMover.MoveReplace(paths.Stage, paths.Target); err != nil {
 		// 移动失败：target 仍是旧版本（MoveFileEx 原子，未成功则不变），回滚 backup 覆盖。
 		rbErr := rollbackForHelper(paths.Target, paths.Backup, plan.OldSHA256)
-		r.fail(paths.Result, fmt.Errorf("MoveFileEx 替换失败: %w", err), errToString(rbErr))
-		return fmt.Errorf("MoveFileEx 替换失败（已回滚）: %w", errors.Join(err, rbErr))
+		r.fail(paths.Result, fmt.Errorf("%s: %w", ui.Bi("MoveFileEx replacement failed", "MoveFileEx 替换失败"), err), errToString(rbErr))
+		return fmt.Errorf("%s: %w", ui.Bi("MoveFileEx replacement failed (rolled back)", "MoveFileEx 替换失败（已回滚）"), errors.Join(err, rbErr))
 	}
 	r.helperLog.step("MoveFileEx OK")
 
 	// 校验新 target hash（防御移动过程中损坏）。
 	if err := verifyFileHash(paths.Target, plan.NewSHA256); err != nil {
 		rbErr := rollbackForHelper(paths.Target, paths.Backup, plan.OldSHA256)
-		r.fail(paths.Result, fmt.Errorf("替换后新 target 校验失败: %w", err), errToString(rbErr))
-		return fmt.Errorf("替换后新 target 校验失败（已回滚）: %w", errors.Join(err, rbErr))
+		r.fail(paths.Result, fmt.Errorf("%s: %w", ui.Bi("new target hash verification failed after replacement", "替换后新 target 校验失败"), err), errToString(rbErr))
+		return fmt.Errorf("%s: %w", ui.Bi("new target hash verification failed after replacement (rolled back)", "替换后新 target 校验失败（已回滚）"), errors.Join(err, rbErr))
 	}
 	r.helperLog.step("hash verified")
 
@@ -176,9 +181,9 @@ func (r *helperRunner) executeUnderLock(ctx context.Context, sess ControlSession
 				restartErr = rerr
 			}
 			r.fail(paths.Result,
-				fmt.Errorf("启动新 daemon 失败: %w", serr),
+				fmt.Errorf("%s: %w", ui.Bi("failed to start new daemon", "启动新 daemon 失败"), serr),
 				fmt.Sprintf("rollback=%v restart=%v", rbErr, restartErr))
-			return fmt.Errorf("启动新 daemon 失败（已回滚重启）: %w", errors.Join(serr, rbErr, restartErr))
+			return fmt.Errorf("%s: %w", ui.Bi("failed to start new daemon (rolled back and restarted)", "启动新 daemon 失败（已回滚重启）"), errors.Join(serr, rbErr, restartErr))
 		}
 		r.helperLog.step("daemon restarted")
 	}
@@ -193,7 +198,7 @@ func (r *helperRunner) executeUnderLock(ctx context.Context, sess ControlSession
 func backupForHelper(target, backup, expectedOldHash string) error {
 	// 先校验当前 target 确为旧版本（hash 一致），防止对非预期文件做备份。
 	if err := verifyFileHash(target, expectedOldHash); err != nil {
-		return fmt.Errorf("备份前 target hash 与预期不一致: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("target hash before backup does not match the expectation", "备份前 target hash 与预期不一致"), err)
 	}
 	if err := copyFileWithMode(target, backup); err != nil {
 		return err
@@ -205,10 +210,10 @@ func backupForHelper(target, backup, expectedOldHash string) error {
 // backup 保留用于诊断（不删除）。
 func rollbackForHelper(target, backup, expectedOldHash string) error {
 	if err := verifyFileHash(backup, expectedOldHash); err != nil {
-		return fmt.Errorf("回滚前 backup 校验失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("backup verification failed before rollback", "回滚前 backup 校验失败"), err)
 	}
 	if err := copyFileWithMode(backup, target); err != nil {
-		return fmt.Errorf("回滚覆盖 target 失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to overwrite target during rollback", "回滚覆盖 target 失败"), err)
 	}
 	return verifyFileHash(target, expectedOldHash)
 }
@@ -239,7 +244,7 @@ func (r *helperRunner) fail(resultPath string, cause error, rollback string) {
 func (r *helperRunner) writeResult(resultPath string, res helperResult) error {
 	data, err := marshalHelperResult(res)
 	if err != nil {
-		return fmt.Errorf("序列化 result 失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to marshal result", "序列化 result 失败"), err)
 	}
 	return r.resultWriter.WriteResult(resultPath, data, 0o600)
 }

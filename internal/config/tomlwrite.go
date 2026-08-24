@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/YuLaiZ/token-usage/internal/fileutil"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -13,7 +14,7 @@ import (
 // config show 等读取 effective 配置的入口使用它;用户配置写盘仍用 MarshalUserConfig。
 func MarshalConfig(cfg *Config) ([]byte, error) {
 	if cfg == nil {
-		return nil, fmt.Errorf("配置不能为 nil")
+		return nil, fmt.Errorf("%s", ui.Bi("config must not be nil", "配置不能为 nil"))
 	}
 	return toml.Marshal(cfg)
 }
@@ -28,14 +29,14 @@ func MarshalUserConfig(cfg *Config) ([]byte, error) {
 func WriteUserConfigAtomic(path string, cfg *Config) error {
 	data, err := MarshalUserConfig(cfg)
 	if err != nil {
-		return fmt.Errorf("序列化配置失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to marshal config", "序列化配置失败"), err)
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("创建配置目录失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to create config directory", "创建配置目录失败"), err)
 	}
 	if err := fileutil.ReplaceCompleteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("完整替换配置失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to replace config file", "完整替换配置失败"), err)
 	}
 	return nil
 }

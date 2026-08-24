@@ -20,18 +20,19 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/runmeta"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // ---- 对外错误（typed，供 errors.Is 判断）----
 
 // ErrControlLockTimeout 在 WithLock 等待 control lock 超过 controlLockTimeout 时返回。
-var ErrControlLockTimeout = errors.New("等待进程控制锁超时")
+var ErrControlLockTimeout = errors.New(ui.Bi("timed out waiting for process control lock", "等待进程控制锁超时"))
 
 // ErrRestartNotRunning 在 restart 时守护进程未运行（未持有 daemon lock）时返回。
-var ErrRestartNotRunning = errors.New("守护进程未运行，请使用 token-usage start")
+var ErrRestartNotRunning = errors.New(ui.Bi("daemon is not running, run token-usage start", "守护进程未运行，请使用 token-usage start"))
 
 // errNonAbsoluteHome NewManager 校验 home 时的内部错误，便于包内测试断言。
-var errNonAbsoluteHome = errors.New("home 必须是绝对路径")
+var errNonAbsoluteHome = errors.New(ui.Bi("home must be an absolute path", "home 必须是绝对路径"))
 
 // ---- 类型定义 ----
 
@@ -230,21 +231,21 @@ type serviceManagerLike interface {
 // ---- 包内错误（typed，便于 errors.Is）----
 
 // errDaemonStillRunning stop 等待 daemon lock 释放超时时返回（语义：daemon 仍在运行）。
-var errDaemonStillRunning = errors.New("守护进程仍在运行")
+var errDaemonStillRunning = errors.New(ui.Bi("daemon is still running", "守护进程仍在运行"))
 
 // errNoPIDFile PID 文件不存在（read 失败的可识别原因之一）。
-var errNoPIDFile = errors.New("PID 文件不存在")
+var errNoPIDFile = errors.New(ui.Bi("PID file does not exist", "PID 文件不存在"))
 
 // errPIDInvalid PID 文件格式非法（read 失败的可识别原因之二）。
-var errPIDInvalid = errors.New("PID 文件格式无效")
+var errPIDInvalid = errors.New(ui.Bi("PID file has invalid format", "PID 文件格式无效"))
 
 // errPIDMetadataUnavailable lock 持有但 PID 元数据不可用，无法安全 spawn/stop（安全错误）。
-var errPIDMetadataUnavailable = errors.New("守护进程正在运行但 PID 元数据不可用")
+var errPIDMetadataUnavailable = errors.New(ui.Bi("daemon is running but PID metadata is unavailable", "守护进程正在运行但 PID 元数据不可用"))
 
 // errSessionReleased Session 已释放（control lock 不再持有）时调用其方法返回。
 // 锁内公开 API（Session.Stop / Session.StartWithExecutable）据此拒绝：它们依赖本次
 // WithLock 持有的 control lock，在锁外调用会把「不加锁操作」误用成「已加锁」。
-var errSessionReleased = errors.New("进程控制会话已释放，control lock 不再持有")
+var errSessionReleased = errors.New(ui.Bi("process control session released, control lock no longer held", "进程控制会话已释放，control lock 不再持有"))
 
 // Manager 进程控制管理器。home 在 CLI bootstrap 时解析并传入；不可变。
 type Manager struct {
@@ -274,7 +275,7 @@ func NewManager(home string) (*Manager, error) {
 	configDir := filepath.Join(home, ".token-usage")
 	// 0755：目录需可进入；文件权限由具体写入方按需收紧。
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		return nil, fmt.Errorf("创建配置目录 %q 失败: %w", configDir, err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi(fmt.Sprintf("failed to create config directory %q", configDir), fmt.Sprintf("创建配置目录 %q 失败", configDir)), err)
 	}
 
 	lockPath := ControlLockPath(home)
@@ -328,10 +329,10 @@ func (m *Manager) ConfigHome() string {
 // 测试通过注入 fake clock 推进虚拟时间，杜绝真实 time.Sleep。
 func (m *Manager) WithLock(ctx context.Context, fn func(*Session) error) (retErr error) {
 	if m == nil {
-		return errors.New("进程控制管理器不能为空")
+		return errors.New(ui.Bi("process control manager must not be nil", "进程控制管理器不能为空"))
 	}
 	if fn == nil {
-		return errors.New("进程控制锁回调不能为空")
+		return errors.New(ui.Bi("process control lock callback must not be nil", "进程控制锁回调不能为空"))
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -348,7 +349,7 @@ func (m *Manager) WithLock(ctx context.Context, fn func(*Session) error) (retErr
 		locker := m.deps.newLocker()
 		acquired, err := locker.tryLock()
 		if err != nil {
-			return fmt.Errorf("获取进程控制锁失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to acquire process control lock", "获取进程控制锁失败"), err)
 		}
 		if acquired {
 			sess := &Session{manager: m, locker: locker}
@@ -403,7 +404,7 @@ func (s *Session) release() error {
 	s.released = true
 	if s.locker != nil {
 		if err := s.locker.unlock(); err != nil {
-			return fmt.Errorf("释放进程控制锁失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to release process control lock", "释放进程控制锁失败"), err)
 		}
 	}
 	return nil
@@ -429,7 +430,7 @@ func (s *Session) Close() error {
 // 普通同步流程应优先用 WithLock，避免忘记 Close。
 func (m *Manager) AcquireLock(ctx context.Context) (*Session, error) {
 	if m == nil {
-		return nil, errors.New("进程控制管理器不能为空")
+		return nil, errors.New(ui.Bi("process control manager must not be nil", "进程控制管理器不能为空"))
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -442,7 +443,7 @@ func (m *Manager) AcquireLock(ctx context.Context) (*Session, error) {
 		locker := m.deps.newLocker()
 		acquired, err := locker.tryLock()
 		if err != nil {
-			return nil, fmt.Errorf("获取进程控制锁失败: %w", err)
+			return nil, fmt.Errorf("%s: %w", ui.Bi("failed to acquire process control lock", "获取进程控制锁失败"), err)
 		}
 		if acquired {
 			return &Session{manager: m, locker: locker}, nil

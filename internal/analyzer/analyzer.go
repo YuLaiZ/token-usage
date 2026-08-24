@@ -11,18 +11,19 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/collector"
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // ErrAnalyzerStopping 在 gate 关闭（shutdown）后由 Submit 返回。
 // 它是稳定的：shutdown 期间及之后的所有新提交都返回此错误，且不对 collectWg 做 Add。
-var ErrAnalyzerStopping = errors.New("analyzer 正在停止，不再接受采集请求")
+var ErrAnalyzerStopping = errors.New(ui.Bi("analyzer is stopping, no longer accepting collection requests", "analyzer 正在停止，不再接受采集请求"))
 
 // ErrAnalyzerAlreadyRun 表示同一个 Analyzer 已经启动过。Analyzer 的 watcher、
 // poller、ready channel 与 stopOnce 都是单次生命周期资源，不能二次启动。
-var ErrAnalyzerAlreadyRun = errors.New("analyzer 已经运行过，不能重复启动")
+var ErrAnalyzerAlreadyRun = errors.New(ui.Bi("analyzer has already run, cannot start again", "analyzer 已经运行过，不能重复启动"))
 
 // ErrAnalyzerExecuteUnavailable 表示 Analyzer 未配置采集执行器。
-var ErrAnalyzerExecuteUnavailable = errors.New("analyzer 采集执行器不能为空")
+var ErrAnalyzerExecuteUnavailable = errors.New(ui.Bi("analyzer collection executor must not be nil", "analyzer 采集执行器不能为空"))
 
 // MonitorSubmitFunc 是 watcher/poller 上报采集请求的统一入口（void）。
 // watcher/poller 只产生 (client, req) 并调用本函数；不直接持有 ExecuteFunc。
@@ -179,7 +180,7 @@ func (a *Analyzer) reportMonitorError(err error) {
 	select {
 	case a.monitorErr <- err:
 	default:
-		a.logger.Error("monitor 异常退出（另一个错误已在处理）", "error", err)
+		a.logger.Error("monitor exited unexpectedly (another error already being handled)", "error", err)
 	}
 }
 
@@ -215,18 +216,89 @@ func (a *Analyzer) monitorSubmit(client string, req collector.CollectRequest) {
 		// 到达这里说明调用时序错误；New() 默认 accepting=false，Submit 必因 accepting=false
 		// 返回 ErrAnalyzerStopping，context.Background() 永远到不了 ExecuteFunc（死代码）。
 		// 故直接放弃提交：不调 Submit，不引入生产路径的 Background。
-		a.logger.Error("runCtx 未初始化，放弃提交", "client", client)
+		a.logger.Error("runCtx not initialized, dropping submit", "client", client)
 		return
 	}
 	if err := a.Submit(runCtx, client, req); err != nil && !errors.Is(err, ErrAnalyzerStopping) {
-		a.logger.Error("monitor 采集提交失败", "client", client, "error", err)
+		a.logger.Error("monitor collection submit failed", "client", client, "error", err)
 	}
+}
+
+// jsonlMonitorClients 是 JSONL watcher 监控的客户端与其目录路径键。
+var jsonlMonitorClients = []struct {
+	name    string
+	pathKey string
+}{
+	{"claude", "projects_dir"},
+	{"codex", "sessions_dir"},
+	{"workbuddy", "projects_dir"},
+	{"autoclaw", "sessions_dir"},
+}
+
+// sqliteMonitorClients 是 client 源 SQLite poller 监控的客户端与其路径键。
+// opencode/zcode 监控单个 db 文件（zcode 为 WAL 模式，取 max(db, -wal) mtime）；
+// codex 为 state_dir 目录 glob 轮询。三者同属「路径键非空即装配」的静态判定。
+var sqliteMonitorClients = []struct {
+	name    string
+	pathKey string
+}{
+	{"opencode", "db"},
+	{"zcode", "db"},
+	{"codex", "state_dir"},
+}
+
+// clientPathConfigured 判定客户端是否启用且指定路径键配置非空。
+// setupFromConfig 的装配与 HasMonitorTargets 的静态谓词共用本判定，防两处漂移。
+func clientPathConfigured(cfg *config.Config, name, pathKey string) bool {
+	clientCfg, ok := cfg.ClientConfig(name)
+	if !ok || !clientCfg.Enabled {
+		return false
+	}
+	path, ok := clientCfg.Paths[pathKey]
+	return ok && path != ""
+}
+
+// routerTargetConfigured 判定 client 是否启用、绑定了 router 且 router 配置
+// 有非空 db_path（SQLite 型 router poller 的装配条件）。
+func routerTargetConfigured(cfg *config.Config, clientCfg config.Client) bool {
+	if !clientCfg.Enabled || clientCfg.Router == "" {
+		return false
+	}
+	routerCfg, ok := cfg.RouterConfig(clientCfg.Router)
+	return ok && routerCfg.DBPath != ""
+}
+
+// HasMonitorTargets 报告配置上是否存在必然装配的监控目标（静态配置谓词，
+// 不含路径运行期可达性与 watcher 构造成败）：任一 JSONL 客户端启用且目录
+// 非空、任一 SQLite 客户端启用且路径键非空、或任一启用客户端绑定配置完整
+// 的 router。start 命令用它前置拦截「配置上无事可做」，避免等待必然失败的
+// 启动就绪超时；判定与 setupFromConfig 装配同源。
+func HasMonitorTargets(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	for _, jc := range jsonlMonitorClients {
+		if clientPathConfigured(cfg, jc.name, jc.pathKey) {
+			return true
+		}
+	}
+	for _, sc := range sqliteMonitorClients {
+		if clientPathConfigured(cfg, sc.name, sc.pathKey) {
+			return true
+		}
+	}
+	for _, clientCfg := range cfg.Clients {
+		if routerTargetConfigured(cfg, clientCfg) {
+			return true
+		}
+	}
+	return false
 }
 
 // setupFromConfig 根据配置设置监控
 func (a *Analyzer) setupFromConfig(cfg *config.Config, debounceDuration time.Duration) {
 	if cfg == nil {
-		a.recordReadyError(errors.New("analyzer 配置不能为空"))
+		a.recordReadyError(errors.New(ui.Bi("analyzer config must not be nil", "analyzer 配置不能为空")))
 		return
 	}
 	// watcher/poller 统一注入 monitorSubmit（从 gate 取 runCtx 调同步 Submit）。
@@ -235,25 +307,12 @@ func (a *Analyzer) setupFromConfig(cfg *config.Config, debounceDuration time.Dur
 	// 为每个启用的 JSONL 客户端创建独立的 watcher
 	// 这样每个 watcher 的 clientName 是真实的客户端名，Submit 可以正确匹配。
 	// ChangedFile 由 watcher 运行期动态填充，此处无需固定 request。
-	jsonlClients := []struct {
-		name    string
-		pathKey string
-	}{
-		{"claude", "projects_dir"},
-		{"codex", "sessions_dir"},
-		{"workbuddy", "projects_dir"},
-		{"autoclaw", "sessions_dir"},
-	}
-
-	for _, jc := range jsonlClients {
-		clientCfg, ok := cfg.ClientConfig(jc.name)
-		if !ok || !clientCfg.Enabled {
+	for _, jc := range jsonlMonitorClients {
+		if !clientPathConfigured(cfg, jc.name, jc.pathKey) {
 			continue
 		}
-		dir, ok := clientCfg.Paths[jc.pathKey]
-		if !ok || dir == "" {
-			continue
-		}
+		clientCfg, _ := cfg.ClientConfig(jc.name)
+		dir := clientCfg.Paths[jc.pathKey]
 
 		watcher, err := NewJSONLWatcher(
 			[]string{dir},
@@ -263,9 +322,9 @@ func (a *Analyzer) setupFromConfig(cfg *config.Config, debounceDuration time.Dur
 			a.logger, // 透传项目 logger
 		)
 		if err != nil {
-			wrapped := fmt.Errorf("%s JSONL watcher 初始化失败: %w", jc.name, err)
+			wrapped := fmt.Errorf("%s: %w", ui.Bi(jc.name+" JSONL watcher initialization failed", jc.name+" JSONL watcher 初始化失败"), err)
 			a.recordReadyError(wrapped)
-			a.logger.Error("创建 JSONL watcher 失败", "client", jc.name, "error", err)
+			a.logger.Error("failed to create JSONL watcher", "client", jc.name, "error", err)
 			continue
 		}
 		a.addWatcher(watcher)
@@ -277,52 +336,40 @@ func (a *Analyzer) setupFromConfig(cfg *config.Config, debounceDuration time.Dur
 		interval = 30 * time.Second
 	}
 
-	// client 源 SQLite poller 固定 Incremental 请求（OpenCode/ZCode/Codex state DB）
+	// client 源 SQLite poller 固定 Incremental 请求（OpenCode/ZCode/Codex state DB）。
+	// Codex 双重监控取舍：state DB 是主源（包含完整 session 元数据），rollout JSONL
+	// 是辅助（记录原始 API 调用）；两者都监控，串行化锁下并发重复不造成数据错误
+	// （UpsertMessage 主键 upsert 幂等）。state_dir 按字面值读取目录再对文件名应用
+	// state_*.sqlite 模式：Codex 升级或首次启动后可能新建 state DB，每次 tick 重新
+	// 扫描可覆盖新增、替换和删除，也不会把目录名中的 glob 字符误当成语法。
 	clientReq := collector.CollectRequest{Incremental: true}
-
-	// OpenCode：监控 opencode.db
-	if opencode, ok := cfg.ClientConfig("opencode"); ok && opencode.Enabled {
-		if dbPath, ok := opencode.Paths["db"]; ok && dbPath != "" {
-			a.addSQLitePoller("opencode", dbPath, clientReq, interval)
+	for _, sc := range sqliteMonitorClients {
+		if !clientPathConfigured(cfg, sc.name, sc.pathKey) {
+			continue
 		}
-	}
-
-	// ZCode：监控 db.sqlite（WAL 模式取 max(db, -wal) mtime，复用 GetSQLiteMtime）
-	if zcode, ok := cfg.ClientConfig("zcode"); ok && zcode.Enabled {
-		if dbPath, ok := zcode.Paths["db"]; ok && dbPath != "" {
-			a.addSQLitePoller("zcode", dbPath, clientReq, interval)
-		}
-	}
-
-	// Codex 双重监控取舍：
-	// state DB 是主源（包含完整 session 元数据），rollout JSONL 是辅助（记录原始 API 调用）
-	// 两者都监控，串行化锁下并发重复不造成数据错误（UpsertMessage 主键 upsert 幂等）
-	if codex, ok := cfg.ClientConfig("codex"); ok && codex.Enabled {
-		if stateDir, ok := codex.Paths["state_dir"]; ok && stateDir != "" {
-			// 按字面值读取目录，再对文件名应用模式。Codex 升级或首次启动后可能新建
-			// state_*.sqlite；每次 tick 重新扫描可覆盖新增、替换和删除，同时不会把
-			// stateDir 中的 [, ? 等合法字符误当成 glob 语法。
-			a.addSQLiteDirGlobPoller("codex", stateDir, "state_*.sqlite", clientReq, interval)
+		clientCfg, _ := cfg.ClientConfig(sc.name)
+		path := clientCfg.Paths[sc.pathKey]
+		if sc.name == "codex" {
+			a.addSQLiteDirGlobPoller(sc.name, path, "state_*.sqlite", clientReq, interval)
+		} else {
+			a.addSQLitePoller(sc.name, path, clientReq, interval)
 		}
 	}
 
 	// 注意：WorkBuddy 不建 SQLite poller。
 	// workbuddy.db 是 title 只读查询库（workbuddy.go:60-67 queryWorkBuddyTitles），
 	// 不由 token-usage 写入，其 mtime 变化不对应「有新 token 数据」；
-	// WorkBuddy 的真实数据源是 projects_dir 下的 JSONL，已由上面的 JSONL watcher 覆盖。
+	// WorkBuddy 的真实数据源是 projects_dir 下的 JSONL，已由 JSONL watcher 覆盖。
 
 	// Router DB 轮询：遍历所有启用 client，按 client.Router 查找 router 配置，
 	// 为 SQLite 型 router 建立 poller 并触发对应 client 采集。
 	// router poller 固定 Source=router, Incremental=true（路由中间件日志增量采集）。
 	routerReq := collector.CollectRequest{Source: collector.CollectSourceRouter, Incremental: true}
 	for clientName, clientCfg := range cfg.Clients {
-		if !clientCfg.Enabled || clientCfg.Router == "" {
+		if !routerTargetConfigured(cfg, clientCfg) {
 			continue
 		}
-		routerCfg, ok := cfg.RouterConfig(clientCfg.Router)
-		if !ok || routerCfg.DBPath == "" {
-			continue
-		}
+		routerCfg, _ := cfg.RouterConfig(clientCfg.Router)
 		switch clientCfg.Router {
 		case "cc_switch":
 			a.addSQLitePoller(clientName, routerCfg.DBPath, routerReq, interval)
@@ -380,14 +427,14 @@ func (a *Analyzer) Run(ctx context.Context) error {
 	// “全部 monitor ready”；否则 start 会在部分数据源实际未受监控时错误成功。
 	if err := a.readyError(); err != nil {
 		a.Stop()
-		return fmt.Errorf("monitor 初始化失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("monitor initialization failed", "monitor 初始化失败"), err)
 	}
 
 	// 0 监控目标时返回 error：所有客户端禁用、路径缺失或监控初始化失败会导致守护进程
 	// 无事可做，立即返回 error 使 launchd 能感知配置错误（告警/重启），而非静默空转。
 	// 不发布 ready（Ready() channel 永不关闭）。
 	if len(a.jsonlWatchers) == 0 && len(a.sqlitePollers) == 0 {
-		return fmt.Errorf("无存活监控：所有客户端禁用、路径缺失或监控初始化失败，请检查 config.toml [clients.*].enabled 与 paths")
+		return errors.New(ui.Bi("no live monitors: all clients disabled, paths missing, or monitor initialization failed; check config.toml [clients.*].enabled and paths", "无存活监控：所有客户端禁用、路径缺失或监控初始化失败，请检查 config.toml [clients.*].enabled 与 paths"))
 	}
 
 	// 派生本次 Run 自己可取消的 runCtx/runCancel，安装到同一 gate 并打开 accepting。
@@ -411,7 +458,7 @@ func (a *Analyzer) Run(ctx context.Context) error {
 		go func(w *JSONLWatcher) {
 			defer a.wg.Done()
 			if err := w.Run(runCtx); err != nil {
-				a.reportMonitorError(fmt.Errorf("%s JSONL watcher 失败: %w", w.clientName, err))
+				a.reportMonitorError(fmt.Errorf("%s: %w", ui.Bi(w.clientName+" JSONL watcher failed", w.clientName+" JSONL watcher 失败"), err))
 			}
 		}(watcher)
 	}
@@ -443,7 +490,7 @@ func (a *Analyzer) Run(ctx context.Context) error {
 	case <-runCtx.Done():
 	case <-readyDone:
 		if err := a.readyError(); err != nil {
-			runErr = fmt.Errorf("monitor 初始化失败: %w", err)
+			runErr = fmt.Errorf("%s: %w", ui.Bi("monitor initialization failed", "monitor 初始化失败"), err)
 			break
 		}
 		select {
@@ -489,7 +536,7 @@ func (a *Analyzer) Run(ctx context.Context) error {
 
 	// monitorErr 与 readyDone 可能同时到达；优先保留初始化失败的完整原因。
 	if err := a.readyError(); err != nil {
-		return fmt.Errorf("monitor 初始化失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("monitor initialization failed", "monitor 初始化失败"), err)
 	}
 	return runErr
 }

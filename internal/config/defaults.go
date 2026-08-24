@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/YuLaiZ/token-usage/internal/fileutil"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 const defaultConfigTemplate = `# token-usage 配置文件
@@ -86,11 +87,11 @@ func DefaultConfigTemplate() string {
 func WriteDefaultConfig(path string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("创建配置目录失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to create config directory", "创建配置目录失败"), err)
 	}
 
 	if err := fileutil.ReplaceCompleteFile(path, []byte(defaultConfigTemplate), 0o644); err != nil {
-		return fmt.Errorf("写入配置文件失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to write config file", "写入配置文件失败"), err)
 	}
 
 	return nil

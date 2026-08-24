@@ -14,6 +14,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/control"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // newInitCmd 构造 `config init` 子命令。
@@ -34,7 +35,7 @@ func newInitCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := os.UserHomeDir()
 			if err != nil {
-				return fmt.Errorf("获取用户主目录失败: %w", err)
+				return fmt.Errorf("%s: %w", ui.Bi("failed to get user home directory", "获取用户主目录失败"), err)
 			}
 			return runInit(cmdContext(cmd), cmd.OutOrStdout(), home)
 		},
@@ -44,7 +45,7 @@ func newInitCmd() *cobra.Command {
 func runInit(ctx context.Context, out io.Writer, home string) error {
 	mgr, err := control.NewManager(home)
 	if err != nil {
-		return fmt.Errorf("创建进程控制管理器失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to create process control manager", "创建进程控制管理器失败"), err)
 	}
 	env := runtimecfg.ResolveEnv{
 		Home:         home,
@@ -57,12 +58,12 @@ func runInit(ctx context.Context, out io.Writer, home string) error {
 	return mgr.WithLock(ctx, func(*control.Session) error {
 		snap, err := runtimecfg.LoadUserConfigSnapshot(cfgPath)
 		if err != nil {
-			return fmt.Errorf("读取已有配置失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to read existing config", "读取已有配置失败"), err)
 		}
 		created := false
 		if !snap.Exists {
 			if err := config.WriteDefaultConfig(cfgPath); err != nil {
-				return fmt.Errorf("生成配置文件失败: %w", err)
+				return fmt.Errorf("%s: %w", ui.Bi("failed to write config file", "生成配置文件失败"), err)
 			}
 			created = true
 		}
@@ -71,38 +72,38 @@ func runInit(ctx context.Context, out io.Writer, home string) error {
 		// 已有配置损坏时明确报错，不能静默改用默认 data_dir 初始化错误的数据库。
 		effective, err := runtimecfg.LoadEffectiveConfig(cfgPath, env)
 		if err != nil {
-			return fmt.Errorf("加载配置失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 		}
 		dataDir := effective.DataDir
 		if dataDir == "" {
-			return fmt.Errorf("配置中的 data_dir 不能为空")
+			return fmt.Errorf("%s", ui.Bi("data_dir in config must not be empty", "配置中的 data_dir 不能为空"))
 		}
 		if err := os.MkdirAll(dataDir, 0o755); err != nil {
-			return fmt.Errorf("创建数据目录失败 (%s): %w", dataDir, err)
+			return fmt.Errorf("%s (%s): %w", ui.Bi("failed to create data directory", "创建数据目录失败"), dataDir, err)
 		}
 
 		dbPath := filepath.Join(dataDir, "usage.db")
 		usageDB, err := db.Open(dbPath)
 		if err != nil {
-			return fmt.Errorf("初始化数据库失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to initialize database", "初始化数据库失败"), err)
 		}
 		if err := usageDB.Close(); err != nil {
-			return fmt.Errorf("关闭初始化数据库失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to close initialized database", "关闭初始化数据库失败"), err)
 		}
 
-		fmt.Fprintf(out, "✓ 配置目录: %s\n", cfgDir)
+		fmt.Fprintf(out, "✓ %s: %s\n", ui.Bi("config directory", "配置目录"), cfgDir)
 		if created {
-			fmt.Fprintf(out, "✓ 生成配置: %s\n", cfgPath)
+			fmt.Fprintf(out, "✓ %s: %s\n", ui.Bi("config generated", "生成配置"), cfgPath)
 		} else {
-			fmt.Fprintf(out, "- 配置已存在: %s\n", cfgPath)
+			fmt.Fprintf(out, "- %s: %s\n", ui.Bi("config already exists", "配置已存在"), cfgPath)
 		}
-		fmt.Fprintf(out, "✓ 数据目录: %s\n", dataDir)
-		fmt.Fprintf(out, "✓ 初始化数据库: %s\n", dbPath)
+		fmt.Fprintf(out, "✓ %s: %s\n", ui.Bi("data directory", "数据目录"), dataDir)
+		fmt.Fprintf(out, "✓ %s: %s\n", ui.Bi("database initialized", "初始化数据库"), dbPath)
 		if created {
-			fmt.Fprintln(out, "\n初始化完成！默认配置未启用任何客户端，按需开启后再采集，例如：")
+			fmt.Fprintln(out, ui.Bi("\nInitialization complete! The default config enables no clients; enable as needed before collecting, e.g.:", "\n初始化完成！默认配置未启用任何客户端，按需开启后再采集，例如："))
 			fmt.Fprintln(out, "  token-usage config set clients.claude.enabled true")
 		} else {
-			fmt.Fprintln(out, "\n初始化完成！")
+			fmt.Fprintln(out, ui.Bi("\nInitialization complete!", "\n初始化完成！"))
 		}
 		return nil
 	})

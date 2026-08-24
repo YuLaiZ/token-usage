@@ -12,6 +12,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/collector"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/model"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // RunCollect 采集主循环（公共函数）。
@@ -35,11 +36,11 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 		log = slog.Default()
 	}
 	if deps == nil || deps.cfg == nil {
-		result.Err = errors.New("采集依赖或配置不能为空")
+		result.Err = errors.New(ui.Bi("collect deps or config must not be empty", "采集依赖或配置不能为空"))
 		return result
 	}
 	if usageDB == nil {
-		result.Err = errors.New("usage DB 不能为空")
+		result.Err = errors.New(ui.Bi("usage DB must not be empty", "usage DB 不能为空"))
 		return result
 	}
 	if err := ctx.Err(); err != nil {
@@ -47,10 +48,13 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 		return result
 	}
 	// recordFailure 记录失败到传入的 *result（供 runRouterOnlyCollect 用独立 result）。
+	// stage 参数为自带失败语义的双语短语（英文极短动词式 + 中文原文字词）。
+	// 错误消息会进入 collection_errors.message，query 警告与 errors 表格均按
+	// 50 显示宽度截断（中文每字占 2 列），英文段必须极短以保住失败原因可见。
 	recordFailure := func(res *Result, source string, failedDates []string, stage string, cause error) {
-		wrapped := fmt.Errorf("%s %s 失败: %w", source, stage, cause)
+		wrapped := fmt.Errorf("%s %s: %w", source, stage, cause)
 		res.Err = errors.Join(res.Err, wrapped)
-		log.Error("采集阶段失败", "client", source, "stage", stage, "dates", failedDates, "error", cause)
+		log.Error("collection stage failed", "client", source, "stage", stage, "dates", failedDates, "error", cause)
 		if recordError {
 			if err := db.RecordErrorsByDate(ctx, usageDB, failedDates, source, wrapped.Error(), ""); err != nil {
 				res.Err = errors.Join(res.Err, err)
@@ -80,35 +84,37 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 		// 按本 collector 装配独立请求（不共享可变 Cursors map），完成去重/游标加载。
 		creq, allCollected, err := requestForCollector(ctx, usageDB, c, req, skipCollected)
 		if err != nil {
-			fail(c.Name(), failureDates(req, nil), "装配请求", err)
+			fail(c.Name(), failureDates(req, nil), ui.Bi("setup", "装配请求失败"), err)
 			continue
 		}
 		if allCollected {
 			result.Succeeded++
-			log.Info("已采集，跳过", "client", c.Name(), "dates", req.Dates)
+			log.Info("already collected, skipping", "client", c.Name(), "dates", req.Dates)
 			if out != nil {
-				fmt.Fprintf(out, "✓ %s: 已采集 %d 个日期，跳过\n", c.Name(), len(req.Dates))
+				fmt.Fprintf(out, "✓ %s: %s\n", c.Name(),
+					ui.Bi(fmt.Sprintf("all %d dates already collected, skipping", len(req.Dates)),
+						fmt.Sprintf("已采集 %d 个日期，跳过", len(req.Dates))))
 			}
 			continue
 		}
 
 		// 每次采集每 client 必打的开始心跳，属预期行为，降 Debug 保留排查轨迹。
-		log.Debug("开始采集", "client", c.Name(), "dates", creq.Dates,
+		log.Debug("collection started", "client", c.Name(), "dates", creq.Dates,
 			"changed_file", creq.ChangedFile, "incremental", creq.Incremental)
 		collected, err := c.Collect(ctx, creq, log)
 		if err != nil {
 			// collector 因 ctx 取消返回错误时，取消不是采集故障：不持久化错误，直接返回。
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 				result.Err = errors.Join(result.Err,
-					fmt.Errorf("%s 采集已取消: %w", c.Name(), err))
+					fmt.Errorf("%s %s: %w", c.Name(), ui.Bi("collection canceled", "采集已取消"), err))
 				return result
 			}
-			fail(c.Name(), failureDates(creq, collected.Messages), "读取数据源", err)
+			fail(c.Name(), failureDates(creq, collected.Messages), ui.Bi("read", "读取数据源失败"), err)
 			continue
 		}
 		if ctx.Err() != nil {
 			result.Err = errors.Join(result.Err,
-				fmt.Errorf("%s 采集已取消: %w", c.Name(), ctx.Err()))
+				fmt.Errorf("%s %s: %w", c.Name(), ui.Bi("collection canceled", "采集已取消"), ctx.Err()))
 			return result
 		}
 
@@ -122,10 +128,10 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 				// router 因 ctx 取消失败时必须立即中止（与 client 读阶段同策略）。
 				if ctx.Err() != nil {
 					result.Err = errors.Join(result.Err,
-						fmt.Errorf("%s 采集已取消: %w", c.Name(), err))
+						fmt.Errorf("%s %s: %w", c.Name(), ui.Bi("collection canceled", "采集已取消"), err))
 					return result
 				}
-				log.Warn("采集 router 数据失败，保留客户端原始数据", "router", router.Name(), "error", err)
+				log.Warn("router collection failed, keeping raw client data", "router", router.Name(), "error", err)
 			} else {
 				routerFetched = true
 			}
@@ -134,7 +140,7 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 		// 写阶段前再次检查 ctx 取消（daemon 关闭期间）。
 		if ctx.Err() != nil {
 			result.Err = errors.Join(result.Err,
-				fmt.Errorf("%s 采集已取消: %w", c.Name(), ctx.Err()))
+				fmt.Errorf("%s %s: %w", c.Name(), ui.Bi("collection canceled", "采集已取消"), ctx.Err()))
 			return result
 		}
 
@@ -145,22 +151,24 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 			// 取消不是采集故障，不调用 RecordErrorsByDate（与读阶段取消语义一致）。
 			if ctx.Err() != nil {
 				result.Err = errors.Join(result.Err,
-					fmt.Errorf("%s 采集已取消: %w", c.Name(), err))
+					fmt.Errorf("%s %s: %w", c.Name(), ui.Bi("collection canceled", "采集已取消"), err))
 				return result
 			}
 			if collected.PartialErr != nil {
-				fail(c.Name(), failureDates(creq, collected.Messages), "读取部分数据源", collected.PartialErr)
+				fail(c.Name(), failureDates(creq, collected.Messages), ui.Bi("partial read", "读取部分数据源失败"), collected.PartialErr)
 			}
-			fail(c.Name(), failureDates(creq, collected.Messages), "写入事务", err)
+			fail(c.Name(), failureDates(creq, collected.Messages), ui.Bi("write", "写入事务失败"), err)
 			continue
 		}
 
 		if collected.PartialErr != nil {
 			// 成功部分已经同批事务落库；随后记录部分失败，使 startup coordinator/CLI
 			// 得到非零结果且 collection_errors 可观察具体损坏文件。
-			fail(c.Name(), failureDates(creq, collected.Messages), "读取部分数据源", collected.PartialErr)
+			fail(c.Name(), failureDates(creq, collected.Messages), ui.Bi("partial read", "读取部分数据源失败"), collected.PartialErr)
 			if out != nil {
-				fmt.Fprintf(out, "⚠ %s: 已保存成功部分，但部分数据源读取失败\n", c.Name())
+				fmt.Fprintf(out, "⚠ %s: %s\n", c.Name(),
+					ui.Bi("saved the successful part, but some data sources failed to read",
+						"已保存成功部分，但部分数据源读取失败"))
 			}
 			continue
 		}
@@ -168,9 +176,11 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 		result.Succeeded++
 		msgCount := len(collected.Messages)
 		// 成功采集的完成心跳与「开始采集」成对，同降 Debug。
-		log.Debug("采集完成", "client", c.Name(), "messages", msgCount)
+		log.Debug("collection completed", "client", c.Name(), "messages", msgCount)
 		if out != nil {
-			fmt.Fprintf(out, "✓ %s: 采集 %d 条消息/API 请求\n", c.Name(), msgCount)
+			fmt.Fprintf(out, "✓ %s: %s\n", c.Name(),
+				ui.Bi(fmt.Sprintf("collected %d messages/API requests", msgCount),
+					fmt.Sprintf("采集 %d 条消息/API 请求", msgCount)))
 		}
 	}
 	return result
@@ -230,23 +240,23 @@ func persistClientBatch(
 ) error {
 	tx, err := usageDB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("开启写事务: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("open write transaction", "开启写事务"), err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	if len(collected.Messages) > 0 {
 		if _, err := db.UpsertMessages(ctx, tx, collected.Messages); err != nil {
-			return fmt.Errorf("保存 messages: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("save messages", "保存 messages"), err)
 		}
 	}
 	if len(collected.Sessions) > 0 {
 		if _, err := db.UpsertSessionMeta(ctx, tx, collected.Sessions); err != nil {
-			return fmt.Errorf("保存 session metadata: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("save session metadata", "保存 session metadata"), err)
 		}
 	}
 	if routerFetched && len(routerResult.Logs) > 0 {
 		if _, err := db.UpsertRawRouterLogs(ctx, tx, routerResult.Logs); err != nil {
-			return fmt.Errorf("保存 router 日志: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("save router logs", "保存 router 日志"), err)
 		}
 	}
 
@@ -256,7 +266,7 @@ func persistClientBatch(
 		if len(messageIDs) > 0 {
 			infos, err := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
 			if err != nil {
-				return fmt.Errorf("查询 router 归因: %w", err)
+				return fmt.Errorf("%s: %w", ui.Bi("query router attribution", "查询 router 归因"), err)
 			}
 			for i := range infos {
 				if alias, ok := providerAliases[infos[i].Provider]; ok {
@@ -265,7 +275,7 @@ func persistClientBatch(
 			}
 			if len(infos) > 0 {
 				if _, err := db.BackfillRouterFields(ctx, tx, infos); err != nil {
-					return fmt.Errorf("回填 router 归因: %w", err)
+					return fmt.Errorf("%s: %w", ui.Bi("backfill router attribution", "回填 router 归因"), err)
 				}
 			}
 		}
@@ -275,20 +285,20 @@ func persistClientBatch(
 		counts := messageCounts(collected.Messages)
 		for _, date := range datesToMark(req, counts) {
 			if err := db.MarkCollected(ctx, tx, date, client, counts[date]); err != nil {
-				return fmt.Errorf("更新 collection_log: %w", err)
+				return fmt.Errorf("%s: %w", ui.Bi("update collection_log", "更新 collection_log"), err)
 			}
 			if _, err := db.ResolveErrorsByDateSource(ctx, tx, date, client); err != nil {
-				return fmt.Errorf("恢复历史错误状态: %w", err)
+				return fmt.Errorf("%s: %w", ui.Bi("resolve historical errors", "恢复历史错误状态"), err)
 			}
 		}
 		if req.Incremental && len(collected.NextCursors) > 0 {
 			if err := db.SetSyncCursors(ctx, tx, client, collected.NextCursors); err != nil {
-				return fmt.Errorf("保存增量游标: %w", err)
+				return fmt.Errorf("%s: %w", ui.Bi("save incremental cursors", "保存增量游标"), err)
 			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("提交写事务: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("commit write transaction", "提交写事务"), err)
 	}
 	return nil
 }
@@ -324,7 +334,7 @@ func runRouterOnlyCollect(
 	// 读取 router cursor（事务外）
 	cursors, err := db.GetSyncCursors(ctx, usageDB, client, []string{router.SyncSource()})
 	if err != nil {
-		recordFailure(&result, client, failureDates(req, nil), "读取 router 游标", err)
+		recordFailure(&result, client, failureDates(req, nil), ui.Bi("read cursor", "读取 router 游标失败"), err)
 		return result
 	}
 	routerReq := collector.RouterCollectRequest{
@@ -335,21 +345,21 @@ func runRouterOnlyCollect(
 	if err != nil {
 		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 			result.Err = errors.Join(result.Err,
-				fmt.Errorf("%s router 采集已取消: %w", client, err))
+				fmt.Errorf("%s %s: %w", client, ui.Bi("router collection canceled", "router 采集已取消"), err))
 			return result
 		}
-		recordFailure(&result, client, failureDates(req, nil), "读取 router 日志", err)
+		recordFailure(&result, client, failureDates(req, nil), ui.Bi("read logs", "读取 router 日志失败"), err)
 		return result
 	}
 	if ctx.Err() != nil {
 		result.Err = errors.Join(result.Err,
-			fmt.Errorf("%s router 采集已取消: %w", client, ctx.Err()))
+			fmt.Errorf("%s %s: %w", client, ui.Bi("router collection canceled", "router 采集已取消"), ctx.Err()))
 		return result
 	}
 
 	tx, err := usageDB.BeginTx(ctx, nil)
 	if err != nil {
-		recordFailure(&result, client, failureDates(req, nil), "开启写事务", err)
+		recordFailure(&result, client, failureDates(req, nil), ui.Bi("open write", "开启写事务失败"), err)
 		return result
 	}
 
@@ -361,16 +371,16 @@ func runRouterOnlyCollect(
 		if txErr != nil {
 			if ctx.Err() != nil {
 				result.Err = errors.Join(result.Err,
-					fmt.Errorf("%s router 采集已取消: %w", client, txErr))
+					fmt.Errorf("%s %s: %w", client, ui.Bi("router collection canceled", "router 采集已取消"), txErr))
 				return
 			}
-			recordFailure(&result, client, failureDates(req, nil), "router 写入事务", txErr)
+			recordFailure(&result, client, failureDates(req, nil), ui.Bi("router write", "router 写入事务失败"), txErr)
 		}
 	}()
 
 	if len(routerResult.Logs) > 0 {
 		if _, err := db.UpsertRawRouterLogs(ctx, tx, routerResult.Logs); err != nil {
-			txErr = fmt.Errorf("保存 router 日志: %w", err)
+			txErr = fmt.Errorf("%s: %w", ui.Bi("save router logs", "保存 router 日志"), err)
 			return result
 		}
 	}
@@ -380,7 +390,7 @@ func runRouterOnlyCollect(
 	if len(messageIDs) > 0 {
 		infos, qerr := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
 		if qerr != nil {
-			txErr = fmt.Errorf("查询 router 归因: %w", qerr)
+			txErr = fmt.Errorf("%s: %w", ui.Bi("query router attribution", "查询 router 归因"), qerr)
 			return result
 		}
 		aliases := deps.cfg.ProviderAliases
@@ -391,7 +401,7 @@ func runRouterOnlyCollect(
 		}
 		if len(infos) > 0 {
 			if _, err := db.BackfillRouterFields(ctx, tx, infos); err != nil {
-				txErr = fmt.Errorf("回填 router 归因: %w", err)
+				txErr = fmt.Errorf("%s: %w", ui.Bi("backfill router attribution", "回填 router 归因"), err)
 				return result
 			}
 		}
@@ -401,21 +411,23 @@ func runRouterOnlyCollect(
 		if err := db.SetSyncCursors(ctx, tx, client, map[string]model.SyncCursor{
 			router.SyncSource(): routerResult.NextCursor,
 		}); err != nil {
-			txErr = fmt.Errorf("保存 router 游标: %w", err)
+			txErr = fmt.Errorf("%s: %w", ui.Bi("save router cursor", "保存 router 游标"), err)
 			return result
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		txErr = fmt.Errorf("提交写事务: %w", err)
+		txErr = fmt.Errorf("%s: %w", ui.Bi("commit write transaction", "提交写事务"), err)
 		return result
 	}
 
 	result.Succeeded++
 	// router 轮完成心跳与 client 路径「采集完成」同级别语义，同降 Debug。
-	log.Debug("router 采集完成", "client", client, "logs", len(routerResult.Logs))
+	log.Debug("router collection completed", "client", client, "logs", len(routerResult.Logs))
 	if out != nil {
-		fmt.Fprintf(out, "✓ %s: router 回填 %d 条归因\n", client, len(routerResult.Logs))
+		fmt.Fprintf(out, "✓ %s: %s\n", client,
+			ui.Bi(fmt.Sprintf("router backfilled %d attributions", len(routerResult.Logs)),
+				fmt.Sprintf("router 回填 %d 条归因", len(routerResult.Logs))))
 	}
 	return result
 }

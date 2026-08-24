@@ -126,7 +126,7 @@ func (a *CCSwitchAdapter) CollectLogs(ctx context.Context, req RouterCollectRequ
 			next = model.SyncCursor{Value: createdAt, ID: requestID}
 		}
 		if requestID == "" || createdAt <= 0 {
-			logger.Debug("CC Switch 日志缺少 request_id 或 created_at，跳过",
+			logger.Debug("CC Switch log missing request_id or created_at, skipped",
 				"request_id", requestID, "created_at", createdAt)
 			continue
 		}

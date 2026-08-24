@@ -98,15 +98,15 @@ func TestRunRestart_NotRunningContract(t *testing.T) {
 	if err == nil {
 		t.Fatal("未运行应退出非 0")
 	}
-	// 未运行提示应出现在 stderr（与其它失败一致）或 stdout；关键含 start 提示。
-	combined := out.String() + errOut.String()
-	if !strings.Contains(combined, "start") {
-		t.Errorf("未运行应提示 token-usage start，实际 out=%q err=%q", out.String(), errOut.String())
+	// 未运行指引随 error 由 cobra 统一输出；关键含 start 提示。
+	if !strings.Contains(err.Error(), "start") {
+		t.Errorf("未运行 error 应含 token-usage start 指引，实际: %v", err)
 	}
 }
 
-// TestRunRestart_RealFailureToStderr 真实失败（非 ErrRestartNotRunning）→ stderr，退出非 0。
-func TestRunRestart_RealFailureToStderr(t *testing.T) {
+// TestRunRestart_RealFailureReturnsContextError 真实失败（非 ErrRestartNotRunning）
+// → 返回带上下文的 error（cobra 统一输出），命令自身不再手写 stderr（防 cause 双打）。
+func TestRunRestart_RealFailureReturnsContextError(t *testing.T) {
 	orig := controlManagerFactory
 	defer func() { controlManagerFactory = orig }()
 	controlManagerFactory = func() (controlStartStopper, error) {
@@ -121,7 +121,10 @@ func TestRunRestart_RealFailureToStderr(t *testing.T) {
 	if err == nil {
 		t.Fatal("真实失败应退出非 0")
 	}
-	if !strings.Contains(errOut.String(), "重启守护进程失败") {
-		t.Errorf("失败应写 stderr，实际 stderr: %q", errOut.String())
+	if !strings.Contains(err.Error(), "重启守护进程失败") || !strings.Contains(err.Error(), "restart boom") {
+		t.Errorf("返回 error 应含上下文与 cause: %v", err)
+	}
+	if errOut.String() != "" {
+		t.Errorf("命令不得手写 stderr（由 cobra 统一输出）: %q", errOut.String())
 	}
 }

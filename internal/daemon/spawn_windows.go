@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // Windows 常量（syscall 包未全部导出）
@@ -34,7 +36,7 @@ func SpawnDetached(opts SpawnOptions) (*exec.Cmd, error) {
 	if opts.StdoutPath != "" {
 		f, err := os.OpenFile(opts.StdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
-			return nil, fmt.Errorf("打开 stdout 日志失败: %w", err)
+			return nil, fmt.Errorf("%s: %w", ui.Bi("failed to open stdout log", "打开 stdout 日志失败"), err)
 		}
 		cmd.Stdout = f
 		defer f.Close()
@@ -44,7 +46,7 @@ func SpawnDetached(opts SpawnOptions) (*exec.Cmd, error) {
 	if opts.StderrPath != "" {
 		f, err := os.OpenFile(opts.StderrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
-			return nil, fmt.Errorf("打开 stderr 日志失败: %w", err)
+			return nil, fmt.Errorf("%s: %w", ui.Bi("failed to open stderr log", "打开 stderr 日志失败"), err)
 		}
 		cmd.Stderr = f
 		defer f.Close()
@@ -55,7 +57,7 @@ func SpawnDetached(opts SpawnOptions) (*exec.Cmd, error) {
 	if opts.Lease != nil {
 		rh, ok := opts.Lease.Reader.(syscall.Handle)
 		if !ok {
-			return nil, fmt.Errorf("Windows 平台 Lease.Reader 必须是 syscall.Handle，实际 %T", opts.Lease.Reader)
+			return nil, fmt.Errorf("%s: %T", ui.Bi("on Windows, Lease.Reader must be syscall.Handle, got", "Windows 平台 Lease.Reader 必须是 syscall.Handle，实际"), opts.Lease.Reader)
 		}
 		// AdditionalInheritedHandles：CreateProcess 通过 PROC_THREAD_ATTRIBUTE_HANDLE_LIST
 		// 限定只继承列表中的 handle（见 stdlib exec_windows.go）。write/unrelated handle
@@ -66,7 +68,7 @@ func SpawnDetached(opts SpawnOptions) (*exec.Cmd, error) {
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("启动 detached 子进程失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to start detached child process", "启动 detached 子进程失败"), err)
 	}
 	return cmd, nil
 }

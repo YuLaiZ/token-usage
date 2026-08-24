@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // version.go 实现 token-usage CLI 自更新使用的 Release tag 解析与版本比较。
@@ -37,10 +39,13 @@ type Version struct {
 // 不返回半解析结果，杜绝调用方误用。
 func ParseVersion(s string) (Version, error) {
 	if len(s) == 0 {
-		return Version{}, errors.New("版本号不能为空")
+		return Version{}, errors.New(ui.Bi("version string must not be empty", "版本号不能为空"))
 	}
 	if s[0] != 'v' {
-		return Version{}, fmt.Errorf("版本号 %q 缺少 v 前缀", s)
+		return Version{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("version string %q is missing the v prefix", s),
+			fmt.Sprintf("版本号 %q 缺少 v 前缀", s),
+		))
 	}
 	rest := s[1:]
 
@@ -49,7 +54,10 @@ func ParseVersion(s string) (Version, error) {
 		core = rest[:idx]
 		rcPart = rest[idx+1:]
 		if rcPart == "" {
-			return Version{}, fmt.Errorf("版本号 %q 的预发布段为空", s)
+			return Version{}, fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("version string %q has an empty prerelease segment", s),
+				fmt.Sprintf("版本号 %q 的预发布段为空", s),
+			))
 		}
 	} else {
 		core = rest
@@ -57,12 +65,18 @@ func ParseVersion(s string) (Version, error) {
 
 	major, minor, patch, err := parseNumericTriple(core)
 	if err != nil {
-		return Version{}, fmt.Errorf("版本号 %q 解析失败: %w", s, err)
+		return Version{}, fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("failed to parse version string %q", s),
+			fmt.Sprintf("版本号 %q 解析失败", s),
+		), err)
 	}
 
 	rc, err := parseRC(rcPart)
 	if err != nil {
-		return Version{}, fmt.Errorf("版本号 %q 解析失败: %w", s, err)
+		return Version{}, fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("failed to parse version string %q", s),
+			fmt.Sprintf("版本号 %q 解析失败", s),
+		), err)
 	}
 
 	return Version{Major: major, Minor: minor, Patch: patch, RC: rc}, nil
@@ -72,19 +86,31 @@ func ParseVersion(s string) (Version, error) {
 func parseNumericTriple(core string) (int, int, int, error) {
 	parts := strings.Split(core, ".")
 	if len(parts) != 3 {
-		return 0, 0, 0, fmt.Errorf("需要三段数字 MAJOR.MINOR.PATCH，实际 %d 段", len(parts))
+		return 0, 0, 0, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("expected three numeric segments MAJOR.MINOR.PATCH, got %d segments", len(parts)),
+			fmt.Sprintf("需要三段数字 MAJOR.MINOR.PATCH，实际 %d 段", len(parts)),
+		))
 	}
 	n0, err := parseNoLeadingZero(parts[0])
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("MAJOR 段 %q: %w", parts[0], err)
+		return 0, 0, 0, fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("MAJOR segment %q", parts[0]),
+			fmt.Sprintf("MAJOR 段 %q", parts[0]),
+		), err)
 	}
 	n1, err := parseNoLeadingZero(parts[1])
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("MINOR 段 %q: %w", parts[1], err)
+		return 0, 0, 0, fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("MINOR segment %q", parts[1]),
+			fmt.Sprintf("MINOR 段 %q", parts[1]),
+		), err)
 	}
 	n2, err := parseNoLeadingZero(parts[2])
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("PATCH 段 %q: %w", parts[2], err)
+		return 0, 0, 0, fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("PATCH segment %q", parts[2]),
+			fmt.Sprintf("PATCH 段 %q", parts[2]),
+		), err)
 	}
 	return n0, n1, n2, nil
 }
@@ -97,22 +123,34 @@ func parseRC(rcPart string) (int, error) {
 	}
 	// 显式拒绝构建元数据：rcPart 内不允许出现 '+'。
 	if strings.Contains(rcPart, "+") {
-		return 0, fmt.Errorf("预发布段 %q 含构建元数据（不允许）", rcPart)
+		return 0, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("prerelease segment %q contains build metadata (not allowed)", rcPart),
+			fmt.Sprintf("预发布段 %q 含构建元数据（不允许）", rcPart),
+		))
 	}
 	const prefix = "rc."
 	if !strings.HasPrefix(rcPart, prefix) {
-		return 0, fmt.Errorf("预发布段 %q 必须形如 rc.N", rcPart)
+		return 0, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("prerelease segment %q must look like rc.N", rcPart),
+			fmt.Sprintf("预发布段 %q 必须形如 rc.N", rcPart),
+		))
 	}
 	num := rcPart[len(prefix):]
 	if num == "" {
-		return 0, errors.New("rc 编号缺失")
+		return 0, errors.New(ui.Bi("rc number is missing", "rc 编号缺失"))
 	}
 	n, err := parseNoLeadingZero(num)
 	if err != nil {
-		return 0, fmt.Errorf("rc 编号 %q: %w", num, err)
+		return 0, fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("rc number %q", num),
+			fmt.Sprintf("rc 编号 %q", num),
+		), err)
 	}
 	if n < 1 {
-		return 0, fmt.Errorf("rc 编号必须为正整数，实际 %d", n)
+		return 0, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("rc number must be a positive integer, got %d", n),
+			fmt.Sprintf("rc 编号必须为正整数，实际 %d", n),
+		))
 	}
 	return n, nil
 }
@@ -121,22 +159,31 @@ func parseRC(rcPart string) (int, error) {
 // 非数字、空串、负号。
 func parseNoLeadingZero(s string) (int, error) {
 	if s == "" {
-		return 0, errors.New("数字段为空")
+		return 0, errors.New(ui.Bi("numeric segment is empty", "数字段为空"))
 	}
 	if len(s) > 1 && s[0] == '0' {
-		return 0, fmt.Errorf("含前导零: %q", s)
+		return 0, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("leading zero found: %q", s),
+			fmt.Sprintf("含前导零: %q", s),
+		))
 	}
 	for _, c := range s {
 		if c < '0' || c > '9' {
-			return 0, fmt.Errorf("含非数字字符: %q", s)
+			return 0, fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("non-digit character found: %q", s),
+				fmt.Sprintf("含非数字字符: %q", s),
+			))
 		}
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil {
-		return 0, fmt.Errorf("数值解析失败: %w", err)
+		return 0, fmt.Errorf("%s: %w", ui.Bi("failed to parse number", "数值解析失败"), err)
 	}
 	if n < 0 {
-		return 0, fmt.Errorf("不支持负数: %q", s)
+		return 0, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("negative numbers are not supported: %q", s),
+			fmt.Sprintf("不支持负数: %q", s),
+		))
 	}
 	return n, nil
 }

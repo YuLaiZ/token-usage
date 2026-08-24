@@ -11,6 +11,7 @@ import (
 	"sort"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // DataDirMigration 描述一次 data_dir 变更需手工迁移的产物。
@@ -359,30 +360,51 @@ func sortedKeys(m map[string]struct{}) []string {
 // 这些函数返回稳定 warning 文案，供 AnalyzeConfigEffects 写入与 ApplyConfig/CLI 展示复用。
 
 func warningOldPathHistoryNotDeleted(client string) string {
-	return fmt.Sprintf("client %q 旧路径历史不会自动删除", client)
+	return ui.Bi(
+		fmt.Sprintf("history under the old paths of client %q is not deleted automatically", client),
+		fmt.Sprintf("client %q 旧路径历史不会自动删除", client),
+	)
 }
 func warningDisabledClientPathChanged(client string) string {
-	return fmt.Sprintf("client %q 已禁用，路径变化不采集；启用后再全量采集，已有历史不会自动删除", client)
+	return ui.Bi(
+		fmt.Sprintf("client %q is disabled; path changes are not collected, run a full collection after enabling it, and existing history is not deleted automatically", client),
+		fmt.Sprintf("client %q 已禁用，路径变化不采集；启用后再全量采集，已有历史不会自动删除", client),
+	)
 }
 func warningClientDisabledHistoryKept(client string) string {
-	return fmt.Sprintf("client %q 已禁用，已有历史不会自动删除", client)
+	return ui.Bi(
+		fmt.Sprintf("client %q is disabled; existing history is not deleted automatically", client),
+		fmt.Sprintf("client %q 已禁用，已有历史不会自动删除", client),
+	)
 }
 func warningRouterRebindOldAssoc(client string) string {
-	return fmt.Sprintf("client %q 旧的 router 关联不会自动清理", client)
+	return ui.Bi(
+		fmt.Sprintf("old router associations of client %q are not cleaned up automatically", client),
+		fmt.Sprintf("client %q 旧的 router 关联不会自动清理", client),
+	)
 }
 func warningDisabledClientRouterChanged(client string) string {
-	return fmt.Sprintf("client %q 已禁用，router 变化不采集；启用后再执行对应全量或 router 采集", client)
+	return ui.Bi(
+		fmt.Sprintf("client %q is disabled; router changes are not collected, run the corresponding full or router collection after enabling it", client),
+		fmt.Sprintf("client %q 已禁用，router 变化不采集；启用后再执行对应全量或 router 采集", client),
+	)
 }
 func warningRouterRemovedAssocKept(client string) string {
-	return fmt.Sprintf("client %q 已移除 router，既有 provider/model 关联不会自动删除", client)
+	return ui.Bi(
+		fmt.Sprintf("client %q no longer has a router; existing provider/model associations are not deleted automatically", client),
+		fmt.Sprintf("client %q 已移除 router，既有 provider/model 关联不会自动删除", client),
+	)
 }
 func warningRouterDBPathAttribution(router string) string {
-	return fmt.Sprintf("router %q db_path 变化，既有归因不会自动改写", router)
+	return ui.Bi(
+		fmt.Sprintf("router %q db_path changed; existing attribution is not rewritten automatically", router),
+		fmt.Sprintf("router %q db_path 变化，既有归因不会自动改写", router),
+	)
 }
 
 // 字符串型 warning 用 const 直接定义更合适。
 const (
-	warningDataDirManualMigration = "data_dir 变化需手工迁移 usage.db/logs，PID/lock/runtime-state 不迁移"
-	warningAliasAttribution       = "provider_aliases 变化，既有 provider/model 需重新归因"
-	warningLogDirNotMigrated      = "log.dir 变化，既有日志不会自动迁移"
+	warningDataDirManualMigration = "data_dir change requires manually migrating usage.db/logs / data_dir 变化需手工迁移 usage.db/logs，PID/lock/runtime-state 不迁移"
+	warningAliasAttribution       = "provider_aliases changed; existing provider/model attribution needs to be re-run / provider_aliases 变化，既有 provider/model 需重新归因"
+	warningLogDirNotMigrated      = "log.dir changed; existing logs are not migrated automatically / log.dir 变化，既有日志不会自动迁移"
 )

@@ -13,6 +13,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/control"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // ErrDeferredToHelper 表示文件替换已延迟到后台 helper（Windows staged replacement）。
@@ -22,7 +23,10 @@ import (
 // Start/Commit/Rollback（这些全部由 helper 负责），并在 ApplyResult 中报告
 // Installed=false、Deferred=true。
 // POSIX 的 Install 永不返回此错误，故 POSIX 路径完全不受影响。
-var ErrDeferredToHelper = errors.New("文件替换已延迟到后台 helper")
+var ErrDeferredToHelper = errors.New(ui.Bi(
+	"file replacement deferred to background helper",
+	"文件替换已延迟到后台 helper",
+))
 
 // update.go 实现更新判定与编排骨架：Service.Check（只读判定）与 Service.Apply（带来源校验的执行）。
 //
@@ -237,7 +241,7 @@ func (s *Service) Check(ctx context.Context, opts CheckOptions) (CheckResult, er
 			return result, nil
 		}
 		// 瞬时错误透传。
-		return CheckResult{}, fmt.Errorf("查询目标 Release 失败: %w", ferr)
+		return CheckResult{}, fmt.Errorf("%s: %w", ui.Bi("failed to fetch target release", "查询目标 Release 失败"), ferr)
 	}
 
 	// 比较：目标严格高于当前 → updateAvailable。
@@ -269,7 +273,7 @@ func (s *Service) Check(ctx context.Context, opts CheckOptions) (CheckResult, er
 // 禁止调用 control.Manager.Start/Stop/Restart（它们各自 WithLock 会二次加锁死锁）。
 func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, error) {
 	if s == nil {
-		return ApplyResult{}, errors.New("Service 不能为空")
+		return ApplyResult{}, errors.New(ui.Bi("Service must not be nil", "Service 不能为空"))
 	}
 	// 在入口初始化带 LogPath 的 result 与 stepLogger，使所有失败路径（包括早期
 	// recoverPendingJournal / Check / provenance error）都能返回带日志路径的结果，
@@ -338,7 +342,10 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 	if !ok {
 		// 平台不受支持：无法给出目标资产，视为不可信来源（保守拒绝）。
 		result.ProvenanceChecked = true
-		result.Reason = fmt.Sprintf("目标平台 %s/%s 无官方资产，请手动安装", goos, goarch)
+		result.Reason = ui.Bi(
+			fmt.Sprintf("no official asset for target platform %s/%s; please install manually", goos, goarch),
+			fmt.Sprintf("目标平台 %s/%s 无官方资产，请手动安装", goos, goarch),
+		)
 		ul.step("platform unsupported: %s/%s", goos, goarch)
 		return result, nil
 	}
@@ -364,7 +371,10 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 	stagePath, derr := s.downloadStage(ctx, checked.TargetTag, result.TargetAsset, result.BinaryPath)
 	if derr != nil {
 		// 下载或清单查询失败：保守拒绝安装，写明原因。ReadyToInstall 保持 false。
-		result.Reason = fmt.Sprintf("下载目标资产失败，请手动安装: %v", derr)
+		result.Reason = ui.Bi(
+			fmt.Sprintf("failed to download target asset, please install manually: %v", derr),
+			fmt.Sprintf("下载目标资产失败，请手动安装: %v", derr),
+		)
 		ul.step("download failed: %v", derr)
 		return result, nil
 	}
@@ -381,13 +391,19 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 			// 探针失败即拒绝安装：已下载的 stage 不再有用，best-effort 删除，
 			// 避免失败路径在目标目录残留大文件（实测 Windows 失败后残留 ~24MB）。
 			_ = os.Remove(stagePath)
-			result.Reason = fmt.Sprintf("stage 版本探针失败: %v；请手动安装", verr)
+			result.Reason = ui.Bi(
+				fmt.Sprintf("stage version probe failed: %v; please install manually", verr),
+				fmt.Sprintf("stage 版本探针失败: %v；请手动安装", verr),
+			)
 			ul.step("stage probe failed: %v", verr)
 			return result, nil
 		}
 		if stageVer != checked.TargetTag {
 			_ = os.Remove(stagePath)
-			result.Reason = fmt.Sprintf("stage 版本 %q 与目标 tag %q 不一致，拒绝安装；请手动安装", stageVer, checked.TargetTag)
+			result.Reason = ui.Bi(
+				fmt.Sprintf("stage version %q does not match target tag %q; refusing to install, please install manually", stageVer, checked.TargetTag),
+				fmt.Sprintf("stage 版本 %q 与目标 tag %q 不一致，拒绝安装；请手动安装", stageVer, checked.TargetTag),
+			)
 			ul.step("stage version mismatch: %s != %s", stageVer, checked.TargetTag)
 			return result, nil
 		}
@@ -440,24 +456,36 @@ func (s *Service) downloadStage(ctx context.Context, targetTag, assetName, binPa
 		return "", nil
 	}
 	if s.ProvenanceDeps.Manifest == nil {
-		return "", errors.New("未配置官方清单获取方式，无法取得目标资产预期 hash")
+		return "", errors.New(ui.Bi("no official manifest fetcher configured; cannot get the expected hash of the target asset", "未配置官方清单获取方式，无法取得目标资产预期 hash"))
 	}
 	targetManifest, merr := s.ProvenanceDeps.Manifest.FetchManifest(ctx, targetTag)
 	if merr != nil {
-		return "", fmt.Errorf("获取目标版本 %s 清单失败: %w", targetTag, merr)
+		return "", fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("failed to fetch manifest for target version %s", targetTag),
+			fmt.Sprintf("获取目标版本 %s 清单失败", targetTag),
+		), merr)
 	}
 	if targetManifest == nil {
-		return "", fmt.Errorf("目标版本 %s 清单为空", targetTag)
+		return "", fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("manifest for target version %s is empty", targetTag),
+			fmt.Sprintf("目标版本 %s 清单为空", targetTag),
+		))
 	}
 	expectedHash, ok := targetManifest.HashFor(assetName)
 	if !ok {
-		return "", fmt.Errorf("目标版本 %s 清单缺少资产 %s 的 hash", targetTag, assetName)
+		return "", fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("manifest for target version %s is missing the hash of asset %s", targetTag, assetName),
+			fmt.Sprintf("目标版本 %s 清单缺少资产 %s 的 hash", targetTag, assetName),
+		))
 	}
 	// stage 落在 target 同目录，保证后续 rename 同卷原子。
 	targetDir := filepath.Dir(binPath)
 	stagePath, derr := s.AssetDownloader.DownloadAsset(ctx, targetTag, assetName, expectedHash, targetDir, "")
 	if derr != nil {
-		return "", fmt.Errorf("下载资产 %s 失败: %w", assetName, derr)
+		return "", fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("failed to download asset %s", assetName),
+			fmt.Sprintf("下载资产 %s 失败", assetName),
+		), derr)
 	}
 	return stagePath, nil
 }
@@ -482,7 +510,7 @@ func (s *Service) recoverPendingJournal(ctx context.Context) (installOutcome, bo
 	}
 	_, found, err := findLeftoverJournal(target)
 	if err != nil {
-		return installOutcome{}, false, fmt.Errorf("检查遗留 journal 失败: %w", err)
+		return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to check leftover journal", "检查遗留 journal 失败"), err)
 	}
 	if !found {
 		return installOutcome{}, false, nil
@@ -519,10 +547,10 @@ func (s *Service) recoveryTargetPath() (string, bool) {
 func (s *Service) recoverJournalUnderLock(ctx context.Context, oldBinPath string) (installOutcome, bool, error) {
 	cfg, err := s.ConfigLoader()
 	if err != nil {
-		return installOutcome{}, false, fmt.Errorf("锁内加载有效配置失败: %w", err)
+		return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to load effective config under lock", "锁内加载有效配置失败"), err)
 	}
 	if cfg == nil {
-		return installOutcome{}, false, errors.New("锁内加载有效配置返回 nil")
+		return installOutcome{}, false, errors.New(ui.Bi("loading effective config under lock returned nil", "锁内加载有效配置返回 nil"))
 	}
 
 	var recovered installOutcome
@@ -547,12 +575,15 @@ func (s *Service) recoverJournalWithSession(ctx context.Context, sess ControlSes
 
 	journalOutcome, cleanupErr := recoverer.RecoverJournal(oldBinPath)
 	if cleanupErr != nil && journalOutcome.State != RecoveryStateCleanupPending {
-		return installOutcome{}, false, fmt.Errorf("处理遗留 journal 失败: %w", cleanupErr)
+		return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to handle leftover journal", "处理遗留 journal 失败"), cleanupErr)
 	}
 
 	switch journalOutcome.State {
 	case RecoveryStateManual:
-		return installOutcome{}, false, errors.New("遗留 journal 状态无法识别，保留文件要求人工处理")
+		return installOutcome{}, false, errors.New(ui.Bi(
+			"leftover journal state unrecognized; files kept for manual handling",
+			"遗留 journal 状态无法识别，保留文件要求人工处理",
+		))
 	case RecoveryStateNewInstalled, RecoveryStateOldRestored, RecoveryStateCleanupPending, RecoveryStateOldIntact:
 		// 状态 2 且原 daemon 未运行时，旧 target 完好，可继续本轮 Install。
 		if journalOutcome.State == RecoveryStateOldIntact && !journalOutcome.RestartDaemon {
@@ -566,26 +597,32 @@ func (s *Service) recoverJournalWithSession(ctx context.Context, sess ControlSes
 			journalOutcome.State == RecoveryStateOldRestored
 		if restartDaemon && journalOutcome.WasRunning {
 			if journalOutcome.NewBinPath == "" {
-				return installOutcome{}, false, errors.New("遗留 journal 缺少 daemon 恢复目标路径")
+				return installOutcome{}, false, errors.New(ui.Bi(
+					"leftover journal is missing the daemon recovery target path",
+					"遗留 journal 缺少 daemon 恢复目标路径",
+				))
 			}
 			if startErr := sess.StartWithExecutable(ctx, cfg, journalOutcome.NewBinPath); startErr != nil {
 				if cleanupErr != nil {
 					return installOutcome{}, false, errors.Join(
-						fmt.Errorf("恢复遗留事务后按原运行态重启 daemon 失败: %w", startErr),
-						fmt.Errorf("遗留事务文件清理待处理: %w", cleanupErr),
+						fmt.Errorf("%s: %w", ui.Bi("failed to restart daemon per original running state after recovering the leftover transaction", "恢复遗留事务后按原运行态重启 daemon 失败"), startErr),
+						fmt.Errorf("%s: %w", ui.Bi("leftover transaction file cleanup pending", "遗留事务文件清理待处理"), cleanupErr),
 					)
 				}
-				return installOutcome{}, false, fmt.Errorf("恢复遗留事务后按原运行态重启 daemon 失败: %w", startErr)
+				return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to restart daemon per original running state after recovering the leftover transaction", "恢复遗留事务后按原运行态重启 daemon 失败"), startErr)
 			}
 		}
 		if cleanupErr != nil {
-			return installOutcome{}, false, fmt.Errorf("遗留事务已恢复，但清理待处理: %w", cleanupErr)
+			return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("leftover transaction recovered, but cleanup is pending", "遗留事务已恢复，但清理待处理"), cleanupErr)
 		}
 		return installOutcome{Recovered: true, RecoveryState: journalOutcome.State}, true, nil
 	case RecoveryStateClean:
 		return installOutcome{}, false, nil
 	default:
-		return installOutcome{}, false, fmt.Errorf("遗留 journal 返回未知状态 %q，保留文件要求人工处理", journalOutcome.State)
+		return installOutcome{}, false, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("leftover journal returned unknown state %q; files kept for manual handling", journalOutcome.State),
+			fmt.Sprintf("遗留 journal 返回未知状态 %q，保留文件要求人工处理", journalOutcome.State),
+		))
 	}
 }
 
@@ -628,10 +665,10 @@ type installOutcome struct {
 func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBinPath string) (installOutcome, error) {
 	cfg, err := s.ConfigLoader()
 	if err != nil {
-		return installOutcome{}, fmt.Errorf("锁内加载有效配置失败: %w", err)
+		return installOutcome{}, fmt.Errorf("%s: %w", ui.Bi("failed to load effective config under lock", "锁内加载有效配置失败"), err)
 	}
 	if cfg == nil {
-		return installOutcome{}, errors.New("锁内加载有效配置返回 nil")
+		return installOutcome{}, errors.New(ui.Bi("loading effective config under lock returned nil", "锁内加载有效配置返回 nil"))
 	}
 
 	var installErr error
@@ -655,14 +692,14 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 		// 1. Inspect 判定替换前运行状态。
 		st, ierr := sess.Inspect(ctx, cfg)
 		if ierr != nil {
-			return fmt.Errorf("锁内 Inspect 失败: %w", ierr)
+			return fmt.Errorf("%s: %w", ui.Bi("Inspect failed under lock", "锁内 Inspect 失败"), ierr)
 		}
 		wasRunning = st.Running
 
 		// 2. 运行中先 Stop（等 daemon lock 释放），为文件替换腾出干净状态。
 		if wasRunning {
 			if serr := sess.Stop(ctx, cfg); serr != nil {
-				return fmt.Errorf("替换前停止 daemon 失败: %w", serr)
+				return fmt.Errorf("%s: %w", ui.Bi("failed to stop daemon before replacement", "替换前停止 daemon 失败"), serr)
 			}
 		}
 
@@ -700,14 +737,14 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 			}
 			if restartErr != nil {
 				return errors.Join(
-					fmt.Errorf("安装新版本失败: %w", installErr),
-					fmt.Errorf("回滚重启旧二进制也失败: %w", restartErr),
+					fmt.Errorf("%s: %w", ui.Bi("failed to install new version", "安装新版本失败"), installErr),
+					fmt.Errorf("%s: %w", ui.Bi("rollback restart with the old binary also failed", "回滚重启旧二进制也失败"), restartErr),
 				)
 			}
 			if wasRunning {
-				return fmt.Errorf("安装新版本失败（已用旧二进制重启）: %w", installErr)
+				return fmt.Errorf("%s: %w", ui.Bi("failed to install new version (restarted with the old binary)", "安装新版本失败（已用旧二进制重启）"), installErr)
 			}
-			return fmt.Errorf("安装新版本失败: %w", installErr)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to install new version", "安装新版本失败"), installErr)
 		}
 
 		// 4. 替换前运行 → 用新二进制重启 daemon，完成「热切换」。
@@ -724,30 +761,30 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 				if rerr := sess.StartWithExecutable(ctx, cfg, oldBinPath); rerr != nil {
 					if rollbackErr != nil {
 						return errors.Join(
-							fmt.Errorf("新二进制启动失败: %w", serr),
-							fmt.Errorf("回滚恢复失败: %w", rollbackErr),
-							fmt.Errorf("回滚重启旧二进制也失败: %w", rerr),
+							fmt.Errorf("%s: %w", ui.Bi("failed to start new binary", "新二进制启动失败"), serr),
+							fmt.Errorf("%s: %w", ui.Bi("rollback restore failed", "回滚恢复失败"), rollbackErr),
+							fmt.Errorf("%s: %w", ui.Bi("rollback restart with the old binary also failed", "回滚重启旧二进制也失败"), rerr),
 						)
 					}
 					return errors.Join(
-						fmt.Errorf("新二进制启动失败: %w", serr),
-						fmt.Errorf("回滚重启旧二进制也失败: %w", rerr),
+						fmt.Errorf("%s: %w", ui.Bi("failed to start new binary", "新二进制启动失败"), serr),
+						fmt.Errorf("%s: %w", ui.Bi("rollback restart with the old binary also failed", "回滚重启旧二进制也失败"), rerr),
 					)
 				}
 				if rollbackErr != nil {
 					return errors.Join(
-						fmt.Errorf("新二进制启动失败: %w", serr),
-						fmt.Errorf("回滚恢复失败: %w", rollbackErr),
+						fmt.Errorf("%s: %w", ui.Bi("failed to start new binary", "新二进制启动失败"), serr),
+						fmt.Errorf("%s: %w", ui.Bi("rollback restore failed", "回滚恢复失败"), rollbackErr),
 					)
 				}
-				return fmt.Errorf("新二进制启动失败，已用旧二进制回滚重启: %w", serr)
+				return fmt.Errorf("%s: %w", ui.Bi("failed to start new binary; rolled back and restarted with the old binary", "新二进制启动失败，已用旧二进制回滚重启"), serr)
 			}
 		}
 		// daemon Start 成功（或无需启动）：提交事务（清理 backup/journal）。
 		// Commit 失败不回滚已成功的新版本，返回「清理待处理」可诊断错误。
 		if th, ok := s.Installer.(TransactionHandler); ok && th != nil {
 			if cerr := th.Commit(); cerr != nil {
-				return fmt.Errorf("更新完成，清理待处理: %w", cerr)
+				return fmt.Errorf("%s: %w", ui.Bi("update completed, cleanup pending", "更新完成，清理待处理"), cerr)
 			}
 		}
 		return nil
@@ -767,11 +804,17 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 // parseCurrent 解析当前版本，dev / 非正式 tag 返回 error。
 func (s *Service) parseCurrent() (Version, error) {
 	if s.CurrentVersion == "dev" {
-		return Version{}, errors.New("当前版本为 dev，无法判定更新；请先通过官方 Release 手动安装正式版")
+		return Version{}, errors.New(ui.Bi(
+			"current version is dev; cannot determine updates, install an official release manually first",
+			"当前版本为 dev，无法判定更新；请先通过官方 Release 手动安装正式版",
+		))
 	}
 	ver, err := ParseVersion(s.CurrentVersion)
 	if err != nil {
-		return Version{}, fmt.Errorf("当前版本 %q 非正式 Release tag，无法判定更新: %w", s.CurrentVersion, err)
+		return Version{}, fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("current version %q is not an official release tag; cannot determine updates", s.CurrentVersion),
+			fmt.Sprintf("当前版本 %q 非正式 Release tag，无法判定更新", s.CurrentVersion),
+		), err)
 	}
 	return ver, nil
 }
@@ -779,10 +822,10 @@ func (s *Service) parseCurrent() (Version, error) {
 // validateForCheck 校验 Check 所需的最小依赖。
 func (s *Service) validateForCheck() error {
 	if s == nil {
-		return errors.New("Service 不能为空")
+		return errors.New(ui.Bi("Service must not be nil", "Service 不能为空"))
 	}
 	if s.ReleaseClient == nil {
-		return errors.New("Service.ReleaseClient 不能为空")
+		return errors.New(ui.Bi("Service.ReleaseClient must not be nil", "Service.ReleaseClient 不能为空"))
 	}
 	return nil
 }

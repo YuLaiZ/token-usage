@@ -10,6 +10,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/collector"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/model"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // RunRouterBackfill 全量回填指定 client 的 router 归因到所有历史 messages。
@@ -36,58 +37,63 @@ func RunRouterBackfill(ctx context.Context, deps *Deps, usageDB *db.DB, log *slo
 		return err
 	}
 	if deps == nil || deps.cfg == nil {
-		return errors.New("采集依赖或配置不能为空")
+		return errors.New(ui.Bi("collect deps or config must not be empty", "采集依赖或配置不能为空"))
 	}
 	if usageDB == nil {
-		return errors.New("usage DB 不能为空")
+		return errors.New(ui.Bi("usage DB must not be empty", "usage DB 不能为空"))
 	}
 	if log == nil {
 		log = slog.Default()
 	}
 	router := deps.RouterFor(client)
 	if router == nil {
-		return fmt.Errorf("客户端 %s 未配置 router", client)
+		return errors.New(ui.Bi(
+			fmt.Sprintf("client %s has no router configured", client),
+			fmt.Sprintf("客户端 %s 未配置 router", client)))
 	}
 
 	// 配置 key → 显示名列表（C2 修复 + I-v4-1 错误处理）
 	displayNames, ok := model.ClientToDisplayNames[client]
 	if !ok {
-		return fmt.Errorf("客户端 %s 的配置 key 未登记到 model.ClientToDisplayNames"+
-			"（新增 client 时需同步更新 ClientToDisplayNames）", client)
+		return errors.New(ui.Bi(
+			fmt.Sprintf("config key for client %s is not registered in model.ClientToDisplayNames"+
+				" (update ClientToDisplayNames when adding a new client)", client),
+			fmt.Sprintf("客户端 %s 的配置 key 未登记到 model.ClientToDisplayNames"+
+				"（新增 client 时需同步更新 ClientToDisplayNames）", client)))
 	}
 
 	// 全表读 router 日志（Incremental=false，Dates=nil 触发 ccswitch.go:208-209 全表分支）
 	routerResult, err := router.CollectLogs(ctx, collector.RouterCollectRequest{}, log)
 	if err != nil {
 		if ctx.Err() != nil {
-			return fmt.Errorf("%s router backfill 已取消: %w", client, err)
+			return fmt.Errorf("%s %s: %w", client, ui.Bi("router backfill canceled", "router backfill 已取消"), err)
 		}
-		return fmt.Errorf("%s 读取 router 日志失败: %w", client, err)
+		return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to read router logs", "读取 router 日志失败"), err)
 	}
 	if ctx.Err() != nil {
-		return fmt.Errorf("%s router backfill 已取消: %w", client, ctx.Err())
+		return fmt.Errorf("%s %s: %w", client, ui.Bi("router backfill canceled", "router backfill 已取消"), ctx.Err())
 	}
 
 	// 单事务：UpsertRawRouterLogs → 查归因 → BackfillRouterFields
 	tx, err := usageDB.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("%s 开启写事务失败: %w", client, err)
+		return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to open write transaction", "开启写事务失败"), err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	if len(routerResult.Logs) > 0 {
 		if _, err := db.UpsertRawRouterLogs(ctx, tx, routerResult.Logs); err != nil {
 			if ctx.Err() != nil {
-				return fmt.Errorf("%s router backfill 已取消: %w", client, err)
+				return fmt.Errorf("%s %s: %w", client, ui.Bi("router backfill canceled", "router backfill 已取消"), err)
 			}
-			return fmt.Errorf("%s 保存 router 日志失败: %w", client, err)
+			return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to save router logs", "保存 router 日志失败"), err)
 		}
 	}
 
 	// 按显示名查该 client 所有历史 messageIDs
 	messageIDs, err := db.GetMessageIDsByDisplayNames(ctx, tx, displayNames)
 	if err != nil {
-		return fmt.Errorf("%s 查询 message ids 失败: %w", client, err)
+		return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to query message ids", "查询 message ids 失败"), err)
 	}
 
 	// 复用现有 DAO（已内置 500 分块、app_type 过滤、routerAppTypeToClient 映射、首条优先）
@@ -95,7 +101,7 @@ func RunRouterBackfill(ctx context.Context, deps *Deps, usageDB *db.DB, log *slo
 	if len(messageIDs) > 0 {
 		infos, err := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
 		if err != nil {
-			return fmt.Errorf("%s 查询 router 归因失败: %w", client, err)
+			return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to query router attribution", "查询 router 归因失败"), err)
 		}
 		// 应用 providerAliases
 		providerAliases := deps.cfg.ProviderAliases
@@ -107,18 +113,20 @@ func RunRouterBackfill(ctx context.Context, deps *Deps, usageDB *db.DB, log *slo
 		if len(infos) > 0 {
 			n, err = db.BackfillRouterFields(ctx, tx, infos)
 			if err != nil {
-				return fmt.Errorf("%s 回填 router 归因失败: %w", client, err)
+				return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to backfill router attribution", "回填 router 归因失败"), err)
 			}
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("%s 提交事务失败: %w", client, err)
+		return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to commit transaction", "提交事务失败"), err)
 	}
 
-	log.Info("router backfill 完成", "client", client, "messages_backfilled", n)
+	log.Info("router backfill completed", "client", client, "messages_backfilled", n)
 	if out != nil {
-		fmt.Fprintf(out, "✓ %s: router 回填 %d 条归因\n", client, n)
+		fmt.Fprintf(out, "✓ %s: %s\n", client,
+			ui.Bi(fmt.Sprintf("router backfilled %d attributions", n),
+				fmt.Sprintf("router 回填 %d 条归因", n)))
 	}
 	return nil
 }

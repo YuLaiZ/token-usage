@@ -3,10 +3,12 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/YuLaiZ/token-usage/internal/collector"
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // Deps 封装采集所需的无状态依赖（cfg + collectors + routers 表）。
@@ -75,22 +77,34 @@ func (r Result) Complete() bool {
 	return r.Attempted > 0 && r.Succeeded == r.Attempted && r.Err == nil
 }
 
+// unknownClientError 统一构造「未知客户端」双语错误（ValidateResult 与
+// RunRetryWithDepsContext 共用，避免支持列表两处文案漂移）。
+func unknownClientError(client string) error {
+	return errors.New(ui.Bi(
+		fmt.Sprintf("unknown client: %s (supported: claude, opencode, codex, workbuddy, zcode, autoclaw)", client),
+		fmt.Sprintf("未知客户端: %s（支持: claude, opencode, codex, workbuddy, zcode, autoclaw）", client)))
+}
+
 // ValidateResult 校验采集结果语义
 func ValidateResult(client string, result Result) error {
 	if client != "" && !result.Matched {
-		return fmt.Errorf("未知客户端: %s（支持: claude, opencode, codex, workbuddy, zcode, autoclaw）", client)
+		return unknownClientError(client)
 	}
 	if result.Attempted == 0 {
 		if client != "" {
-			return fmt.Errorf("客户端 %s 未启用，请检查 enabled 配置", client)
+			return errors.New(ui.Bi(
+				fmt.Sprintf("client %s is not enabled, check the enabled config", client),
+				fmt.Sprintf("客户端 %s 未启用，请检查 enabled 配置", client)))
 		}
-		return fmt.Errorf("没有已启用的客户端，未执行采集")
+		return errors.New(ui.Bi("no enabled clients, collection not executed", "没有已启用的客户端，未执行采集"))
 	}
 	if result.Err != nil {
-		return fmt.Errorf("采集未完全成功: %w", result.Err)
+		return fmt.Errorf("%s: %w", ui.Bi("collection incomplete", "采集未完全成功"), result.Err)
 	}
 	if !result.Complete() {
-		return fmt.Errorf("采集未完全成功: %d/%d 个数据源成功", result.Succeeded, result.Attempted)
+		return errors.New(ui.Bi(
+			fmt.Sprintf("collection incomplete: %d/%d sources succeeded", result.Succeeded, result.Attempted),
+			fmt.Sprintf("采集未完全成功: %d/%d 个数据源成功", result.Succeeded, result.Attempted)))
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/fileutil"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 	"golang.org/x/sys/windows"
 )
 
@@ -43,7 +44,7 @@ type windowsProcessWaitHandle struct {
 func (h *windowsProcessWaitHandle) CreationTime() (uint64, error) {
 	var creation, exit, kernel, user windows.Filetime
 	if err := windows.GetProcessTimes(h.handle, &creation, &exit, &kernel, &user); err != nil {
-		return 0, fmt.Errorf("GetProcessTimes 失败: %w", err)
+		return 0, fmt.Errorf("%s: %w", ui.Bi("GetProcessTimes failed", "GetProcessTimes 失败"), err)
 	}
 	return uint64(creation.HighDateTime)<<32 | uint64(creation.LowDateTime), nil
 }
@@ -57,7 +58,7 @@ func (h *windowsProcessWaitHandle) Wait(ctx context.Context) error {
 		// 每轮最多等 1s，便于及时响应 ctx。
 		status, err := windows.WaitForSingleObject(h.handle, 1000)
 		if err != nil {
-			return fmt.Errorf("WaitForSingleObject 失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("WaitForSingleObject failed", "WaitForSingleObject 失败"), err)
 		}
 		if status == windows.WAIT_OBJECT_0 {
 			return nil // 进程已退出。
@@ -84,7 +85,10 @@ func (windowsProcessProbe) OpenForWait(pid uint32) (ProcessWaitHandle, error) {
 		if err == windows.ERROR_INVALID_PARAMETER {
 			return nil, errProcessGone
 		}
-		return nil, fmt.Errorf("OpenProcess(%d) 失败: %w", pid, err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("OpenProcess(%d) failed", pid),
+			fmt.Sprintf("OpenProcess(%d) 失败", pid),
+		), err)
 	}
 	return &windowsProcessWaitHandle{handle: h}, nil
 }

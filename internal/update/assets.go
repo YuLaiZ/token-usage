@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // assets.go 实现平台 → 资产名映射、Release/Asset 值对象与 Release 元数据校验。
@@ -94,28 +96,46 @@ type Release struct {
 // 任一条件不满足返回错误；通过则返回 nil。该校验不触碰网络与文件系统。
 func ValidateRelease(r *Release, wantTag string, allowPrerelease bool) error {
 	if r == nil {
-		return errors.New("release 不能为空")
+		return errors.New(ui.Bi("release must not be nil", "release 不能为空"))
 	}
 	if r.Tag != wantTag {
-		return fmt.Errorf("release tag 不匹配：got %q want %q", r.Tag, wantTag)
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("release tag mismatch: got %q want %q", r.Tag, wantTag),
+			fmt.Sprintf("release tag 不匹配：got %q want %q", r.Tag, wantTag),
+		))
 	}
 	if r.Draft {
-		return fmt.Errorf("release %q 是草稿，拒绝更新", r.Tag)
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("release %q is a draft; refusing to update", r.Tag),
+			fmt.Sprintf("release %q 是草稿，拒绝更新", r.Tag),
+		))
 	}
 	// 版本与 prerelease 元数据的一致性：rc 版本必须标记 prerelease，稳定版反之。
 	if r.Version.IsPrerelease() {
 		if !r.Prerelease {
-			return fmt.Errorf("版本 %q 是候选版但 Prerelease=false", r.Tag)
+			return fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("version %q is a release candidate but Prerelease=false", r.Tag),
+				fmt.Sprintf("版本 %q 是候选版但 Prerelease=false", r.Tag),
+			))
 		}
 		if !allowPrerelease {
-			return fmt.Errorf("版本 %q 是候选版，当前未允许安装预发布版本", r.Tag)
+			return fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("version %q is a release candidate; prerelease installation is not allowed", r.Tag),
+				fmt.Sprintf("版本 %q 是候选版，当前未允许安装预发布版本", r.Tag),
+			))
 		}
 	} else if r.Prerelease {
-		return fmt.Errorf("版本 %q 是稳定版但 Prerelease=true", r.Tag)
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("version %q is stable but Prerelease=true", r.Tag),
+			fmt.Sprintf("版本 %q 是稳定版但 Prerelease=true", r.Tag),
+		))
 	}
 	// 资产集合精确匹配：键集合必须等于冻结的 {三二进制, SHA256SUMS}。
 	if err := validateAssetSet(r.Assets); err != nil {
-		return fmt.Errorf("release %q 资产集合非法: %w", r.Tag, err)
+		return fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("release %q has an invalid asset set", r.Tag),
+			fmt.Sprintf("release %q 资产集合非法", r.Tag),
+		), err)
 	}
 	return nil
 }
@@ -124,13 +144,22 @@ func ValidateRelease(r *Release, wantTag string, allowPrerelease bool) error {
 // 多一项、少一项、错名、空集合均视为非法。
 func validateAssetSet(assets map[string]Asset) error {
 	if len(assets) != len(platformAssetNamesSorted) {
-		return fmt.Errorf("资产数量不匹配：got %d want %d", len(assets), len(platformAssetNamesSorted))
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("asset count mismatch: got %d want %d", len(assets), len(platformAssetNamesSorted)),
+			fmt.Sprintf("资产数量不匹配：got %d want %d", len(assets), len(platformAssetNamesSorted)),
+		))
 	}
 	for _, name := range platformAssetNamesSorted {
 		if a, ok := assets[name]; !ok {
-			return fmt.Errorf("缺少资产 %q", name)
+			return fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("missing asset %q", name),
+				fmt.Sprintf("缺少资产 %q", name),
+			))
 		} else if a.Name != name {
-			return fmt.Errorf("资产键 %q 的 Name 字段不一致: %q", name, a.Name)
+			return fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("Name field of asset key %q is inconsistent: %q", name, a.Name),
+				fmt.Sprintf("资产键 %q 的 Name 字段不一致: %q", name, a.Name),
+			))
 		}
 	}
 	return nil

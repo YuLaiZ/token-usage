@@ -19,6 +19,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/engine"
 	"github.com/YuLaiZ/token-usage/internal/logger"
 	"github.com/YuLaiZ/token-usage/internal/runmeta"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // RunOptions 描述 daemon.Run 的可选参数。
@@ -48,7 +49,7 @@ type RunOptions struct {
 // ErrParentLeaseLost 在 ParentLeaseLost 先于 daemon lock commit 关闭时由 Run 返回，
 // 表示「父级 control lease 已消失，取消启动，不写 PID/runtime-state」。
 // 这是 lease EOF 先到的语义；调用方据此退出（不进入 analyzer）。
-var ErrParentLeaseLost = errors.New("父进程 control lease 已丢失，取消守护进程启动")
+var ErrParentLeaseLost = errors.New(ui.Bi("parent control lease lost, aborting daemon start", "父进程 control lease 已丢失，取消守护进程启动"))
 
 // RuntimeResources 由 OpenResources 返回的运行时资源。Close 由 Run 在退出时调用，
 // 其错误与主运行错误用 errors.Join 合并（不得覆盖主错误）。
@@ -66,7 +67,7 @@ type OpenRuntimeResources func(cfg *config.Config) (RuntimeResources, error)
 func productionOpenResources(cfg *config.Config) (RuntimeResources, error) {
 	log, err := logger.Init(cfg.Log.Level, cfg.Log.Dir, cfg.Log.MaxDays)
 	if err != nil {
-		return RuntimeResources{}, fmt.Errorf("初始化日志失败: %w", err)
+		return RuntimeResources{}, fmt.Errorf("%s: %w", ui.Bi("failed to initialize logger", "初始化日志失败"), err)
 	}
 	// logger 就绪后接管 fd 1/2（unix）：panic 等直接写 stderr 的兜底输出并入
 	// 当日结构化日志文件。restore 丢弃——daemon 生命周期即进程生命周期。
@@ -76,7 +77,7 @@ func productionOpenResources(cfg *config.Config) (RuntimeResources, error) {
 	usageDB, err := db.Open(filepath.Join(cfg.DataDir, "usage.db"))
 	if err != nil {
 		logger.Close()
-		return RuntimeResources{}, fmt.Errorf("打开数据库失败: %w", err)
+		return RuntimeResources{}, fmt.Errorf("%s: %w", ui.Bi("failed to open database", "打开数据库失败"), err)
 	}
 	return RuntimeResources{
 		DB:  usageDB,
@@ -85,7 +86,7 @@ func productionOpenResources(cfg *config.Config) (RuntimeResources, error) {
 			dbErr := usageDB.Close()
 			logger.Close()
 			if dbErr != nil {
-				return fmt.Errorf("关闭数据库失败: %w", dbErr)
+				return fmt.Errorf("%s: %w", ui.Bi("failed to close database", "关闭数据库失败"), dbErr)
 			}
 			return nil
 		},
@@ -120,10 +121,10 @@ func cleanupLegacyFallbackLogs(dataDir string) {
 // Run 在 AcquireLock 前后检查它，确保 EOF 先到时取消启动（不写 PID/runtime-state、不开 DB）。
 func Run(ctx context.Context, cfg *config.Config, opts RunOptions) (err error) {
 	if cfg == nil {
-		return errors.New("daemon config 不能为 nil")
+		return errors.New(ui.Bi("daemon config must not be nil", "daemon config 不能为 nil"))
 	}
 	if strings.TrimSpace(cfg.DataDir) == "" {
-		return errors.New("daemon data_dir 不能为空")
+		return errors.New(ui.Bi("daemon data_dir must not be empty", "daemon data_dir 不能为空"))
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -139,18 +140,18 @@ func Run(ctx context.Context, cfg *config.Config, opts RunOptions) (err error) {
 	if opts.InstanceID == "" ||
 		strings.TrimSpace(opts.InstanceID) != opts.InstanceID ||
 		len(strings.Fields(opts.InstanceID)) != 1 {
-		return fmt.Errorf("InstanceID 必须是非空且不含空白的单字段: %q", opts.InstanceID)
+		return fmt.Errorf("%s: %q", ui.Bi("InstanceID must be a single non-empty field without whitespace, got", "InstanceID 必须是非空且不含空白的单字段"), opts.InstanceID)
 	}
 
 	// 获取排他锁：失败即说明守护进程正在运行。
 	// 不前置 IsDaemonRunning（双重加锁 TOCTOU）；AcquireLock 返回 (nil,false) 已能判定「正在运行」。
 	f, ok := AcquireLock(lockPath)
 	if !ok {
-		return fmt.Errorf("守护进程正在运行或获取锁失败，请先停止后再启动")
+		return errors.New(ui.Bi("daemon is already running or lock acquisition failed, stop it before starting", "守护进程正在运行或获取锁失败，请先停止后再启动"))
 	}
 	defer func() {
 		if releaseErr := ReleaseLock(f); releaseErr != nil {
-			err = errors.Join(err, fmt.Errorf("释放 daemon lock 失败: %w", releaseErr))
+			err = errors.Join(err, fmt.Errorf("%s: %w", ui.Bi("failed to release daemon lock", "释放 daemon lock 失败"), releaseErr))
 		}
 	}()
 
@@ -163,7 +164,7 @@ func Run(ctx context.Context, cfg *config.Config, opts RunOptions) (err error) {
 	// daemon lock 已 commit：恰好一次回调（独立 _run 在此释放 control lock）。
 	if opts.OnDaemonLockCommit != nil {
 		if commitErr := opts.OnDaemonLockCommit(); commitErr != nil {
-			return fmt.Errorf("提交 daemon lock 后释放 control lease 失败: %w", commitErr)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to release control lease after daemon lock commit", "提交 daemon lock 后释放 control lease 失败"), commitErr)
 		}
 	}
 
@@ -179,20 +180,20 @@ func Run(ctx context.Context, cfg *config.Config, opts RunOptions) (err error) {
 	// daemon lock 已 commit：无条件清理上一代 PID/state + 精确 temp 残留，再写本次 PID。
 	// lock 已确保上一代 daemon 已退出，残留 PID/state 必为 stale，可安全清理。
 	if cerr := runmeta.CleanupStaleMetadata(cfg.DataDir); cerr != nil {
-		return fmt.Errorf("清理上一代元数据失败: %w", cerr)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to clean up previous generation metadata", "清理上一代元数据失败"), cerr)
 	}
 
 	// 写入 PID 文件（新格式 "<pid> <instanceID>"，供 cat 调试 + start ready 握手定位）。
 	pid := os.Getpid()
 	if werr := runmeta.WritePIDFile(pidPath, pid, opts.InstanceID); werr != nil {
-		return fmt.Errorf("写入 PID 文件失败: %w", werr)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to write PID file", "写入 PID 文件失败"), werr)
 	}
 	// 正常退出按「确认 instanceID 所有权 → state → PID → daemon lock」顺序清理；
 	// defer 在返回时执行，此时 daemon lock 即将由外层 defer Release 释放。
 	// 清理失败并入最终返回值，同时残留仍可由下次 start/stop 收敛。
 	defer func() {
 		if cerr := runmeta.CleanupOwnedMetadata(cfg.DataDir, pid, opts.InstanceID); cerr != nil {
-			err = errors.Join(err, fmt.Errorf("清理本实例运行元数据失败: %w", cerr))
+			err = errors.Join(err, fmt.Errorf("%s: %w", ui.Bi("failed to clean up this instance's run metadata", "清理本实例运行元数据失败"), cerr))
 		}
 	}()
 
@@ -203,7 +204,7 @@ func Run(ctx context.Context, cfg *config.Config, opts RunOptions) (err error) {
 	}
 	resources, oerr := openFn(cfg)
 	if oerr != nil {
-		return fmt.Errorf("打开运行时资源失败: %w", oerr)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to open runtime resources", "打开运行时资源失败"), oerr)
 	}
 	// Close 在退出时调用；其错误与主错误用 errors.Join 合并，不得覆盖主错误。
 	// 通过命名返回值 err：Close 错误 join 到最终返回值，主错误仍由后续 runAnalyzer 写入 err。
@@ -215,14 +216,14 @@ func Run(ctx context.Context, cfg *config.Config, opts RunOptions) (err error) {
 		}
 	}()
 	if resources.DB == nil {
-		return errors.New("运行时资源未提供 usage DB")
+		return errors.New(ui.Bi("runtime resources did not provide usage DB", "运行时资源未提供 usage DB"))
 	}
 
 	log := resources.Log
 	if log == nil {
 		log = slog.Default()
 	}
-	log.Info("守护进程启动（后台模式）", "pid", os.Getpid(), "data_dir", cfg.DataDir)
+	log.Info("daemon started (background mode)", "pid", os.Getpid(), "data_dir", cfg.DataDir)
 
 	err = runAnalyzer(ctx, cfg, resources.DB, log, pid, opts.InstanceID)
 	return err

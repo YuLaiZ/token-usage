@@ -191,7 +191,7 @@ func (s *providerMissStats) logSummary(logger *slog.Logger) {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	logger.Debug("ZCode provider 映射缺失，已回退原值",
+	logger.Debug("ZCode provider mapping missing, kept original value",
 		"count", s.count, "provider_ids", strings.Join(ids, ","))
 }
 
@@ -297,7 +297,7 @@ func (c *ZCodeCollector) scanRows(ctx context.Context, db *sql.DB, query string,
 			hasNext = true
 		}
 		if id == "" || sessionID == "" || completedAt <= 0 {
-			logger.Debug("ZCode completed 行缺少必要标识或时间，跳过",
+			logger.Debug("ZCode completed line missing required identifiers or timestamp, skipped",
 				"usage_id", id, "session_id", sessionID, "completed_at", completedAt)
 			continue
 		}
@@ -308,7 +308,7 @@ func (c *ZCodeCollector) scanRows(ctx context.Context, db *sql.DB, query string,
 		}
 		fresh := model.SubtractCache(input, cacheRead, cacheCreate)
 		if input < cacheRead+cacheCreate {
-			logger.Warn("ZCode cache token 超过 input，fresh input 已归零",
+			logger.Warn("ZCode cache token exceeds input, fresh input clamped to zero",
 				"usage_id", id, "input", input, "cache_read", cacheRead, "cache_create", cacheCreate)
 		}
 		provider := providerID

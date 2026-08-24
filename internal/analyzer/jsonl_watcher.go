@@ -15,6 +15,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 
 	"github.com/YuLaiZ/token-usage/internal/collector"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // JSONLWatcher 监控 JSONL 文件目录变化
@@ -44,20 +45,20 @@ type JSONLWatcher struct {
 // 本构造函数不接收测试专用 onReady 参数。
 func NewJSONLWatcher(dirs []string, clientName string, debounceDuration time.Duration, submit MonitorSubmitFunc, logger *slog.Logger) (*JSONLWatcher, error) {
 	if len(dirs) == 0 {
-		return nil, fmt.Errorf("监控目录不能为空")
+		return nil, errors.New(ui.Bi("watch directory must not be empty", "监控目录不能为空"))
 	}
 	if submit == nil {
-		return nil, fmt.Errorf("monitor submit callback 不能为空")
+		return nil, errors.New(ui.Bi("monitor submit callback must not be nil", "monitor submit callback 不能为空"))
 	}
 	normalized := make([]string, 0, len(dirs))
 	seen := make(map[string]struct{}, len(dirs))
 	for _, dir := range dirs {
 		if strings.TrimSpace(dir) == "" {
-			return nil, fmt.Errorf("监控目录不能为空")
+			return nil, errors.New(ui.Bi("watch directory must not be empty", "监控目录不能为空"))
 		}
 		abs, err := filepath.Abs(dir)
 		if err != nil {
-			return nil, fmt.Errorf("解析监控目录 %q 失败: %w", dir, err)
+			return nil, fmt.Errorf("%s: %w", ui.Bi(fmt.Sprintf("failed to resolve watch directory %q", dir), fmt.Sprintf("解析监控目录 %q 失败", dir)), err)
 		}
 		abs = filepath.Clean(abs)
 		if _, ok := seen[abs]; ok {
@@ -85,7 +86,7 @@ func NewJSONLWatcher(dirs []string, clientName string, debounceDuration time.Dur
 	// 使 setupFromConfig 能跳过该客户端，Analyzer.Run 在无任何存活监控时返回 error
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		return nil, fmt.Errorf("创建 fsnotify watcher 失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to create fsnotify watcher", "创建 fsnotify watcher 失败"), err)
 	}
 	w.watcher = watcher
 
@@ -150,7 +151,7 @@ func (w *JSONLWatcher) Run(ctx context.Context) error {
 				if w.stopping(ctx) {
 					return nil
 				}
-				return fmt.Errorf("fsnotify event channel 意外关闭")
+				return errors.New(ui.Bi("fsnotify event channel closed unexpectedly", "fsnotify event channel 意外关闭"))
 			}
 			// 新建相关目录时动态递归 Add（包括原先不存在的目标路径逐级创建）。
 			if event.Op&fsnotify.Create != 0 {
@@ -159,7 +160,7 @@ func (w *JSONLWatcher) Run(ctx context.Context) error {
 						if w.stopping(ctx) {
 							return nil
 						}
-						return fmt.Errorf("动态注册目录 %s 失败: %w", event.Name, addErr)
+						return fmt.Errorf("%s: %w", ui.Bi(fmt.Sprintf("failed to register directory %s dynamically", event.Name), fmt.Sprintf("动态注册目录 %s 失败", event.Name)), addErr)
 					}
 					// 运行期新目录接管是低频事件，单条保留排查线索。
 					w.logger.Debug("watching new directory", "dir", event.Name)
@@ -172,7 +173,7 @@ func (w *JSONLWatcher) Run(ctx context.Context) error {
 					if w.stopping(ctx) {
 						return nil
 					}
-					return fmt.Errorf("监控目录变更后恢复监听失败: %w", err)
+					return fmt.Errorf("%s: %w", ui.Bi("failed to restore watching after monitored directory changed", "监控目录变更后恢复监听失败"), err)
 				}
 			}
 			// 只处理 Create 和 Write 事件
@@ -193,7 +194,7 @@ func (w *JSONLWatcher) Run(ctx context.Context) error {
 				if w.stopping(ctx) {
 					return nil
 				}
-				return fmt.Errorf("fsnotify error channel 意外关闭")
+				return errors.New(ui.Bi("fsnotify error channel closed unexpectedly", "fsnotify error channel 意外关闭"))
 			}
 			return fmt.Errorf("fsnotify watcher error: %w", err)
 		}
@@ -214,7 +215,7 @@ func (w *JSONLWatcher) registerRoots(ctx context.Context) error {
 			return err
 		}
 		if err := w.registerRoot(ctx, root); err != nil {
-			return fmt.Errorf("注册监控根目录 %s: %w", root, err)
+			return fmt.Errorf("%s: %w", ui.Bi(fmt.Sprintf("register watch root %s", root), fmt.Sprintf("注册监控根目录 %s", root)), err)
 		}
 	}
 	// 注册结果是启动必经的批量预期路径，逐目录打印只会刷屏；数量才是有效信息。
@@ -229,7 +230,7 @@ func (w *JSONLWatcher) registerRoot(ctx context.Context, root string) error {
 	info, err := os.Stat(root)
 	if err == nil {
 		if !info.IsDir() {
-			return fmt.Errorf("路径不是目录")
+			return errors.New(ui.Bi("path is not a directory", "路径不是目录"))
 		}
 		// 同时监控父目录，以便目标根目录被删除后可以观察其重建。
 		if parent := filepath.Dir(root); parent != root {
@@ -255,7 +256,7 @@ func nearestExistingDir(path string) (string, error) {
 		info, err := os.Stat(current)
 		if err == nil {
 			if !info.IsDir() {
-				return "", fmt.Errorf("最近存在的父路径 %s 不是目录", current)
+				return "", errors.New(ui.Bi(fmt.Sprintf("nearest existing parent path %s is not a directory", current), fmt.Sprintf("最近存在的父路径 %s 不是目录", current)))
 			}
 			return current, nil
 		}
@@ -264,7 +265,7 @@ func nearestExistingDir(path string) (string, error) {
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
-			return "", fmt.Errorf("找不到可监听的已存在父目录: %s", path)
+			return "", errors.New(ui.Bi(fmt.Sprintf("no existing parent directory available to watch: %s", path), fmt.Sprintf("找不到可监听的已存在父目录: %s", path)))
 		}
 	}
 }
@@ -292,7 +293,7 @@ func (w *JSONLWatcher) addWatch(path string) error {
 		return nil
 	}
 	if err := w.watcher.Add(path); err != nil {
-		return fmt.Errorf("监听目录 %s: %w", path, err)
+		return fmt.Errorf("%s: %w", ui.Bi(fmt.Sprintf("watch directory %s", path), fmt.Sprintf("监听目录 %s", path)), err)
 	}
 	w.watched[path] = struct{}{}
 	return nil

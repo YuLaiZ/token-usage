@@ -6,6 +6,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // routerPage 路由中间件页:列出 app.draft.Routers,每行一个 db_path textinput,
@@ -29,7 +31,7 @@ func newRouterPage(app *App) *routerPage {
 		ti.SetValue(app.draft.Routers[n].DBPath)
 		ph := app.display.Routers[n].DBPath
 		if ph == "" {
-			ph = "(运行时默认)"
+			ph = "(" + ui.Bi("runtime default", "运行时默认") + ")"
 		}
 		ti.Placeholder = ph
 		p.inputs = append(p.inputs, ti)
@@ -38,7 +40,7 @@ func newRouterPage(app *App) *routerPage {
 	return p
 }
 
-func (p *routerPage) title() string { return "路由中间件" }
+func (p *routerPage) title() string { return ui.Bi("Routers", "路由中间件") }
 func (p *routerPage) Init() tea.Cmd { return nil }
 
 // setDBPath 设置第 idx 行 db_path textinput 的值(测试用)。
@@ -107,7 +109,7 @@ func (p *routerPage) commit() error {
 }
 
 func (p *routerPage) View() string {
-	s := "路由中间件\n\n"
+	s := ui.Bi("Routers", "路由中间件") + "\n\n"
 	for i, name := range p.names {
 		cur := "  "
 		if i == p.cursor {
@@ -116,8 +118,10 @@ func (p *routerPage) View() string {
 		s += fmt.Sprintf("%s%s%s\n", cur, pad(name, 14), p.inputs[i].View())
 	}
 	if len(p.names) == 0 {
-		s += "  (无已配置路由中间件)\n"
+		s += "  (" + ui.Bi("no routers configured", "无已配置路由中间件") + ")\n"
 	}
-	s += "\n  编辑 db_path   esc 应用到草稿并返回(主菜单 s 保存写盘)\n"
+	s += "\n  " + ui.Bi("Edit db_path", "编辑 db_path") + "   " +
+		ui.Bi("esc Apply to draft and return (main-menu s saves to disk)",
+			"esc 应用到草稿并返回(主菜单 s 保存写盘)") + "\n"
 	return s
 }

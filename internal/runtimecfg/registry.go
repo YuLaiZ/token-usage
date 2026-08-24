@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // registry 是固定注册表：哪些 client/router/log level/path key 受支持。
@@ -268,7 +269,10 @@ func defaultAutoClawSessionsDir(home string) string {
 
 // errNotRegistered 构造「未注册 X」错误（稳定错误信息，便于测试与 CLI 提示）。
 func errNotRegistered(kind, name string) error {
-	return fmt.Errorf("未注册的 %s %q（受支持: %v）", kind, name, registeredNamesForKind(kind))
+	return fmt.Errorf("%s", ui.Bi(
+		fmt.Sprintf("unregistered %s %q (supported: %v)", kind, name, registeredNamesForKind(kind)),
+		fmt.Sprintf("未注册的 %s %q（受支持: %v）", kind, name, registeredNamesForKind(kind)),
+	))
 }
 
 func registeredNamesForKind(kind string) []string {

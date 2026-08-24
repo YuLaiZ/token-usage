@@ -568,7 +568,7 @@ func TestApplyConfig_AutoStartOnlyChangeIsEffectiveChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyConfig: %v", err)
 	}
-	if !res.Changed || res.SuccessMessage != "配置已保存" {
+	if !res.Changed || res.SuccessMessage != "config saved / 配置已保存" {
 		t.Errorf("仅 autostart 变化也是有效配置变化，got Changed=%v message=%q", res.Changed, res.SuccessMessage)
 	}
 	if len(res.SuggestedSteps) != 0 {

@@ -26,6 +26,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
 	"github.com/YuLaiZ/token-usage/internal/service"
 	"github.com/YuLaiZ/token-usage/internal/tui"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // runConfigTUI 启动配置 TUI。
@@ -44,7 +45,7 @@ func runConfigTUIContext(ctx context.Context) error {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("获取用户主目录失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to get user home directory", "获取用户主目录失败"), err)
 	}
 	path := runtimecfg.ConfigPath(home)
 
@@ -55,7 +56,7 @@ func runConfigTUIContext(ctx context.Context) error {
 	}
 	mgr, err := control.NewManager(home)
 	if err != nil {
-		return fmt.Errorf("创建进程控制管理器失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to create process control manager", "创建进程控制管理器失败"), err)
 	}
 
 	created, err := ensureDefaultConfig(ctx, mgr, path)
@@ -63,7 +64,7 @@ func runConfigTUIContext(ctx context.Context) error {
 		return err
 	}
 	if created {
-		fmt.Println("已生成默认配置:", path)
+		fmt.Println(ui.Bi("default config generated:", "已生成默认配置:"), path)
 	}
 
 	draft, display, diskRevision, err := loadTUIConfigState(path, env)
@@ -86,10 +87,10 @@ func ensureDefaultConfig(ctx context.Context, mgr *control.Manager, path string)
 		case statErr == nil:
 			return nil
 		case !os.IsNotExist(statErr):
-			return fmt.Errorf("检查配置文件失败: %w", statErr)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to check config file", "检查配置文件失败"), statErr)
 		}
 		if err := config.WriteDefaultConfig(path); err != nil {
-			return fmt.Errorf("生成默认配置失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to write default config", "生成默认配置失败"), err)
 		}
 		created = true
 		return nil
@@ -105,17 +106,17 @@ func loadTUIConfigState(
 ) (draft, display *config.Config, revision []byte, err error) {
 	snap, err := runtimecfg.LoadUserConfigSnapshot(path)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("加载配置失败: %w", err)
+		return nil, nil, nil, fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 	}
 	if !snap.Exists {
-		return nil, nil, nil, fmt.Errorf("配置文件 %s 不存在，请先执行 `token-usage config init`", path)
+		return nil, nil, nil, fmt.Errorf("%s %s %s", ui.Bi("config file", "配置文件"), path, ui.Bi("does not exist; run `token-usage config init` first", "不存在，请先执行 `token-usage config init`"))
 	}
 	if err := runtimecfg.ValidateUserConfig(snap.Config); err != nil {
-		return nil, nil, nil, fmt.Errorf("配置校验失败: %w", err)
+		return nil, nil, nil, fmt.Errorf("%s: %w", ui.Bi("config validation failed", "配置校验失败"), err)
 	}
 	display, err = runtimecfg.ResolveEffectiveConfig(snap.Config, env)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("加载运行时配置失败: %w", err)
+		return nil, nil, nil, fmt.Errorf("%s: %w", ui.Bi("failed to load runtime config", "加载运行时配置失败"), err)
 	}
 	return snap.Config, display, configapp.Revision(snap.Raw), nil
 }
@@ -135,7 +136,7 @@ func newTUIApplyFunc(home string) (tui.ApplyFunc, error) {
 	}
 	mgr, err := control.NewManager(home)
 	if err != nil {
-		return nil, fmt.Errorf("创建进程控制管理器失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to create process control manager", "创建进程控制管理器失败"), err)
 	}
 	return newTUIApplyFuncWithManager(home, env, mgr)
 }
@@ -147,7 +148,7 @@ func newTUIApplyFuncWithManager(
 ) (tui.ApplyFunc, error) {
 	app, err := configapp.NewApplication(home, env, mgr, service.NewAutoStartManager())
 	if err != nil {
-		return nil, fmt.Errorf("创建配置应用层失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to create config application layer", "创建配置应用层失败"), err)
 	}
 	return func(expectedRevision []byte, currentUser *config.Config) (configapp.ApplyConfigResult, error) {
 		return app.ApplyConfig(context.Background(), expectedRevision, currentUser, false)

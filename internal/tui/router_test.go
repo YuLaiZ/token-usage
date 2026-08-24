@@ -93,12 +93,14 @@ func TestRouterPage_CursorBoundedWithinInputs(t *testing.T) {
 	}
 }
 
+// 双语化后 placeholder 为「(runtime default / 运行时默认)」,断言适配为包含中文片段:
+// 校验意图不变——display 无默认时不虚构路径,显示通用运行时默认提示。
 func TestRouterPage_MissingDisplayDefaultDoesNotInventPath(t *testing.T) {
 	edit := &config.Config{Routers: map[string]config.RouterConfig{"cc_switch": {}}}
 	display := &config.Config{Routers: map[string]config.RouterConfig{"cc_switch": {}}}
 	p := newRouterPage(newAppForTest(edit, display, nil))
 
-	if got := p.inputs[0].Placeholder; got != "(运行时默认)" {
+	if got := p.inputs[0].Placeholder; !contains(got, "运行时默认") {
 		t.Fatalf("placeholder = %q, want generic runtime-default hint", got)
 	}
 }

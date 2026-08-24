@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // helper_plan.go 实现 Windows staged replacement 的 helper 执行计划：计划结构、
@@ -88,7 +90,7 @@ func deriveHelperPaths(selfDir, targetBasename, nonce string) helperPaths {
 func writeHelperPlan(path string, plan helperPlan) error {
 	data, err := json.Marshal(plan)
 	if err != nil {
-		return fmt.Errorf("序列化 helper 计划失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to marshal helper plan", "序列化 helper 计划失败"), err)
 	}
 	return writeJournalFile(path, data) // 复用 0600 原子写（fileutil.ReplaceCompleteFile）
 }
@@ -98,11 +100,11 @@ func writeHelperPlan(path string, plan helperPlan) error {
 func readHelperPlan(path string) (helperPlan, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return helperPlan{}, fmt.Errorf("读取 helper 计划失败: %w", err)
+		return helperPlan{}, fmt.Errorf("%s: %w", ui.Bi("failed to read helper plan", "读取 helper 计划失败"), err)
 	}
 	var plan helperPlan
 	if err := json.Unmarshal(data, &plan); err != nil {
-		return helperPlan{}, fmt.Errorf("解析 helper 计划失败: %w", err)
+		return helperPlan{}, fmt.Errorf("%s: %w", ui.Bi("failed to parse helper plan", "解析 helper 计划失败"), err)
 	}
 	return plan, nil
 }
@@ -165,13 +167,22 @@ func validateHelperPlan(selfExe, planPath string) (validatedHelperPlan, error) {
 	// 1. helper 自身必须可信。
 	selfInfo, err := os.Lstat(selfExe)
 	if err != nil {
-		return validatedHelperPlan{}, fmt.Errorf("无法读取 helper 自身元信息 %s: %w", selfExe, err)
+		return validatedHelperPlan{}, fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("cannot stat helper itself at %s", selfExe),
+			fmt.Sprintf("无法读取 helper 自身元信息 %s", selfExe),
+		), err)
 	}
 	if selfInfo.Mode()&fs.ModeSymlink != 0 {
-		return validatedHelperPlan{}, fmt.Errorf("helper 自身 %s 是符号链接，拒绝执行", selfExe)
+		return validatedHelperPlan{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("helper itself at %s is a symlink; refusing to run", selfExe),
+			fmt.Sprintf("helper 自身 %s 是符号链接，拒绝执行", selfExe),
+		))
 	}
 	if !selfInfo.Mode().IsRegular() {
-		return validatedHelperPlan{}, fmt.Errorf("helper 自身 %s 不是普通文件（mode %s）", selfExe, selfInfo.Mode())
+		return validatedHelperPlan{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("helper itself at %s is not a regular file (mode %s)", selfExe, selfInfo.Mode()),
+			fmt.Sprintf("helper 自身 %s 不是普通文件（mode %s）", selfExe, selfInfo.Mode()),
+		))
 	}
 
 	// 2. helper 自身目录。
@@ -180,19 +191,31 @@ func validateHelperPlan(selfExe, planPath string) (validatedHelperPlan, error) {
 	// 3. planPath 必须在 helper 自身目录内（精确目录匹配，杜绝 ../ 注入）。
 	planClean := filepath.Clean(planPath)
 	if filepath.Dir(planClean) != selfDir {
-		return validatedHelperPlan{}, fmt.Errorf("计划文件 %s 不在 helper 自身目录 %s 内，拒绝执行", planPath, selfDir)
+		return validatedHelperPlan{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("plan file %s is not inside the helper's own directory %s; refusing to run", planPath, selfDir),
+			fmt.Sprintf("计划文件 %s 不在 helper 自身目录 %s 内，拒绝执行", planPath, selfDir),
+		))
 	}
 
 	// 4. planPath 必须是普通非 symlink 文件。
 	planInfo, err := os.Lstat(planClean)
 	if err != nil {
-		return validatedHelperPlan{}, fmt.Errorf("无法读取计划文件元信息 %s: %w", planClean, err)
+		return validatedHelperPlan{}, fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("cannot stat plan file %s", planClean),
+			fmt.Sprintf("无法读取计划文件元信息 %s", planClean),
+		), err)
 	}
 	if planInfo.Mode()&fs.ModeSymlink != 0 {
-		return validatedHelperPlan{}, fmt.Errorf("计划文件 %s 是符号链接，拒绝执行", planClean)
+		return validatedHelperPlan{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("plan file %s is a symlink; refusing to run", planClean),
+			fmt.Sprintf("计划文件 %s 是符号链接，拒绝执行", planClean),
+		))
 	}
 	if !planInfo.Mode().IsRegular() {
-		return validatedHelperPlan{}, fmt.Errorf("计划文件 %s 不是普通文件（mode %s）", planClean, planInfo.Mode())
+		return validatedHelperPlan{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("plan file %s is not a regular file (mode %s)", planClean, planInfo.Mode()),
+			fmt.Sprintf("计划文件 %s 不是普通文件（mode %s）", planClean, planInfo.Mode()),
+		))
 	}
 
 	// 5. 解析计划并校验字段。
@@ -209,12 +232,18 @@ func validateHelperPlan(selfExe, planPath string) (validatedHelperPlan, error) {
 
 	// 7. planPath 必须精确等于派生的 plan 路径。
 	if planClean != paths.Plan {
-		return validatedHelperPlan{}, fmt.Errorf("计划文件路径 %s 与派生路径 %s 不一致，拒绝执行", planClean, paths.Plan)
+		return validatedHelperPlan{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("plan file path %s does not match the derived path %s; refusing to run", planClean, paths.Plan),
+			fmt.Sprintf("计划文件路径 %s 与派生路径 %s 不一致，拒绝执行", planClean, paths.Plan),
+		))
 	}
 
 	// 8. helper 自身必须精确等于派生的 helper 路径（确认 nonce 与 helper.exe 绑定）。
 	if filepath.Clean(selfExe) != paths.Helper {
-		return validatedHelperPlan{}, fmt.Errorf("helper 自身 %s 与派生 helper 路径 %s 不一致，拒绝执行", selfExe, paths.Helper)
+		return validatedHelperPlan{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("helper itself at %s does not match the derived helper path %s; refusing to run", selfExe, paths.Helper),
+			fmt.Sprintf("helper 自身 %s 与派生 helper 路径 %s 不一致，拒绝执行", selfExe, paths.Helper),
+		))
 	}
 
 	return validatedHelperPlan{Plan: plan, Paths: paths}, nil
@@ -228,29 +257,50 @@ func validateCleanupPlan(selfExe, planPath string) (validatedHelperPlan, error) 
 	selfClean := filepath.Clean(selfExe)
 	selfInfo, err := os.Lstat(selfClean)
 	if err != nil {
-		return validatedHelperPlan{}, fmt.Errorf("无法读取 cleanup 自身元信息 %s: %w", selfExe, err)
+		return validatedHelperPlan{}, fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("cannot stat cleanup executable at %s", selfExe),
+			fmt.Sprintf("无法读取 cleanup 自身元信息 %s", selfExe),
+		), err)
 	}
 	if selfInfo.Mode()&fs.ModeSymlink != 0 {
-		return validatedHelperPlan{}, fmt.Errorf("cleanup 自身 %s 是符号链接，拒绝执行", selfExe)
+		return validatedHelperPlan{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("cleanup executable at %s is a symlink; refusing to run", selfExe),
+			fmt.Sprintf("cleanup 自身 %s 是符号链接，拒绝执行", selfExe),
+		))
 	}
 	if !selfInfo.Mode().IsRegular() {
-		return validatedHelperPlan{}, fmt.Errorf("cleanup 自身 %s 不是普通文件（mode %s）", selfExe, selfInfo.Mode())
+		return validatedHelperPlan{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("cleanup executable at %s is not a regular file (mode %s)", selfExe, selfInfo.Mode()),
+			fmt.Sprintf("cleanup 自身 %s 不是普通文件（mode %s）", selfExe, selfInfo.Mode()),
+		))
 	}
 
 	selfDir := filepath.Dir(selfClean)
 	planClean := filepath.Clean(planPath)
 	if filepath.Dir(planClean) != selfDir {
-		return validatedHelperPlan{}, fmt.Errorf("计划文件 %s 不在 cleanup 自身目录 %s 内，拒绝执行", planPath, selfDir)
+		return validatedHelperPlan{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("plan file %s is not inside the cleanup executable's own directory %s; refusing to run", planPath, selfDir),
+			fmt.Sprintf("计划文件 %s 不在 cleanup 自身目录 %s 内，拒绝执行", planPath, selfDir),
+		))
 	}
 	planInfo, err := os.Lstat(planClean)
 	if err != nil {
-		return validatedHelperPlan{}, fmt.Errorf("无法读取计划文件元信息 %s: %w", planClean, err)
+		return validatedHelperPlan{}, fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("cannot stat plan file %s", planClean),
+			fmt.Sprintf("无法读取计划文件元信息 %s", planClean),
+		), err)
 	}
 	if planInfo.Mode()&fs.ModeSymlink != 0 {
-		return validatedHelperPlan{}, fmt.Errorf("计划文件 %s 是符号链接，拒绝执行", planClean)
+		return validatedHelperPlan{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("plan file %s is a symlink; refusing to run", planClean),
+			fmt.Sprintf("计划文件 %s 是符号链接，拒绝执行", planClean),
+		))
 	}
 	if !planInfo.Mode().IsRegular() {
-		return validatedHelperPlan{}, fmt.Errorf("计划文件 %s 不是普通文件（mode %s）", planClean, planInfo.Mode())
+		return validatedHelperPlan{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("plan file %s is not a regular file (mode %s)", planClean, planInfo.Mode()),
+			fmt.Sprintf("计划文件 %s 不是普通文件（mode %s）", planClean, planInfo.Mode()),
+		))
 	}
 
 	plan, err := readHelperPlan(planClean)
@@ -262,10 +312,16 @@ func validateCleanupPlan(selfExe, planPath string) (validatedHelperPlan, error) 
 	}
 	paths := deriveHelperPaths(selfDir, plan.TargetBasename, plan.Nonce)
 	if planClean != paths.Plan {
-		return validatedHelperPlan{}, fmt.Errorf("计划文件路径 %s 与派生路径 %s 不一致，拒绝执行", planClean, paths.Plan)
+		return validatedHelperPlan{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("plan file path %s does not match the derived path %s; refusing to run", planClean, paths.Plan),
+			fmt.Sprintf("计划文件路径 %s 与派生路径 %s 不一致，拒绝执行", planClean, paths.Plan),
+		))
 	}
 	if selfClean != paths.Target {
-		return validatedHelperPlan{}, fmt.Errorf("cleanup 自身 %s 与派生 target 路径 %s 不一致，拒绝执行", selfExe, paths.Target)
+		return validatedHelperPlan{}, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("cleanup executable at %s does not match the derived target path %s; refusing to run", selfExe, paths.Target),
+			fmt.Sprintf("cleanup 自身 %s 与派生 target 路径 %s 不一致，拒绝执行", selfExe, paths.Target),
+		))
 	}
 	return validatedHelperPlan{Plan: plan, Paths: paths}, nil
 }
@@ -273,21 +329,30 @@ func validateCleanupPlan(selfExe, planPath string) (validatedHelperPlan, error) 
 // validateHelperPlanFields 校验所有参与路径与进程身份安全合同的 plan 字段。
 func validateHelperPlanFields(plan helperPlan) error {
 	if plan.Nonce == "" {
-		return errors.New("计划缺少 nonce")
+		return errors.New(ui.Bi("plan is missing nonce", "计划缺少 nonce"))
 	}
 	if !isHexNonce(plan.Nonce) {
 		// 接受 32 字符（16 字节，与 POSIX generateNonce 一致）或 64 字符 hex。
-		return fmt.Errorf("计划 nonce %q 不是合法 hex", plan.Nonce)
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("plan nonce %q is not valid hex", plan.Nonce),
+			fmt.Sprintf("计划 nonce %q 不是合法 hex", plan.Nonce),
+		))
 	}
 	if plan.TargetBasename == "" {
-		return errors.New("计划缺少 target_basename")
+		return errors.New(ui.Bi("plan is missing target_basename", "计划缺少 target_basename"))
 	}
 	if strings.ContainsAny(plan.TargetBasename, `/\\`) {
-		return fmt.Errorf("target_basename %q 含路径分隔符", plan.TargetBasename)
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("target_basename %q contains path separators", plan.TargetBasename),
+			fmt.Sprintf("target_basename %q 含路径分隔符", plan.TargetBasename),
+		))
 	}
 	// Parent 身份必须为合法非零值（防降级或缺失：helper 必须据显式身份等待精确父进程实例）。
 	if !plan.Parent.Valid() {
-		return fmt.Errorf("计划缺少合法父进程身份（PID=%d CreationTime=%d）", plan.Parent.PID, plan.Parent.CreationTime)
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("plan is missing a valid parent identity (PID=%d CreationTime=%d)", plan.Parent.PID, plan.Parent.CreationTime),
+			fmt.Sprintf("计划缺少合法父进程身份（PID=%d CreationTime=%d）", plan.Parent.PID, plan.Parent.CreationTime),
+		))
 	}
 	return nil
 }
@@ -300,13 +365,16 @@ func validateHelperPlanFields(plan helperPlan) error {
 // 不删除 result 文件——它供下次完整 update（Apply）在来源校验通过后消费，由后续更新覆盖或人工查看。
 func CleanupHelperTempFiles(selfDir, targetBasename, nonce string) error {
 	if selfDir == "" || targetBasename == "" || nonce == "" {
-		return errors.New("清理 helper 临时文件的 selfDir/targetBasename/nonce 不能为空")
+		return errors.New(ui.Bi("selfDir/targetBasename/nonce for helper temp file cleanup must not be empty", "清理 helper 临时文件的 selfDir/targetBasename/nonce 不能为空"))
 	}
 	paths := deriveHelperPaths(selfDir, targetBasename, nonce)
 	var cleanupErr error
 	for _, p := range []string{paths.Helper, paths.Plan, paths.Stage, paths.Backup} {
 		if err := removeRegularFile(p); err != nil {
-			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("清理 helper 临时文件失败 %s: %w", p, err))
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("%s: %w", ui.Bi(
+				fmt.Sprintf("failed to clean up helper temp file %s", p),
+				fmt.Sprintf("清理 helper 临时文件失败 %s", p),
+			), err))
 		}
 	}
 	return cleanupErr

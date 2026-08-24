@@ -6,6 +6,8 @@ package control
 import (
 	"fmt"
 	"os/exec"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // newProductionProcessSignaler 返回 Windows 生产用 processSignaler（taskkill /PID <pid> /F）。
@@ -20,7 +22,7 @@ type productionWindowsSignaler struct{}
 func (productionWindowsSignaler) terminate(pid int) error {
 	cmd := exec.Command("taskkill", "/PID", fmt.Sprintf("%d", pid), "/F")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("taskkill 失败: %w（输出: %s）", err, string(out))
+		return fmt.Errorf("%s: %w（%s: %s）", ui.Bi("taskkill failed", "taskkill 失败"), err, ui.Bi("output", "输出"), string(out))
 	}
 	return nil
 }

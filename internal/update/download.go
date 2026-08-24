@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // download.go 实现资产下载器：从固定 GitHub 下载前缀拉取 SHA256SUMS 与平台二进制，
@@ -48,13 +50,13 @@ var stageFilePattern = func() string {
 }()
 
 // ErrNonHTTPSRedirect 表示下载/查询链路中出现非 HTTPS 重定向目标，一律拒绝。
-var ErrNonHTTPSRedirect = errors.New("拒绝非 HTTPS 重定向")
+var ErrNonHTTPSRedirect = errors.New(ui.Bi("non-HTTPS redirect rejected", "拒绝非 HTTPS 重定向"))
 
 // ErrChecksumMismatch 表示下载内容 SHA256 与预期清单 hash 不一致。
-var ErrChecksumMismatch = errors.New("下载内容校验和不匹配")
+var ErrChecksumMismatch = errors.New(ui.Bi("downloaded content checksum mismatch", "下载内容校验和不匹配"))
 
 // ErrBinaryTooLarge 表示下载响应超过 maxBytes 上限。
-var ErrBinaryTooLarge = errors.New("下载内容超过大小上限")
+var ErrBinaryTooLarge = errors.New(ui.Bi("downloaded content exceeds the size limit", "下载内容超过大小上限"))
 
 // newHTTPSOnlyClient 构造一个仅跟随 HTTPS 重定向的 *http.Client。
 // CheckRedirect 拒绝任何 scheme != https 的目标，确保下载链路全程加密；
@@ -138,7 +140,7 @@ func (d *downloader) DownloadAsset(ctx context.Context, tag, assetName, expected
 
 	stage, err := d.temp.CreateTemp(targetDir, pattern)
 	if err != nil {
-		return "", fmt.Errorf("创建 stage 文件失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to create stage file", "创建 stage 文件失败"), err)
 	}
 	stagePath := stage.Name()
 
@@ -156,11 +158,11 @@ func (d *downloader) DownloadAsset(ctx context.Context, tag, assetName, expected
 	if err := stage.Sync(); err != nil {
 		_ = stage.Close()
 		cleanup()
-		return "", fmt.Errorf("stage 同步失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to sync stage file", "stage 同步失败"), err)
 	}
 	if err := stage.Close(); err != nil {
 		cleanup()
-		return "", fmt.Errorf("stage 关闭失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to close stage file", "stage 关闭失败"), err)
 	}
 
 	// hash 校验：边写边算的 sum 与清单预期 hash 比对。
@@ -173,7 +175,7 @@ func (d *downloader) DownloadAsset(ctx context.Context, tag, assetName, expected
 	if NeedsUnixExecMode(goosForAsset(assetName)) {
 		if err := setExecMode(stagePath); err != nil {
 			cleanup()
-			return "", fmt.Errorf("设置 stage 权限失败: %w", err)
+			return "", fmt.Errorf("%s: %w", ui.Bi("failed to set stage permissions", "设置 stage 权限失败"), err)
 		}
 	}
 	return stagePath, nil
@@ -184,18 +186,21 @@ func (d *downloader) DownloadAsset(ctx context.Context, tag, assetName, expected
 func (d *downloader) streamToStage(ctx context.Context, requestURL string, stage *os.File) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("构造下载请求失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to build download request", "构造下载请求失败"), err)
 	}
 	req.Header.Set("User-Agent", d.userAgent)
 
 	resp, err := d.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("发起下载失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to start download", "发起下载失败"), err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("下载返回非成功状态 %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("download returned non-success status %d", resp.StatusCode),
+			fmt.Sprintf("下载返回非成功状态 %d", resp.StatusCode),
+		))
 	}
 
 	h := sha256.New()
@@ -205,10 +210,13 @@ func (d *downloader) streamToStage(ctx context.Context, requestURL string, stage
 	sink := io.MultiWriter(stage, h)
 	n, err := io.Copy(sink, limited)
 	if err != nil {
-		return nil, fmt.Errorf("写入 stage 失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to write stage file", "写入 stage 失败"), err)
 	}
 	if n > d.maxBytes {
-		return nil, fmt.Errorf("%w: 已写 %d 字节", ErrBinaryTooLarge, n)
+		return nil, fmt.Errorf("%w: %s", ErrBinaryTooLarge, ui.Bi(
+			fmt.Sprintf("wrote %d bytes", n),
+			fmt.Sprintf("已写 %d 字节", n),
+		))
 	}
 	return h.Sum(nil), nil
 }
@@ -219,31 +227,34 @@ func (d *downloader) FetchManifest(ctx context.Context, tag string) (*Manifest, 
 	url := buildDownloadURLBase(d.downloadBase, tag, SumsAssetName)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("构造清单请求失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to build manifest request", "构造清单请求失败"), err)
 	}
 	req.Header.Set("User-Agent", d.userAgent)
 
 	resp, err := d.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("下载清单失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to download manifest", "下载清单失败"), err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("清单下载返回非成功状态 %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("manifest download returned non-success status %d", resp.StatusCode),
+			fmt.Sprintf("清单下载返回非成功状态 %d", resp.StatusCode),
+		))
 	}
 	// 清单远小于二进制，复用二进制上限即可。
 	lr := io.LimitReader(resp.Body, d.maxBytes+1)
 	body, err := io.ReadAll(lr)
 	if err != nil {
-		return nil, fmt.Errorf("读取清单失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to read manifest", "读取清单失败"), err)
 	}
 	if int64(len(body)) > d.maxBytes {
-		return nil, fmt.Errorf("%w: 清单超过上限", ErrBinaryTooLarge)
+		return nil, fmt.Errorf("%w: %s", ErrBinaryTooLarge, ui.Bi("manifest exceeds the limit", "清单超过上限"))
 	}
 	m, err := ParseManifest(body)
 	if err != nil {
-		return nil, fmt.Errorf("解析清单失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to parse manifest", "解析清单失败"), err)
 	}
 	return m, nil
 }

@@ -478,7 +478,7 @@ func TestZCodeCollector_CacheCreateExceedsInputInvariantWarning(t *testing.T) {
 		t.Errorf("raw token 未原样保留: in=%d cr=%d cc=%d", m.InputTokens, m.CacheReadTokens, m.CacheCreateTokens)
 	}
 	// 必须有 invariant warning 日志
-	if !handler.HasMessage("ZCode cache token 超过 input") {
+	if !handler.HasMessage("ZCode cache token exceeds input") {
 		t.Errorf("期望 invariant warning 日志，实际日志: %v", handler.Messages())
 	}
 }
@@ -1008,7 +1008,7 @@ func TestZCodeCollector_ProviderMissSummarySingleLog(t *testing.T) {
 	// 恰好一条汇总，count=2（两天各一行），provider_ids 只含 p-missing。
 	var summaries []slog.Record
 	for _, r := range handler.Records() {
-		if strings.Contains(r.Message, "映射缺失") {
+		if strings.Contains(r.Message, "provider mapping missing") {
 			summaries = append(summaries, r)
 		}
 	}
@@ -1047,7 +1047,7 @@ func TestZCodeCollector_ProviderAllMappedNoSummary(t *testing.T) {
 	if _, err := c.Collect(context.Background(), CollectRequest{}, slog.New(handler)); err != nil {
 		t.Fatalf("Collect 失败: %v", err)
 	}
-	if handler.HasMessage("映射缺失") {
+	if handler.HasMessage("provider mapping missing") {
 		t.Errorf("全部命中时不应有映射缺失汇总: %v", handler.Messages())
 	}
 }

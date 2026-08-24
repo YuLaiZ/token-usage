@@ -34,17 +34,27 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/fileutil"
 	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
 	"github.com/YuLaiZ/token-usage/internal/service"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // ErrConfigChangedExternally 表示 expectedRevision 与重新读取的磁盘 revision 不一致，
 // 本次未写入。调用方应据此提示用户「配置已被其他进程修改，请重读后再试」。
-var ErrConfigChangedExternally = errors.New("配置已被其他进程修改，本次未写入")
+var ErrConfigChangedExternally = errors.New(ui.Bi(
+	"config was modified by another process; nothing was written this time",
+	"配置已被其他进程修改，本次未写入",
+))
 
 // errDataDirMigrationNotConfirmed data_dir 变化但未传确认参数。
-var errDataDirMigrationNotConfirmed = errors.New("data_dir 变化需显式确认迁移（传 confirmDataDirMigration=true）")
+var errDataDirMigrationNotConfirmed = errors.New(ui.Bi(
+	"data_dir change requires explicit migration confirmation (pass confirmDataDirMigration=true)",
+	"data_dir 变化需显式确认迁移（传 confirmDataDirMigration=true）",
+))
 
 // errDataDirMigrationRunning data_dir 变化但旧 daemon 仍在运行。
-var errDataDirMigrationRunning = errors.New("data_dir 变化但旧 daemon 仍在运行，请先 token-usage stop")
+var errDataDirMigrationRunning = errors.New(ui.Bi(
+	"data_dir changed but the old daemon is still running; run token-usage stop first",
+	"data_dir 变化但旧 daemon 仍在运行，请先 token-usage stop",
+))
 
 // missingFileSentinel 是「配置文件不存在」的固定 revision（区别于空文件的 sha256）。
 // 文件不存在与空文件语义不同：前者是合法的「首次写入」，后者是「损坏」。
@@ -91,14 +101,14 @@ func (a *managerAdapter) WithLock(ctx context.Context, fn func() error) error {
 
 func (a *managerAdapter) Inspect(ctx context.Context, cfg *config.Config) (control.RuntimeState, error) {
 	if a.capturedSession == nil {
-		return control.RuntimeState{}, errors.New("Inspect 必须在 control lock 内调用")
+		return control.RuntimeState{}, errors.New(ui.Bi("Inspect must be called while holding the control lock", "Inspect 必须在 control lock 内调用"))
 	}
 	return a.capturedSession.Inspect(ctx, cfg)
 }
 
 func (a *managerAdapter) CleanupStaleMetadata(ctx context.Context, dataDir string) error {
 	if a.capturedSession == nil {
-		return errors.New("CleanupStaleMetadata 必须在 control lock 内调用")
+		return errors.New(ui.Bi("CleanupStaleMetadata must be called while holding the control lock", "CleanupStaleMetadata 必须在 control lock 内调用"))
 	}
 	return a.capturedSession.CleanupStaleMetadata(ctx, dataDir)
 }
@@ -154,10 +164,13 @@ func NewApplication(
 	autoStart service.AutoStartManager,
 ) (*Application, error) {
 	if manager == nil {
-		return nil, errors.New("control manager 不能为 nil")
+		return nil, errors.New(ui.Bi("control manager must not be nil", "control manager 不能为 nil"))
 	}
 	if got := manager.ConfigHome(); got != filepath.Join(home, ".token-usage") {
-		return nil, fmt.Errorf("manager.ConfigHome() (%q) 与 filepath.Join(home,\".token-usage\") (%q) 不一致", got, filepath.Join(home, ".token-usage"))
+		return nil, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("manager.ConfigHome() (%q) does not match filepath.Join(home,\".token-usage\") (%q)", got, filepath.Join(home, ".token-usage")),
+			fmt.Sprintf("manager.ConfigHome() (%q) 与 filepath.Join(home,\".token-usage\") (%q) 不一致", got, filepath.Join(home, ".token-usage")),
+		))
 	}
 	return newApplicationWithDeps(home, env, &managerAdapter{mgr: manager}, autoStart)
 }
@@ -171,25 +184,31 @@ func newApplicationWithDeps(
 	autoStart service.AutoStartManager,
 ) (*Application, error) {
 	if ctrl == nil {
-		return nil, errors.New("controlPort 不能为 nil")
+		return nil, errors.New(ui.Bi("controlPort must not be nil", "controlPort 不能为 nil"))
 	}
 	if autoStart == nil {
-		return nil, errors.New("autoStart manager 不能为 nil")
+		return nil, errors.New(ui.Bi("autoStart manager must not be nil", "autoStart manager 不能为 nil"))
 	}
 	if home == "" {
-		return nil, errors.New("home 不能为空")
+		return nil, errors.New(ui.Bi("home must not be empty", "home 不能为空"))
 	}
 	if !filepath.IsAbs(home) {
-		return nil, fmt.Errorf("home 必须是绝对路径，当前 %q", home)
+		return nil, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("home must be an absolute path, got %q", home),
+			fmt.Sprintf("home 必须是绝对路径，当前 %q", home),
+		))
 	}
 	if env.Home != home {
-		return nil, fmt.Errorf("env.Home (%q) 与 home (%q) 不一致", env.Home, home)
+		return nil, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("env.Home (%q) does not match home (%q)", env.Home, home),
+			fmt.Sprintf("env.Home (%q) 与 home (%q) 不一致", env.Home, home),
+		))
 	}
 	if env.GOOS == "" {
-		return nil, errors.New("ResolveEnv.GOOS 不能为空")
+		return nil, errors.New(ui.Bi("ResolveEnv.GOOS must not be empty", "ResolveEnv.GOOS 不能为空"))
 	}
 	if env.DefaultPaths == nil {
-		return nil, errors.New("ResolveEnv.DefaultPaths 不能为 nil")
+		return nil, errors.New(ui.Bi("ResolveEnv.DefaultPaths must not be nil", "ResolveEnv.DefaultPaths 不能为 nil"))
 	}
 	// 生产路径：manager.ConfigHome() == filepath.Join(home,".token-usage")。
 	// controlPort 接口不暴露 ConfigHome（fake 无此概念），故只在 NewApplication（生产入口）校验，
@@ -232,14 +251,14 @@ func (a *Application) ApplyConfig(
 		// ---- 步骤 2：清理 .config.toml.tmp-* temp（锁内，避免与并发写竞争）----
 		configHome := filepath.Join(a.home, ".token-usage")
 		if err := fileutil.CleanupKnownTempFiles(configHome, []string{fileutil.TempPrefix(runtimecfg.ConfigPath(a.home))}); err != nil {
-			return fmt.Errorf("清理 config temp 失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to clean up config temp files", "清理 config temp 失败"), err)
 		}
 
 		// ---- 步骤 3：重新读 raw 算 revision，校验 expectedRevision ----
 		configPath := runtimecfg.ConfigPath(a.home)
 		snap, err := runtimecfg.LoadUserConfigSnapshot(configPath)
 		if err != nil {
-			return fmt.Errorf("读取配置文件失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to read config file", "读取配置文件失败"), err)
 		}
 		var diskRevision []byte
 		var previousRaw []byte
@@ -261,7 +280,7 @@ func (a *Application) ApplyConfig(
 
 		// ---- 步骤 4：校验 current，再 ResolveEffectiveConfig(previous/current) ----
 		if err := runtimecfg.ValidateUserConfigForWrite(currentUser); err != nil {
-			return fmt.Errorf("配置校验失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("config validation failed", "配置校验失败"), err)
 		}
 		// previous 为 nil（首次写入）时，以合法空用户配置解析默认 effective。
 		previousForResolve := previous
@@ -270,11 +289,11 @@ func (a *Application) ApplyConfig(
 		}
 		prevEff, err := runtimecfg.ResolveEffectiveConfig(previousForResolve, a.resolveEnv)
 		if err != nil {
-			return fmt.Errorf("解析 previous effective config 失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to resolve previous effective config", "解析 previous effective config 失败"), err)
 		}
 		currEff, err := runtimecfg.ResolveEffectiveConfig(currentUser, a.resolveEnv)
 		if err != nil {
-			return fmt.Errorf("解析 current effective config 失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to resolve current effective config", "解析 current effective config 失败"), err)
 		}
 		pathWarnings := changedResolvedPathWarnings(prevEff, currEff)
 
@@ -289,7 +308,7 @@ func (a *Application) ApplyConfig(
 			// 按 previous effective oldDataDir Inspect.Running；运行中即使确认也拒绝（写入前）。
 			oldState, inspErr := a.ctrl.Inspect(ctx, prevEff)
 			if inspErr != nil {
-				return fmt.Errorf("检查旧 daemon 状态失败: %w", inspErr)
+				return fmt.Errorf("%s: %w", ui.Bi("failed to check old daemon state", "检查旧 daemon 状态失败"), inspErr)
 			}
 			if oldState.Running {
 				return errDataDirMigrationRunning
@@ -299,14 +318,14 @@ func (a *Application) ApplyConfig(
 		// ---- 步骤 6：Session.Inspect 读运行状态（当前 effective config）----
 		daemonState, err := a.ctrl.Inspect(ctx, currEff)
 		if err != nil {
-			return fmt.Errorf("读取 daemon 状态失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to read daemon state", "读取 daemon 状态失败"), err)
 		}
 		result.DaemonState = daemonState
 
 		// ---- 步骤 7：MarshalUserConfig 一次 → writeBytes；与 previousRaw 比较；写入 ----
 		writeBytes, err := config.MarshalUserConfig(currentUser)
 		if err != nil {
-			return fmt.Errorf("序列化配置失败: %w", err)
+			return fmt.Errorf("%s: %w", ui.Bi("failed to marshal config", "序列化配置失败"), err)
 		}
 
 		rawUnchanged := previous != nil && bytes.Equal(writeBytes, previousRaw)
@@ -317,7 +336,7 @@ func (a *Application) ApplyConfig(
 		} else {
 			// 写入磁盘（完整替换）。
 			if err := fileutil.ReplaceCompleteFile(configPath, writeBytes, 0o644); err != nil {
-				return fmt.Errorf("写入配置文件失败: %w", err)
+				return fmt.Errorf("%s: %w", ui.Bi("failed to write config file", "写入配置文件失败"), err)
 			}
 			result.Saved = true
 			result.NewRevision = Revision(writeBytes)
@@ -338,7 +357,7 @@ func (a *Application) ApplyConfig(
 		if syncErr != nil {
 			if !errors.Is(syncErr, service.ErrPlatformUnsupported) {
 				// 真实同步失败 → PartialErrors（不回滚）。
-				partialErrs = append(partialErrs, fmt.Errorf("同步自启定义失败: %w", syncErr))
+				partialErrs = append(partialErrs, fmt.Errorf("%s: %w", ui.Bi("failed to sync autostart definition", "同步自启定义失败"), syncErr))
 			}
 			// ErrPlatformUnsupported → 非致命，进 ExplanatoryNotes（步骤10）。
 		}
@@ -348,7 +367,7 @@ func (a *Application) ApplyConfig(
 		if dataDirChanged {
 			// 已停 → CleanupStaleMetadata(oldDataDir)（不移动 DB）。
 			if err := a.ctrl.CleanupStaleMetadata(ctx, prevEff.DataDir); err != nil {
-				partialErrs = append(partialErrs, fmt.Errorf("清理旧 data_dir stale metadata 失败: %w", err))
+				partialErrs = append(partialErrs, fmt.Errorf("%s: %w", ui.Bi("failed to clean up stale metadata in the old data_dir", "清理旧 data_dir stale metadata 失败"), err))
 			}
 		}
 
@@ -430,7 +449,7 @@ func (a *Application) buildActionsAndNotes(
 
 	// ---- raw 变化但 effective 相同（纯写法规范化）→ 明确说明，不生成 restart/collect ----
 	if !rawUnchanged && effectiveEqual(prevEff, currEff) {
-		notes = append(notes, "有效配置未变化（仅写法变化已规范化）")
+		notes = append(notes, ui.Bi("effective config unchanged (only formatting was normalized)", "有效配置未变化（仅写法变化已规范化）"))
 	}
 
 	// ---- 自启结构化说明 ----
@@ -443,19 +462,28 @@ func (a *Application) buildActionsAndNotes(
 
 	// ---- data_dir 迁移说明 ----
 	if effects.DataDirMigration != nil {
-		notes = append(notes, fmt.Sprintf(
-			"data_dir 从 %q 迁移到 %q：需手工搬运 %s；旧 PID/lock/runtime-state 已清理，不自动移动数据库",
-			effects.DataDirMigration.From, effects.DataDirMigration.To,
-			strings.Join(effects.DataDirMigration.Items, "、"),
+		notes = append(notes, ui.Bi(
+			fmt.Sprintf("data_dir moved from %q to %q: %s must be migrated manually; old PID/lock/runtime-state cleaned up, the database is not moved automatically",
+				effects.DataDirMigration.From, effects.DataDirMigration.To,
+				strings.Join(effects.DataDirMigration.Items, ", ")),
+			fmt.Sprintf("data_dir 从 %q 迁移到 %q：需手工搬运 %s；旧 PID/lock/runtime-state 已清理，不自动移动数据库",
+				effects.DataDirMigration.From, effects.DataDirMigration.To,
+				strings.Join(effects.DataDirMigration.Items, "、")),
 		))
 	}
 
 	// ---- collect 末尾 start 提示（daemon 未运行但有采集）----
 	if !daemonRunning && hasCollect {
 		if currentAutoStart {
-			notes = append(notes, "采集后可执行 token-usage start 启动；自启已开启，下次登录会自动启动，但本次不会隐式启动")
+			notes = append(notes, ui.Bi(
+				"run token-usage start after collection; autostart is enabled and takes effect at next login, but it will not start implicitly this time",
+				"采集后可执行 token-usage start 启动；自启已开启，下次登录会自动启动，但本次不会隐式启动",
+			))
 		} else {
-			notes = append(notes, "采集后可执行 token-usage start 启动守护进程")
+			notes = append(notes, ui.Bi(
+				"run token-usage start after collection to launch the daemon",
+				"采集后可执行 token-usage start 启动守护进程",
+			))
 		}
 	}
 
@@ -504,14 +532,14 @@ func changedResolvedPathWarnings(previous, current *config.Config) []string {
 	for _, path := range changed {
 		if _, err := os.Stat(path.value); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				warnings = append(warnings, fmt.Sprintf(
-					"变更后的路径 %s=%q 当前不存在；配置已保存，请在使用前创建路径或安装对应客户端",
-					path.label, path.value,
+				warnings = append(warnings, ui.Bi(
+					fmt.Sprintf("changed path %s=%q does not exist yet; config saved, create the path or install the corresponding client before use", path.label, path.value),
+					fmt.Sprintf("变更后的路径 %s=%q 当前不存在；配置已保存，请在使用前创建路径或安装对应客户端", path.label, path.value),
 				))
 			} else {
-				warnings = append(warnings, fmt.Sprintf(
-					"变更后的路径 %s=%q 当前无法访问（%v）；配置已保存，请在使用前确认",
-					path.label, path.value, err,
+				warnings = append(warnings, ui.Bi(
+					fmt.Sprintf("changed path %s=%q is not accessible (%v); config saved, please verify before use", path.label, path.value, err),
+					fmt.Sprintf("变更后的路径 %s=%q 当前无法访问（%v）；配置已保存，请在使用前确认", path.label, path.value, err),
 				))
 			}
 		}
@@ -549,24 +577,45 @@ func (a *Application) appendAutoStartNotes(
 	case outcome.Err != nil && errors.Is(outcome.Err, service.ErrPlatformUnsupported):
 		// 平台不支持：配置意图已保存，不伪装已安装，不作为可重试同步失败。
 		if requested {
-			*notes = append(*notes, "当前平台不支持开机自启定义；配置意图已保存，但无法安装自启定义")
+			*notes = append(*notes, ui.Bi(
+				"autostart definitions are not supported on this platform; the config intent is saved but the definition cannot be installed",
+				"当前平台不支持开机自启定义；配置意图已保存，但无法安装自启定义",
+			))
 		} else {
-			*notes = append(*notes, "当前平台不支持开机自启定义，已跳过同步")
+			*notes = append(*notes, ui.Bi(
+				"autostart definitions are not supported on this platform; sync skipped",
+				"当前平台不支持开机自启定义，已跳过同步",
+			))
 		}
 	case outcome.Err != nil:
 		// 真实同步失败：配置已保存，但不声称 status 会自动修复。
-		*notes = append(*notes, fmt.Sprintf("配置已保存，但自启定义同步失败: %v（请手动检查自启定义）", outcome.Err))
+		*notes = append(*notes, ui.Bi(
+			fmt.Sprintf("config saved, but autostart definition sync failed: %v (please check the autostart definition manually)", outcome.Err),
+			fmt.Sprintf("配置已保存，但自启定义同步失败: %v（请手动检查自启定义）", outcome.Err),
+		))
 	case requested && outcome.DefinitionNow:
 		if daemonRunning {
-			*notes = append(*notes, "自启定义已启用；当前 daemon 保持运行")
+			*notes = append(*notes, ui.Bi(
+				"autostart definition enabled; the running daemon keeps running",
+				"自启定义已启用；当前 daemon 保持运行",
+			))
 		} else {
-			*notes = append(*notes, "自启定义已启用，下次登录/开机生效；当前未运行，如需现在运行可执行 token-usage start")
+			*notes = append(*notes, ui.Bi(
+				"autostart definition enabled, taking effect at next login/boot; not running now, run token-usage start if you need it now",
+				"自启定义已启用，下次登录/开机生效；当前未运行，如需现在运行可执行 token-usage start",
+			))
 		}
 		if outcome.DriftRepaired {
-			*notes = append(*notes, "自启定义已修复（检测到漂移并重新收敛）")
+			*notes = append(*notes, ui.Bi(
+				"autostart definition repaired (drift detected and re-converged)",
+				"自启定义已修复（检测到漂移并重新收敛）",
+			))
 		}
 	case !requested:
-		*notes = append(*notes, "自启定义已关闭，下次登录/开机不再启动；当前 daemon 状态不变")
+		*notes = append(*notes, ui.Bi(
+			"autostart definition disabled, no longer started at next login/boot; current daemon state unchanged",
+			"自启定义已关闭，下次登录/开机不再启动；当前 daemon 状态不变",
+		))
 	default:
 		// requested=true 但 DefinitionNow=false（Enable 失败已被 outcome.Err 捕获）。
 	}
@@ -583,15 +632,15 @@ func (a *Application) buildSuccessMessage(
 	effectiveChanged := !effectiveEqual(prevEff, currEff)
 	if rawUnchanged {
 		if !effectiveChanged {
-			return "有效配置未变化", false
+			return ui.Bi("effective config unchanged", "有效配置未变化"), false
 		}
-		return "配置已保存", true
+		return ui.Bi("config saved", "配置已保存"), true
 	}
 	if !effectiveChanged {
 		// raw 变化但 effective 相同。
-		return "有效配置未变化（仅写法变化已规范化）", true
+		return ui.Bi("effective config unchanged (only formatting was normalized)", "有效配置未变化（仅写法变化已规范化）"), true
 	}
-	return "配置已保存", true
+	return ui.Bi("config saved", "配置已保存"), true
 }
 
 // effectiveEqual 比较两份 effective config 的全部字段。

@@ -13,6 +13,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/model"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // retryGroup 按 (date, source) 分组的重试单元
@@ -57,16 +58,16 @@ func RunRetryWithDepsContext(ctx context.Context, deps *Deps, usageDB *db.DB, cl
 		ctx = context.Background()
 	}
 	if deps == nil || deps.cfg == nil {
-		return fmt.Errorf("采集依赖或配置不能为空")
+		return errors.New(ui.Bi("collect deps or config must not be empty", "采集依赖或配置不能为空"))
 	}
 	if usageDB == nil {
-		return fmt.Errorf("usage DB 不能为空")
+		return errors.New(ui.Bi("usage DB must not be empty", "usage DB 不能为空"))
 	}
 	if log == nil {
 		log = slog.Default()
 	}
 	if clientName != "" && !hasCollector(deps, clientName) {
-		return fmt.Errorf("未知客户端: %s（支持: claude, opencode, codex, workbuddy, zcode, autoclaw）", clientName)
+		return unknownClientError(clientName)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -74,18 +75,20 @@ func RunRetryWithDepsContext(ctx context.Context, deps *Deps, usageDB *db.DB, cl
 
 	errs, err := db.GetErrorsContext(ctx, usageDB, db.ErrorFilter{Source: clientName, Type: "error", Unresolved: true})
 	if err != nil {
-		return fmt.Errorf("查询失败记录: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("query failed records", "查询失败记录"), err)
 	}
 	if len(errs) == 0 {
 		if out != nil {
-			fmt.Fprintln(out, "暂无需要重试的失败记录")
+			fmt.Fprintln(out, ui.Bi("no failed records to retry", "暂无需要重试的失败记录"))
 		}
 		return nil
 	}
 
 	groups := groupByDateSource(errs)
 	if out != nil {
-		fmt.Fprintf(out, "重试 %d 组失败采集...\n\n", len(groups))
+		fmt.Fprintf(out, "%s\n\n", ui.Bi(
+			fmt.Sprintf("retrying %d failed collection groups...", len(groups)),
+			fmt.Sprintf("重试 %d 组失败采集...", len(groups))))
 	}
 	retrySuccess := 0
 	retryFailed := 0
@@ -97,27 +100,29 @@ func RunRetryWithDepsContext(ctx context.Context, deps *Deps, usageDB *db.DB, cl
 		// 未知或禁用 collector 没有发生真实采集，不递增 retry_count。
 		if !hasCollector(deps, group.source) || !collectorEnabled(deps, group.source) {
 			if out != nil {
-				fmt.Fprintf(out, "✗ %s (%s): 数据源不存在或未启用，未执行重试\n", group.source, group.date)
+				fmt.Fprintf(out, "✗ %s (%s): %s\n", group.source, group.date,
+					ui.Bi("source missing or disabled, retry skipped", "数据源不存在或未启用，未执行重试"))
 			}
 			retryFailed++
 			continue
 		}
 		updated, err := db.IncrementRetryCountByDateSource(ctx, usageDB, group.date, group.source)
 		if err != nil {
-			log.Error("原子更新重试次数失败", "client", group.source, "date", group.date, "error", err)
+			log.Error("atomic retry count update failed", "client", group.source, "date", group.date, "error", err)
 			retryFailed++
 			continue
 		}
 		if updated == 0 {
 			// 查询后到执行前记录已被其他成功采集解决；不再重复采集。
 			if out != nil {
-				fmt.Fprintf(out, "- %s (%s): 错误已被其他采集恢复，跳过\n", group.source, group.date)
+				fmt.Fprintf(out, "- %s (%s): %s\n", group.source, group.date,
+					ui.Bi("error already resolved by another collection, skipping", "错误已被其他采集恢复，跳过"))
 			}
 			retrySuccess++
 			continue
 		}
 
-		log.Info("重试采集", "client", group.source, "date", group.date)
+		log.Info("retrying collection", "client", group.source, "date", group.date)
 		result := RunCollect(ctx, deps, usageDB, log, nil, group.source,
 			collector.CollectRequest{Dates: []string{group.date}}, false, false) // 失败时不新增错误；成功时 RunCollect 自动解决同组错误
 		if err := ctx.Err(); err != nil {
@@ -125,26 +130,32 @@ func RunRetryWithDepsContext(ctx context.Context, deps *Deps, usageDB *db.DB, cl
 		}
 		if result.Complete() {
 			if out != nil {
-				fmt.Fprintf(out, "✓ %s (%s): 重试成功\n", group.source, group.date)
+				fmt.Fprintf(out, "✓ %s (%s): %s\n", group.source, group.date,
+					ui.Bi("retry succeeded", "重试成功"))
 			}
 			retrySuccess++
 		} else {
 			reason := result.Err
 			if reason == nil {
-				reason = fmt.Errorf("采集未完整执行")
+				reason = errors.New(ui.Bi("collection not fully executed", "采集未完整执行"))
 			}
 			if out != nil {
-				fmt.Fprintf(out, "✗ %s (%s): 重试失败: %v\n", group.source, group.date, reason)
+				fmt.Fprintf(out, "✗ %s (%s): %s: %v\n", group.source, group.date,
+					ui.Bi("retry failed", "重试失败"), reason)
 			}
 			retryFailed++
 		}
 	}
 
 	if out != nil {
-		fmt.Fprintf(out, "\n重试完成: %d 成功, %d 失败\n", retrySuccess, retryFailed)
+		fmt.Fprintf(out, "\n%s\n", ui.Bi(
+			fmt.Sprintf("retry done: %d succeeded, %d failed", retrySuccess, retryFailed),
+			fmt.Sprintf("重试完成: %d 成功, %d 失败", retrySuccess, retryFailed)))
 	}
 	if retryFailed > 0 {
-		return fmt.Errorf("部分重试失败: %d 组", retryFailed)
+		return errors.New(ui.Bi(
+			fmt.Sprintf("some retries failed: %d groups", retryFailed),
+			fmt.Sprintf("部分重试失败: %d 组", retryFailed)))
 	}
 	return nil
 }
@@ -159,7 +170,7 @@ func RunCollectWithRetry(ctx context.Context, collectFn func(context.Context) Re
 		ctx = context.Background()
 	}
 	if collectFn == nil {
-		return Result{Err: errors.New("collectFn 不能为空")}
+		return Result{Err: errors.New(ui.Bi("collectFn must not be nil", "collectFn 不能为空"))}
 	}
 	if err := ctx.Err(); err != nil {
 		return Result{Err: err}
@@ -185,7 +196,7 @@ func RunCollectWithRetry(ctx context.Context, collectFn func(context.Context) Re
 		case <-time.After(wait):
 		}
 		if log != nil {
-			log.Info("守护进程重试采集", "attempt", attempt, "last_error", res.Err)
+			log.Info("daemon retrying collection", "attempt", attempt, "last_error", res.Err)
 		}
 		res = collectFn(ctx)
 		if res.Complete() {

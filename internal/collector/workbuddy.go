@@ -88,13 +88,13 @@ func (c *WorkBuddyCollector) Collect(ctx context.Context, req CollectRequest, lo
 			var queryErr error
 			titleMap, queryErr = queryWorkBuddyTitles(ctx, db)
 			if queryErr != nil {
-				logger.Debug("WorkBuddy title 查询失败，降级为空 title",
+				logger.Debug("WorkBuddy title query failed, degrading to empty title",
 					"error", queryErr,
 					"db_path", dbPath)
 			}
 			db.Close()
 		} else {
-			logger.Debug("WorkBuddy DB 打开失败，降级为空 title",
+			logger.Debug("WorkBuddy DB open failed, degrading to empty title",
 				"error", openErr,
 				"db_path", dbPath)
 		}
@@ -118,7 +118,7 @@ func (c *WorkBuddyCollector) Collect(ctx context.Context, req CollectRequest, lo
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return result, err
 			}
-			logger.Warn("WorkBuddy JSONL 文件解析失败，跳过", "file", file, "error", err)
+			logger.Warn("WorkBuddy JSONL file parse failed, skipped", "file", file, "error", err)
 			result.PartialErr = errors.Join(result.PartialErr, fmt.Errorf("%s: %w", file, err))
 			continue
 		}
@@ -131,7 +131,7 @@ func (c *WorkBuddyCollector) Collect(ctx context.Context, req CollectRequest, lo
 		if fileSessionID == "" {
 			err := fmt.Errorf("%s: 文件名缺少 session ID", file)
 			result.PartialErr = errors.Join(result.PartialErr, err)
-			logger.Warn("WorkBuddy JSONL 文件名无效，跳过", "file", file)
+			logger.Warn("WorkBuddy JSONL file name invalid, skipped", "file", file)
 			continue
 		}
 
@@ -358,7 +358,7 @@ func parseWorkBuddyJSONLContext(ctx context.Context, path string, logger *slog.L
 
 		var msg workbuddyMessage
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
-			logger.Debug("WorkBuddy JSONL 行解析失败，跳过",
+			logger.Debug("WorkBuddy JSONL line parse failed, skipped",
 				"file", path,
 				"line", lineNum,
 				"error", err)
@@ -370,7 +370,7 @@ func parseWorkBuddyJSONLContext(ctx context.Context, path string, logger *slog.L
 			continue
 		}
 		if msg.Timestamp <= 0 {
-			logger.Debug("WorkBuddy assistant 消息时间戳无效，跳过",
+			logger.Debug("WorkBuddy assistant message timestamp invalid, skipped",
 				"file", path, "line", lineNum, "message_id", msg.ID, "timestamp", msg.Timestamp)
 			continue
 		}

@@ -624,7 +624,7 @@ func TestWorkBuddy_TitleQueryFailure_LogsDebug(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !handler.HasRecord(slog.LevelDebug, "WorkBuddy title 查询失败，降级为空 title") {
+	if !handler.HasRecord(slog.LevelDebug, "WorkBuddy title query failed, degrading to empty title") {
 		t.Errorf("expected exact debug record, got: %v", handler.Messages())
 	}
 }
@@ -641,7 +641,7 @@ func TestWorkBuddy_BadLineLogsDebug(t *testing.T) {
 	if err != nil || len(messages) != 1 {
 		t.Fatalf("messages=%+v err=%v", messages, err)
 	}
-	if !handler.HasRecord(slog.LevelDebug, "WorkBuddy JSONL 行解析失败，跳过") {
+	if !handler.HasRecord(slog.LevelDebug, "WorkBuddy JSONL line parse failed, skipped") {
 		t.Fatalf("missing bad-line debug record: %v", handler.Messages())
 	}
 }
@@ -658,7 +658,7 @@ func TestWorkBuddy_FileParseFailureLogsWarn(t *testing.T) {
 	if err != nil || len(result.Messages) != 0 {
 		t.Fatalf("messages=%+v err=%v", result.Messages, err)
 	}
-	if !handler.HasRecord(slog.LevelWarn, "WorkBuddy JSONL 文件解析失败，跳过") {
+	if !handler.HasRecord(slog.LevelWarn, "WorkBuddy JSONL file parse failed, skipped") {
 		t.Fatalf("missing file-failure warn record: %v", handler.Messages())
 	}
 }

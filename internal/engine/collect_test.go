@@ -252,16 +252,16 @@ func TestRunCollect_HeartbeatLoggedAtDebug(t *testing.T) {
 	if !result.Complete() {
 		t.Fatalf("result = %+v", result)
 	}
-	if !handler.hasRecordAt(slog.LevelDebug, "开始采集") {
+	if !handler.hasRecordAt(slog.LevelDebug, "collection started") {
 		t.Error("开始采集 必须以 Debug 记录")
 	}
-	if handler.hasRecordAt(slog.LevelInfo, "开始采集") {
+	if handler.hasRecordAt(slog.LevelInfo, "collection started") {
 		t.Error("开始采集 不得以 Info 记录")
 	}
-	if !handler.hasRecordAt(slog.LevelDebug, "采集完成") {
+	if !handler.hasRecordAt(slog.LevelDebug, "collection completed") {
 		t.Error("采集完成 必须以 Debug 记录")
 	}
-	if handler.hasRecordAt(slog.LevelInfo, "采集完成") {
+	if handler.hasRecordAt(slog.LevelInfo, "collection completed") {
 		t.Error("采集完成 不得以 Info 记录")
 	}
 }
@@ -288,10 +288,10 @@ func TestRunCollect_RouterHeartbeatLoggedAtDebug(t *testing.T) {
 	if !result.Complete() {
 		t.Fatalf("result = %+v", result)
 	}
-	if !handler.hasRecordAt(slog.LevelDebug, "router 采集完成") {
+	if !handler.hasRecordAt(slog.LevelDebug, "router collection completed") {
 		t.Error("router 采集完成 必须以 Debug 记录")
 	}
-	if handler.hasRecordAt(slog.LevelInfo, "router 采集完成") {
+	if handler.hasRecordAt(slog.LevelInfo, "router collection completed") {
 		t.Error("router 采集完成 不得以 Info 记录")
 	}
 }
@@ -312,10 +312,10 @@ func TestRunCollect_SkipCollectedStaysInfo(t *testing.T) {
 	if !result.Complete() {
 		t.Fatalf("result = %+v", result)
 	}
-	if !handler.hasRecordAt(slog.LevelInfo, "已采集，跳过") {
+	if !handler.hasRecordAt(slog.LevelInfo, "already collected, skipping") {
 		t.Error("已采集，跳过 必须保持 Info")
 	}
-	if handler.hasRecordAt(slog.LevelDebug, "已采集，跳过") {
+	if handler.hasRecordAt(slog.LevelDebug, "already collected, skipping") {
 		t.Error("已采集，跳过 不应降为 Debug")
 	}
 }

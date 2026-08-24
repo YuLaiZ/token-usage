@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // SpawnDetached 拉起一个脱离当前终端会话的子进程（detached）。
@@ -28,7 +30,7 @@ func SpawnDetached(opts SpawnOptions) (*exec.Cmd, error) {
 	if opts.StdoutPath != "" {
 		f, err := os.OpenFile(opts.StdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
-			return nil, fmt.Errorf("打开 stdout 日志失败: %w", err)
+			return nil, fmt.Errorf("%s: %w", ui.Bi("failed to open stdout log", "打开 stdout 日志失败"), err)
 		}
 		cmd.Stdout = f
 		// defer f.Close() 在 SpawnDetached 返回时关闭父进程侧 fd，
@@ -40,7 +42,7 @@ func SpawnDetached(opts SpawnOptions) (*exec.Cmd, error) {
 	if opts.StderrPath != "" {
 		f, err := os.OpenFile(opts.StderrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
-			return nil, fmt.Errorf("打开 stderr 日志失败: %w", err)
+			return nil, fmt.Errorf("%s: %w", ui.Bi("failed to open stderr log", "打开 stderr 日志失败"), err)
 		}
 		cmd.Stderr = f
 		defer f.Close()
@@ -51,7 +53,7 @@ func SpawnDetached(opts SpawnOptions) (*exec.Cmd, error) {
 	if opts.Lease != nil {
 		rf, ok := opts.Lease.Reader.(*os.File)
 		if !ok {
-			return nil, fmt.Errorf("POSIX 平台 Lease.Reader 必须是 *os.File，实际 %T", opts.Lease.Reader)
+			return nil, fmt.Errorf("%s: %T", ui.Bi("on POSIX, Lease.Reader must be *os.File, got", "POSIX 平台 Lease.Reader 必须是 *os.File，实际"), opts.Lease.Reader)
 		}
 		// ExtraFiles[i] 在 child 中成为 fd 3+i。记录索引供 env 写值。
 		cmd.ExtraFiles = append(cmd.ExtraFiles, rf)
@@ -61,7 +63,7 @@ func SpawnDetached(opts SpawnOptions) (*exec.Cmd, error) {
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("启动 detached 子进程失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to start detached child process", "启动 detached 子进程失败"), err)
 	}
 	return cmd, nil
 }

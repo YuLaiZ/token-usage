@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // version_probe.go 实现下载 stage 的生产版本探针。
@@ -24,7 +26,7 @@ const (
 	stageVersionOutputPrefix   = "token-usage "
 )
 
-var errStageVersionOutputTooLarge = errors.New("stage --version 输出超过上限")
+var errStageVersionOutputTooLarge = errors.New(ui.Bi("stage --version output exceeds the limit", "stage --version 输出超过上限"))
 
 // stageVersionRunner 抽象实际执行，供单元测试注入固定输出；生产实现见
 // runStageVersionCommand。
@@ -43,18 +45,18 @@ func NewExecVersionProbe() VersionProbe {
 // ProbeVersion 执行 stagePath --version，并把严格的一行输出解析为 Release tag。
 func (p execVersionProbe) ProbeVersion(ctx context.Context, stagePath string) (string, error) {
 	if stagePath == "" || !filepath.IsAbs(stagePath) {
-		return "", errors.New("stage 版本探针要求非空绝对路径")
+		return "", errors.New(ui.Bi("stage version probe requires a non-empty absolute path", "stage 版本探针要求非空绝对路径"))
 	}
 	if p.run == nil {
-		return "", errors.New("stage 版本探针未配置执行器")
+		return "", errors.New(ui.Bi("stage version probe has no runner configured", "stage 版本探针未配置执行器"))
 	}
 	output, err := p.run(ctx, stagePath)
 	if err != nil {
-		return "", fmt.Errorf("执行 stage --version 失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to run stage --version", "执行 stage --version 失败"), err)
 	}
 	version, err := parseStageVersionOutput(output)
 	if err != nil {
-		return "", fmt.Errorf("解析 stage --version 输出失败: %w", err)
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to parse stage --version output", "解析 stage --version 输出失败"), err)
 	}
 	return version, nil
 }
@@ -111,7 +113,7 @@ func (b *limitedOutputBuffer) Write(p []byte) (int, error) {
 // "token-usage <严格 Release tag>" 加一个 LF 或 CRLF 结尾。
 func parseStageVersionOutput(output []byte) (string, error) {
 	if len(output) == 0 {
-		return "", errors.New("输出为空")
+		return "", errors.New(ui.Bi("output is empty", "输出为空"))
 	}
 	if len(output) > maxStageVersionOutputBytes {
 		return "", errStageVersionOutputTooLarge
@@ -119,19 +121,25 @@ func parseStageVersionOutput(output []byte) (string, error) {
 
 	raw := string(output)
 	if !strings.HasSuffix(raw, "\n") {
-		return "", errors.New("输出缺少末尾换行")
+		return "", errors.New(ui.Bi("output is missing the trailing newline", "输出缺少末尾换行"))
 	}
 	line := strings.TrimSuffix(raw, "\n")
 	line = strings.TrimSuffix(line, "\r")
 	if strings.ContainsAny(line, "\r\n") {
-		return "", errors.New("输出必须恰好一行")
+		return "", errors.New(ui.Bi("output must be exactly one line", "输出必须恰好一行"))
 	}
 	if !strings.HasPrefix(line, stageVersionOutputPrefix) {
-		return "", fmt.Errorf("输出必须以 %q 开头", stageVersionOutputPrefix)
+		return "", fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("output must start with %q", stageVersionOutputPrefix),
+			fmt.Sprintf("输出必须以 %q 开头", stageVersionOutputPrefix),
+		))
 	}
 	version := strings.TrimPrefix(line, stageVersionOutputPrefix)
 	if _, err := ParseVersion(version); err != nil {
-		return "", fmt.Errorf("输出中的版本 %q 非法: %w", version, err)
+		return "", fmt.Errorf("%s: %w", ui.Bi(
+			fmt.Sprintf("version %q in the output is invalid", version),
+			fmt.Sprintf("输出中的版本 %q 非法", version),
+		), err)
 	}
 	return version, nil
 }

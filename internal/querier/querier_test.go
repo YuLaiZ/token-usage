@@ -2,7 +2,9 @@ package querier
 
 import (
 	"context"
+
 	"errors"
+	"github.com/mattn/go-runewidth"
 	"strings"
 	"testing"
 
@@ -125,40 +127,11 @@ func TestSessions_OnlyShowsSessionsWithMessages(t *testing.T) {
 		t.Fatalf("Sessions failed: %v", err)
 	}
 
-	if !strings.Contains(result, "sess-alpha") {
-		t.Errorf("result should contain sess-alpha\ngot:\n%s", result)
+	if !strings.Contains(result, "fix-login") {
+		t.Errorf("result should contain the alpha session title fix-login\ngot:\n%s", result)
 	}
-	if strings.Contains(result, "sess-beta") {
-		t.Errorf("result must NOT contain sess-beta (no messages)\ngot:\n%s", result)
-	}
-}
-
-// 主模型只按查询日期范围内 total 最大值选择。
-func TestSessions_MainModelByDateRange(t *testing.T) {
-	q := setupMessageFixture(t)
-
-	// 07-09 范围内只有 msg-one(claude-sonnet-4, total 1100)
-	r1, err := q.Sessions(context.Background(), []string{"2026-07-09"})
-	if err != nil {
-		t.Fatalf("Sessions 07-09 failed: %v", err)
-	}
-	if !strings.Contains(r1, "claude-sonnet-4") {
-		t.Errorf("07-09 main model should be claude-sonnet-4\ngot:\n%s", r1)
-	}
-	if strings.Contains(r1, "gpt-5.5") {
-		t.Errorf("07-09 result must not contain gpt-5.5\ngot:\n%s", r1)
-	}
-
-	// 07-10 范围内只有 msg-two(gpt-5.5, total 1100)
-	r2, err := q.Sessions(context.Background(), []string{"2026-07-10"})
-	if err != nil {
-		t.Fatalf("Sessions 07-10 failed: %v", err)
-	}
-	if !strings.Contains(r2, "gpt-5.5") {
-		t.Errorf("07-10 main model should be gpt-5.5\ngot:\n%s", r2)
-	}
-	if strings.Contains(r2, "claude-sonnet-4") {
-		t.Errorf("07-10 result must not contain claude-sonnet-4\ngot:\n%s", r2)
+	if strings.Contains(result, "no-messages") {
+		t.Errorf("result must NOT contain the empty session (no messages)\ngot:\n%s", result)
 	}
 }
 
@@ -306,5 +279,126 @@ func TestQueries_CheckDependenciesAndCancellationBeforeEmptyDateShortcut(t *test
 				t.Fatalf("err = %v, want context.Canceled", err)
 			}
 		})
+	}
+}
+
+// formatCacheHit 口径回归：cache_read / (fresh + read + create)，零分母 0.00%。
+func TestFormatCacheHit(t *testing.T) {
+	cases := []struct {
+		fresh, read, create int64
+		want                string
+	}{
+		{0, 0, 0, "0.00%"},
+		{100, 0, 0, "0.00%"},
+		{100, 300, 100, "60.00%"},
+		{0, 9662, 353, "96.48%"}, // OpenCode 形态：分母含 cache create
+		{3, 97, 0, "97.00%"},
+	}
+	for _, tc := range cases {
+		if got := formatCacheHit(tc.fresh, tc.read, tc.create); got != tc.want {
+			t.Errorf("formatCacheHit(%d,%d,%d) = %s, want %s", tc.fresh, tc.read, tc.create, got, tc.want)
+		}
+	}
+}
+
+// 尾部 7 列统一约定收口：分组表与 sessions 的表头英文行最后 7 列必须
+// 依次为 Requests / Input / Output / Cache Read / Reasoning / Total / Cache Hit。
+func TestQueryViewsTailColumnsLocked(t *testing.T) {
+	wantTail := []string{"Requests", "Input", "Output", "Cache Read", "Reasoning", "Total", "Cache Hit"}
+
+	headerCells := func(t *testing.T, out string) []string {
+		t.Helper()
+		var header string
+		for _, ln := range strings.Split(out, "\n") {
+			if strings.Contains(ln, "│") {
+				header = ln // 首条含 │ 的行即表头英文行（顶边框用 ┌┬┐）
+				break
+			}
+		}
+		if header == "" {
+			t.Fatalf("输出缺少表头行:\n%s", out)
+		}
+		cells := strings.Split(strings.Trim(header, "│"), "│")
+		for i := range cells {
+			cells[i] = strings.TrimSpace(cells[i])
+		}
+		return cells
+	}
+
+	q := setupMessageFixture(t)
+	for _, tc := range []struct {
+		name string
+		run  func() (string, error)
+	}{
+		{"client", func() (string, error) { return q.ByClient(context.Background(), bothDates) }},
+		{"model", func() (string, error) { return q.ByModel(context.Background(), bothDates) }},
+		{"project", func() (string, error) { return q.ByProject(context.Background(), bothDates) }},
+		{"session", func() (string, error) { return q.Sessions(context.Background(), bothDates) }},
+	} {
+		out, err := tc.run()
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		cells := headerCells(t, out)
+		if len(cells) < 7 {
+			t.Fatalf("%s 列数 %d < 7:\n%s", tc.name, len(cells), out)
+		}
+		tail := cells[len(cells)-7:]
+		for i := range wantTail {
+			if tail[i] != wantTail[i] {
+				t.Errorf("%s 尾部第 %d 列 = %q, want %q（完整表头: %v）", tc.name, i, tail[i], wantTail[i], cells)
+			}
+		}
+	}
+}
+
+// sessions 长 Title 截断：超过 30 显示宽的标题截断加省略号且不穿透框线。
+func TestSessionsLongTitleTruncated(t *testing.T) {
+	q := setupMessageFixture(t)
+	// 直接在 fixture 之上写一条长标题会话。
+	longTitle := strings.Repeat("长标题", 30) // 60 显示宽
+	if _, err := db.UpsertSessionMeta(context.Background(), q.db, []model.Session{{
+		ID: "sess-long", Client: model.ClientClaudeCode, Directory: "/work", Project: "proj-A",
+		Title: longTitle, FirstTS: 1000, LastTS: 2000,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, []model.Message{{
+		ID: "msg-long", SessionID: "sess-long", Client: model.ClientClaudeCode,
+		Date: "2026-07-09", TS: 1000, InputTokens: 10, TotalTokens: 10,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := q.Sessions(context.Background(), []string{"2026-07-09"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 锁定 30 显示宽合同：截断结果必须与 runewidth.Truncate(longTitle, 30, ...)
+	// 逐字节一致（上限回退为 20 或标题缺失均不得通过）。
+	wantTitle := runewidth.Truncate(longTitle, 30, "...")
+	var border string
+	for _, bl := range strings.Split(result, "\n") {
+		if strings.Contains(bl, "┌") {
+			border = bl
+			break
+		}
+	}
+	found := false
+	for _, ln := range strings.Split(result, "\n") {
+		if !strings.Contains(ln, "长标题") {
+			continue
+		}
+		found = true
+		if !strings.Contains(ln, wantTitle) {
+			t.Errorf("标题应精确截断为 %q:\n%s", wantTitle, result)
+		}
+		if border != "" {
+			if w, bw := runewidth.StringWidth(ln), runewidth.StringWidth(border); w != bw {
+				t.Errorf("截断后行宽 %d 与边框 %d 不一致:\n%s", w, bw, result)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("长标题行未出现于输出:\n%s", result)
 	}
 }

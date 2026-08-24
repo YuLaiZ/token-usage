@@ -82,7 +82,7 @@ not-json-line-2
 
 	var summaries []slog.Record
 	for _, r := range handler.Records() {
-		if strings.Contains(r.Message, "行解析失败") {
+		if strings.Contains(r.Message, "line parse failed") {
 			summaries = append(summaries, r)
 		}
 	}
@@ -119,7 +119,7 @@ func TestClaudeParseNoFailuresNoSummary(t *testing.T) {
 	if _, err := parseClaudeMessageFile(path, nil, slog.New(handler)); err != nil {
 		t.Fatalf("parseClaudeMessageFile 失败: %v", err)
 	}
-	if handler.HasMessage("行解析失败") {
+	if handler.HasMessage("line parse failed") {
 		t.Errorf("全部合法时不应有行解析失败汇总: %v", handler.Messages())
 	}
 }
@@ -230,7 +230,7 @@ func TestClaudeUnknownContentFormSummarizedPerFile(t *testing.T) {
 	}
 	var summary *slog.Record
 	for i, r := range handler.Records() {
-		if strings.Contains(r.Message, "行解析失败") {
+		if strings.Contains(r.Message, "line parse failed") {
 			summary = &handler.Records()[i]
 		}
 	}
@@ -261,7 +261,7 @@ func TestClaudeStringContentFixtureParsesCleanly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseClaudeMessageFile 失败: %v", err)
 	}
-	if handler.HasMessage("行解析失败") {
+	if handler.HasMessage("line parse failed") {
 		t.Fatalf("字符串 content 行不应触发行解析失败汇总: %v", handler.Messages())
 	}
 	if len(result.Messages) != 2 {
@@ -590,7 +590,7 @@ invalid json line
 
 	c.Collect(context.Background(), CollectRequest{Dates: []string{"2026-06-22"}}, logger)
 
-	if !handler.HasRecord(slog.LevelDebug, "Claude JSONL 行解析失败，跳过") {
+	if !handler.HasRecord(slog.LevelDebug, "Claude JSONL line parse failed, skipped") {
 		t.Errorf("expected exact debug record, got messages: %v", handler.Messages())
 	}
 }
@@ -613,7 +613,7 @@ func TestClaude_FileParseFailureLogsWarn(t *testing.T) {
 	if err != nil || len(result.Messages) != 1 {
 		t.Fatalf("messages=%+v err=%v", result.Messages, err)
 	}
-	if !handler.HasRecord(slog.LevelWarn, "Claude JSONL 文件解析失败，跳过") {
+	if !handler.HasRecord(slog.LevelWarn, "Claude JSONL file parse failed, skipped") {
 		t.Fatalf("missing file-failure warn record: %v", handler.Messages())
 	}
 }

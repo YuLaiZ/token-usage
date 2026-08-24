@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // provenance.go 实现「当前安装来源验证」安全门。
@@ -94,11 +96,17 @@ type ProvenanceResult struct {
 func VerifyProvenance(ctx context.Context, deps ProvenanceDeps, currentVersion string, rc ReleaseClient) (ProvenanceResult, error) {
 	// 第 1 步：解析当前版本。dev 或非法 tag 直接判不可信（短路，不触网/不读盘）。
 	if currentVersion == "dev" {
-		return untrusted("当前版本为 dev（本地构建），无法验证官方来源，请手动安装"), nil
+		return untrusted(ui.Bi(
+			"current version is dev (local build); official provenance cannot be verified, please install manually",
+			"当前版本为 dev（本地构建），无法验证官方来源，请手动安装",
+		)), nil
 	}
 	ver, err := ParseVersion(currentVersion)
 	if err != nil {
-		return untrusted(fmt.Sprintf("当前版本 %q 非正式 Release tag，无法验证官方来源，请手动安装", currentVersion)), nil
+		return untrusted(ui.Bi(
+			fmt.Sprintf("current version %q is not an official release tag; official provenance cannot be verified, please install manually", currentVersion),
+			fmt.Sprintf("当前版本 %q 非正式 Release tag，无法验证官方来源，请手动安装", currentVersion),
+		)), nil
 	}
 	result := ProvenanceResult{CurrentTag: currentVersion}
 	_ = ver // 已确认合法；tag 字面量即后续查询键
@@ -111,29 +119,47 @@ func VerifyProvenance(ctx context.Context, deps ProvenanceDeps, currentVersion s
 	// 第 3 步：解析当前可执行文件路径，须为绝对路径。
 	binPath, err := deps.Executable.Executable()
 	if err != nil {
-		return untrustedWith(result, fmt.Sprintf("无法解析当前可执行文件路径: %v；请手动安装", err)), nil
+		return untrustedWith(result, ui.Bi(
+			fmt.Sprintf("cannot resolve the current executable path: %v; please install manually", err),
+			fmt.Sprintf("无法解析当前可执行文件路径: %v；请手动安装", err),
+		)), nil
 	}
 	if !filepath.IsAbs(binPath) {
-		return untrustedWith(result, fmt.Sprintf("当前可执行文件路径 %q 非绝对路径，可能为 go install / 本地构建，请手动安装", binPath)), nil
+		return untrustedWith(result, ui.Bi(
+			fmt.Sprintf("current executable path %q is not absolute; it may come from go install / a local build, please install manually", binPath),
+			fmt.Sprintf("当前可执行文件路径 %q 非绝对路径，可能为 go install / 本地构建，请手动安装", binPath),
+		)), nil
 	}
 	result.BinaryPath = binPath
 
 	// 第 4 步：Lstat 确认是普通文件且非 symlink。
 	info, err := deps.Lstat.Lstat(binPath)
 	if err != nil {
-		return untrustedWith(result, fmt.Sprintf("无法读取当前可执行文件元信息: %v；请手动安装", err)), nil
+		return untrustedWith(result, ui.Bi(
+			fmt.Sprintf("cannot stat the current executable: %v; please install manually", err),
+			fmt.Sprintf("无法读取当前可执行文件元信息: %v；请手动安装", err),
+		)), nil
 	}
 	if info.Mode()&fs.ModeSymlink != 0 {
-		return untrustedWith(result, "当前可执行文件是符号链接，无法安全覆盖，请手动安装"), nil
+		return untrustedWith(result, ui.Bi(
+			"current executable is a symlink; cannot be replaced safely, please install manually",
+			"当前可执行文件是符号链接，无法安全覆盖，请手动安装",
+		)), nil
 	}
 	if !info.Mode().IsRegular() {
-		return untrustedWith(result, fmt.Sprintf("当前可执行文件不是普通文件（mode %s），请手动安装", info.Mode())), nil
+		return untrustedWith(result, ui.Bi(
+			fmt.Sprintf("current executable is not a regular file (mode %s), please install manually", info.Mode()),
+			fmt.Sprintf("当前可执行文件不是普通文件（mode %s），请手动安装", info.Mode()),
+		)), nil
 	}
 
 	// 第 5 步：读取当前二进制并计算 SHA256。
 	content, err := deps.FileReader.ReadFile(binPath)
 	if err != nil {
-		return untrustedWith(result, fmt.Sprintf("无法读取当前二进制内容: %v；请手动安装", err)), nil
+		return untrustedWith(result, ui.Bi(
+			fmt.Sprintf("cannot read the current binary: %v; please install manually", err),
+			fmt.Sprintf("无法读取当前二进制内容: %v；请手动安装", err),
+		)), nil
 	}
 	sum := sha256.Sum256(content)
 	result.LocalHash = hex.EncodeToString(sum[:])
@@ -142,48 +168,78 @@ func VerifyProvenance(ctx context.Context, deps ProvenanceDeps, currentVersion s
 	// 再拉取该 Release 的 SHA256SUMS manifest。任一环节失败均视为来源不可信。
 	// 这一步同时把 currentVersion 当作精确 tag 查询，确认它确实是已发布的官方版本。
 	if rc == nil {
-		return untrustedWith(result, "未配置 Release 查询客户端，无法验证来源；请手动安装"), nil
+		return untrustedWith(result, ui.Bi(
+			"no release query client configured; provenance cannot be verified, please install manually",
+			"未配置 Release 查询客户端，无法验证来源；请手动安装",
+		)), nil
 	}
 	curRelease, err := rc.FetchRelease(ctx, currentVersion)
 	if err != nil {
-		return untrustedWith(result, fmt.Sprintf("当前版本 %s 的官方 Release 查询失败: %v；请手动安装", currentVersion, err)), nil
+		return untrustedWith(result, ui.Bi(
+			fmt.Sprintf("failed to fetch the official release for current version %s: %v; please install manually", currentVersion, err),
+			fmt.Sprintf("当前版本 %s 的官方 Release 查询失败: %v；请手动安装", currentVersion, err),
+		)), nil
 	}
 	if curRelease == nil {
-		return untrustedWith(result, fmt.Sprintf("当前版本 %s 无对应官方 Release；请手动安装", currentVersion)), nil
+		return untrustedWith(result, ui.Bi(
+			fmt.Sprintf("current version %s has no matching official release; please install manually", currentVersion),
+			fmt.Sprintf("当前版本 %s 无对应官方 Release；请手动安装", currentVersion),
+		)), nil
 	}
 	if curRelease.Tag != currentVersion {
-		return untrustedWith(result, fmt.Sprintf("当前版本 %s 与官方 Release tag %q 不一致；请手动安装", currentVersion, curRelease.Tag)), nil
+		return untrustedWith(result, ui.Bi(
+			fmt.Sprintf("current version %s does not match official release tag %q; please install manually", currentVersion, curRelease.Tag),
+			fmt.Sprintf("当前版本 %s 与官方 Release tag %q 不一致；请手动安装", currentVersion, curRelease.Tag),
+		)), nil
 	}
 
 	// 拉取当前版本的官方 manifest。未注入 ManifestFetcher 视为不可信。
 	if deps.Manifest == nil {
-		return untrustedWith(result, "未配置官方清单获取方式，无法验证来源；请手动安装"), nil
+		return untrustedWith(result, ui.Bi(
+			"no official manifest fetcher configured; provenance cannot be verified, please install manually",
+			"未配置官方清单获取方式，无法验证来源；请手动安装",
+		)), nil
 	}
 	manifest, err := deps.Manifest.FetchManifest(ctx, currentVersion)
 	if err != nil {
-		return untrustedWith(result, fmt.Sprintf("无法获取当前版本 %s 的官方清单: %v；请手动安装", currentVersion, err)), nil
+		return untrustedWith(result, ui.Bi(
+			fmt.Sprintf("cannot fetch the official manifest for current version %s: %v; please install manually", currentVersion, err),
+			fmt.Sprintf("无法获取当前版本 %s 的官方清单: %v；请手动安装", currentVersion, err),
+		)), nil
 	}
 	if manifest == nil {
-		return untrustedWith(result, "当前版本官方清单为空，无法比对来源；请手动安装"), nil
+		return untrustedWith(result, ui.Bi(
+			"official manifest for the current version is empty; provenance cannot be compared, please install manually",
+			"当前版本官方清单为空，无法比对来源；请手动安装",
+		)), nil
 	}
 
 	// 第 7 步：当前平台须受支持。
 	assetName, ok := AssetName(deps.Goos, deps.Goarch)
 	if !ok {
-		return untrustedWith(result, fmt.Sprintf("当前平台 %s/%s 无官方资产，请手动安装", deps.Goos, deps.Goarch)), nil
+		return untrustedWith(result, ui.Bi(
+			fmt.Sprintf("no official asset for current platform %s/%s, please install manually", deps.Goos, deps.Goarch),
+			fmt.Sprintf("当前平台 %s/%s 无官方资产，请手动安装", deps.Goos, deps.Goarch),
+		)), nil
 	}
 	result.Asset = assetName
 
 	// 第 8 步：manifest 须含当前平台资产 hash。
 	official, ok := manifest.HashFor(assetName)
 	if !ok {
-		return untrustedWith(result, fmt.Sprintf("当前版本 %s 清单缺少平台资产 %s 的 hash，请手动安装", currentVersion, assetName)), nil
+		return untrustedWith(result, ui.Bi(
+			fmt.Sprintf("manifest for current version %s is missing the hash of platform asset %s, please install manually", currentVersion, assetName),
+			fmt.Sprintf("当前版本 %s 清单缺少平台资产 %s 的 hash，请手动安装", currentVersion, assetName),
+		)), nil
 	}
 	result.OfficialHash = official
 
 	// 第 9 步：本地 hash 须严格等于官方 hash。
 	if result.LocalHash != official {
-		return untrustedWith(result, fmt.Sprintf("当前二进制 hash 与官方资产不一致（可能为 go install / 本地构建 / 已被篡改），请手动安装")), nil
+		return untrustedWith(result, ui.Bi(
+			"current binary hash does not match the official asset (possibly go install / local build / tampered), please install manually",
+			"当前二进制 hash 与官方资产不一致（可能为 go install / 本地构建 / 已被篡改），请手动安装",
+		)), nil
 	}
 
 	result.Trusted = true
@@ -193,13 +249,13 @@ func VerifyProvenance(ctx context.Context, deps ProvenanceDeps, currentVersion s
 // validate 校验 ProvenanceDeps 必填字段齐全。nil 属于编程错误。
 func (d ProvenanceDeps) validate() error {
 	if d.Executable == nil {
-		return errors.New("ProvenanceDeps.Executable 不能为空")
+		return errors.New(ui.Bi("ProvenanceDeps.Executable must not be nil", "ProvenanceDeps.Executable 不能为空"))
 	}
 	if d.Lstat == nil {
-		return errors.New("ProvenanceDeps.Lstat 不能为空")
+		return errors.New(ui.Bi("ProvenanceDeps.Lstat must not be nil", "ProvenanceDeps.Lstat 不能为空"))
 	}
 	if d.FileReader == nil {
-		return errors.New("ProvenanceDeps.FileReader 不能为空")
+		return errors.New(ui.Bi("ProvenanceDeps.FileReader must not be nil", "ProvenanceDeps.FileReader 不能为空"))
 	}
 	// Manifest 允许在 Check 阶段为 nil（Check 不做来源校验），
 	// 但 VerifyProvenance 调用前必须注入；此处不强制，留给 VerifyProvenance 的 manifest 阶段处理。

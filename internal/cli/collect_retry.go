@@ -9,6 +9,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/engine"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // newCollectRetryCmd 构造 `collect retry` 子命令：重试未解决失败组。
@@ -20,13 +21,19 @@ func newCollectRetryCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "retry",
 		Short: "Retry failed collection records / 重试失败的采集记录",
-		Long: `重试 collection_errors 中未解决的失败采集记录。
+		Long: ui.Bi(`Retry unresolved failed collection records in collection_errors.
+
+Unresolved errors are queried grouped by (date, source) and recollected per group per date;
+on success the group's historical errors are resolved automatically, on failure retry_count is incremented.
+
+--client X limits to one client's failure groups (inherited from the collect parent).
+`, `重试 collection_errors 中未解决的失败采集记录。
 
 按 (date, source) 分组查询未解决错误，逐组按日期重新采集；
 成功时自动恢复同组历史错误，失败时递增 retry_count。
 
 --client X 限定只处理指定客户端的失败组（继承自 collect 父命令）。
-`,
+`),
 		Args: cobra.NoArgs,
 		RunE: runCollectRetryCmd,
 	}

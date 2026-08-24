@@ -15,6 +15,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/engine"
 	"github.com/YuLaiZ/token-usage/internal/logger"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // newCollectCmd 构造 collect 命令及其 all/router/retry 子命令。
@@ -33,7 +34,17 @@ func newCollectCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "collect [YYYYMMDD|YYYYMMDD-YYYYMMDD]",
 		Short: "Collect token usage data (router included by default) / 采集 token 使用数据（默认含 router）",
-		Long: `采集 token 使用数据。
+		Long: ui.Bi(`Collect token usage data.
+
+Without a subcommand it runs one incremental collection for the given date (today or the positional date arg) across all enabled clients, reading router logs and backfilling attribution along the way; --client X limits to one client, --force recollects.
+
+Subcommands:
+  all    Scan full history and backfill router attribution (two phases: messages → router)
+  router Backfill router attribution for one client (does not invoke client collectors)
+  retry  Retry unresolved failed groups in collection_errors
+
+collect all already includes the router backfill; no need to run collect router separately.
+`, `采集 token 使用数据。
 
 不带子命令时按日期（今天或位置参数指定日期）对所有已启用客户端做一次增量采集，
 采集过程中会同步读取 router 日志并回填归因；--client X 限定单客户端，--force 强制覆盖。
@@ -44,16 +55,16 @@ func newCollectCmd() *cobra.Command {
   retry  重试 collection_errors 中未解决的失败组
 
 collect all 已隐含包含 router backfill，无需再单独执行 collect router。
-`,
+`),
 		Args: cobra.MaximumNArgs(1),
 		RunE: runCollectDefault,
 	}
 
 	// --client 为 PersistentFlag，三个子命令继承。
 	cmd.PersistentFlags().String("client", "",
-		"指定客户端 (claude/opencode/codex/workbuddy/zcode/autoclaw)，子命令继承")
+		ui.Bi("Limit to one client (claude/opencode/codex/workbuddy/zcode/autoclaw), inherited by subcommands", "指定客户端 (claude/opencode/codex/workbuddy/zcode/autoclaw)，子命令继承"))
 	// --force 仅 collect 本身的 LocalFlag，子命令不继承。
-	cmd.Flags().Bool("force", false, "强制重新采集（忽略 collection_log 去重）")
+	cmd.Flags().Bool("force", false, ui.Bi("Force recollection (ignore collection_log dedup)", "强制重新采集（忽略 collection_log 去重）"))
 
 	cmd.AddCommand(newCollectAllCmd(), newCollectRouterCmd(), newCollectRetryCmd())
 	return cmd
@@ -72,7 +83,7 @@ func runCollectDefault(cmd *cobra.Command, args []string) error {
 	// 2. 加载配置 → daemon 预检（DB 打开之前）。
 	cfg, err := loadConfig()
 	if err != nil {
-		return fmt.Errorf("加载配置失败: %w", err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 	}
 	if handled, perr := collectPreflight(cfg, false, false); handled {
 		return perr
@@ -106,7 +117,7 @@ func runCollectDefault(cmd *cobra.Command, args []string) error {
 func loadCollectConfig(force bool) (*config.Config, error) {
 	cfg, err := loadConfig()
 	if err != nil {
-		return nil, fmt.Errorf("加载配置失败: %w", err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 	}
 	if handled, perr := collectPreflight(cfg, false, force); handled {
 		return nil, perr
@@ -117,16 +128,16 @@ func loadCollectConfig(force bool) (*config.Config, error) {
 // openCollectRuntime 只负责在参数与目标校验全部通过后初始化 logger 和 DB。
 func openCollectRuntime(cfg *config.Config) (log *slog.Logger, usageDB *db.DB, cleanup func(), err error) {
 	if cfg == nil {
-		return nil, nil, nil, fmt.Errorf("有效配置不能为空")
+		return nil, nil, nil, fmt.Errorf("%s", ui.Bi("valid config must not be empty", "有效配置不能为空"))
 	}
 	log, err = logger.Init(cfg.Log.Level, cfg.Log.Dir, cfg.Log.MaxDays)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("初始化日志失败: %w", err)
+		return nil, nil, nil, fmt.Errorf("%s: %w", ui.Bi("failed to init logger", "初始化日志失败"), err)
 	}
 	usageDB, err = dbOpener(filepath.Join(cfg.DataDir, "usage.db"))
 	if err != nil {
 		logger.Close()
-		return nil, nil, nil, fmt.Errorf("打开数据库失败: %w", err)
+		return nil, nil, nil, fmt.Errorf("%s: %w", ui.Bi("failed to open database", "打开数据库失败"), err)
 	}
 	cleanup = func() {
 		usageDB.Close()
@@ -155,14 +166,14 @@ func loadCollectRuntime(force bool) (cfg *config.Config, log *slog.Logger, usage
 // 不存在 → "未知客户端"；存在但 disabled → "已禁用"。
 func validateClientExists(cfg *config.Config, client string) error {
 	if cfg == nil {
-		return fmt.Errorf("有效配置不能为空")
+		return fmt.Errorf("%s", ui.Bi("valid config must not be empty", "有效配置不能为空"))
 	}
 	cc, ok := cfg.ClientConfig(client)
 	if !ok {
-		return fmt.Errorf("未知客户端: %s", client)
+		return fmt.Errorf("%s: %s", ui.Bi("unknown client", "未知客户端"), client)
 	}
 	if !cc.Enabled {
-		return fmt.Errorf("客户端 %s 已禁用，请先在 config 中启用", client)
+		return fmt.Errorf("%s %s %s", ui.Bi("client", "客户端"), client, ui.Bi("is disabled; enable it in config first", "已禁用，请先在 config 中启用"))
 	}
 	return nil
 }
@@ -178,7 +189,7 @@ func runOneFullCollect(ctx context.Context, deps *engine.Deps, usageDB *db.DB, l
 // checkDaemonConflict 检查守护进程是否冲突。
 func checkDaemonConflict(lockPath string) error {
 	if daemon.IsDaemonRunning(lockPath) {
-		return fmt.Errorf("守护进程正在运行，数据由守护进程维护")
+		return fmt.Errorf("%s", ui.Bi("daemon is running; data is maintained by the daemon", "守护进程正在运行，数据由守护进程维护"))
 	}
 	return nil
 }
@@ -187,7 +198,7 @@ func checkDaemonConflict(lockPath string) error {
 // （含 --force），确保不与守护进程并发写库。返回 handled=true 时调用方应直接返回 err。
 func collectPreflight(cfg *config.Config, retry, force bool) (handled bool, err error) {
 	if cfg == nil {
-		return true, fmt.Errorf("有效配置不能为空")
+		return true, fmt.Errorf("%s", ui.Bi("valid config must not be empty", "有效配置不能为空"))
 	}
 	if err := checkDaemonConflict(filepath.Join(cfg.DataDir, "token-usage.lock")); err != nil {
 		return true, err

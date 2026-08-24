@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // manifest.go 实现 SHA256SUMS 清单的严格解析与目标资产 hash 查询。
@@ -52,7 +54,7 @@ type Manifest struct {
 // 整份输入必须以换行结尾（每行都有换行符），否则拒绝。
 func ParseManifest(data []byte) (*Manifest, error) {
 	if len(data) == 0 {
-		return nil, errors.New("清单内容为空")
+		return nil, errors.New(ui.Bi("manifest content is empty", "清单内容为空"))
 	}
 	// 仅以 \n 切行；\r\n 中的 \r 留待逐行校验时剥离。
 	// 不使用 bytes.Split(_, "\n") 后直接断言长度，因尾随换行会产生尾空段。
@@ -61,7 +63,10 @@ func ParseManifest(data []byte) (*Manifest, error) {
 		return nil, err
 	}
 	if len(lines) != manifestLineCount {
-		return nil, fmt.Errorf("清单行数必须为 %d，实际 %d", manifestLineCount, len(lines))
+		return nil, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("manifest must have exactly %d lines, got %d", manifestLineCount, len(lines)),
+			fmt.Sprintf("清单行数必须为 %d，实际 %d", manifestLineCount, len(lines)),
+		))
 	}
 
 	hashes := make(map[string]string, manifestLineCount)
@@ -72,7 +77,10 @@ func ParseManifest(data []byte) (*Manifest, error) {
 			return nil, perr
 		}
 		if _, dup := hashes[name]; dup {
-			return nil, fmt.Errorf("清单第 %d 行资产名 %q 重复", i+1, name)
+			return nil, fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("manifest line %d has duplicate asset name %q", i+1, name),
+				fmt.Sprintf("清单第 %d 行资产名 %q 重复", i+1, name),
+			))
 		}
 		hashes[name] = hash
 		seenNames = append(seenNames, name)
@@ -92,9 +100,15 @@ func ParseManifest(data []byte) (*Manifest, error) {
 				}
 			}
 			if !equalSet {
-				return nil, fmt.Errorf("清单资产集合与冻结集合不符：got %v", seenNames)
+				return nil, fmt.Errorf("%s", ui.Bi(
+					fmt.Sprintf("manifest asset set does not match the frozen set: got %v", seenNames),
+					fmt.Sprintf("清单资产集合与冻结集合不符：got %v", seenNames),
+				))
 			}
-			return nil, fmt.Errorf("清单第 %d 行资产名顺序错误：got %q want %q（须 ASCII 升序）", i+1, seenNames[i], want)
+			return nil, fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("manifest line %d has wrong asset name order: got %q want %q (ASCII ascending required)", i+1, seenNames[i], want),
+				fmt.Sprintf("清单第 %d 行资产名顺序错误：got %q want %q（须 ASCII 升序）", i+1, seenNames[i], want),
+			))
 		}
 	}
 
@@ -107,7 +121,7 @@ func ParseManifest(data []byte) (*Manifest, error) {
 func splitManifestLines(data []byte) ([]string, error) {
 	// 必须以 \n 结尾（每行含尾随换行）。
 	if data[len(data)-1] != '\n' {
-		return nil, errors.New("清单必须以换行符结尾")
+		return nil, errors.New(ui.Bi("manifest must end with a newline", "清单必须以换行符结尾"))
 	}
 	// 切分前先拒绝裸 \r（单独出现的回车，非 \r\n 一部分）：扫描 \r\n 配对。
 	if err := validateNewlines(data); err != nil {
@@ -124,7 +138,10 @@ func splitManifestLines(data []byte) ([]string, error) {
 			p = p[:len(p)-1]
 		}
 		if p == "" {
-			return nil, fmt.Errorf("清单第 %d 行为空行（不允许）", i+1)
+			return nil, fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("manifest line %d is empty (not allowed)", i+1),
+				fmt.Sprintf("清单第 %d 行为空行（不允许）", i+1),
+			))
 		}
 		out = append(out, p)
 	}
@@ -143,7 +160,10 @@ func validateNewlines(data []byte) error {
 			i++ // 跳过 \n
 			continue
 		}
-		return fmt.Errorf("清单含非法回车（非 CRLF）：偏移 %d", i)
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("manifest contains an illegal carriage return (not CRLF): offset %d", i),
+			fmt.Sprintf("清单含非法回车（非 CRLF）：偏移 %d", i),
+		))
 	}
 	return nil
 }
@@ -156,31 +176,49 @@ func parseManifestLine(line string, idx int) (hash, name string, err error) {
 	// 恰好两空格分隔：找到 "  "，且其前其后不再有连续空格。
 	sepi := strings.Index(line, "  ")
 	if sepi < 0 {
-		return "", "", fmt.Errorf("清单第 %d 行缺少两空格分隔符", idx+1)
+		return "", "", fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("manifest line %d is missing the two-space separator", idx+1),
+			fmt.Sprintf("清单第 %d 行缺少两空格分隔符", idx+1),
+		))
 	}
 	hash = line[:sepi]
 	rest := line[sepi+2:]
 	// rest 必须不再含空格/制表符（资产名内无空白）；rest 也不能以空格开头（已 +2，仍校验）。
 	if rest == "" {
-		return "", "", fmt.Errorf("清单第 %d 行资产名缺失", idx+1)
+		return "", "", fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("manifest line %d is missing the asset name", idx+1),
+			fmt.Sprintf("清单第 %d 行资产名缺失", idx+1),
+		))
 	}
 	if strings.ContainsAny(rest, " \t") {
-		return "", "", fmt.Errorf("清单第 %d 行资产名含空白", idx+1)
+		return "", "", fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("manifest line %d asset name contains whitespace", idx+1),
+			fmt.Sprintf("清单第 %d 行资产名含空白", idx+1),
+		))
 	}
 	name = rest
 
 	// hash 校验：64 位小写 hex。
 	if !isLowerHex64(hash) {
-		return "", "", fmt.Errorf("清单第 %d 行 hash %q 必须为 64 位小写十六进制", idx+1, hash)
+		return "", "", fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("manifest line %d hash %q must be 64 lowercase hex characters", idx+1, hash),
+			fmt.Sprintf("清单第 %d 行 hash %q 必须为 64 位小写十六进制", idx+1, hash),
+		))
 	}
 
 	// name 校验：禁止路径分隔符与空白（防御文件名注入）。
 	if strings.ContainsAny(name, "/\\") {
-		return "", "", fmt.Errorf("清单第 %d 行资产名 %q 含路径分隔符", idx+1, name)
+		return "", "", fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("manifest line %d asset name %q contains path separators", idx+1, name),
+			fmt.Sprintf("清单第 %d 行资产名 %q 含路径分隔符", idx+1, name),
+		))
 	}
 	// name 必须在冻结集合内（拒绝多余/未知资产名）。
 	if !isKnownManifestAsset(name) {
-		return "", "", fmt.Errorf("清单第 %d 行出现未知资产名 %q", idx+1, name)
+		return "", "", fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("manifest line %d has unknown asset name %q", idx+1, name),
+			fmt.Sprintf("清单第 %d 行出现未知资产名 %q", idx+1, name),
+		))
 	}
 	return hash, name, nil
 }
