@@ -35,11 +35,11 @@ import (
 // helperSuffix / planSuffix / resultSuffix 是 Windows helper 专属文件的后缀。
 // stage/backup 复用 install_common.go 的 updateStageSuffix / updateBackupSuffix。
 const (
-	helperSuffix = ".stage-helper-" // helper.exe 后缀（接 nonce + ".exe"）
-	planSuffix   = ".update-plan-"  // plan 文件后缀（接 nonce）
+	helperSuffix = ".stage-helper-"  // helper.exe 后缀（接 nonce + ".exe"）
+	planSuffix   = ".update-plan-"   // plan 文件后缀（接 nonce）
 	resultSuffix = ".update-result-" // result 文件后缀（接 nonce + ".json"）
-	helperExeExt = ".exe"           // Windows 可执行扩展名
-	resultExt    = ".json"          // result 文件扩展名
+	helperExeExt = ".exe"            // Windows 可执行扩展名
+	resultExt    = ".json"           // result 文件扩展名
 )
 
 // helperPlan 是 Windows staged replacement 的 helper 执行计划。

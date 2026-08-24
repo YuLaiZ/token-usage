@@ -32,9 +32,9 @@ type fakeInstaller struct {
 	stageContents  [][]byte // 每次 Install 时捕获的 stage 文件内容（stagePath 非空且存在时）
 	newBinPath     string   // 成功时返回的新二进制路径（默认 = 入参 targetBinPath）
 	err            error
-	installAfter   string   // 记录调用时刻的 orchestration 阶段标记（由 trace 对照）
-	useTargetAsNew bool     // true 时 newBinPath 取 targetBinPath（默认行为）
-	deferred       bool     // true 时返回 (targetBinPath, ErrDeferredToHelper) 模拟 Windows staged replacement
+	installAfter   string // 记录调用时刻的 orchestration 阶段标记（由 trace 对照）
+	useTargetAsNew bool   // true 时 newBinPath 取 targetBinPath（默认行为）
+	deferred       bool   // true 时返回 (targetBinPath, ErrDeferredToHelper) 模拟 Windows staged replacement
 }
 
 type recordedInstall struct {
