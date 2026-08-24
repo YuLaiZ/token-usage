@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -189,8 +190,8 @@ func TestParseRolloutJSONL_SessionMeta(t *testing.T) {
 	if meta.Originator != "codex-tui" {
 		t.Errorf("Originator = %q, want 'codex-tui'", meta.Originator)
 	}
-	if meta.Source != "cli" {
-		t.Errorf("Source = %q, want 'cli'", meta.Source)
+	if meta.sourceString() != "cli" {
+		t.Errorf("sourceString() = %q, want 'cli'", meta.sourceString())
 	}
 	if meta.Cwd != "/Users/test/project" {
 		t.Errorf("Cwd = %q, want '/Users/test/project'", meta.Cwd)
@@ -246,6 +247,137 @@ func TestParseRolloutJSONL_OnlySessionMeta(t *testing.T) {
 	}
 	if entries[0].Type != "session_meta" {
 		t.Errorf("type = %q, want 'session_meta'", entries[0].Type)
+	}
+}
+
+// subagent 会话的 session_meta payload.source 是对象（如 {"subagent":{...}}），
+// 完整解析必须成功且 sourceString 归一为空串。
+func TestExtractSessionMeta_SubagentObjectSource(t *testing.T) {
+	entry := rolloutEntry{
+		Type:    "session_meta",
+		Payload: json.RawMessage(`{"id":"019f22b4","originator":"Codex Desktop","source":{"subagent":{"thread_spawn":{"parent_thread_id":"019f22b0","depth":1,"agent_role":"explorer"}}},"thread_source":"subagent","cwd":"/tmp/project"}`),
+	}
+	meta, err := extractSessionMeta(entry)
+	if err != nil {
+		t.Fatalf("extractSessionMeta failed: %v", err)
+	}
+	if meta.ID != "019f22b4" {
+		t.Errorf("ID = %q, want '019f22b4'", meta.ID)
+	}
+	if meta.sourceString() != "" {
+		t.Errorf("sourceString() = %q, want empty for object source", meta.sourceString())
+	}
+	if meta.Originator != "Codex Desktop" {
+		t.Errorf("Originator = %q, want 'Codex Desktop'", meta.Originator)
+	}
+}
+
+// 字段类型漂移（originator 变对象）时降级为仅提取 ID，不再整条丢弃。
+func TestExtractSessionMeta_FieldDriftDegradedToID(t *testing.T) {
+	entry := rolloutEntry{
+		Type:    "session_meta",
+		Payload: json.RawMessage(`{"id":"thread-drift","originator":{"nested":true},"cwd":"/tmp"}`),
+	}
+	meta, err := extractSessionMeta(entry)
+	if err != nil {
+		t.Fatalf("expected degraded extraction to succeed, got error: %v", err)
+	}
+	if meta.ID != "thread-drift" {
+		t.Errorf("ID = %q, want 'thread-drift'", meta.ID)
+	}
+	if meta.Cwd != "" || meta.Originator != "" {
+		t.Errorf("degraded meta should only carry ID, got cwd=%q originator=%q", meta.Cwd, meta.Originator)
+	}
+}
+
+// 连 ID 都提取不到时仍返回错误。
+func TestExtractSessionMeta_DriftWithoutIDFails(t *testing.T) {
+	entry := rolloutEntry{
+		Type:    "session_meta",
+		Payload: json.RawMessage(`{"originator":{"nested":true}}`),
+	}
+	if _, err := extractSessionMeta(entry); err == nil {
+		t.Error("expected error when neither full parse nor ID extraction succeeds")
+	}
+}
+
+// sourceString 的三形态：字符串、对象、缺失。
+func TestSourceString(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    string
+		wantLen int
+	}{
+		{name: "字符串形态", raw: `"cli"`, want: "cli"},
+		{name: "对象形态", raw: `{"subagent":{"other":"guardian"}}`, want: ""},
+		{name: "缺失", raw: ``, want: ""},
+	}
+	for _, tt := range tests {
+		p := sessionMetaPayload{Source: json.RawMessage(tt.raw)}
+		if got := p.sourceString(); got != tt.want {
+			t.Errorf("%s: sourceString() = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+// 回归：subagent 对象 source 的 rollout 在 fallback 为空（扫描路径）下
+// 不再报「缺少 session ID」，会话可建立且 token 正常采集。
+func TestParseCodexRollout_SubagentObjectSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "subagent-rollout.jsonl")
+	content := `{"timestamp":"2026-07-11T14:26:35Z","type":"session_meta","payload":{"id":"019f4fdb","originator":"Codex Desktop","source":{"subagent":{"thread_spawn":{"parent_thread_id":"019f4fda","depth":1,"agent_nickname":"Noether","agent_role":"worker"}}},"thread_source":"subagent","cwd":"/tmp/project"}}
+{"timestamp":"2026-07-11T14:27:00Z","type":"turn_context","payload":{"model":"gpt-5"}}
+{"timestamp":"2026-07-11T14:27:10Z","type":"response_item","payload":{"type":"message","role":"assistant","id":"msg-sub-1"}}
+{"timestamp":"2026-07-11T14:27:20Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":30,"total_tokens":180}}}}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	result, err := parseCodexRollout(path, codexThread{}, nil)
+	if err != nil {
+		t.Fatalf("parseCodexRollout failed: %v", err)
+	}
+	if len(result.Sessions) != 1 {
+		t.Fatalf("Sessions = %d, want 1", len(result.Sessions))
+	}
+	sess := result.Sessions[0]
+	if sess.ID != "019f4fdb" {
+		t.Errorf("Session ID = %q, want '019f4fdb' (from session_meta payload.id)", sess.ID)
+	}
+	if sess.Client != model.ClientCodexApp {
+		t.Errorf("Session Client = %q, want %q (originator 'Codex Desktop')", sess.Client, model.ClientCodexApp)
+	}
+	if len(result.Messages) != 1 {
+		t.Fatalf("Messages = %d, want 1 (token_count event)", len(result.Messages))
+	}
+	if result.Messages[0].SessionID != "019f4fdb" {
+		t.Errorf("Message SessionID = %q, want '019f4fdb'", result.Messages[0].SessionID)
+	}
+	if result.Messages[0].TotalTokens != 180 {
+		t.Errorf("TotalTokens = %d, want 180", result.Messages[0].TotalTokens)
+	}
+}
+
+// 字段漂移降级的端到端：仅 ID 可提取时，fallback 空的扫描路径仍能建立会话。
+func TestParseCodexRollout_FieldDriftStillBuildsSession(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "drift-rollout.jsonl")
+	content := `{"timestamp":"2026-07-11T14:26:35Z","type":"session_meta","payload":{"id":"thread-drift","cwd":{"unexpected":"object"}}}
+{"timestamp":"2026-07-11T14:27:00Z","type":"turn_context","payload":{"model":"gpt-5"}}
+{"timestamp":"2026-07-11T14:27:10Z","type":"response_item","payload":{"type":"message","role":"assistant","id":"msg-drift"}}
+{"timestamp":"2026-07-11T14:27:20Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"total_tokens":15}}}}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	result, err := parseCodexRollout(path, codexThread{}, nil)
+	if err != nil {
+		t.Fatalf("parseCodexRollout failed: %v", err)
+	}
+	if len(result.Sessions) != 1 || result.Sessions[0].ID != "thread-drift" {
+		t.Fatalf("Sessions = %+v, want one session with ID 'thread-drift'", result.Sessions)
+	}
+	if len(result.Messages) != 1 {
+		t.Fatalf("Messages = %d, want 1", len(result.Messages))
 	}
 }
 

@@ -525,15 +525,30 @@ type rolloutEntry struct {
 }
 
 // sessionMetaPayload 对应 session_meta 的 payload 结构（平铺，非嵌套）。
+// Source 为双形态：主会话是字符串（"cli"/"vscode"），subagent 会话是对象
+// （如 {"subagent":{"thread_spawn":{...}}}），故用 RawMessage 承载，
+// 字符串值经 sourceString 归一。
 type sessionMetaPayload struct {
-	ID            string `json:"id"`
-	Timestamp     string `json:"timestamp"`
-	Cwd           string `json:"cwd"`
-	Originator    string `json:"originator"`
-	CLIVersion    string `json:"cli_version"`
-	Source        string `json:"source"`
-	ModelProvider string `json:"model_provider"`
-	ForkedFromID  string `json:"forked_from_id"`
+	ID            string          `json:"id"`
+	Timestamp     string          `json:"timestamp"`
+	Cwd           string          `json:"cwd"`
+	Originator    string          `json:"originator"`
+	CLIVersion    string          `json:"cli_version"`
+	Source        json.RawMessage `json:"source"`
+	ModelProvider string          `json:"model_provider"`
+	ForkedFromID  string          `json:"forked_from_id"`
+}
+
+// sourceString 返回 Source 的字符串形态值；对象形态（subagent）或缺失返回空串。
+func (p sessionMetaPayload) sourceString() string {
+	if len(p.Source) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(p.Source, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 // ===== rollout 状态机 =====
@@ -560,12 +575,11 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 		return CollectResult{}, err
 	}
 
-	// 合并 session_meta 与 fallback。
-	sessionMeta := sessionMetaPayload{
-		ID:     fallback.ID,
-		Cwd:    fallback.Cwd,
-		Source: fallback.Source,
-	}
+	// 合并 session_meta 与 fallback：fallback 优先，session_meta 逐字段补缺。
+	// session_meta 可能多条（resume 追加），后一条的非空字段覆盖前一条；
+	// extractSessionMeta 降级提取时只有 ID，逐字段合并不丢前一条其余字段。
+	var meta sessionMetaPayload
+	metaSource := ""
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return CollectResult{}, err
@@ -573,25 +587,42 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 		if entry.Type != "session_meta" {
 			continue
 		}
-		meta, merr := extractSessionMeta(entry)
-		if merr == nil {
-			sessionMeta = *meta
+		m, merr := extractSessionMeta(entry)
+		if merr != nil {
+			continue
+		}
+		if m.ID != "" {
+			meta.ID = m.ID
+		}
+		if m.Cwd != "" {
+			meta.Cwd = m.Cwd
+		}
+		if m.Originator != "" {
+			meta.Originator = m.Originator
+		}
+		if m.ForkedFromID != "" {
+			meta.ForkedFromID = m.ForkedFromID
+		}
+		if s := m.sourceString(); s != "" {
+			metaSource = s
 		}
 	}
 
 	sessionID := fallback.ID
 	if sessionID == "" {
-		sessionID = sessionMeta.ID
+		sessionID = meta.ID
 	}
 	cwd := fallback.Cwd
 	if cwd == "" {
-		cwd = sessionMeta.Cwd
+		cwd = meta.Cwd
 	}
+	// state DB 的 source 列对 subagent 线程存的是 JSON 对象字符串，
+	// 与 payload 对象形态一样不参与 cli/vscode 匹配，保持原样传入。
 	source := fallback.Source
 	if source == "" {
-		source = sessionMeta.Source
+		source = metaSource
 	}
-	rawClient := inferClient(source, sessionMeta.Originator, fallback.ThreadSource)
+	rawClient := inferClient(source, meta.Originator, fallback.ThreadSource)
 	displayClient := model.RawClientToClient[rawClient]
 
 	if sessionID == "" {
@@ -614,7 +645,7 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 		result   CollectResult
 		firstTS  int64
 		lastTS   int64
-		parentID = sessionMeta.ForkedFromID
+		parentID = meta.ForkedFromID
 	)
 	// fallback 可提供 ParentID（理论上 threads 表不存 forked_from_id，但保持扩展性）。
 
@@ -935,14 +966,23 @@ func parseRolloutJSONLContext(ctx context.Context, path string) ([]rolloutEntry,
 	return entries, nil
 }
 
-// extractSessionMeta 从 rolloutEntry 提取 session_meta payload
+// extractSessionMeta 从 rolloutEntry 提取 session_meta payload。
+// 完整解析失败（未知字段类型漂移，如 subagent 的 source 对象）时降级为仅提取 ID：
+// 会话可建立，其余字段为零值，由 fallback 或前一条 meta 的逐字段合并补足；
+// 连 ID 都提取不到才返回错误。
 func extractSessionMeta(entry rolloutEntry) (*sessionMetaPayload, error) {
 	if entry.Type != "session_meta" {
 		return nil, fmt.Errorf("entry type is %q, not session_meta", entry.Type)
 	}
 	var meta sessionMetaPayload
 	if err := json.Unmarshal(entry.Payload, &meta); err != nil {
-		return nil, fmt.Errorf("解析 session_meta payload 失败: %w", err)
+		var idOnly struct {
+			ID string `json:"id"`
+		}
+		if ierr := json.Unmarshal(entry.Payload, &idOnly); ierr != nil || idOnly.ID == "" {
+			return nil, fmt.Errorf("解析 session_meta payload 失败: %w", err)
+		}
+		meta = sessionMetaPayload{ID: idOnly.ID}
 	}
 	return &meta, nil
 }
