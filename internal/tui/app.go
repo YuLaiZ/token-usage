@@ -233,7 +233,7 @@ func (a *App) handleSaveMsg(sm saveMsg) tea.Cmd {
 
 	// 组合 statusMsg: 优先用 ApplyConfigResult 的结构化信息(SuccessMessage/SuggestedSteps/
 	// ExplanatoryNotes), 再叠加自启同步失败提示。
-	a.statusMsg = a.composeSaveStatus(sm)
+	a.statusMsg = a.composeSaveStatus(sm) + "\n（按 q 退出，或继续编辑）"
 
 	// quitAfterSave 衔接: 干净成功(ConfigApplied=true 且无 PartialErrors)才退出。
 	// AutoStart 失败(syncPending)或 PartialErrors 都视为非干净成功,清 quitAfterSave 留编辑器。

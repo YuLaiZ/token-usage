@@ -371,7 +371,9 @@ fileutil → 标准库（+ Windows 经 golang.org/x/sys）
 
 配置文件路径：`~/.token-usage/config.toml`，TOML 格式，可手工添加注释。`config set` 与 TUI 保存使用 `go-toml/v2` 完整重写用户配置，因此不保留原有注释或 map 键书写顺序。
 
-开箱即用：client 只需声明 `enabled = true`，数据源路径由 `runtimecfg` registry 按各工具默认位置统一填充；个性化时用 dotted key 同段写法覆盖默认。
+所有客户端默认关闭：用 `clients.<name>.enabled = true` 开启需要的客户端，数据源路径由 `runtimecfg` registry 按各工具默认位置统一填充；个性化时用 dotted key 同段写法覆盖默认。
+
+下方示例展示的是客户端已启用状态；`config init` 生成的默认模板中所有客户端 `enabled = false`（`router` 行与 provider 别名均为注释示例）。
 
 ```toml
 # 数据目录（数据库、日志、PID、锁存放位置）
@@ -414,7 +416,7 @@ dir = "~/.token-usage/logs"
 max_days = 7
 ```
 
-> **路由归因现状**：当前只有 Claude（Code/Desktop）配置 `router = "cc_switch"` 会做消息级归因回填（`app_type` 仅识别 `claude` / `claude-desktop`）。其他客户端即使配置 `router`，原始日志仍会写入 `raw_router_logs`，但 `MessageID` 为空、不回填 `messages`。新增其他客户端的路由归因需要日志协议解析、poller/cursor、`app_type→client` 映射和对应测试，不能仅靠配置自动接入。
+> **路由归因现状**：当前只有 Claude（Code/Desktop）配置 `router = "cc_switch"` 会做消息级归因回填（`app_type` 仅识别 `claude` / `claude-desktop`）。配置入口会拒绝其他客户端设置非空 `router`（`config set` 直接报错，TUI 不提供该字段且保存校验拒绝）；存量配置中已存在的值读取不受影响——原始日志仍会写入 `raw_router_logs`，但 `MessageID` 为空、不回填 `messages`。新增其他客户端的路由归因需要日志协议解析、poller/cursor、`app_type→client` 映射和对应测试，不能仅靠配置自动接入。
 
 `provider_aliases` 以「CC Switch 原始 provider 名 → 对外显示名」映射回填结果；其变化会触发已启用且配置 router 的 client 重新归因建议。可通过 TUI 的 aliases 页面或 `config set 'provider_aliases."原始名"' '显示名'` 维护。
 

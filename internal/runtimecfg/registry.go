@@ -35,6 +35,12 @@ var registry = struct {
 	},
 }
 
+// routerCapableClients 是支持 router 归因回填的客户端集合。
+// CC Switch 的 app_type 仅识别 Claude 家族，其余客户端即使配置了 router
+// 也只写原始日志、不回填归因；因此配置入口（config set / TUI / 保存校验）
+// 统一拒绝，避免产生「已配置即生效」的误导。支持面扩大时更新此表。
+var routerCapableClients = []string{"claude"}
+
 func copySlice(in []string) []string {
 	if in == nil {
 		return nil
@@ -52,6 +58,16 @@ func RegisteredClients() []string {
 // RegisteredRouters 返回受支持的 router 名集合（副本）。
 func RegisteredRouters() []string {
 	return copySlice(registry.routers)
+}
+
+// ClientSupportsRouter 判断客户端是否支持 router 归因回填。
+func ClientSupportsRouter(client string) bool {
+	return contains(routerCapableClients, client)
+}
+
+// RouterCapableClients 返回支持 router 归因回填的客户端名集合（副本）。
+func RouterCapableClients() []string {
+	return copySlice(routerCapableClients)
 }
 
 // RegisteredLogLevels 返回受支持的 log level 集合（副本）。

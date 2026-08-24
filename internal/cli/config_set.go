@@ -144,6 +144,16 @@ func runConfigSet(
 
 	// 3. 应用 dotted-key 草稿修改（内存）。data_dir 由 ApplyConfig 校验迁移前置条件，
 	//    CLI 只需在 confirm 时把目标值写入内存 cfg。
+	//    router 赋值前先做能力拦截：非空 router 只允许配在支持归因回填的客户端上
+	//    （设为空字符串表示清除，始终放行）。key 用与 config.Set 相同的规则解析，
+	//    使 clients."name".router 引号段写法与裸写法判定一致；解析失败的 key
+	//    不在此拦，交由 config.Set 报错。
+	if segs, err := config.ParseDottedKey(key); err == nil &&
+		len(segs) == 3 && segs[0] == "clients" && segs[2] == "router" && value != "" {
+		if !runtimecfg.ClientSupportsRouter(segs[1]) {
+			return fmt.Errorf("client %q 不支持 router 归因（当前仅 %v 支持）", segs[1], runtimecfg.RouterCapableClients())
+		}
+	}
 	if err := config.Set(snap.Config, key, value); err != nil {
 		if errors.Is(err, config.ErrDataDirNeedsConfirm) {
 			if !confirmMigrate {

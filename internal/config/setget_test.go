@@ -16,20 +16,20 @@ func TestParseDottedKey(t *testing.T) {
 		{`clients.codex.paths.db`, []string{"clients", "codex", "paths", "db"}},
 	}
 	for _, c := range cases {
-		got, err := parseDottedKey(c.in)
+		got, err := ParseDottedKey(c.in)
 		if err != nil {
-			t.Fatalf("parseDottedKey(%q) err: %v", c.in, err)
+			t.Fatalf("ParseDottedKey(%q) err: %v", c.in, err)
 		}
 		if len(got) != len(c.want) {
-			t.Errorf("parseDottedKey(%q) = %v, want %v", c.in, got, c.want)
+			t.Errorf("ParseDottedKey(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}
 }
 
 func TestParseDottedKey_Errors(t *testing.T) {
 	for _, bad := range []string{`"unclosed`, `a..b`, `a.`, `.a`} {
-		if _, err := parseDottedKey(bad); err == nil {
-			t.Errorf("parseDottedKey(%q) 应报错", bad)
+		if _, err := ParseDottedKey(bad); err == nil {
+			t.Errorf("ParseDottedKey(%q) 应报错", bad)
 		}
 	}
 }

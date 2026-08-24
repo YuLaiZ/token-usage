@@ -24,8 +24,18 @@ func TestClientDetailPage_CommitPaths(t *testing.T) {
 	display := &config.Config{Clients: map[string]config.Client{"codex": {Paths: map[string]string{"db": "/default/db"}}}}
 	a := newAppForTest(edit, display, nil)
 	p := newClientDetailPage(a, "codex")
-	// 模拟输入路径
-	p.fields[1].input.SetValue("/custom/db")
+	// codex 不支持 router,字段全部是 path 输入框;按 key 定位,不依赖字段顺序
+	var dbField *detailField
+	for i := range p.fields {
+		if p.fields[i].key == "db" {
+			dbField = &p.fields[i]
+			break
+		}
+	}
+	if dbField == nil {
+		t.Fatalf("codex 字段应含 db, got %d 个字段", len(p.fields))
+	}
+	dbField.input.SetValue("/custom/db")
 	p.commit()
 	if a.draft.Clients["codex"].Paths["db"] != "/custom/db" {
 		t.Errorf("commit 后 Paths.db = %q", a.draft.Clients["codex"].Paths["db"])
@@ -97,10 +107,10 @@ func TestClientDetailPage_CursorReachesToggleAndFields(t *testing.T) {
 	display := &config.Config{Clients: map[string]config.Client{"codex": {Paths: map[string]string{"state_dir": "/s", "sessions_dir": "/ss"}}}}
 	a := newAppForTest(edit, display, nil)
 	p := newClientDetailPage(a, "codex")
-	// 字段: [0]=绑定路由(选择), [1]=state_dir, [2]=sessions_dir
-	wantFields := 3 // 1 router + 2 paths
+	// 字段: [0]=state_dir, [1]=sessions_dir(codex 不支持 router,无绑定路由字段)
+	wantFields := 2
 	if len(p.fields) != wantFields {
-		t.Fatalf("codex 应有 %d 字段(1 router + 2 path), got %d", wantFields, len(p.fields))
+		t.Fatalf("codex 应有 %d 字段(2 path), got %d", wantFields, len(p.fields))
 	}
 	if p.cursor != -1 {
 		t.Fatalf("打开页默认 cursor 应在 toggle(-1), got %d", p.cursor)
@@ -108,34 +118,26 @@ func TestClientDetailPage_CursorReachesToggleAndFields(t *testing.T) {
 	if !p.toggle.Focused() {
 		t.Error("toggle 应聚焦(cursor=-1)")
 	}
-	// down: -1 → 0 → 1 → 2,然后停在 2(不越界)
+	// down: -1 → 0 → 1,然后停在 1(不越界)
 	p.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if p.cursor != 0 {
-		t.Errorf("down 应到 router 字段(0), got %d", p.cursor)
+		t.Errorf("down 应到 state_dir 字段(0), got %d", p.cursor)
 	}
 	if p.toggle.Focused() {
 		t.Error("离开 toggle 后应失焦")
 	}
 	p.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if p.cursor != 1 {
-		t.Errorf("down 应到 state_dir(1), got %d", p.cursor)
+		t.Errorf("down 应到 sessions_dir(1), got %d", p.cursor)
 	}
 	p.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if p.cursor != 2 {
-		t.Errorf("down 应到 sessions_dir(2), got %d", p.cursor)
-	}
-	p.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if p.cursor != 2 {
-		t.Errorf("最后字段再 down 应停在 2(不越界), got %d", p.cursor)
-	}
-	// up: 2 → 1 → 0 → -1(toggle),然后停在 -1
-	p.Update(tea.KeyMsg{Type: tea.KeyUp})
 	if p.cursor != 1 {
-		t.Errorf("up 应回 state_dir(1), got %d", p.cursor)
+		t.Errorf("最后字段再 down 应停在 1(不越界), got %d", p.cursor)
 	}
+	// up: 1 → 0 → -1(toggle),然后停在 -1
 	p.Update(tea.KeyMsg{Type: tea.KeyUp})
 	if p.cursor != 0 {
-		t.Errorf("up 应回 router(0), got %d", p.cursor)
+		t.Errorf("up 应回 state_dir(0), got %d", p.cursor)
 	}
 	p.Update(tea.KeyMsg{Type: tea.KeyUp})
 	if p.cursor != -1 {
@@ -179,9 +181,10 @@ func TestClientDetailPage_ToggleFocusTogglesEnabled(t *testing.T) {
 // TestClientDetailPage_RouterFieldSelectsFromRegistry 验证 router 字段从「无 + 注册 router」
 // 循环选择,不接受自由文本输入:按 space/enter 循环,无 cc_switch→cc_switch→无。
 func TestClientDetailPage_RouterFieldSelectsFromRegistry(t *testing.T) {
-	edit := &config.Config{Clients: map[string]config.Client{"codex": {Enabled: true}}}
+	// router 字段仅支持归因回填的客户端提供,用 claude 验证
+	edit := &config.Config{Clients: map[string]config.Client{"claude": {Enabled: true}}}
 	a := newAppForTest(edit, edit, nil)
-	p := newClientDetailPage(a, "codex")
+	p := newClientDetailPage(a, "claude")
 	// router 字段是 fields[0],初始值为空(无)
 	p.cursor = 0
 	if p.fields[0].input.Value() != "" {
@@ -198,37 +201,37 @@ func TestClientDetailPage_RouterFieldSelectsFromRegistry(t *testing.T) {
 		t.Errorf("第二次 space 应回到 无(空), got %q", p.fields[0].input.Value())
 	}
 	p.commit()
-	if a.draft.Clients["codex"].Router != "" {
-		t.Errorf("空 router commit 应写回空, got %q", a.draft.Clients["codex"].Router)
+	if a.draft.Clients["claude"].Router != "" {
+		t.Errorf("空 router commit 应写回空, got %q", a.draft.Clients["claude"].Router)
 	}
 }
 
 // TestClientDetailPage_RouterFieldUnregisteredCannotEnterDraft 验证未注册 router 无法进入草稿:
 // router 字段只接受 registry 枚举,手输未注册名(如 fake_router)不应被 commit 写入。
 func TestClientDetailPage_RouterFieldUnregisteredCannotEnterDraft(t *testing.T) {
-	edit := &config.Config{Clients: map[string]config.Client{"codex": {Enabled: true}}}
+	edit := &config.Config{Clients: map[string]config.Client{"claude": {Enabled: true}}}
 	a := newAppForTest(edit, edit, nil)
-	p := newClientDetailPage(a, "codex")
+	p := newClientDetailPage(a, "claude")
 	// 尝试直接写未注册 router(模拟旧自由文本路径)
 	p.fields[0].input.SetValue("fake_router")
 	p.commit()
-	if a.draft.Clients["codex"].Router != "" {
-		t.Errorf("未注册 router 不应进入草稿, got %q(应保持空或归一化)", a.draft.Clients["codex"].Router)
+	if a.draft.Clients["claude"].Router != "" {
+		t.Errorf("未注册 router 不应进入草稿, got %q(应保持空或归一化)", a.draft.Clients["claude"].Router)
 	}
 }
 
 // TestClientDetailPage_RouterFieldPreselectsExisting 验证 client 已有合法 router(cc_switch)
 // 时打开页,router 字段预选该值且 commit 不 dirty。
 func TestClientDetailPage_RouterFieldPreselectsExisting(t *testing.T) {
-	edit := &config.Config{Clients: map[string]config.Client{"codex": {Enabled: true, Router: "cc_switch"}}}
+	edit := &config.Config{Clients: map[string]config.Client{"claude": {Enabled: true, Router: "cc_switch"}}}
 	a := newAppForTest(edit, edit, nil)
-	p := newClientDetailPage(a, "codex")
+	p := newClientDetailPage(a, "claude")
 	if p.fields[0].input.Value() != "cc_switch" {
 		t.Errorf("已有 cc_switch 应预选, got %q", p.fields[0].input.Value())
 	}
 	p.commit()
-	if a.draft.Clients["codex"].Router != "cc_switch" {
-		t.Errorf("commit 应保持 cc_switch, got %q", a.draft.Clients["codex"].Router)
+	if a.draft.Clients["claude"].Router != "cc_switch" {
+		t.Errorf("commit 应保持 cc_switch, got %q", a.draft.Clients["claude"].Router)
 	}
 	if a.dirty() {
 		t.Error("未改动 router 不应 dirty")
@@ -243,9 +246,9 @@ func TestClientDetailPage_PathKeysFromRegistry(t *testing.T) {
 	edit := &config.Config{Clients: map[string]config.Client{"workbuddy": {Enabled: true}}}
 	a := newAppForTest(edit, edit, nil)
 	p := newClientDetailPage(a, "workbuddy")
-	// workbuddy 注册 path keys: db, projects_dir(跳过 router 字段 index 0)
+	// workbuddy 注册 path keys: db, projects_dir(不支持 router,字段直接是 path 输入框)
 	keys := []string{}
-	for _, f := range p.fields[1:] { // [0]=router
+	for _, f := range p.fields {
 		keys = append(keys, f.key)
 	}
 	want := []string{"db", "projects_dir"}
@@ -302,4 +305,37 @@ func TestClientsPage_EmptyClientsMapNilSafe(t *testing.T) {
 	p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 	p.Update(tea.KeyMsg{Type: tea.KeyDown})
 	p.Update(tea.KeyMsg{Type: tea.KeyUp})
+}
+
+// TestClientDetailPage_LegacyRouterFieldVisibleForClearing 验证非 Claude 客户端
+// 默认无 router 字段,但存量配置已带非空 router 时字段仍显示（用户可清回「无」，
+// 保存校验拒绝非空值）。
+func TestClientDetailPage_LegacyRouterFieldVisibleForClearing(t *testing.T) {
+	// 无存量 router:codex 不显示 router 字段
+	clean := &config.Config{Clients: map[string]config.Client{"codex": {Enabled: true}}}
+	a := newAppForTest(clean, clean, nil)
+	p := newClientDetailPage(a, "codex")
+	for _, f := range p.fields {
+		if f.isRouter {
+			t.Error("codex 无存量 router 时不应显示 router 字段")
+		}
+	}
+
+	// 存量非空 router:字段显示且预选存量值
+	legacy := &config.Config{Clients: map[string]config.Client{"codex": {Enabled: true, Router: "cc_switch"}}}
+	b := newAppForTest(legacy, legacy, nil)
+	q := newClientDetailPage(b, "codex")
+	var routerField *detailField
+	for i := range q.fields {
+		if q.fields[i].isRouter {
+			routerField = &q.fields[i]
+			break
+		}
+	}
+	if routerField == nil {
+		t.Fatal("codex 存量 router 时应显示 router 字段（供清除）")
+	}
+	if routerField.input.Value() != "cc_switch" {
+		t.Errorf("存量 router 应预选, got %q", routerField.input.Value())
+	}
 }

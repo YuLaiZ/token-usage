@@ -423,3 +423,51 @@ func TestLoadEffectiveConfig_NilDefaultPathsReturnsError(t *testing.T) {
 		t.Fatal("nil DefaultPaths 应返回错误")
 	}
 }
+
+// ValidateUserConfig（读取链）容忍非 Claude 家族的非空 router：存量配置
+// 不应让 show/collect/daemon 等读路径失败（行为同旧版：只写原始日志不回填）。
+func TestValidateUserConfig_ReadToleratesNonCapableRouter(t *testing.T) {
+	user := &config.Config{Clients: map[string]config.Client{
+		"opencode": {Enabled: true, Router: "cc_switch"},
+	}}
+	if err := ValidateUserConfig(user); err != nil {
+		t.Errorf("读取链应容忍非 Claude 家族 router, got %v", err)
+	}
+}
+
+// ValidateUserConfigForWrite（写入链）拒绝非 Claude 家族的非空 router；
+// 空值（清除）与 Claude 家族的非空值放行。
+func TestValidateUserConfigForWrite_RejectsNonCapableRouter(t *testing.T) {
+	bad := &config.Config{Clients: map[string]config.Client{
+		"opencode": {Enabled: true, Router: "cc_switch"},
+	}}
+	if err := ValidateUserConfigForWrite(bad); err == nil {
+		t.Error("写入链应拒绝 opencode 的非空 router")
+	}
+
+	cleared := &config.Config{Clients: map[string]config.Client{
+		"opencode": {Enabled: true, Router: ""},
+	}}
+	if err := ValidateUserConfigForWrite(cleared); err != nil {
+		t.Errorf("写入链应放行空 router(清除), got %v", err)
+	}
+
+	ok := &config.Config{Clients: map[string]config.Client{
+		"claude": {Enabled: true, Router: "cc_switch"},
+	}}
+	if err := ValidateUserConfigForWrite(ok); err != nil {
+		t.Errorf("写入链应放行 claude 的 router, got %v", err)
+	}
+}
+
+// ClientSupportsRouter 仅 Claude 家族为真（CC Switch 的 app_type 只识别 Claude）。
+func TestClientSupportsRouter_OnlyClaude(t *testing.T) {
+	if !ClientSupportsRouter("claude") {
+		t.Error("claude 应支持 router")
+	}
+	for _, name := range []string{"opencode", "codex", "workbuddy", "zcode", "autoclaw"} {
+		if ClientSupportsRouter(name) {
+			t.Errorf("client %q 不应支持 router", name)
+		}
+	}
+}

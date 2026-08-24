@@ -24,10 +24,15 @@ func fakeApplyFunc(result configapp.ApplyConfigResult, err error) (fn configSetA
 	var last applyCall
 	fn = func(ctx context.Context, expectedRevision []byte, currentUser *config.Config, confirm bool) (configapp.ApplyConfigResult, error) {
 		n++
+		routers := map[string]string{}
+		for name, c := range currentUser.Clients {
+			routers[name] = c.Router
+		}
 		last = applyCall{
 			expectedRevision:      append([]byte(nil), expectedRevision...),
 			currentUserDataDir:    currentUser.DataDir,
 			currentUserAutoStart:  currentUser.Daemon.AutoStart,
+			currentUserRouters:    routers,
 			confirmDataDirMigrate: confirm,
 		}
 		return result, err
@@ -42,6 +47,7 @@ type applyCall struct {
 	expectedRevision      []byte
 	currentUserDataDir    string
 	currentUserAutoStart  bool
+	currentUserRouters    map[string]string
 	confirmDataDirMigrate bool
 }
 
@@ -561,5 +567,96 @@ poll_interval = 30
 	// 稳定成功行仍写 stdout
 	if !strings.Contains(out.String(), "✓ daemon.poll_interval = 0") {
 		t.Errorf("stdout 应含稳定行，实际: %q", out.String())
+	}
+}
+
+// ---- clients.<name>.router 能力拦截 ----
+
+// 拦截发生在 config.Set/ApplyConfig 之前：非 router 客户端设非空 router 直接报错，
+// applyFn 不被调用（不产生任何写入）。
+func TestRunConfigSet_RouterGuard_RejectsNonRouterClient(t *testing.T) {
+	setupHomeConfig(t, `data_dir = "/x"`)
+	applyFn, calls, _ := fakeApplyFunc(configapp.ApplyConfigResult{}, nil)
+
+	var out, errOut bytes.Buffer
+	err := runConfigSet(context.Background(), &out, &errOut, "clients.codex.router", "cc_switch", false, applyFn)
+	if err == nil {
+		t.Fatal("非 router 客户端设置非空 router 应报错")
+	}
+	if !strings.Contains(err.Error(), "不支持 router 归因") {
+		t.Errorf("错误应说明 router 能力限制, got: %v", err)
+	}
+	if *calls != 0 {
+		t.Errorf("拦截应发生在 ApplyConfig 前, applyFn 被调用 %d 次, want 0", *calls)
+	}
+}
+
+// 引号段写法与裸写法判定一致：clients."codex".router 的 codex 段经同一
+// key 解析规则提取，同样被拒（回归：strings.Split 预解析会把 "codex" 连同引号当客户端名）。
+func TestRunConfigSet_RouterGuard_RejectsQuotedNonRouterClient(t *testing.T) {
+	setupHomeConfig(t, `data_dir = "/x"`)
+	applyFn, calls, _ := fakeApplyFunc(configapp.ApplyConfigResult{}, nil)
+
+	var out, errOut bytes.Buffer
+	err := runConfigSet(context.Background(), &out, &errOut, `clients."codex".router`, "cc_switch", false, applyFn)
+	if err == nil {
+		t.Fatal("引号段写法的非 router 客户端设置非空 router 应报错")
+	}
+	// 客户端名必须是解析去引号后的 codex；预解析漂移（把 "codex" 连引号当名字）
+	// 会得到转义引号形式 client "\"codex\""，不含本子串。
+	if !strings.Contains(err.Error(), `client "codex"`) {
+		t.Errorf("错误应指名解析后的客户端名 codex, got: %v", err)
+	}
+	if *calls != 0 {
+		t.Errorf("拦截应发生在 ApplyConfig 前, applyFn 被调用 %d 次, want 0", *calls)
+	}
+}
+
+// 引号段写法对合法客户端放行，且写入值进入 ApplyConfig 收到的配置。
+func TestRunConfigSet_RouterGuard_QuotedClaudeAllowed(t *testing.T) {
+	setupHomeConfig(t, `data_dir = "/x"
+[clients.claude]
+enabled = true
+`)
+	applyFn, calls, last := fakeApplyFunc(configapp.ApplyConfigResult{
+		Changed:       true,
+		Saved:         true,
+		ConfigApplied: true,
+	}, nil)
+
+	var out, errOut bytes.Buffer
+	if err := runConfigSet(context.Background(), &out, &errOut, `clients."claude".router`, "cc_switch", false, applyFn); err != nil {
+		t.Fatalf("引号段的 claude.router 设置应放行, got: %v", err)
+	}
+	if *calls != 1 {
+		t.Fatalf("放行路径 applyFn 应被调用 1 次, 实际 %d", *calls)
+	}
+	if got := last.currentUserRouters["claude"]; got != "cc_switch" {
+		t.Errorf("ApplyConfig 收到的 claude router = %q, want cc_switch", got)
+	}
+}
+
+// 空值=清除，始终放行；存量非法值也允许被清空（读链容忍、清除不受限）。
+func TestRunConfigSet_RouterGuard_EmptyValueClearsExistingAllowed(t *testing.T) {
+	setupHomeConfig(t, `data_dir = "/x"
+[clients.codex]
+enabled = true
+router = "legacy_non_router"
+`)
+	applyFn, calls, last := fakeApplyFunc(configapp.ApplyConfigResult{
+		Changed:       true,
+		Saved:         true,
+		ConfigApplied: true,
+	}, nil)
+
+	var out, errOut bytes.Buffer
+	if err := runConfigSet(context.Background(), &out, &errOut, "clients.codex.router", "", false, applyFn); err != nil {
+		t.Fatalf("空值清除存量 router 应放行, got: %v", err)
+	}
+	if *calls != 1 {
+		t.Fatalf("放行路径 applyFn 应被调用 1 次, 实际 %d", *calls)
+	}
+	if got := last.currentUserRouters["codex"]; got != "" {
+		t.Errorf("ApplyConfig 收到的 codex router 应已清空, got %q", got)
 	}
 }

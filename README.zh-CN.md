@@ -14,7 +14,7 @@
 - **CC Switch 路由归因**：从 CC-Switch 代理日志回填真实 provider/model（当前仅 Claude 系列生效）
 - **双运行模式**：CLI 命令（单次执行）+ 守护进程（实时监控，nginx 风格后台启动）
 - **开机自启**：macOS launchd / Windows 注册表，config TUI 或 `config set` 一键开关
-- **可配置化**：数据源路径、客户端开关、路由均可配置，开箱即用默认值
+- **按需启用**：所有客户端默认关闭，开启你实际使用的即可；数据源路径仍有开箱即用默认值
 - **单二进制分发**：Go 编译（纯 Go SQLite，无需 CGO），支持 macOS 与 Windows
 
 ## 快速开始
@@ -82,7 +82,10 @@ token-usage config init
 #    或直接打开交互式配置 TUI 编辑（不存在则自动初始化）
 token-usage config
 
-# 2. 采集历史全数据（首次必做一次）
+# 2. 开启你使用的客户端（默认全部关闭），例如
+token-usage config set clients.claude.enabled true
+
+# 3. 采集历史全数据（首次必做一次）
 #    方式 A（推荐）：自动全量采集，无需手动指定日期范围（已隐含 router 回填）
 token-usage collect all
 #    方式 B：手动指定日期范围
@@ -96,7 +99,7 @@ token-usage collect 20260101-20260721
 #   token-usage collect router --client claude
 # 注意：collect all 已隐含包含 router 回填，通常无需单独执行 collect router
 
-# 3. 之后保持当天数据更新有两种方式：
+# 4. 之后保持当天数据更新有两种方式：
 #    方式 A：启动守护进程，自动实时监控各数据源变化（推荐）
 token-usage start
 #    方式 B：手动采集当天
@@ -129,7 +132,7 @@ token-usage collect
 | 命令 | 作用 |
 |------|------|
 | `config` | 打开交互式配置 TUI（含开机自启开关） |
-| `config init` | 初始化配置文件与数据库 |
+| `config init` | 初始化配置文件与数据库；输出默认未启用任何客户端，并给出开启示例命令 |
 | `config get <key>` | 读取单项配置（dotted key，用户配置层原值，不展开 `~`、不补默认值） |
 | `config show` | 输出完整 effective TOML（展开 `~`、补默认值/默认路径，只读、纯 TOML） |
 | `config set <key> <value>` | 写入单项配置（原子写盘 + 自启同步 + 动作建议） |
@@ -287,7 +290,7 @@ token-usage config set daemon.autostart false
 
 ## 配置
 
-配置文件路径：`~/.token-usage/config.toml`，TOML 格式，可手工添加注释。开箱即用：client 只需声明 `enabled = true`，路径由程序按各工具默认位置自动填充。
+配置文件路径：`~/.token-usage/config.toml`，TOML 格式，可手工添加注释。所有客户端默认关闭：用 `clients.<name>.enabled = true` 开启你使用的客户端，路径由程序按各工具默认位置自动填充。
 
 > `config set` 和 TUI 保存会完整重写用户配置文件，因此不会保留既有注释和 map 键书写顺序；需要保留手写说明时请先备份。
 
@@ -297,6 +300,8 @@ token-usage config set daemon.autostart false
 - `config show`：输出完整 **effective TOML**（展开 `~`、补 `data_dir`/`daemon`/`log` 核心默认值与 client/router registry 默认路径后的运行时生效配置），纯 TOML 无前缀，便于脚本解析与重定向。只读，不创建 config/DB/日志、不抢进程锁。
 
 > `config show` 输出含本机路径：`~` 会展开；显式相对路径及其派生的默认路径（如 `data_dir` 派生的 `log.dir`、`state_dir` 派生的 `sessions_dir`）保持相对；其余 home-based 默认路径为绝对路径。对外分享前请检查是否含敏感信息。其输出也不是建议覆盖回用户配置文件的模板（回写会冻结默认路径并丢失注释）。
+
+下方示例展示的是客户端已启用状态；`config init` 生成的默认模板中所有客户端 `enabled = false`（`router` 行与 provider 别名均为注释示例）。
 
 ```toml
 # 数据目录（数据库、日志、PID、锁存放位置）
@@ -341,7 +346,7 @@ dir = "~/.token-usage/logs"
 max_days = 7
 ```
 
-> **路由归因现状**：当前只有 Claude（Code/Desktop）配置 `router = "cc_switch"` 会做消息级归因回填。其他客户端（OpenCode/Codex/WorkBuddy/ZCode/AutoClaw）即使配置 `router`，原始日志仍会写入 `raw_router_logs`，但不会回填 `messages`，因为 CC Switch 的 `app_type` 只识别 Claude 系列。
+> **路由归因现状**：当前只有 Claude（Code/Desktop）配置 `router = "cc_switch"` 会做消息级归因回填。配置入口会拒绝其他客户端（OpenCode/Codex/WorkBuddy/ZCode/AutoClaw）设置非空 `router`：`config set clients.X.router` 直接报错，TUI 也不提供该字段且保存校验拒绝；存量配置中已存在的值读取不受影响，其原始日志仍会写入 `raw_router_logs` 但不会回填 `messages`，因为 CC Switch 的 `app_type` 只识别 Claude 系列。
 >
 > **Provider 别名**：`provider_aliases` 只规范 CC Switch 回填的 provider 显示名；key 必须与原始 provider 名完全一致。修改后按命令提示执行 `collect router --client <name>`（或 `collect all --client <name>`）回填既有归因数据。
 

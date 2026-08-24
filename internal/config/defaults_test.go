@@ -83,3 +83,44 @@ func TestDefaultConfig_CanBeLoaded(t *testing.T) {
 		t.Errorf("Log.MaxDays = %d, want 7", cfg.Log.MaxDays)
 	}
 }
+
+// 默认模板所有客户端关闭、无默认 router、无默认 provider 映射：
+// 用户按需逐个开启，避免新装即全量采集与带出示例映射。
+func TestDefaultConfigTemplate_AllClientsDisabledByDefault(t *testing.T) {
+	template := DefaultConfigTemplate()
+	for _, name := range []string{"claude", "opencode", "codex", "workbuddy", "zcode", "autoclaw"} {
+		section := "[" + "clients." + name + "]"
+		idx := strings.Index(template, section)
+		if idx < 0 {
+			t.Fatalf("template missing section %q", section)
+		}
+		rest := template[idx+len(section):]
+		next := strings.Index(rest, "[")
+		if next < 0 {
+			next = len(rest)
+		}
+		body := rest[:next]
+		if strings.Contains(body, "enabled = true") {
+			t.Errorf("client %q 默认应为 enabled = false", name)
+		}
+		if !strings.Contains(body, "enabled = false") {
+			t.Errorf("client %q 默认应显式 enabled = false", name)
+		}
+	}
+	// 只检查非注释行：注释里的示例配置（router / provider 映射）允许存在。
+	effectiveLine := func(line string) bool {
+		trimmed := strings.TrimSpace(line)
+		return trimmed != "" && !strings.HasPrefix(trimmed, "#")
+	}
+	for _, line := range strings.Split(template, "\n") {
+		if !effectiveLine(line) {
+			continue
+		}
+		if strings.Contains(line, "router = ") {
+			t.Errorf("默认模板不应带生效的 router 配置（只允许注释示例）: %s", line)
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "\"") && strings.Contains(line, " = ") {
+			t.Errorf("默认模板不应带默认 provider 映射（只允许注释示例）: %s", line)
+		}
+	}
+}

@@ -260,7 +260,7 @@ func (a *Application) ApplyConfig(
 		}
 
 		// ---- 步骤 4：校验 current，再 ResolveEffectiveConfig(previous/current) ----
-		if err := runtimecfg.ValidateUserConfig(currentUser); err != nil {
+		if err := runtimecfg.ValidateUserConfigForWrite(currentUser); err != nil {
 			return fmt.Errorf("配置校验失败: %w", err)
 		}
 		// previous 为 nil（首次写入）时，以合法空用户配置解析默认 effective。

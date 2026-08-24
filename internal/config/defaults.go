@@ -9,46 +9,51 @@ import (
 )
 
 const defaultConfigTemplate = `# token-usage 配置文件
+#
+# 所有客户端默认关闭（enabled = false）：按需开启后再采集。
+# 开启方式：改为 enabled = true，或执行
+#   token-usage config set clients.<name>.enabled true
+# （可用客户端见下方各 [clients.*] 段；router 归因当前仅支持 claude）。
 
 # 数据目录（数据库、日志存放位置）
 data_dir = "~/.token-usage"
 
 # 各客户端配置
 [clients.claude]
-enabled = true
-router = "cc_switch"  # 使用的路由中间件名称，不设置即不使用
+enabled = false
+# router = "cc_switch"  # 可选：路由归因（当前仅 Claude 家族支持），不设置即不使用
 
 [clients.claude.paths]
 projects_dir = "~/.claude/projects"
 
 [clients.opencode]
-enabled = true
+enabled = false
 
 [clients.opencode.paths]
 db = "~/.local/share/opencode/opencode.db"
 
 [clients.codex]
-enabled = true
+enabled = false
 
 [clients.codex.paths]
 state_dir = "~/.codex"                  # state_*.sqlite 所在目录
 sessions_dir = "~/.codex/sessions"      # rollout JSONL 所在目录
 
 [clients.workbuddy]
-enabled = true
+enabled = false
 
 [clients.workbuddy.paths]
 db = "~/.workbuddy/workbuddy.db"
 projects_dir = "~/.workbuddy/projects"
 
 [clients.zcode]
-enabled = true
+enabled = false
 
 [clients.zcode.paths]
 db = "~/.zcode/cli/db/db.sqlite"
 
 [clients.autoclaw]
-enabled = true
+enabled = false
 
 [clients.autoclaw.paths]
 sessions_dir = "~/.openclaw-autoclaw/agents"
@@ -63,9 +68,9 @@ db_path = "~/.cc-switch/cc-switch.db"
 poll_interval = 30  # SQLite 轮询间隔（秒），默认 30s
 autostart = false   # 开机自启（macOS launchd / Windows 注册表）
 
-# Provider 名称映射（可自定义）
+# Provider 名称映射（可自定义，按需添加）
 [provider_aliases]
-"Zhipu AI Coding Plan" = "Zhipu GLM"
+# "Zhipu AI Coding Plan" = "Zhipu GLM"
 
 # 日志配置
 [log]

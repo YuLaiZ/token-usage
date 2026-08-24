@@ -126,12 +126,17 @@ func newClientDetailPage(app *App, name string) *clientDetailPage {
 	p.toggle = NewToggle("启用", c.Enabled).SetFocus(true)
 	// 路由字段:只读选择,从「无 + RegisteredRouters」枚举。
 	// choices[0]=""(无), 其余为 RegisteredRouters()。
-	routerChoices := append([]string{""}, runtimecfg.RegisteredRouters()...)
-	ti := textinput.New()
-	ti.SetValue(c.Router)
-	field := detailField{label: "绑定路由", input: ti, isRouter: true, choices: routerChoices}
-	field.choiceIdx = routerChoiceIndex(c.Router, routerChoices)
-	p.fields = append(p.fields, field)
+	// 仅支持归因回填的客户端提供该字段;其余客户端(CC Switch 不识别)不展示,
+	// 避免配置出永不生效的 router。例外:存量配置已带非空 router 时仍显示,
+	// 让用户能把值清回「无」(保存校验会拒绝非空值)。
+	if runtimecfg.ClientSupportsRouter(name) || c.Router != "" {
+		routerChoices := append([]string{""}, runtimecfg.RegisteredRouters()...)
+		ti := textinput.New()
+		ti.SetValue(c.Router)
+		field := detailField{label: "绑定路由", input: ti, isRouter: true, choices: routerChoices}
+		field.choiceIdx = routerChoiceIndex(c.Router, routerChoices)
+		p.fields = append(p.fields, field)
+	}
 	// 各路径:textinput,值为 draft(用户层);空则占位 display 默认。
 	// path keys 来自 runtimecfg registry(共享只读入口)+ draft 用户已写键 + display 默认键并集。
 	displayC := app.display.Clients[name]
@@ -277,16 +282,20 @@ func (p *clientDetailPage) delegateInput(msg tea.Msg) *clientDetailPage {
 func (p *clientDetailPage) commit() error {
 	c := p.app.draft.Clients[p.name]
 	c.Enabled = p.toggle.Value()
-	// router 字段(index 0):值必须落在 registry 枚举内,否则归一化为空(防未注册进入草稿)。
+	// router 字段:按 isRouter 标志定位(非 Claude 客户端无该字段、存量清除时
+	// 可能不在 index 0),值必须落在 registry 枚举内,否则归一化为空
+	//(防未注册进入草稿)。
 	routerVal := ""
-	if len(p.fields) > 0 {
-		ri := p.fields[0]
-		if ri.isRouter && routerChoiceIndex(ri.input.Value(), ri.choices) > 0 {
-			routerVal = ri.input.Value()
+	for _, f := range p.fields {
+		if f.isRouter {
+			if routerChoiceIndex(f.input.Value(), f.choices) > 0 {
+				routerVal = f.input.Value()
+			}
+			break
 		}
 	}
 	c.Router = routerVal
-	for _, f := range p.fields[1:] { // 跳过路由字段(index 0)
+	for _, f := range p.fields {
 		if f.key == "" || f.isRouter {
 			continue
 		}

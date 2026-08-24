@@ -106,6 +106,19 @@ func LoadEffectiveConfig(path string, env ResolveEnv) (*config.Config, error) {
 // 保持纯校验使 LoadEffectiveConfig 在 ResolveEffectiveConfig 前先拒绝非法输入，
 // ResolveEffectiveConfig 因此不再需要静默 clamp 负值。
 func ValidateUserConfig(user *config.Config) error {
+	return validateUserConfig(user, false)
+}
+
+// ValidateUserConfigForWrite 在 ValidateUserConfig 基础上追加写入口径校验：
+// 非空 router 只允许配在支持归因回填的客户端上（CC Switch 仅识别 Claude 家族）。
+// 读取链（show/collect/daemon 等 LoadEffectiveConfig 路径）仍用 ValidateUserConfig
+// 容忍存量配置中的非法 router（行为同旧版：只写原始日志、不回填归因），
+// 避免历史配置让整个程序不可用；写入链（config set / TUI 保存）用本函数拒绝新值。
+func ValidateUserConfigForWrite(user *config.Config) error {
+	return validateUserConfig(user, true)
+}
+
+func validateUserConfig(user *config.Config, forWrite bool) error {
 	if user == nil {
 		return fmt.Errorf("配置不能为 nil")
 	}
@@ -121,8 +134,13 @@ func ValidateUserConfig(user *config.Config) error {
 				return fmt.Errorf("未注册的 path key %q（client %q 受支持: %v）", key, name, RegisteredClientPathKeys(name))
 			}
 		}
-		if r := user.Clients[name].Router; r != "" && !isRegisteredRouter(r) {
-			return errNotRegistered("router", r)
+		if r := user.Clients[name].Router; r != "" {
+			if !isRegisteredRouter(r) {
+				return errNotRegistered("router", r)
+			}
+			if forWrite && !ClientSupportsRouter(name) {
+				return fmt.Errorf("client %q 不支持 router 归因（当前仅 %v 支持）；请移除 clients.%s.router 或留空", name, RouterCapableClients(), name)
+			}
 		}
 	}
 	for name := range user.Routers {

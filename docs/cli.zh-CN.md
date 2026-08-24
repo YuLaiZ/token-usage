@@ -244,7 +244,7 @@ token-usage config init                # 初始化配置文件与数据库
 
 ### config（TUI）
 
-无参数时打开交互式配置 TUI（`bubbletea`）。配置文件不存在时先写默认模板再打开；可编辑客户端、路由、守护进程、日志和 provider aliases，`data_dir` 在 TUI 中只读。保存统一走 `ApplyConfig`（见下文「config set」）。
+无参数时打开交互式配置 TUI（`bubbletea`）。配置文件不存在时先写默认模板再打开；可编辑客户端、路由、守护进程、日志和 provider aliases，`data_dir` 在 TUI 中只读。保存统一走 `ApplyConfig`（见下文「config set」）。非 router 支持客户端（当前除 Claude 外全部）不展示「绑定路由」字段；此类客户端上存量非空 router 仍会显示（便于清回「无」），保存校验拒绝非空值（见下文「config set」的 router 拦截）。
 
 ### config show
 
@@ -289,6 +289,8 @@ token-usage config set <key> <value> --confirm-migrate   # 仅迁移 data_dir �
 
 **完整重写：** 实际发生配置变更时，`config set` 与 TUI 都会序列化完整用户配置文件；原有注释和 map 键书写顺序不会保留。需要保留手写说明时请先备份。
 
+**router 拦截：** `config set clients.<name>.router <value>` 在 `<value>` 非空且 `<name>` 不是 router 支持客户端（当前仅 Claude）时直接报错拒绝写入，退出非零；设为空字符串表示清除，始终放行。读取链路（`config show`、采集、daemon）对存量配置中其他客户端的非空 router 仍容忍。
+
 **data_dir 迁移：** 修改 `data_dir` 需 `--confirm-migrate` 确认；且要求旧 daemon **已停止**（运行中拒绝，写入前校验），迁移需手动搬运 `usage.db`/`logs`，PID/lock/runtime-state 不迁移（按 stale 协议清理）。
 
 ### 支持的 dotted key
@@ -326,6 +328,7 @@ token-usage config set 'provider_aliases."Zhipu AI Coding Plan"' 'Zhipu GLM'
 - 配置文件：仅在不存在时写入默认模板（幂等，不覆盖已有配置）。
 - 数据库：`usage.db` 始终初始化（即便配置已存在）。
 - `data_dir` 沿用已有配置中的值；字段未显式配置时使用默认目录 `~/.token-usage`。已有配置无法解析或校验失败时命令报错，不静默覆盖。
+- 新建配置文件时，完成提示会说明默认未启用任何客户端，并给出开启示例命令（`token-usage config set clients.<name>.enabled true`）；默认模板所有客户端 `enabled = false`，`router` 行与 provider 别名为注释示例。
 
 示例：
 
@@ -471,6 +474,6 @@ Windows 上替换运行中的 `.exe` 受限，自更新把替换交给后台 hel
 
 ## 配置文件
 
-路径固定 `~/.token-usage/config.toml`（TOML，可手工添加注释）。开箱即用：client 只需声明 `enabled = true`，数据源路径由程序按各工具默认位置自动填充。用 dotted key 同段写法覆盖默认。`config set`/TUI 保存会完整重写配置，故不保留原有注释和 map 键书写顺序；完整字段与默认值见 `token-usage config init` 生成的模板。
+路径固定 `~/.token-usage/config.toml`（TOML，可手工添加注释）。所有客户端默认关闭：用 `clients.<name>.enabled = true` 开启需要的客户端，数据源路径由程序按各工具默认位置自动填充。用 dotted key 同段写法覆盖默认。`config set`/TUI 保存会完整重写配置，故不保留原有注释和 map 键书写顺序；完整字段与默认值见 `token-usage config init` 生成的模板。
 
 `data_dir` 决定数据文件位置（`usage.db`、日志、PID、runtime-state、锁）；配置文件路径不随 `data_dir` 变化。`daemon.autostart` 控制开机自启（macOS launchd / Windows 注册表）。

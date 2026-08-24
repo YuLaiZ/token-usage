@@ -98,7 +98,12 @@ func runInit(ctx context.Context, out io.Writer, home string) error {
 		}
 		fmt.Fprintf(out, "✓ 数据目录: %s\n", dataDir)
 		fmt.Fprintf(out, "✓ 初始化数据库: %s\n", dbPath)
-		fmt.Fprintln(out, "\n初始化完成！")
+		if created {
+			fmt.Fprintln(out, "\n初始化完成！默认配置未启用任何客户端，按需开启后再采集，例如：")
+			fmt.Fprintln(out, "  token-usage config set clients.claude.enabled true")
+		} else {
+			fmt.Fprintln(out, "\n初始化完成！")
+		}
 		return nil
 	})
 }

@@ -16,7 +16,7 @@ func Set(cfg *Config, key, value string) error {
 	if cfg == nil {
 		return fmt.Errorf("配置不能为 nil")
 	}
-	segs, err := parseDottedKey(key)
+	segs, err := ParseDottedKey(key)
 	if err != nil {
 		return err
 	}
@@ -34,15 +34,18 @@ func Get(cfg *Config, key string) (string, error) {
 	if cfg == nil {
 		return "", fmt.Errorf("配置不能为 nil")
 	}
-	segs, err := parseDottedKey(key)
+	segs, err := ParseDottedKey(key)
 	if err != nil {
 		return "", err
 	}
 	return getByPath(cfg, segs)
 }
 
-// parseDottedKey 按 '.' 分段,引号内的 '.' 不分段;段支持双引号包裹(含特殊字符)。
-func parseDottedKey(key string) ([]string, error) {
+// ParseDottedKey 按 Set/Get 的 key 规则把 dotted key 解析为段列表：
+// 按 '.' 分段,引号内的 '.' 不分段;段支持双引号包裹(含特殊字符)。
+// 导出给需要与 Set/Get 口径一致的调用方复用(如按 key 预判写入目标的校验),
+// 避免调用方自行 strings.Split 造成引号段解析漂移。
+func ParseDottedKey(key string) ([]string, error) {
 	var segs []string
 	var cur strings.Builder
 	inQuote := false
