@@ -131,11 +131,9 @@ func (a *CCSwitchAdapter) CollectLogs(ctx context.Context, req RouterCollectRequ
 			continue
 		}
 
+		// app_type 非 claude/claude-desktop 时不参与消息关联是结构性预期行为
+		// （未关联量可经 raw_router_logs 查询），不留日志；raw 照常落库。
 		messageID := extractMessageIDFromRequestID(appType, requestID)
-		if messageID == "" {
-			logger.Debug("CC Switch 保留 raw 但不参与消息关联",
-				"request_id", requestID, "app_type", appType)
-		}
 
 		// json.Marshal 仅含基础类型（string/int/bool/float64/[]string），不会失败；忽略 error。
 		rawData, _ := json.Marshal(map[string]any{

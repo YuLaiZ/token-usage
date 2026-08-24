@@ -176,6 +176,14 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 	defer file.Close()
 
 	var entries []jsonlEntry
+	// 行解析失败按文件聚合为一条汇总（首行号+首个错误保留定位线索）：
+	// 上游合法数据形态变化（如 user 行 content 为字符串）会让失败在全量扫描中
+	// 必然重复出现，逐行打印只产生噪音。
+	var (
+		badLines     int
+		firstBadLine int
+		firstBadErr  error
+	)
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), maxJSONLLineSize)
 	for line := 1; scanner.Scan(); line++ {
@@ -185,10 +193,18 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 		}
 		var entry jsonlEntry
 		if err := json.Unmarshal(raw, &entry); err != nil {
-			logger.Debug("Claude JSONL 行解析失败，跳过", "file", filePath, "line", line, "error", err)
+			if badLines == 0 {
+				firstBadLine = line
+				firstBadErr = err
+			}
+			badLines++
 			continue
 		}
 		entries = append(entries, entry)
+	}
+	if badLines > 0 {
+		logger.Debug("Claude JSONL 行解析失败，跳过",
+			"file", filePath, "count", badLines, "first_line", firstBadLine, "error", firstBadErr)
 	}
 	if err := scanner.Err(); err != nil {
 		return CollectResult{}, fmt.Errorf("读取文件失败: %w", err)

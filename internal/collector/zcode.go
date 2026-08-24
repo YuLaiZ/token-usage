@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -91,6 +93,9 @@ func (c *ZCodeCollector) Collect(ctx context.Context, req CollectRequest, logger
 	defer db.Close()
 
 	providerMap := loadZCodeProviderMap(zcodeCachePathFromDB(c.dbPath))
+	// provider 映射缺失是预期降级（历史 provider 不在缓存），聚合到 Collect 层
+	// 输出唯一一条汇总，避免逐消息刷屏；count 仍能暴露 schema 漂移面。
+	misses := &providerMissStats{}
 
 	cursor := req.Cursors[SyncSourceZCodeModelUsage]
 	var (
@@ -100,7 +105,7 @@ func (c *ZCodeCollector) Collect(ctx context.Context, req CollectRequest, logger
 	)
 
 	if req.Incremental {
-		msgs, metas, n, err := c.queryIncremental(ctx, db, cursor, providerMap, logger)
+		msgs, metas, n, err := c.queryIncremental(ctx, db, cursor, providerMap, misses, logger)
 		if err != nil {
 			return CollectResult{}, err
 		}
@@ -128,7 +133,7 @@ func (c *ZCodeCollector) Collect(ctx context.Context, req CollectRequest, logger
 			if err := ctx.Err(); err != nil {
 				return CollectResult{}, err
 			}
-			msgs, metas, _, err := c.queryRange(ctx, db, r.start, r.end, providerMap, logger)
+			msgs, metas, _, err := c.queryRange(ctx, db, r.start, r.end, providerMap, misses, logger)
 			if err != nil {
 				return CollectResult{}, err
 			}
@@ -146,6 +151,7 @@ func (c *ZCodeCollector) Collect(ctx context.Context, req CollectRequest, logger
 
 	// Session 元数据：按 (client,sessionID) 去重，写 ParentID/title/directory/first/last。
 	sessions := buildZCodeSessions(messages, sessionMeta)
+	misses.logSummary(logger)
 
 	result := CollectResult{
 		Messages: messages,
@@ -160,12 +166,41 @@ func (c *ZCodeCollector) Collect(ctx context.Context, req CollectRequest, logger
 	return result, nil
 }
 
+// providerMissStats 聚合一次 Collect 内的 provider 映射缺失（跨多日期范围/增量查询），
+// 由 Collect 末尾输出唯一一条汇总——逐消息打印会让全量扫描刷屏，而汇总的 count
+// 仍能暴露缓存文件 schema 漂移导致的映射面收窄。
+type providerMissStats struct {
+	count int
+	ids   map[string]struct{}
+}
+
+func (s *providerMissStats) record(providerID string) {
+	s.count++
+	if s.ids == nil {
+		s.ids = make(map[string]struct{})
+	}
+	s.ids[providerID] = struct{}{}
+}
+
+func (s *providerMissStats) logSummary(logger *slog.Logger) {
+	if s.count == 0 {
+		return
+	}
+	ids := make([]string, 0, len(s.ids))
+	for id := range s.ids {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	logger.Debug("ZCode provider 映射缺失，已回退原值",
+		"count", s.count, "provider_ids", strings.Join(ids, ","))
+}
+
 // queryRange 执行单次全量/范围查询：startMS/endMS 均为 0 时不加 completed_at 范围（全量）。
 // 逐行扫描 completed 行（不再 SUM/GROUP BY），每行一条 Message。
 // 返回 messages、session 元数据片段与本批最大 (completed_at, id) 游标。
 // 没有新行时 next 保持输入 init cursor，避免回退。
 func (c *ZCodeCollector) queryRange(ctx context.Context, db *sql.DB, startMS, endMS int64,
-	providerMap map[string]string, logger *slog.Logger) ([]model.Message, []zcodeSessionMeta, model.SyncCursor, error) {
+	providerMap map[string]string, misses *providerMissStats, logger *slog.Logger) ([]model.Message, []zcodeSessionMeta, model.SyncCursor, error) {
 	query := zcodeBaseSelect + ` WHERE m.status='completed'`
 	args := []any{}
 	if startMS != 0 || endMS != 0 {
@@ -173,20 +208,20 @@ func (c *ZCodeCollector) queryRange(ctx context.Context, db *sql.DB, startMS, en
 		args = append(args, startMS, endMS)
 	}
 	query += ` ORDER BY m.completed_at,m.id`
-	return c.scanRows(ctx, db, query, args, providerMap, logger, model.SyncCursor{})
+	return c.scanRows(ctx, db, query, args, providerMap, misses, logger, model.SyncCursor{})
 }
 
 // queryIncremental 执行增量复合游标查询：
 // completed_at>? OR (completed_at=? AND id>?)。
 // 没有新行时 next 保持输入 cursor，避免回退。
 func (c *ZCodeCollector) queryIncremental(ctx context.Context, db *sql.DB, cursor model.SyncCursor,
-	providerMap map[string]string, logger *slog.Logger) ([]model.Message, []zcodeSessionMeta, model.SyncCursor, error) {
+	providerMap map[string]string, misses *providerMissStats, logger *slog.Logger) ([]model.Message, []zcodeSessionMeta, model.SyncCursor, error) {
 	query := zcodeBaseSelect +
 		` WHERE m.status='completed'` +
 		` AND (m.completed_at>? OR (m.completed_at=? AND m.id>?))` +
 		` ORDER BY m.completed_at,m.id`
 	args := []any{cursor.Value, cursor.Value, cursor.ID}
-	return c.scanRows(ctx, db, query, args, providerMap, logger, cursor)
+	return c.scanRows(ctx, db, query, args, providerMap, misses, logger, cursor)
 }
 
 // zcodeBaseSelect 逐行查询的列定义（不再 SUM/GROUP BY）。
@@ -215,7 +250,7 @@ type zcodeSessionMeta struct {
 // scanRows 扫描查询结果，逐行生成 Message，记录本批最大 (completed_at,id) 游标。
 // 没有新行时 next 保持传入的 init cursor，避免回退。
 func (c *ZCodeCollector) scanRows(ctx context.Context, db *sql.DB, query string, args []any,
-	providerMap map[string]string, logger *slog.Logger, init model.SyncCursor) ([]model.Message, []zcodeSessionMeta, model.SyncCursor, error) {
+	providerMap map[string]string, misses *providerMissStats, logger *slog.Logger, init model.SyncCursor) ([]model.Message, []zcodeSessionMeta, model.SyncCursor, error) {
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, nil, model.SyncCursor{}, fmt.Errorf("查询 zcode model_usage 失败: %w", err)
@@ -280,7 +315,7 @@ func (c *ZCodeCollector) scanRows(ctx context.Context, db *sql.DB, query string,
 		if name, ok := providerMap[providerID]; ok && name != "" {
 			provider = name
 		} else {
-			logger.Debug("provider 映射缺失，回退原值", "provider_id", providerID)
+			misses.record(providerID)
 		}
 		project := projectBase(directory)
 		messages = append(messages, model.Message{

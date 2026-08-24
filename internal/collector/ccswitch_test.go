@@ -266,9 +266,10 @@ func TestCCSwitchAdapter_CollectLogs_NoDBPath(t *testing.T) {
 	}
 }
 
-// TestCCSwitch_UnknownRequestID_LogsDebug 验证无法关联消息的 raw log 仍保留，
-// 但写 Debug 日志说明"保留 raw 但不参与消息关联"。
-func TestCCSwitch_UnknownRequestID_LogsDebug(t *testing.T) {
+// TestCCSwitch_UnknownRequestID_NoLog 验证无法关联消息的 raw log 仍保留，
+// 且不再逐条写「保留 raw 但不参与消息关联」——app_type 不支持关联是结构性
+// 预期行为（未关联量可经 raw_router_logs 查询），预期行为不打日志。
+func TestCCSwitch_UnknownRequestID_NoLog(t *testing.T) {
 	// 复用现有 helper，确保 fixture schema 与 CollectLogs 真实查询一致：
 	// model / cache_creation_tokens，不得写成 model_name / cache_create_tokens。
 	dbPath := createCCSwitchTestDB(t, false)
@@ -305,8 +306,8 @@ func TestCCSwitch_UnknownRequestID_LogsDebug(t *testing.T) {
 	if result.Logs[0].MessageID != "" {
 		t.Errorf("MessageID = %q, want empty", result.Logs[0].MessageID)
 	}
-	if !handler.HasMessage("保留 raw 但不参与消息关联") {
-		t.Errorf("expected debug record about preserving raw, got messages: %v", handler.Messages())
+	if handler.HasMessage("保留 raw 但不参与消息关联") {
+		t.Errorf("expected no per-row debug for unassociated raw logs, got messages: %v", handler.Messages())
 	}
 }
 

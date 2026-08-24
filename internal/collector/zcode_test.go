@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -957,6 +958,97 @@ func TestLoadZCodeProviderMap_MixedSchemasMerge(t *testing.T) {
 	}
 	if m["builtin:bigmodel-coding-plan"] != "Bigmodel - Coding Plan" {
 		t.Errorf("v2 bigmodel name = %q", m["builtin:bigmodel-coding-plan"])
+	}
+}
+
+// provider 映射缺失在多日期全量采集下也只输出一条汇总（聚合发生在 Collect 层，
+// 而非每个日期范围的 scanRows），且汇总只含未命中的 provider；命中行正常显示映射名。
+func TestZCodeCollector_ProviderMissSummarySingleLog(t *testing.T) {
+	tmpDir := t.TempDir()
+	// db 放三层深（同 ~/.zcode/cli/db/db.sqlite 布局），使 zcodeCachePathFromDB
+	// 推导出的 cache 路径落在 tmpDir 内，fixture cache 文件才会被读取。
+	dbPath := filepath.Join(tmpDir, ".zcode", "cli", "db", "db.sqlite")
+	createTestZCodeDB(t, dbPath)
+	insertZCodeSession(t, dbPath, zcodeSessionRow{id: "sess-1", directory: "/p"})
+	// 两天 × 两种 provider：p-mapped 可在 cache 命中，p-missing 必然回退。
+	for _, day := range []int{1, 2} {
+		ts := time.Date(2026, 7, day, 10, 0, 0, 0, time.Local).UnixMilli()
+		for i, prov := range []string{"p-mapped", "p-missing"} {
+			insertZCodeUsage(t, dbPath, zcodeUsageRow{
+				id: fmt.Sprintf("u-%d-%d", day, i), sessionID: "sess-1", model: "M",
+				provider: prov, status: "completed",
+				startedAt: ts + int64(i)*1000, completedAt: ts + int64(i)*1000,
+				input: 10, inputSet: true, output: 5, outputSet: true,
+				computedTotal: 15, computedTotalSet: true,
+			})
+		}
+	}
+	writeZCodeCacheJSON(t, filepath.Join(tmpDir, ".zcode", "v2", "bots-model-cache.v2.json"),
+		[]map[string]any{{"id": "p-mapped", "name": "Mapped Provider"}})
+
+	c := newTestZCodeCollector(t, dbPath)
+	handler := &testLogHandler{}
+	result, err := c.Collect(context.Background(),
+		CollectRequest{Dates: []string{"2026-07-01", "2026-07-02"}}, slog.New(handler))
+	if err != nil {
+		t.Fatalf("Collect 失败: %v", err)
+	}
+
+	// 命中映射的行显示名称，缺失行回退原值。
+	byID := msgByID(result.Messages)
+	if byID["u-1-0"].Provider != "Mapped Provider" || byID["u-2-0"].Provider != "Mapped Provider" {
+		t.Errorf("p-mapped 行应显示映射名，实际 u-1-0=%q u-2-0=%q",
+			byID["u-1-0"].Provider, byID["u-2-0"].Provider)
+	}
+	if byID["u-1-1"].Provider != "p-missing" || byID["u-2-1"].Provider != "p-missing" {
+		t.Errorf("p-missing 行应回退原值，实际 u-1-1=%q u-2-1=%q",
+			byID["u-1-1"].Provider, byID["u-2-1"].Provider)
+	}
+
+	// 恰好一条汇总，count=2（两天各一行），provider_ids 只含 p-missing。
+	var summaries []slog.Record
+	for _, r := range handler.Records() {
+		if strings.Contains(r.Message, "映射缺失") {
+			summaries = append(summaries, r)
+		}
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("期望恰好 1 条映射缺失汇总，实际 %d 条: %v", len(summaries), handler.Messages())
+	}
+	attrs := map[string]string{}
+	summaries[0].Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = fmt.Sprint(a.Value.Any())
+		return true
+	})
+	if attrs["count"] != "2" {
+		t.Errorf("汇总 count = %q, want 2", attrs["count"])
+	}
+	if attrs["provider_ids"] != "p-missing" {
+		t.Errorf("汇总 provider_ids = %q, want p-missing", attrs["provider_ids"])
+	}
+}
+
+// 全部 provider 命中映射时不输出映射缺失汇总。
+func TestZCodeCollector_ProviderAllMappedNoSummary(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, ".zcode", "cli", "db", "db.sqlite")
+	createTestZCodeDB(t, dbPath)
+	insertZCodeSession(t, dbPath, zcodeSessionRow{id: "sess-1", directory: "/p"})
+	insertZCodeUsage(t, dbPath, zcodeUsageRow{
+		id: "u-1", sessionID: "sess-1", model: "M", provider: "p-ok", status: "completed",
+		startedAt: day1MS(10), completedAt: day1MS(10),
+		input: 10, inputSet: true, computedTotal: 10, computedTotalSet: true,
+	})
+	writeZCodeCacheJSON(t, filepath.Join(tmpDir, ".zcode", "v2", "bots-model-cache.v2.json"),
+		[]map[string]any{{"id": "p-ok", "name": "OK Provider"}})
+
+	c := newTestZCodeCollector(t, dbPath)
+	handler := &testLogHandler{}
+	if _, err := c.Collect(context.Background(), CollectRequest{}, slog.New(handler)); err != nil {
+		t.Fatalf("Collect 失败: %v", err)
+	}
+	if handler.HasMessage("映射缺失") {
+		t.Errorf("全部命中时不应有映射缺失汇总: %v", handler.Messages())
 	}
 }
 

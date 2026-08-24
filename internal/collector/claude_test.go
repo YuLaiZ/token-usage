@@ -59,6 +59,69 @@ func writeClaudeBlindSpotFixture(t *testing.T, path string) {
 	}
 }
 
+// 行解析失败按文件聚合为一条汇总（count + 首行号 + 首个错误），不再逐行打印。
+func TestClaudeParseLineFailuresPerFileSummary(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proj.jsonl")
+	// 第 1 行合法、第 2/4 行坏、第 3 行合法。
+	content := `{"type":"user","sessionId":"s1","timestamp":"2026-07-08T10:00:00+08:00","cwd":"/tmp/project","message":{"id":"u-1","role":"user"}}
+not-json-line-2
+{"type":"user","sessionId":"s1","timestamp":"2026-07-08T10:01:00+08:00","cwd":"/tmp/project","message":{"id":"u-2","role":"user"}}
+{broken line 4
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := &testLogHandler{}
+	if _, err := parseClaudeMessageFile(path, nil, slog.New(handler)); err != nil {
+		t.Fatalf("parseClaudeMessageFile 失败: %v", err)
+	}
+
+	var summaries []slog.Record
+	for _, r := range handler.Records() {
+		if strings.Contains(r.Message, "行解析失败") {
+			summaries = append(summaries, r)
+		}
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("期望恰好 1 条行解析失败汇总，实际 %d 条: %v", len(summaries), handler.Messages())
+	}
+	attrs := map[string]string{}
+	summaries[0].Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = fmt.Sprint(a.Value.Any())
+		return true
+	})
+	if attrs["count"] != "2" {
+		t.Errorf("count = %q, want 2", attrs["count"])
+	}
+	if attrs["first_line"] != "2" {
+		t.Errorf("first_line = %q, want 2", attrs["first_line"])
+	}
+	if attrs["error"] == "" {
+		t.Error("汇总缺少 error 定位线索")
+	}
+}
+
+// 全部行合法时不输出行解析失败汇总。
+func TestClaudeParseNoFailuresNoSummary(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ok.jsonl")
+	content := `{"type":"user","sessionId":"s1","timestamp":"2026-07-08T10:00:00+08:00","cwd":"/tmp/project","message":{"id":"u-1","role":"user"}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := &testLogHandler{}
+	if _, err := parseClaudeMessageFile(path, nil, slog.New(handler)); err != nil {
+		t.Fatalf("parseClaudeMessageFile 失败: %v", err)
+	}
+	if handler.HasMessage("行解析失败") {
+		t.Errorf("全部合法时不应有行解析失败汇总: %v", handler.Messages())
+	}
+}
+
 // 超过 50 行时位于盲区（第 26 行）的 assistant usage 必须被采集。
 func TestClaudeCollector_FullScanIncludesMiddleMessage(t *testing.T) {
 	projectsDir := t.TempDir()
