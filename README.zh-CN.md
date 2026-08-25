@@ -122,7 +122,7 @@ token-usage collect
 | `collect router --client X` | 仅 router 全量回填（不动 messages；`--client` 必填且须已配置 router） |
 | `collect retry` | 重试 `collection_errors` 中未解决失败组（`--client X` 限定） |
 | `query [日期]` | 查询统计（默认今日，按客户端分组） |
-| `query client/model/project/session/summary [日期]` | 对应视图查询 |
+| `query client/model/provider/project/session/summary [日期]` | 对应视图查询 |
 | `errors [YYYYMMDD]` | 查看采集异常（`--source X` / `--unresolved`） |
 
 日期为位置参数：`YYYYMMDD` 单日或 `YYYYMMDD-YYYYMMDD` 闭区间；无 `--date` 标志。
@@ -348,7 +348,7 @@ max_days = 7
 
 > **路由归因现状**：当前只有 Claude（Code/Desktop）配置 `router = "cc_switch"` 会做消息级归因回填。配置入口会拒绝其他客户端（OpenCode/Codex/WorkBuddy/ZCode/AutoClaw）设置非空 `router`：`config set clients.X.router` 直接报错，TUI 也不提供该字段且保存校验拒绝；存量配置中已存在的值读取不受影响，其原始日志仍会写入 `raw_router_logs` 但不会回填 `messages`，因为 CC Switch 的 `app_type` 只识别 Claude 系列。
 >
-> **供应商别名**：`provider_aliases` 只规范 CC Switch 回填的 provider 显示名；key 必须与原始 provider 名完全一致。修改后按命令提示执行 `collect router --client <name>`（或 `collect all --client <name>`）回填既有归因数据。
+> **供应商别名**：`provider_aliases` 只影响 `query provider` 的供应商标签与分组；key 必须与采集或路由回填得到的原始 provider 名完全一致。修改不会改写 `usage.db`，也无需采集或回填；下一次查询立即生效。历史空值保持“未归因”。
 
 ## 平台支持
 

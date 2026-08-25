@@ -148,7 +148,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 用户执行命令 → 加载配置 → 执行采集/查询/配置编辑 → 输出结果 → 退出
 ```
 
-命令组：`version`（多行详细输出）、Cobra 内置 `completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`project`/`session`/`summary`）、`errors`、`start`、`status`、`stop`、`restart`，以及 Hidden 内部命令 `_run`。根命令另带 `-v, --version` flag（单行短输出）。
+命令组：`version`（多行详细输出）、Cobra 内置 `completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`session`/`summary`）、`errors`、`start`、`status`、`stop`、`restart`，以及 Hidden 内部命令 `_run`。根命令另带 `-v, --version` flag（单行短输出）。
 
 直接执行 `token-usage`（不带任何参数）只会打印帮助信息，既不启动 TUI 也不启动守护进程。命令树、参数、标志、退出码与示例的完整参考见 [CLI 参考](cli.zh-CN.md)。
 
@@ -265,7 +265,7 @@ daemon lock 是存活唯一真相源，PID/runtime-state 是**可降级**的定�
 **配置影响矩阵**（`AnalyzeConfigEffects`）按 effective config 变化输出：
 
 - client disabled→enabled / 路径变化 → `collect all --client X`（新版 `collect all` 已含 router 阶段，同一 client 不重复进 router 列表）。
-- client router 变化（空→R 或 R1→R2）→ `collect router --client X`；provider_aliases 全局变化或 router db_path 变化 → 受影响已启用且配 router 的 client 走 router backfill。
+- client router 变化（空→R 或 R1→R2）或 router db_path 变化 → 受影响已启用且配 router 的 client 执行 `collect router --client X`。`provider_aliases` 变化仅影响查询展示，不触发采集或 router 回填。
 - daemon poll_interval / log 字段 / 任一 client-router-path 变化（不含纯 autostart）→ `RuntimeChanged`（运行中需 restart）。
 - 仅 `daemon.autostart` 变化 → **不算** runtime changed（只影响下次登录定义）。
 
@@ -418,7 +418,7 @@ max_days = 7
 
 > **路由归因现状**：当前只有 Claude（Code/Desktop）配置 `router = "cc_switch"` 会做消息级归因回填（`app_type` 仅识别 `claude` / `claude-desktop`）。配置入口会拒绝其他客户端设置非空 `router`（`config set` 直接报错，TUI 不提供该字段且保存校验拒绝）；存量配置中已存在的值读取不受影响——原始日志仍会写入 `raw_router_logs`，但 `MessageID` 为空、不回填 `messages`。新增其他客户端的路由归因需要日志协议解析、poller/cursor、`app_type→client` 映射和对应测试，不能仅靠配置自动接入。
 
-`provider_aliases` 以「CC Switch 原始 provider 名 → 对外显示名」映射回填结果；其变化会触发已启用且配置 router 的 client 重新归因建议。可通过 TUI 的 aliases 页面或 `config set 'provider_aliases."原始名"' '显示名'` 维护。
+`query provider` 先选用路由归因，再选用采集器值。历史空值保持未归因，查询不会依据客户端推断供应商。`provider_aliases` 将取得的供应商值映射为显示名。查询在选定有效供应商后应用别名并合并同名行；映射不会写入 `messages`，也不会触发重新归因。可通过 TUI 的 aliases 页面或 `config set 'provider_aliases."原始名"' '显示名'` 维护。
 
 ## 扩展性
 

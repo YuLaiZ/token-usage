@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/YuLaiZ/token-usage/internal/db"
+	"github.com/YuLaiZ/token-usage/internal/model"
 )
 
 // TestNewQueryCmd_NoOldFlags 断言 删除的旧 flag 已全部不存在，
@@ -25,17 +26,18 @@ func TestNewQueryCmd_NoOldFlags(t *testing.T) {
 	}
 }
 
-// TestNewQueryCmd_SubcommandTree 断言 query 命令树包含且仅包含五个子命令，
+// TestNewQueryCmd_SubcommandTree 断言 query 命令树包含且仅包含六个子命令，
 // 且每个子命令的 Short/Use 与公开 CLI 文档一致。
 func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 	cmd := newQueryCmd()
 
 	wantShort := map[string]string{
-		"client":  "Group by client (default) / 按客户端分组（默认）",
-		"model":   "Group by model / 按模型分组",
-		"project": "Group by project / 按项目分组",
-		"session": "View session details / 查看会话明细",
-		"summary": "View summary / 查看总览摘要",
+		"client":   "Group by client (default) / 按客户端分组（默认）",
+		"model":    "Group by model / 按模型分组",
+		"provider": "Group by provider / 按供应商分组",
+		"project":  "Group by project / 按项目分组",
+		"session":  "View session details / 查看会话明细",
+		"summary":  "View summary / 查看总览摘要",
 	}
 
 	got := map[string]bool{}
@@ -61,7 +63,7 @@ func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 // 超出则在 args 校验阶段报错（不是 silently 接受）。
 func TestNewQueryCmd_SubcommandMaxOneArg(t *testing.T) {
 	cmd := newQueryCmd()
-	for _, name := range []string{"client", "model", "project", "session", "summary"} {
+	for _, name := range []string{"client", "model", "provider", "project", "session", "summary"} {
 		sub, _, err := cmd.Find([]string{name})
 		if err != nil {
 			t.Fatalf("Find(%q) err: %v", name, err)
@@ -105,6 +107,7 @@ func TestExecuteQuery_ViewDispatch(t *testing.T) {
 	}{
 		{viewClient, "按客户端分组", "按模型分组"},
 		{viewModel, "按模型分组", "按项目分组"},
+		{viewProvider, "按供应商分组", "按项目分组"},
 		{viewProject, "按项目分组", "按客户端分组"},
 		{viewSessions, "会话明细", "总览摘要"},
 		{viewSummary, "总览摘要", "会话明细"},
@@ -121,6 +124,32 @@ func TestExecuteQuery_ViewDispatch(t *testing.T) {
 		if strings.Contains(got, c.wantNoHeader) {
 			t.Errorf("view %v 输出不应含 %q, got: %s", c.view, c.wantNoHeader, got)
 		}
+	}
+}
+
+// 配置的供应商别名只传给 provider 查询，不需要也不会触发写库。
+func TestExecuteQueryDatesWithAliases_AppliesProviderAlias(t *testing.T) {
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+	if _, err := db.UpsertMessages(context.Background(), usageDB, []model.Message{{
+		ID: "provider-alias", SessionID: "session", Client: model.ClientZCode,
+		Date: "2026-08-25", TS: 1, Provider: "raw-provider", TotalTokens: 10,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := &bytes.Buffer{}
+	err = executeQueryDatesWithAliases(context.Background(), buf, usageDB, []string{"2026-08-25"}, viewProvider, map[string]string{
+		"raw-provider": "Display provider",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "Display provider") || strings.Contains(buf.String(), "raw-provider") {
+		t.Errorf("provider alias should apply only to output, got:\n%s", buf.String())
 	}
 }
 

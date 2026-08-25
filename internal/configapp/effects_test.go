@@ -138,7 +138,7 @@ func TestAnalyzeConfigEffects_Matrix(t *testing.T) {
 			wantWarnings: []string{warningRouterDBPathAttribution("cc_switch")},
 		},
 		{
-			name: "provider alias 新增 backfill 所有已启用且配 router 的 client",
+			name: "provider alias 变化仅影响 query 展示",
 			prev: &config.Config{
 				DataDir: "/d",
 				Clients: map[string]config.Client{
@@ -156,9 +156,7 @@ func TestAnalyzeConfigEffects_Matrix(t *testing.T) {
 				Routers:         map[string]config.RouterConfig{"cc_switch": {DBPath: "/r.db"}},
 				ProviderAliases: map[string]string{"anthropic": "Anthropic"},
 			},
-			wantRuntime:  true,
-			wantRouter:   []string{"claude"}, // codex 无 router 不 backfill
-			wantWarnings: []string{warningAliasAttribution},
+			wantRuntime: false,
 		},
 		{
 			name:         "daemon poll_interval 变化 无采集 runtime changed",

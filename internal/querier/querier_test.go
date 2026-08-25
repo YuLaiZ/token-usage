@@ -38,13 +38,13 @@ func setupMessageFixture(t *testing.T) *Querier {
 	msgs := []model.Message{
 		{
 			ID: "msg-one", SessionID: "sess-alpha", Client: model.ClientClaudeCode,
-			Date: "2026-07-09", TS: 1000, Model: "claude-sonnet-4", Directory: "/work", Project: "proj-A",
+			Date: "2026-07-09", TS: 1000, Model: "claude-sonnet-4", Provider: "Anthropic", Directory: "/work", Project: "proj-A",
 			InputTokens: 1000, FreshInputTokens: 700, OutputTokens: 50,
 			CacheReadTokens: 300, ReasoningTokens: 50, TotalTokens: 1100,
 		},
 		{
 			ID: "msg-two", SessionID: "sess-alpha", Client: model.ClientClaudeCode,
-			Date: "2026-07-10", TS: 2000, Model: "gpt-5.5", Directory: "/work", Project: "proj-A",
+			Date: "2026-07-10", TS: 2000, Model: "gpt-5.5", Provider: "OpenAI", Directory: "/work", Project: "proj-A",
 			InputTokens: 1000, FreshInputTokens: 700, OutputTokens: 50,
 			CacheReadTokens: 300, ReasoningTokens: 50, TotalTokens: 1100,
 		},
@@ -94,6 +94,63 @@ func TestByModel_DoesNotCollapse(t *testing.T) {
 	}
 	if !strings.Contains(result, "gpt-5.5") {
 		t.Errorf("result should contain model gpt-5.5\ngot:\n%s", result)
+	}
+}
+
+// ByProvider 将所有历史空 provider 保留为未归因，不按客户端推断供应商。
+func TestByProvider_SeparatesProvidersAndUnattributed(t *testing.T) {
+	q := setupMessageFixture(t)
+	if _, err := db.UpsertMessages(context.Background(), q.db, []model.Message{{
+		ID: "msg-unattributed", SessionID: "sess-alpha", Client: model.ClientZhipuAutoClaw,
+		Date: "2026-07-10", TS: 3000, Model: "unknown", TotalTokens: 99,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := q.ByProvider(context.Background(), bothDates, nil)
+	if err != nil {
+		t.Fatalf("ByProvider failed: %v", err)
+	}
+	for _, want := range []string{"Anthropic", "OpenAI", "(unattributed)", "(未归因)", "供应商"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("result should contain %q\ngot:\n%s", want, result)
+		}
+	}
+}
+
+// provider_aliases 只在查询期改展示并合并聚合，不得修改 messages 原始字段。
+func TestByProvider_AliasesMergeAtQueryTimeWithoutMutatingMessages(t *testing.T) {
+	q := setupMessageFixture(t)
+	msgs := []model.Message{
+		{ID: "msg-alias-source", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 3000, Provider: "source-a", TotalTokens: 100},
+		{ID: "msg-alias-router", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4000, Provider: "source-b", RouterProvider: "router-b", TotalTokens: 200},
+		{ID: "msg-codex-empty", SessionID: "sess-alpha", Client: model.ClientCodexApp, Date: "2026-07-11", TS: 5000, TotalTokens: 300},
+		{ID: "msg-claude-empty", SessionID: "sess-alpha", Client: model.ClientClaudeDesktop, Date: "2026-07-11", TS: 6000, TotalTokens: 400},
+		{ID: "msg-workbuddy-empty", SessionID: "sess-alpha", Client: model.ClientWorkBuddy, Date: "2026-07-11", TS: 7000, TotalTokens: 500},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := q.ByProvider(context.Background(), []string{"2026-07-11"}, map[string]string{
+		"source-a": "Merged provider",
+		"router-b": "Merged provider",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(out, "Merged provider") != 1 || strings.Contains(out, "source-a") || strings.Contains(out, "router-b") {
+		t.Errorf("alias should merge only in output:\n%s", out)
+	}
+	if strings.Count(out, "(unattributed)") != 1 || !strings.Contains(out, "(未归因)") {
+		t.Errorf("empty historical providers should remain unattributed:\n%s", out)
+	}
+	var provider, routerProvider string
+	if err := q.db.QueryRow(`SELECT provider, router_provider FROM messages WHERE id='msg-alias-router' AND client=?`, model.ClientClaudeCode).Scan(&provider, &routerProvider); err != nil {
+		t.Fatal(err)
+	}
+	if provider != "source-b" || routerProvider != "router-b" {
+		t.Fatalf("query aliases modified stored attribution: provider=%q router_provider=%q", provider, routerProvider)
 	}
 }
 
@@ -260,6 +317,7 @@ func TestQueries_CheckDependenciesAndCancellationBeforeEmptyDateShortcut(t *test
 	}{
 		{name: "ByClient", run: func() (string, error) { return q.ByClient(ctx, nil) }},
 		{name: "ByModel", run: func() (string, error) { return q.ByModel(ctx, nil) }},
+		{name: "ByProvider", run: func() (string, error) { return q.ByProvider(ctx, nil, nil) }},
 		{name: "ByProject", run: func() (string, error) { return q.ByProject(ctx, nil) }},
 		{name: "Sessions", run: func() (string, error) { return q.Sessions(ctx, nil) }},
 		{name: "Summary", run: func() (string, error) { return q.Summary(ctx, nil) }},
@@ -332,6 +390,7 @@ func TestQueryViewsTailColumnsLocked(t *testing.T) {
 	}{
 		{"client", func() (string, error) { return q.ByClient(context.Background(), bothDates) }},
 		{"model", func() (string, error) { return q.ByModel(context.Background(), bothDates) }},
+		{"provider", func() (string, error) { return q.ByProvider(context.Background(), bothDates, nil) }},
 		{"project", func() (string, error) { return q.ByProject(context.Background(), bothDates) }},
 		{"session", func() (string, error) { return q.Sessions(context.Background(), bothDates) }},
 	} {

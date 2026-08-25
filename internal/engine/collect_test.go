@@ -1080,9 +1080,9 @@ func TestRunCollect_CliDatesFetchesRouterLogsThenBackfills(t *testing.T) {
 	}
 }
 
-// TestRunCollect_ProviderAliasOnlyChangesRouterProvider：
-// 配置 provider alias 后断言只改 RouterProvider，不改 Message.Provider。
-func TestRunCollect_ProviderAliasOnlyChangesRouterProvider(t *testing.T) {
+// TestRunCollect_ProviderAliasesDoNotChangeStoredAttribution：
+// 供应商别名仅供 query 展示，采集与 router 回填必须保留原始归因值。
+func TestRunCollect_ProviderAliasesDoNotChangeStoredAttribution(t *testing.T) {
 	usageDB, _ := db.Open(":memory:")
 	defer usageDB.Close()
 	c := fixedResultCollector("claude", collector.CollectResult{
@@ -1120,8 +1120,8 @@ func TestRunCollect_ProviderAliasOnlyChangesRouterProvider(t *testing.T) {
 	if provider != "original" {
 		t.Fatalf("message.provider changed by alias: %q", provider)
 	}
-	if routerProvider != "alias_provider" {
-		t.Fatalf("router_provider should be aliased: %q", routerProvider)
+	if routerProvider != "raw_provider" {
+		t.Fatalf("router_provider should keep raw value: %q", routerProvider)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/YuLaiZ/token-usage/internal/db"
@@ -202,6 +203,90 @@ func (q *Querier) ByModel(ctx context.Context, dates []string) (string, error) {
 		return "", fmt.Errorf("%s: %w", ui.Bi("iterate model aggregate rows failed", "遍历模型聚合结果失败"), err)
 	}
 
+	sb.WriteString(t.String())
+	return sb.String(), nil
+}
+
+// ByProvider 以路由归因优先、采集归因其次的顺序分组。
+// 历史空值保持未归因，不根据客户端名称补写或推断供应商。
+// aliases 仅用于本次查询的显示和合并，绝不写回 messages。
+func (q *Querier) ByProvider(ctx context.Context, dates []string, aliases map[string]string) (string, error) {
+	ctx, err := q.readyContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(dates) == 0 {
+		return ui.Bi("Group by provider - no data", "按供应商分组 - 无数据"), nil
+	}
+
+	placeholders, args := buildPlaceholders(dates)
+	const effectiveProvider = `CASE
+		WHEN router_provider != '' THEN router_provider
+		WHEN provider != '' THEN provider
+		ELSE ''
+	END`
+	query := fmt.Sprintf(`
+		SELECT %s, %s
+		FROM messages
+		WHERE date IN (%s)
+		GROUP BY %s
+		ORDER BY SUM(total_tokens) DESC
+	`, effectiveProvider, groupSelectColumns, placeholders, effectiveProvider)
+
+	rows, err := q.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
+	}
+	defer rows.Close()
+
+	var sb strings.Builder
+	sb.WriteString(ui.Bi("Group by provider", "按供应商分组") + "\n")
+
+	type aggregate struct {
+		requests, freshInput, outputTokens, cacheRead, cacheCreate, reasoning, totalTokens int64
+	}
+	aggregates := map[string]aggregate{}
+	for rows.Next() {
+		provider, requestCount, freshInput, outputTokens, cacheRead, cacheCreate, reasoning, totalTokens, err := scanGroupRow(rows)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", ui.Bi("scan provider aggregate rows failed", "扫描供应商聚合结果失败"), err)
+		}
+		if alias := strings.TrimSpace(aliases[provider]); alias != "" {
+			provider = alias
+		}
+		if provider == "" {
+			provider = ui.Bi("(unattributed)", "(未归因)")
+		}
+		a := aggregates[provider]
+		a.requests += requestCount
+		a.freshInput += freshInput
+		a.outputTokens += outputTokens
+		a.cacheRead += cacheRead
+		a.cacheCreate += cacheCreate
+		a.reasoning += reasoning
+		a.totalTokens += totalTokens
+		aggregates[provider] = a
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("%s: %w", ui.Bi("iterate provider aggregate rows failed", "遍历供应商聚合结果失败"), err)
+	}
+
+	providers := make([]string, 0, len(aggregates))
+	for provider := range aggregates {
+		providers = append(providers, provider)
+	}
+	sort.Slice(providers, func(i, j int) bool {
+		left, right := aggregates[providers[i]], aggregates[providers[j]]
+		if left.totalTokens != right.totalTokens {
+			return left.totalTokens > right.totalTokens
+		}
+		return providers[i] < providers[j]
+	})
+	t := newGroupTable(ui.HProvider)
+	for _, provider := range providers {
+		a := aggregates[provider]
+		addGroupRow(t, provider, a.requests, a.freshInput, a.outputTokens, a.cacheRead, a.cacheCreate, a.reasoning, a.totalTokens)
+	}
 	sb.WriteString(t.String())
 	return sb.String(), nil
 }

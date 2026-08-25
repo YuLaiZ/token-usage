@@ -20,6 +20,7 @@ type queryView int
 const (
 	viewClient queryView = iota
 	viewModel
+	viewProvider
 	viewProject
 	viewSessions
 	viewSummary
@@ -42,6 +43,7 @@ func newQueryCmd() *cobra.Command {
 	cmd.AddCommand(
 		newQuerySubCmd("client", "Group by client (default) / 按客户端分组（默认）", viewClient),
 		newQuerySubCmd("model", "Group by model / 按模型分组", viewModel),
+		newQuerySubCmd("provider", "Group by provider / 按供应商分组", viewProvider),
 		newQuerySubCmd("project", "Group by project / 按项目分组", viewProject),
 		newQuerySubCmd("session", "View session details / 查看会话明细", viewSessions),
 		newQuerySubCmd("summary", "View summary / 查看总览摘要", viewSummary),
@@ -67,7 +69,7 @@ func newQuerySubCmd(name, short string, view queryView) *cobra.Command {
 	}
 }
 
-// runQuery 是 query 及其五个子命令的公共执行入口。
+// runQuery 是 query 及其六个子命令的公共执行入口。
 func runQuery(cmd *cobra.Command, args []string, view queryView) error {
 	return runQueryWithDeps(cmd, args, view, loadConfig, dbOpener)
 }
@@ -97,7 +99,7 @@ func runQueryWithDeps(
 	}
 	defer usageDB.Close()
 
-	return executeQueryDates(cmdContext(cmd), cmd.OutOrStdout(), usageDB, dates, view)
+	return executeQueryDatesWithAliases(cmdContext(cmd), cmd.OutOrStdout(), usageDB, dates, view, cfg.ProviderAliases)
 }
 
 // executeQuery 执行 query 的视图分发核心逻辑（不依赖 cobra，便于单测）：
@@ -118,6 +120,10 @@ func executeQueryContext(ctx context.Context, out io.Writer, usageDB *db.DB, arg
 }
 
 func executeQueryDates(ctx context.Context, out io.Writer, usageDB *db.DB, dates []string, view queryView) error {
+	return executeQueryDatesWithAliases(ctx, out, usageDB, dates, view, nil)
+}
+
+func executeQueryDatesWithAliases(ctx context.Context, out io.Writer, usageDB *db.DB, dates []string, view queryView, aliases map[string]string) error {
 	q := querier.New(usageDB)
 
 	var result string
@@ -125,6 +131,8 @@ func executeQueryDates(ctx context.Context, out io.Writer, usageDB *db.DB, dates
 	switch view {
 	case viewModel:
 		result, err = q.ByModel(ctx, dates)
+	case viewProvider:
+		result, err = q.ByProvider(ctx, dates, aliases)
 	case viewProject:
 		result, err = q.ByProject(ctx, dates)
 	case viewSessions:

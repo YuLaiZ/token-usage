@@ -103,13 +103,6 @@ func RunRouterBackfill(ctx context.Context, deps *Deps, usageDB *db.DB, log *slo
 		if err != nil {
 			return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to query router attribution", "查询 router 归因失败"), err)
 		}
-		// 应用 providerAliases
-		providerAliases := deps.cfg.ProviderAliases
-		for i := range infos {
-			if alias, ok := providerAliases[infos[i].Provider]; ok {
-				infos[i].Provider = alias
-			}
-		}
 		if len(infos) > 0 {
 			n, err = db.BackfillRouterFields(ctx, tx, infos)
 			if err != nil {

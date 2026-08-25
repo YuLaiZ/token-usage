@@ -186,6 +186,7 @@ token-usage collect retry --client codex
 token-usage query [日期]
 token-usage query client [日期]     # 默认视图，裸 query 与此等价
 token-usage query model [日期]
+token-usage query provider [日期]
 token-usage query project [日期]
 token-usage query session [日期]
 token-usage query summary [日期]
@@ -193,11 +194,14 @@ token-usage query summary [日期]
 
 缺省日期为今天。若查询的日期区间在 `collection_errors` 中存在未解决记录，结果末尾会附「采集异常」提示并列出条目，建议用 `errors` 查看详情、`collect retry` 重试。
 
+`query provider` 优先使用路由归因，其次使用采集器的供应商值；历史空值保持未归因，查询不会依据客户端推断供应商。`provider_aliases` 只在渲染此视图时生效：相同别名会合并为同一行，且不会修改 `usage.db`。
+
 示例：
 
 ```bash
 token-usage query                    # 今日，按客户端分组
 token-usage query model              # 今日，按模型分组
+token-usage query provider           # 今日，按供应商分组
 token-usage query 20260701-20260721  # 区间，按客户端分组
 token-usage query summary 20260701   # 单日总览
 ```
@@ -306,7 +310,7 @@ token-usage config set <key> <value> --confirm-migrate   # 仅迁移 data_dir �
 
 受支持 client 为 `claude`、`opencode`、`codex`、`workbuddy`、`zcode`、`autoclaw`。path key 分别为：Claude `projects_dir`；OpenCode `db`；Codex `state_dir`/`sessions_dir`；WorkBuddy `db`/`projects_dir`；ZCode `db`；AutoClaw `sessions_dir`。
 
-`provider_aliases` 用于把 CC Switch 回填的原始 provider 名规范为显示名；变更后按命令提示重新执行 router backfill。名称含 `.` 时使用引号段，例如：
+`provider_aliases` 只改变 `query provider` 中的标签与分组，不修改采集或路由回填的数据，下一次查询立即生效。名称含 `.` 时使用引号段，例如：
 
 ```bash
 token-usage config set 'provider_aliases."Zhipu AI Coding Plan"' 'Zhipu GLM'

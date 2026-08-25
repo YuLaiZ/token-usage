@@ -124,7 +124,7 @@ Running `token-usage` without arguments only prints help. See the **[CLI Referen
 | `collect router --client X` | Full router backfill only; does not touch `messages`; `--client` is required and the client must have a router configured. |
 | `collect retry` | Retries unresolved groups in `collection_errors`; `--client X` limits the client. |
 | `query [date]` | Queries usage statistics; defaults to today and groups by client. |
-| `query client/model/project/session/summary [date]` | Queries the selected view. |
+| `query client/model/provider/project/session/summary [date]` | Queries the selected view. |
 | `errors [YYYYMMDD]` | Displays collection errors; supports `--source X` and `--unresolved`. |
 
 Dates are positional arguments: a single day is `YYYYMMDD`, and an inclusive range is `YYYYMMDD-YYYYMMDD`; there is no `--date` flag.
@@ -350,7 +350,7 @@ max_days = 7
 
 > **Current router-attribution support**: only Claude (Code/Desktop) with `router = "cc_switch"` receives message-level attribution backfill. Configuration entry points reject a non-empty `router` on other clients (OpenCode/Codex/WorkBuddy/ZCode/AutoClaw): `config set clients.X.router` fails up front, and the TUI neither offers nor saves one. Existing configurations that already contain such a value are still read without errors; their raw logs would only be written to `raw_router_logs` without backfilling `messages`, because CC Switch recognizes only the Claude family in `app_type`.
 >
-> **Provider aliases**: `provider_aliases` only normalizes provider display names backfilled by CC Switch; each key must exactly match the raw provider name. After changing it, follow the command suggestion to run `collect router --client <name>` (or `collect all --client <name>`) and backfill existing attribution data.
+> **Provider aliases**: `provider_aliases` changes only the labels and grouping in `query provider`; each key must exactly match the collected or router-backfilled provider value. It never rewrites `usage.db` or requires collection/backfill, so changes take effect on the next query. Historical empty values remain unattributed.
 
 ## Platform Support
 

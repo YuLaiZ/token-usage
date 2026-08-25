@@ -148,7 +148,7 @@ Queries directly SUM `fresh_input_tokens` and `total_tokens`: values come from t
 User runs a command → load configuration → collect/query/edit configuration → print results → exit
 ```
 
-Command groups: `version` (five-line detailed output), Cobra's built-in `completion`, `config` (interactive TUI with `show`/`init`/`get`/`set` subcommands), `collect` (with `all`/`router`/`retry`), `query` (with `client`/`model`/`project`/`session`/`summary`), `errors`, `start`, `status`, `stop`, `restart`, and the hidden internal `_run`. The root command also has the `-v, --version` flag for one-line short output.
+Command groups: `version` (five-line detailed output), Cobra's built-in `completion`, `config` (interactive TUI with `show`/`init`/`get`/`set` subcommands), `collect` (with `all`/`router`/`retry`), `query` (with `client`/`model`/`provider`/`project`/`session`/`summary`), `errors`, `start`, `status`, `stop`, `restart`, and the hidden internal `_run`. The root command also has the `-v, --version` flag for one-line short output.
 
 Running `token-usage` with no arguments only prints help; it neither starts the TUI nor the daemon. See the [CLI Reference](cli.md) for the full command tree, arguments, flags, exit codes, and examples.
 
@@ -265,7 +265,7 @@ This contract covers PID files, runtime-state, and `config.toml` (written by `Ap
 **Configuration impact matrix** (`AnalyzeConfigEffects`) outputs actions based on effective-configuration changes:
 
 - client disabled → enabled or path changed → `collect all --client X` (the new `collect all` already includes the router phase, so the same client is not added twice to the router list).
-- client router changed (empty → R or R1 → R2) → `collect router --client X`; a global `provider_aliases` change or a router `db_path` change → router backfill for affected enabled clients that have routers configured.
+- client router changed (empty → R or R1 → R2), or a router `db_path` change → `collect router --client X` for affected enabled clients. A `provider_aliases` change is query-only and triggers neither collection nor router backfill.
 - daemon `poll_interval`, log fields, or any client/router/path change (excluding autostart alone) → `RuntimeChanged` (a running daemon needs restart).
 - only `daemon.autostart` changed → **not** a runtime change (it affects only the next-login definition).
 
@@ -419,7 +419,7 @@ max_days = 7
 
 > **Current router-attribution support**: only Claude (Code/Desktop) configured with `router = "cc_switch"` receives message-level attribution backfill (`app_type` recognizes only `claude` / `claude-desktop`). Configuration entry points reject a non-empty `router` on other clients (`config set` fails up front; the TUI neither offers nor saves one); existing configurations that already contain such a value are still read without errors — their raw logs are written to `raw_router_logs` but their `MessageID` is empty and `messages` are not backfilled. Adding router attribution for another client requires log-protocol parsing, a poller/cursor, an `app_type→client` mapping, backfill logic, and tests; configuration alone cannot add it.
 
-`provider_aliases` maps a CC Switch raw provider name to its display name in backfilled results. Changing it suggests re-attributing enabled clients with a configured router. Maintain it through the aliases page in the TUI or `config set 'provider_aliases."raw name"' 'display name'`.
+`query provider` chooses router attribution first, then the collector value. Historical empty values remain unattributed: the query never infers a provider from the client. `provider_aliases` maps any resulting provider value to a display label. The query applies aliases after choosing the effective provider and merges equal labels; the mapping never writes to `messages` or triggers re-attribution. Maintain it through the aliases page in the TUI or `config set 'provider_aliases."raw name"' 'display name'`.
 
 ## Extensibility
 

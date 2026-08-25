@@ -78,17 +78,6 @@ func AnalyzeConfigEffects(previous, current *config.Config) ConfigEffects {
 		warns[warningLogDirNotMigrated] = struct{}{}
 	}
 
-	// --- provider alias 变化：backfill 所有已启用且配置 router 的 client ---
-	aliasChanged := !stringMapEqual(prev.ProviderAliases, curr.ProviderAliases)
-	if aliasChanged {
-		for name, c := range curr.Clients {
-			if c.Enabled && c.Router != "" {
-				router[name] = struct{}{}
-			}
-		}
-		warns[warningAliasAttribution] = struct{}{}
-	}
-
 	// --- router db_path 变化：backfill 绑定该 router 的已启用 client ---
 	routerDBChanged := map[string]struct{}{}
 	for name, r := range curr.Routers {
@@ -182,7 +171,7 @@ func AnalyzeConfigEffects(previous, current *config.Config) ConfigEffects {
 	}
 
 	// --- RuntimeChanged：除「仅 autostart」外任何 effective 变化都为 true ---
-	runtimeChanged := runtimeAffectingChange(prev, curr, aliasChanged, len(full) > 0, len(router) > 0, migration != nil)
+	runtimeChanged := runtimeAffectingChange(prev, curr, len(full) > 0, len(router) > 0, migration != nil)
 
 	return ConfigEffects{
 		RuntimeChanged:        runtimeChanged,
@@ -195,7 +184,7 @@ func AnalyzeConfigEffects(previous, current *config.Config) ConfigEffects {
 
 // runtimeAffectingChange 判定运行中 daemon 是否需要重载/重启。
 // 「仅 autostart 变化」不算 runtime changed（只影响下次登录/开机的定义）。
-func runtimeAffectingChange(prev, curr normalizedCfg, aliasChanged bool, hasFull, hasRouter bool, hasMigration bool) bool {
+func runtimeAffectingChange(prev, curr normalizedCfg, hasFull, hasRouter bool, hasMigration bool) bool {
 	if prev.DataDir != curr.DataDir {
 		return true
 	}
@@ -205,7 +194,7 @@ func runtimeAffectingChange(prev, curr normalizedCfg, aliasChanged bool, hasFull
 	if prev.Log.Level != curr.Log.Level || prev.Log.Dir != curr.Log.Dir || prev.Log.MaxDays != curr.Log.MaxDays {
 		return true
 	}
-	if aliasChanged || hasFull || hasRouter || hasMigration {
+	if hasFull || hasRouter || hasMigration {
 		return true
 	}
 	// client/router path 变化若未触发 full/router（如两侧均禁用仅 warning），仍属运行时配置变化。
@@ -405,6 +394,5 @@ func warningRouterDBPathAttribution(router string) string {
 // 字符串型 warning 用 const 直接定义更合适。
 const (
 	warningDataDirManualMigration = "data_dir change requires manually migrating usage.db/logs / data_dir 变化需手工迁移 usage.db/logs，PID/lock/runtime-state 不迁移"
-	warningAliasAttribution       = "provider_aliases changed; existing provider/model attribution needs to be re-run / provider_aliases 变化，既有 provider/model 需重新归因"
 	warningLogDirNotMigrated      = "log.dir changed; existing logs are not migrated automatically / log.dir 变化，既有日志不会自动迁移"
 )

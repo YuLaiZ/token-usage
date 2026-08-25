@@ -30,6 +30,7 @@ func HeaderLines(en, zh string) string {
 // query 表格两行表头（与上方单行列名常量同源同译文）。
 var (
 	HClient    = HeaderLines("Client", "客户端")
+	HProvider  = HeaderLines("Provider", "供应商")
 	HModel     = HeaderLines("Model", "模型")
 	HProject   = HeaderLines("Project", "项目")
 	HTitle     = HeaderLines("Title", "标题")

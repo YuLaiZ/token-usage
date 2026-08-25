@@ -144,9 +144,8 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 			return result
 		}
 
-		providerAliases := deps.cfg.ProviderAliases
 		if err := persistClientBatch(ctx, usageDB, c.Name(), creq, collected,
-			routerFetched, routerResult, providerAliases, router, log); err != nil {
+			routerFetched, routerResult, router, log); err != nil {
 			// persistClientBatch 失败后再检查 ctx：若事务因 ctx 取消而失败，
 			// 取消不是采集故障，不调用 RecordErrorsByDate（与读阶段取消语义一致）。
 			if ctx.Err() != nil {
@@ -234,7 +233,6 @@ func persistClientBatch(
 	collected collector.CollectResult,
 	routerFetched bool,
 	routerResult collector.RouterCollectResult,
-	providerAliases map[string]string,
 	router collector.RouterAdapter,
 	log *slog.Logger,
 ) error {
@@ -267,11 +265,6 @@ func persistClientBatch(
 			infos, err := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
 			if err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("query router attribution", "查询 router 归因"), err)
-			}
-			for i := range infos {
-				if alias, ok := providerAliases[infos[i].Provider]; ok {
-					infos[i].Provider = alias
-				}
 			}
 			if len(infos) > 0 {
 				if _, err := db.BackfillRouterFields(ctx, tx, infos); err != nil {
@@ -392,12 +385,6 @@ func runRouterOnlyCollect(
 		if qerr != nil {
 			txErr = fmt.Errorf("%s: %w", ui.Bi("query router attribution", "查询 router 归因"), qerr)
 			return result
-		}
-		aliases := deps.cfg.ProviderAliases
-		for i := range infos {
-			if alias, ok := aliases[infos[i].Provider]; ok {
-				infos[i].Provider = alias
-			}
 		}
 		if len(infos) > 0 {
 			if _, err := db.BackfillRouterFields(ctx, tx, infos); err != nil {

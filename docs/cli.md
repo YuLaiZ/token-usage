@@ -186,6 +186,7 @@ Queries token-usage statistics. Output is always a table (there is no `--format`
 token-usage query [date]
 token-usage query client [date]     # default view; bare query is equivalent
 token-usage query model [date]
+token-usage query provider [date]
 token-usage query project [date]
 token-usage query session [date]
 token-usage query summary [date]
@@ -193,11 +194,14 @@ token-usage query summary [date]
 
 The default date is today. If the queried date range has unresolved entries in `collection_errors`, the results end with a collection-error notice and list the affected entries. Use `errors` for details and `collect retry` to retry them.
 
+`query provider` prefers router attribution, then the collector's provider value. Historical empty values remain unattributed; the query does not infer a provider from the client. `provider_aliases` is applied only while rendering this view: aliases with the same value are combined into one row, without changing `usage.db`.
+
 Examples:
 
 ```bash
 token-usage query                    # today, grouped by client
 token-usage query model              # today, grouped by model
+token-usage query provider           # today, grouped by provider
 token-usage query 20260701-20260721  # date range, grouped by client
 token-usage query summary 20260701   # single-day overview
 ```
@@ -306,7 +310,7 @@ token-usage config set <key> <value> --confirm-migrate   # only when migrating d
 
 Supported clients are `claude`, `opencode`, `codex`, `workbuddy`, `zcode`, and `autoclaw`. Their path keys are: Claude `projects_dir`; OpenCode `db`; Codex `state_dir`/`sessions_dir`; WorkBuddy `db`/`projects_dir`; ZCode `db`; AutoClaw `sessions_dir`.
 
-`provider_aliases` normalizes the raw provider name backfilled by CC Switch to a display name. After changing one, follow the command suggestion to run router backfill again. When a name contains `.`, use a quoted segment, for example:
+`provider_aliases` changes labels and grouping only in `query provider`; it does not alter collected or router-backfilled data, and takes effect on the next query. When a name contains `.`, use a quoted segment, for example:
 
 ```bash
 token-usage config set 'provider_aliases."Zhipu AI Coding Plan"' 'Zhipu GLM'
