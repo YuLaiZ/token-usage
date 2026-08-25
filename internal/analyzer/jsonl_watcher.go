@@ -168,12 +168,16 @@ func (w *JSONLWatcher) Run(ctx context.Context) error {
 				}
 			}
 			if event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
-				w.removeWatchedTree(event.Name)
-				if err := w.registerRoots(ctx); err != nil {
-					if w.stopping(ctx) {
-						return nil
+				// 只有被 watch 的目录树确有条目被移除才需要恢复监听；普通
+				// 文件删除与 watch 无关（watch 挂在目录上），跳过全量重注册
+				// ——会话文件删除/轮转是高频事件，逐次重注册加汇总日志会刷屏。
+				if w.removeWatchedTree(event.Name) {
+					if err := w.registerRoots(ctx); err != nil {
+						if w.stopping(ctx) {
+							return nil
+						}
+						return fmt.Errorf("%s: %w", ui.Bi("failed to restore watching after monitored directory changed", "监控目录变更后恢复监听失败"), err)
 					}
-					return fmt.Errorf("%s: %w", ui.Bi("failed to restore watching after monitored directory changed", "监控目录变更后恢复监听失败"), err)
 				}
 			}
 			// 只处理 Create 和 Write 事件
@@ -335,13 +339,18 @@ func (w *JSONLWatcher) checkRunning(ctx context.Context) error {
 // removeWatchedTree 清除 path 及其所有子目录的本地 watch 记录。
 // 目录被 rename/remove 后，fsnotify 可能一次性撤销整棵子树的内核 watch；
 // 若只删除事件路径本身，重建目录时 addTree 会被陈旧 map 误判为已经注册。
-func (w *JSONLWatcher) removeWatchedTree(path string) {
+// removeWatchedTree 清除 path 及其所有子目录的本地 watch 记录，返回是否
+// 确有条目被移除（仅目录树被移除时调用方才需要恢复监听）。
+func (w *JSONLWatcher) removeWatchedTree(path string) bool {
 	path = filepath.Clean(path)
+	removed := false
 	for watched := range w.watched {
 		if pathWithin(path, watched) {
 			delete(w.watched, watched)
+			removed = true
 		}
 	}
+	return removed
 }
 
 func (w *JSONLWatcher) isRelevantDir(path string) bool {

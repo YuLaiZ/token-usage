@@ -388,3 +388,70 @@ func TestJSONLWatcher_StopTwice(t *testing.T) {
 	watcher.Stop()
 	watcher.Stop()
 }
+
+// 文件删除不得触发全量重注册（watch 挂在目录上，与文件无关）；目录删除
+// 才恢复监听。注册汇总日志条数即重注册次数。
+func TestJSONLWatcher_FileRemoveDoesNotReregister(t *testing.T) {
+	tmpDir := t.TempDir()
+	projDir := filepath.Join(tmpDir, "proj")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(projDir, "session.jsonl")
+	if err := os.WriteFile(file, []byte(`{"type":"message"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := &captureLogHandler{}
+	watcher, err := NewJSONLWatcher([]string{tmpDir}, "codex", 50*time.Millisecond,
+		func(string, collector.CollectRequest) {}, slog.New(handler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go watcher.Run(ctx)
+	waitForCount := func(n int) bool {
+		deadline := time.Now().Add(1 * time.Second)
+		for time.Now().Before(deadline) {
+			c := 0
+			for _, msg := range handler.messages() {
+				if msg == "watching directories" {
+					c++
+				}
+			}
+			if c >= n {
+				return true
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		return false
+	}
+	if !waitForCount(1) {
+		t.Fatal("初始注册汇总未出现")
+	}
+
+	// 删除普通会话文件：不得重注册（汇总日志不新增）。
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	countAfterFileRemove := 0
+	for _, msg := range handler.messages() {
+		if msg == "watching directories" {
+			countAfterFileRemove++
+		}
+	}
+	if countAfterFileRemove != 1 {
+		t.Fatalf("文件删除后注册汇总应仍为 1 条，实际 %d", countAfterFileRemove)
+	}
+
+	// 删除被 watch 的子目录：应恢复监听（汇总日志新增）。
+	if err := os.Remove(projDir); err != nil {
+		t.Logf("删除子目录失败（可能已被清理）: %v", err)
+	}
+	if !waitForCount(2) {
+		t.Fatal("目录删除后应触发重注册（第二条汇总日志）")
+	}
+	watcher.Stop()
+}
