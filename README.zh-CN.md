@@ -348,7 +348,7 @@ max_days = 7
 
 > **路由归因现状**：当前只有 Claude（Code/Desktop）配置 `router = "cc_switch"` 会做消息级归因回填。配置入口会拒绝其他客户端（OpenCode/Codex/WorkBuddy/ZCode/AutoClaw）设置非空 `router`：`config set clients.X.router` 直接报错，TUI 也不提供该字段且保存校验拒绝；存量配置中已存在的值读取不受影响，其原始日志仍会写入 `raw_router_logs` 但不会回填 `messages`，因为 CC Switch 的 `app_type` 只识别 Claude 系列。
 >
-> **Provider 别名**：`provider_aliases` 只规范 CC Switch 回填的 provider 显示名；key 必须与原始 provider 名完全一致。修改后按命令提示执行 `collect router --client <name>`（或 `collect all --client <name>`）回填既有归因数据。
+> **供应商别名**：`provider_aliases` 只规范 CC Switch 回填的 provider 显示名；key 必须与原始 provider 名完全一致。修改后按命令提示执行 `collect router --client <name>`（或 `collect all --client <name>`）回填既有归因数据。
 
 ## 平台支持
 

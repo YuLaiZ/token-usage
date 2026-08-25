@@ -32,7 +32,7 @@ func newMainMenu(app *App) *mainMenu {
 			ui.Bi("Routers", "路由中间件"),
 			ui.Bi("Daemon", "守护进程"),
 			ui.Bi("Logs", "日志"),
-			ui.Bi("Provider aliases", "Provider 别名"),
+			ui.Bi("Provider aliases", "供应商别名"),
 			ui.Bi("Data dir (read-only)", "数据目录(只读)"),
 		},
 	}

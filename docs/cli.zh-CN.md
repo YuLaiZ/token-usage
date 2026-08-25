@@ -302,7 +302,7 @@ token-usage config set <key> <value> --confirm-migrate   # 仅迁移 data_dir �
 | 日志 | `log.level`、`log.dir`、`log.max_days` |
 | 客户端 | `clients.<name>.enabled`、`clients.<name>.router`、`clients.<name>.paths.<path-key>` |
 | 路由 | `routers.cc_switch.db_path` |
-| Provider 别名 | `provider_aliases.<原始 provider 名>` |
+| 供应商别名 | `provider_aliases.<原始 provider 名>` |
 
 受支持 client 为 `claude`、`opencode`、`codex`、`workbuddy`、`zcode`、`autoclaw`。path key 分别为：Claude `projects_dir`；OpenCode `db`；Codex `state_dir`/`sessions_dir`；WorkBuddy `db`/`projects_dir`；ZCode `db`；AutoClaw `sessions_dir`。
 

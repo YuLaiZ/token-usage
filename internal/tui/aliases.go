@@ -48,7 +48,7 @@ func (p *aliasesPage) refreshKeys() {
 	sort.Strings(p.keys)
 }
 
-func (p *aliasesPage) title() string { return ui.Bi("Provider aliases", "Provider 别名") }
+func (p *aliasesPage) title() string { return ui.Bi("Provider aliases", "供应商别名") }
 func (p *aliasesPage) Init() tea.Cmd { return nil }
 
 // add 新增或覆盖 alias(key→value)。key/value 均 trim 后非空才写入。
@@ -208,7 +208,7 @@ func (p *aliasesPage) delegateInput(msg tea.Msg) *aliasesPage {
 }
 
 func (p *aliasesPage) View() string {
-	s := ui.Bi("Provider aliases", "Provider 别名") + "\n\n"
+	s := ui.Bi("Provider aliases", "供应商别名") + "\n\n"
 	for i, k := range p.keys {
 		cur := "  "
 		if i == p.cursor && p.cursor < len(p.keys) {
