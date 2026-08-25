@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -79,6 +80,50 @@ func TestWriteUserConfigAtomic_TildePreserved(t *testing.T) {
 	raw, _ := os.ReadFile(path)
 	if !strings.Contains(string(raw), "~/.token-usage") {
 		t.Errorf("文件应含 ~ 字面: %s", string(raw))
+	}
+}
+
+func TestMarshalConfig_ProviderAliasKeysAlwaysDoubleQuoted(t *testing.T) {
+	src := &Config{ProviderAliases: map[string]string{
+		"BigModel - Coding Plan": "Zhipu GLM",
+		"OpenCode-Completions":   "OpenCode",
+		`Provider "Special"`:     `Display "Name"`,
+	}}
+	data, err := MarshalConfig(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		`"BigModel - Coding Plan" = "Zhipu GLM"`,
+		`"OpenCode-Completions" = "OpenCode"`,
+		`"Provider \"Special\"" = "Display \"Name\""`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("provider alias 应统一使用双引号，缺少 %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "OpenCode-Completions =") {
+		t.Errorf("provider alias key 不应输出为 bare key:\n%s", text)
+	}
+
+	var got Config
+	if err := toml.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.ProviderAliases, src.ProviderAliases) {
+		t.Errorf("provider aliases round trip = %#v, want %#v", got.ProviderAliases, src.ProviderAliases)
+	}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := WriteUserConfigAtomic(path, src); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(loaded.ProviderAliases, src.ProviderAliases) {
+		t.Errorf("loaded provider aliases = %#v, want %#v", loaded.ProviderAliases, src.ProviderAliases)
 	}
 }
 
