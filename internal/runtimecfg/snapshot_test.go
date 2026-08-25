@@ -134,6 +134,21 @@ func TestLoadUserConfigSnapshot_NilMapsInitialized(t *testing.T) {
 	snap.Config.ProviderAliases["A"] = "B"
 }
 
+// TUI/config set 都通过 snapshot 取用户层配置；别名 key 必须保留原始大小写。
+func TestLoadUserConfigSnapshot_PreservesProviderAliasKeyCase(t *testing.T) {
+	p := writeConfigBytes(t, []byte("[provider_aliases]\n\"OpenCode-Completions\" = \"OpenCode-Display\"\n"))
+	snap, err := LoadUserConfigSnapshot(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snap.Config.ProviderAliases["OpenCode-Completions"]; got != "OpenCode-Display" {
+		t.Fatalf("mixed-case alias value = %q, want OpenCode-Display", got)
+	}
+	if _, ok := snap.Config.ProviderAliases["opencode-completions"]; ok {
+		t.Fatalf("alias key was lowercased: %#v", snap.Config.ProviderAliases)
+	}
+}
+
 func TestLoadUserConfigSnapshot_RejectsUnknownNestedFields(t *testing.T) {
 	tests := []struct {
 		name    string

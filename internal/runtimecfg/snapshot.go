@@ -6,12 +6,9 @@
 package runtimecfg
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"strings"
-
-	"github.com/spf13/viper"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/ui"
@@ -77,17 +74,7 @@ func LoadUserConfigSnapshot(path string) (UserSnapshot, error) {
 // parseUserConfig 从 TOML 字节解析用户层 Config（initMaps 初始化 nil map，不补默认值）。
 // 抽出便于 snapshot 与 raw config 的 LoadUserConfig 复用同一字节→对象语义。
 func parseUserConfig(raw []byte) (*config.Config, error) {
-	v := viper.New()
-	v.SetConfigType("toml")
-	if err := v.ReadConfig(bytes.NewReader(raw)); err != nil {
-		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to parse config file", "解析配置文件失败"), err)
-	}
-	var cfg config.Config
-	if err := v.UnmarshalExact(&cfg); err != nil {
-		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to parse config file", "解析配置文件失败"), err)
-	}
-	initMaps(&cfg)
-	return &cfg, nil
+	return config.ParseUserConfig(raw)
 }
 
 // initMaps 把 nil map 初始化为空 map（仅此，不回填默认值）。

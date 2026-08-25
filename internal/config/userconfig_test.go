@@ -49,6 +49,22 @@ func TestLoadUserConfig_NilMapsInitialized(t *testing.T) {
 	}
 }
 
+// provider_aliases 的 key 是 query provider 的精确匹配键，大小写不得被解析器改写。
+func TestLoadUserConfig_PreservesProviderAliasKeyCase(t *testing.T) {
+	cfg, err := LoadUserConfig(writeUserConfigTemp(t, `[provider_aliases]
+"OpenCode-Completions" = "OpenCode-Display"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.ProviderAliases["OpenCode-Completions"]; got != "OpenCode-Display" {
+		t.Fatalf("mixed-case alias value = %q, want OpenCode-Display", got)
+	}
+	if _, ok := cfg.ProviderAliases["opencode-completions"]; ok {
+		t.Fatalf("alias key was lowercased: %#v", cfg.ProviderAliases)
+	}
+}
+
 // ~ 不展开(保持字面值)
 func TestLoadUserConfig_TildeNotExpanded(t *testing.T) {
 	cfg, err := LoadUserConfig(writeUserConfigTemp(t, `data_dir = "~/.token-usage"

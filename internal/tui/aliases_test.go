@@ -123,14 +123,26 @@ func TestAliasesPage_AddTrimsKeyAndValue(t *testing.T) {
 	edit := &config.Config{ProviderAliases: map[string]string{}}
 	a := newAppForTest(edit, edit, nil)
 	p := newAliasesPage(a)
-	if !p.add("  K  ", "  v  ") {
+	if !p.add("  OpenCode-Completions  ", "  OpenCode-Display  ") {
 		t.Fatal("带空白 key/value trim 后非空应 add 成功")
 	}
-	if a.draft.ProviderAliases["K"] != "v" {
-		t.Errorf("add 应 trim 落库, K=%q", a.draft.ProviderAliases["K"])
+	if a.draft.ProviderAliases["OpenCode-Completions"] != "OpenCode-Display" {
+		t.Errorf("add 应只 trim 两端空白并保留大小写, aliases=%#v", a.draft.ProviderAliases)
 	}
-	if a.draft.ProviderAliases["  K  "] != "" {
+	if a.draft.ProviderAliases["  OpenCode-Completions  "] != "" {
 		t.Error("不应残留未 trim 的 key")
+	}
+}
+
+func TestAliasesPage_EditTrimsOnlyOuterWhitespaceAndPreservesCase(t *testing.T) {
+	edit := &config.Config{ProviderAliases: map[string]string{"OpenCode-Completions": "old"}}
+	a := newAppForTest(edit, edit, nil)
+	p := newAliasesPage(a)
+	if !p.editValue("OpenCode-Completions", "  OpenCode-Display  ") {
+		t.Fatal("edit 应成功")
+	}
+	if got := a.draft.ProviderAliases["OpenCode-Completions"]; got != "OpenCode-Display" {
+		t.Errorf("edit 应只 trim 两端空白并保留大小写, got %q", got)
 	}
 }
 

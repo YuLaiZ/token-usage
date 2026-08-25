@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/pelletier/go-toml/v2"
 	"github.com/spf13/viper"
 
 	"github.com/YuLaiZ/token-usage/internal/ui"
@@ -36,6 +37,13 @@ func LoadUserConfig(path string) (*Config, error) {
 		))
 	}
 
+	return ParseUserConfig(raw)
+}
+
+// ParseUserConfig 从 TOML 字节解析用户配置层。
+// Viper 维持既有的严格字段校验与兼容行为；但它会把 map key 归一为小写，
+// 因此 provider_aliases 额外从原始 TOML 恢复大小写，以满足 query provider 的精确匹配。
+func ParseUserConfig(raw []byte) (*Config, error) {
 	v := viper.New()
 	v.SetConfigType("toml")
 	if err := v.ReadConfig(bytes.NewReader(raw)); err != nil {
@@ -45,8 +53,36 @@ func LoadUserConfig(path string) (*Config, error) {
 	if err := v.UnmarshalExact(&cfg); err != nil {
 		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to parse config file", "解析配置文件失败"), err)
 	}
+	if err := restoreProviderAliasKeyCase(raw, &cfg); err != nil {
+		return nil, err
+	}
 	initMaps(&cfg)
 	return &cfg, nil
+}
+
+// restoreProviderAliasKeyCase 用 TOML 解码器保留 provider_aliases 的原始 key。
+// 仅覆盖该表，其他配置仍完全沿用 Viper 的现有解析语义。
+func restoreProviderAliasKeyCase(raw []byte, cfg *Config) error {
+	var doc struct {
+		ProviderAliases map[string]any `toml:"provider_aliases"`
+	}
+	if err := toml.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("failed to parse config file", "解析配置文件失败"), err)
+	}
+	if doc.ProviderAliases == nil {
+		return nil
+	}
+	aliases := make(map[string]string, len(doc.ProviderAliases))
+	for key, value := range doc.ProviderAliases {
+		text, ok := value.(string)
+		if !ok {
+			// 由 Viper 保留既有的类型校验/转换合同；此处只处理字符串别名。
+			return nil
+		}
+		aliases[key] = text
+	}
+	cfg.ProviderAliases = aliases
+	return nil
 }
 
 // LoadUserConfigAuto 从默认路径加载用户配置层。
