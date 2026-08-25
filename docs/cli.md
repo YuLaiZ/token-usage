@@ -18,7 +18,7 @@ token-usage
 │   ├── client [YYYYMMDD|YYYYMMDD-YYYYMMDD]  # group by client (default view)
 │   ├── model [YYYYMMDD|YYYYMMDD-YYYYMMDD]   # group by model
 │   ├── project [YYYYMMDD|YYYYMMDD-YYYYMMDD] # group by project
-│   ├── sessions [YYYYMMDD|YYYYMMDD-YYYYMMDD]# session details
+│   ├── session [YYYYMMDD|YYYYMMDD-YYYYMMDD]# session details
 │   └── summary [YYYYMMDD|YYYYMMDD-YYYYMMDD] # overview summary
 ├── errors [YYYYMMDD]
 ├── config                                # no arguments: open the interactive configuration TUI
@@ -187,7 +187,7 @@ token-usage query [date]
 token-usage query client [date]     # default view; bare query is equivalent
 token-usage query model [date]
 token-usage query project [date]
-token-usage query sessions [date]
+token-usage query session [date]
 token-usage query summary [date]
 ```
 

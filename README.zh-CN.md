@@ -122,7 +122,7 @@ token-usage collect
 | `collect router --client X` | 仅 router 全量回填（不动 messages；`--client` 必填且须已配置 router） |
 | `collect retry` | 重试 `collection_errors` 中未解决失败组（`--client X` 限定） |
 | `query [日期]` | 查询统计（默认今日，按客户端分组） |
-| `query client/model/project/sessions/summary [日期]` | 对应视图查询 |
+| `query client/model/project/session/summary [日期]` | 对应视图查询 |
 | `errors [YYYYMMDD]` | 查看采集异常（`--source X` / `--unresolved`） |
 
 日期为位置参数：`YYYYMMDD` 单日或 `YYYYMMDD-YYYYMMDD` 闭区间；无 `--date` 标志。

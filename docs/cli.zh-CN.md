@@ -18,7 +18,7 @@ token-usage
 │   ├── client [YYYYMMDD|YYYYMMDD-YYYYMMDD]  # 按客户端分组（默认视图）
 │   ├── model [YYYYMMDD|YYYYMMDD-YYYYMMDD]   # 按模型分组
 │   ├── project [YYYYMMDD|YYYYMMDD-YYYYMMDD] # 按项目分组
-│   ├── sessions [YYYYMMDD|YYYYMMDD-YYYYMMDD]# 会话明细
+│   ├── session [YYYYMMDD|YYYYMMDD-YYYYMMDD]# 会话明细
 │   └── summary [YYYYMMDD|YYYYMMDD-YYYYMMDD] # 总览摘要
 ├── errors [YYYYMMDD]
 ├── config                                # 无参数：打开交互式配置 TUI
@@ -187,7 +187,7 @@ token-usage query [日期]
 token-usage query client [日期]     # 默认视图，裸 query 与此等价
 token-usage query model [日期]
 token-usage query project [日期]
-token-usage query sessions [日期]
+token-usage query session [日期]
 token-usage query summary [日期]
 ```
 

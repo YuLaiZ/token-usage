@@ -148,7 +148,7 @@ Queries directly SUM `fresh_input_tokens` and `total_tokens`: values come from t
 User runs a command → load configuration → collect/query/edit configuration → print results → exit
 ```
 
-Command groups: `version` (five-line detailed output), Cobra's built-in `completion`, `config` (interactive TUI with `show`/`init`/`get`/`set` subcommands), `collect` (with `all`/`router`/`retry`), `query` (with `client`/`model`/`project`/`sessions`/`summary`), `errors`, `start`, `status`, `stop`, `restart`, and the hidden internal `_run`. The root command also has the `-v, --version` flag for one-line short output.
+Command groups: `version` (five-line detailed output), Cobra's built-in `completion`, `config` (interactive TUI with `show`/`init`/`get`/`set` subcommands), `collect` (with `all`/`router`/`retry`), `query` (with `client`/`model`/`project`/`session`/`summary`), `errors`, `start`, `status`, `stop`, `restart`, and the hidden internal `_run`. The root command also has the `-v, --version` flag for one-line short output.
 
 Running `token-usage` with no arguments only prints help; it neither starts the TUI nor the daemon. See the [CLI Reference](cli.md) for the full command tree, arguments, flags, exit codes, and examples.
 

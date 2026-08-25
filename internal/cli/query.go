@@ -43,7 +43,7 @@ func newQueryCmd() *cobra.Command {
 		newQuerySubCmd("client", "Group by client (default) / 按客户端分组（默认）", viewClient),
 		newQuerySubCmd("model", "Group by model / 按模型分组", viewModel),
 		newQuerySubCmd("project", "Group by project / 按项目分组", viewProject),
-		newQuerySubCmd("sessions", "View session details / 查看会话明细", viewSessions),
+		newQuerySubCmd("session", "View session details / 查看会话明细", viewSessions),
 		newQuerySubCmd("summary", "View summary / 查看总览摘要", viewSummary),
 	)
 

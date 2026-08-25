@@ -124,7 +124,7 @@ Running `token-usage` without arguments only prints help. See the **[CLI Referen
 | `collect router --client X` | Full router backfill only; does not touch `messages`; `--client` is required and the client must have a router configured. |
 | `collect retry` | Retries unresolved groups in `collection_errors`; `--client X` limits the client. |
 | `query [date]` | Queries usage statistics; defaults to today and groups by client. |
-| `query client/model/project/sessions/summary [date]` | Queries the selected view. |
+| `query client/model/project/session/summary [date]` | Queries the selected view. |
 | `errors [YYYYMMDD]` | Displays collection errors; supports `--source X` and `--unresolved`. |
 
 Dates are positional arguments: a single day is `YYYYMMDD`, and an inclusive range is `YYYYMMDD-YYYYMMDD`; there is no `--date` flag.
