@@ -188,6 +188,11 @@ func workBuddyMessage(fileSessionID string, in workbuddyParsedMessage, modelMapp
 	if total == 0 {
 		total = in.InputTokens + in.OutputTokens
 	}
+	provider := strings.TrimSpace(modelMapping[in.Model])
+	if provider == "" {
+		// WorkBuddy 的 models.json 可能不包含当前模型；客户端来源仍可确定。
+		provider = model.ClientWorkBuddy
+	}
 	return model.Message{
 		ID:                in.ID,
 		SessionID:         fileSessionID,
@@ -195,7 +200,7 @@ func workBuddyMessage(fileSessionID string, in workbuddyParsedMessage, modelMapp
 		Date:              workbuddyTsMsToDate(in.Timestamp),
 		TS:                in.Timestamp,
 		Model:             in.Model,
-		Provider:          modelMapping[in.Model],
+		Provider:          provider,
 		Directory:         in.Cwd,
 		Project:           workbuddyInferProject(in.Cwd),
 		InputTokens:       in.InputTokens,

@@ -826,9 +826,9 @@ func TestWorkBuddyCollector_ModelFallbackAndVendorMapping(t *testing.T) {
 	if got := byID["wb-fb"].Model; got != "DeepSeek-V4 Pro" {
 		t.Errorf("wb-fb Model = %q, want DeepSeek-V4 Pro (requestModelName 回退)", got)
 	}
-	// models.json 中无 requestModelName 映射 -> provider 为空
-	if got := byID["wb-fb"].Provider; got != "" {
-		t.Errorf("wb-fb Provider = %q, want 空 (models.json 无此 model 映射)", got)
+	// models.json 中无 requestModelName 映射时，仍按 WorkBuddy 官方来源归因。
+	if got := byID["wb-fb"].Provider; got != "WorkBuddy" {
+		t.Errorf("wb-fb Provider = %q, want WorkBuddy (models.json 无此 model 映射)", got)
 	}
 	// model 短 id 经 models.json 映射 vendor
 	if got := byID["wb-map"].Model; got != "deepseek-v4-pro" {

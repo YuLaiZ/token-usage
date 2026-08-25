@@ -793,6 +793,23 @@ func TestLoadZCodeProviderMap_ParsesIDName(t *testing.T) {
 	}
 }
 
+func TestLoadZCodeProviderMap_ConfigNameOverridesCache(t *testing.T) {
+	root := t.TempDir()
+	cachePath := filepath.Join(root, "v2", "bots-model-cache.v2.json")
+	writeZCodeCacheJSON(t, cachePath, []map[string]any{{
+		"id": "provider-id", "name": "Stale cache name",
+	}})
+	configPath := filepath.Join(root, "v2", "config.json")
+	config := []byte(`{"provider":{"provider-id":{"name":"OpenCode-Completions"}}}`)
+	if err := os.WriteFile(configPath, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := loadZCodeProviderMap(cachePath)["provider-id"]; got != "OpenCode-Completions" {
+		t.Errorf("config provider name = %q, want OpenCode-Completions", got)
+	}
+}
+
 func TestLoadZCodeProviderMap_FileNotFound_EmptyMap(t *testing.T) {
 	m := loadZCodeProviderMap(filepath.Join(t.TempDir(), "no-such.json"))
 	if m == nil || len(m) != 0 {

@@ -406,15 +406,20 @@ func TestClaudeCollector_ClientMapping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	clients := map[string]string{}
+	messages := map[string]model.Message{}
 	for _, m := range result.Messages {
-		clients[m.ID] = m.Client
+		messages[m.ID] = m
 	}
-	if clients["code-msg"] != model.ClientClaudeCode {
-		t.Errorf("code-msg client = %q, want %q", clients["code-msg"], model.ClientClaudeCode)
+	if messages["code-msg"].Client != model.ClientClaudeCode {
+		t.Errorf("code-msg client = %q, want %q", messages["code-msg"].Client, model.ClientClaudeCode)
 	}
-	if clients["desktop-msg"] != model.ClientClaudeDesktop {
-		t.Errorf("desktop-msg client = %q, want %q", clients["desktop-msg"], model.ClientClaudeDesktop)
+	if messages["desktop-msg"].Client != model.ClientClaudeDesktop {
+		t.Errorf("desktop-msg client = %q, want %q", messages["desktop-msg"].Client, model.ClientClaudeDesktop)
+	}
+	for _, id := range []string{"code-msg", "desktop-msg"} {
+		if messages[id].Provider != "Anthropic" {
+			t.Errorf("%s provider = %q, want Anthropic", id, messages[id].Provider)
+		}
 	}
 }
 

@@ -322,12 +322,14 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 			}
 		}
 		messages = append(messages, model.Message{
-			ID:                entry.Message.ID,
-			SessionID:         fileSessionID,
-			Client:            model.RawClientToClient[client],
-			Date:              date,
-			TS:                ts,
-			Model:             entry.Message.Model,
+			ID:        entry.Message.ID,
+			SessionID: fileSessionID,
+			Client:    model.RawClientToClient[client],
+			Date:      date,
+			TS:        ts,
+			Model:     entry.Message.Model,
+			// Claude Code/Desktop 的本地会话不记录 provider；其官方来源可确定。
+			Provider:          "Anthropic",
 			Directory:         cwd,
 			Project:           project,
 			InputTokens:       usage.InputTokens,

@@ -460,6 +460,9 @@ func TestCodexCollector_UsesRolloutTokenUsage(t *testing.T) {
 	if m.TotalTokens != 120 {
 		t.Errorf("TotalTokens = %d, want 120 (from token_count event)", m.TotalTokens)
 	}
+	if m.Provider != "OpenAI" {
+		t.Errorf("Provider = %q, want OpenAI (official Codex channel)", m.Provider)
+	}
 	if m.SessionID != "thread-1" {
 		t.Errorf("SessionID = %q, want 'thread-1' (from session_meta)", m.SessionID)
 	}

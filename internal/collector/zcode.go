@@ -446,7 +446,8 @@ func zcodeCachePathFromDB(dbPath string) string {
 	return filepath.Join(zcodeRoot, "v2", "bots-model-cache.v2.json")
 }
 
-// loadZCodeProviderMap 读 bots-model-cache.v2.json，返回 provider_id→name 映射。
+// loadZCodeProviderMap 读 ZCode v2 的 provider 显示名，返回 provider_id→name 映射。
+// config.json 是当前用户配置的权威来源，优先于 cache；cache 保留为历史 schema 兼容。
 // 兼容两种 schema：version 1 的顶层 providers[].id/name；version 2 起顶层 providers
 // 字段移除，provider 显示名挪到 workspaceConfigOptions.{workspace::tab}.configOptions[]
 // .options[].modelProviderId/modelProviderName。两路同一次 Unmarshal 合并解析。
@@ -456,7 +457,7 @@ func loadZCodeProviderMap(cachePath string) map[string]string {
 	m := make(map[string]string)
 	data, err := os.ReadFile(cachePath)
 	if err != nil {
-		return m
+		data = nil
 	}
 	var doc struct {
 		Providers []struct {
@@ -472,21 +473,39 @@ func loadZCodeProviderMap(cachePath string) map[string]string {
 			} `json:"configOptions"`
 		} `json:"workspaceConfigOptions"`
 	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return m
-	}
-	for _, p := range doc.Providers {
-		if p.ID != "" {
-			m[p.ID] = p.Name
+	if len(data) > 0 && json.Unmarshal(data, &doc) == nil {
+		for _, p := range doc.Providers {
+			if p.ID != "" && p.Name != "" {
+				m[p.ID] = p.Name
+			}
 		}
-	}
-	for _, ws := range doc.WorkspaceConfigOptions {
-		for _, opt := range ws.ConfigOptions {
-			for _, model := range opt.Options {
-				if model.ModelProviderID != "" {
-					m[model.ModelProviderID] = model.ModelProviderName
+		for _, ws := range doc.WorkspaceConfigOptions {
+			for _, opt := range ws.ConfigOptions {
+				for _, model := range opt.Options {
+					if model.ModelProviderID != "" && model.ModelProviderName != "" {
+						m[model.ModelProviderID] = model.ModelProviderName
+					}
 				}
 			}
+		}
+	}
+	// v2/config.json 形如 {"provider":{"<provider-id>":{"name":"..."}}}。
+	// 只解码显示名，apiKey 等敏感字段不会进入内存结构。
+	configData, err := os.ReadFile(filepath.Join(filepath.Dir(cachePath), "config.json"))
+	if err != nil {
+		return m
+	}
+	var configDoc struct {
+		Provider map[string]struct {
+			Name string `json:"name"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal(configData, &configDoc); err != nil {
+		return m
+	}
+	for id, provider := range configDoc.Provider {
+		if id != "" && provider.Name != "" {
+			m[id] = provider.Name
 		}
 	}
 	return m

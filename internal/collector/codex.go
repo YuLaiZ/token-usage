@@ -794,12 +794,15 @@ func codexMessageFromUsage(ts int64, messageID string, index int,
 		total = usage.InputTokens + usage.OutputTokens
 	}
 	return model.Message{
-		ID:               fmt.Sprintf("%s#%d", messageID, index),
-		SessionID:        sessionID,
-		Client:           client,
-		Date:             codexTsMsToDate(ts),
-		TS:               ts,
-		Model:            currentModel,
+		ID:        fmt.Sprintf("%s#%d", messageID, index),
+		SessionID: sessionID,
+		Client:    client,
+		Date:      codexTsMsToDate(ts),
+		TS:        ts,
+		Model:     currentModel,
+		// Codex CLI/App 当前均为官方 OpenAI 渠道；rollout 未提供 provider 字段，
+		// 因而在采集时填入确定的来源归因，不能依赖用户展示别名。
+		Provider:         "OpenAI",
 		Directory:        cwd,
 		Project:          codexProjectName(cwd),
 		InputTokens:      usage.InputTokens,
