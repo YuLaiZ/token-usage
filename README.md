@@ -130,6 +130,8 @@ Running `token-usage` without arguments only prints help. See the **[CLI Referen
 
 Dates are positional arguments: a single day is `YYYYMMDD`, and an inclusive range is `YYYYMMDD-YYYYMMDD`; there is no `--date` flag.
 
+Every query command opens its output with a bilingual statistics header (printed once even for multi-table groups): the queried range, the latest message timestamp inside that range (`Data through`), and the most recent successful collection completion time (`Last successful collection`); fields with no data show `—`. See the **[CLI Reference](docs/cli.md)** for the exact semantics of each field.
+
 ### Configuration
 
 | Command | Purpose |

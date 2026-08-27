@@ -193,6 +193,19 @@ token-usage query summary [date]
 token-usage query custom <name> [date]  # runs a configured subquery or group by name
 ```
 
+Every query command starts its output with a shared statistics header, printed exactly once no matter how many tables follow:
+
+```text
+Usage statistics / 使用统计
+Query range / 统计范围: 2026-07-01 ~ 2026-07-21
+Data through / 数据截至: 2026-07-21 23:59:59
+Last successful collection / 最近成功采集: 2026-07-22 08:15:03
+```
+
+- `Query range / 统计范围` echoes the actual date argument: a single day alone, or an inclusive range as `YYYY-MM-DD ~ YYYY-MM-DD`.
+- `Data through / 数据截至` is the latest message-event timestamp (`messages.ts`) inside the queried range, displayed in local time to the second. Message event times are the temporal boundary of the statistics; the field shows `—` when the range contains no messages.
+- `Last successful collection / 最近成功采集` is the most recent successful collection completion time in the whole database (`collection_log.collected_at`, stored in UTC and displayed in local time). It does not imply that every client was collected up to that moment, and it shows `—` before any successful collection exists.
+
 The default date is today. If the queried date range has unresolved entries in `collection_errors`, the results end with a collection-error notice and list the affected entries; when several tables are output (a group), the notice appears once after all of them. Use `errors` for details and `collect retry` to retry them.
 
 Every grouped view (the four built-in views and every custom multi-dimensional table) ends with a `Total / 总计` row computed from the same date range as the table; session details and the summary do not have this row.

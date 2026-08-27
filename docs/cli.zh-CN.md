@@ -193,6 +193,19 @@ token-usage query summary [日期]
 token-usage query custom <name> [日期]  # 按名称执行已配置的子查询或组合查询
 ```
 
+每条 query 命令的输出都以一个统一的统计信息区开始，无论后面输出多少张表都只打印一次：
+
+```text
+Usage statistics / 使用统计
+Query range / 统计范围: 2026-07-01 ~ 2026-07-21
+Data through / 数据截至: 2026-07-21 23:59:59
+Last successful collection / 最近成功采集: 2026-07-22 08:15:03
+```
+
+- `Query range / 统计范围` 回显本次实际日期参数：单日只显示该日，闭区间显示为 `YYYY-MM-DD ~ YYYY-MM-DD`。
+- `Data through / 数据截至` 是统计日期范围内最新的消息事件时间（`messages.ts`），按本机时区显示到秒。消息事件时间才是统计数据的时间边界；范围内没有消息时显示 `—`。
+- `Last successful collection / 最近成功采集` 是全库最近一次成功采集完成的时间（`collection_log.collected_at`，库内以 UTC 存储，展示时转换为本机时区）。它不代表每个客户端都已完整采集到该时刻；还没有任何成功采集记录时显示 `—`。
+
 缺省日期为今天。若查询的日期区间在 `collection_errors` 中存在未解决记录，结果末尾会附「采集异常」提示并列出条目（组合查询输出多张表时，全部表结束后只提示一次），建议用 `errors` 查看详情、`collect retry` 重试。
 
 所有分组视图（四个内置视图与全部自定义多维表）末行显示 `Total / 总计`，总计与表格使用同一日期范围独立聚合；会话明细与总览摘要不追加该行。

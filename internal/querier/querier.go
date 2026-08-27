@@ -483,8 +483,7 @@ func (q *Querier) Summary(ctx context.Context, dates []string) (string, error) {
 
 	var sb strings.Builder
 	sb.WriteString(ui.Bi("Summary", "总览摘要") + "\n\n")
-	firstDate, lastDate := dateBounds(dates)
-	fmt.Fprintf(&sb, "%s: %s ~ %s\n", ui.Bi("Date range", "日期范围"), firstDate, lastDate)
+	// 统计范围只由 CLI 统一信息区的 Query range 行承载(单日不渲染 a ~ a),这里不再重复。
 	fmt.Fprintf(&sb, "%s: %d\n", ui.Bi("Clients", "客户端数"), clientCount)
 	fmt.Fprintf(&sb, "%s: %d\n", ui.Bi("Total requests", "请求总数"), requestCount)
 	fmt.Fprintf(&sb, "%s: %s\n", ui.ColInput, formatTokens(freshInput))
@@ -495,19 +494,6 @@ func (q *Querier) Summary(ctx context.Context, dates []string) (string, error) {
 	fmt.Fprintf(&sb, "%s: %s\n", ui.ColTotal, formatTokens(totalTokens))
 
 	return sb.String(), nil
-}
-
-func dateBounds(dates []string) (string, string) {
-	first, last := dates[0], dates[0]
-	for _, date := range dates[1:] {
-		if date < first {
-			first = date
-		}
-		if date > last {
-			last = date
-		}
-	}
-	return first, last
 }
 
 func formatTokens(tokens int64) string {

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +17,9 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/querydef"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
+
+// emDash 是时间字段缺数据时的占位符:范围内无消息事件 / 库中无成功采集记录。
+const emDash = "—"
 
 // queryView 标识 query 命令的互斥视图。裸 query 与 query client 共用 viewClient。
 type queryView int
@@ -237,12 +242,16 @@ func resolveTarget(defs *querydef.QueryDefinitions, name string) (querydef.Targe
 }
 
 // executeTargetQuery 把目标展开为渲染序列并逐表输出;全部表完成后统一输出一次异常警告。
+// 统一统计信息区只在全部表格前打印一次,不随表数量重复。
 func executeTargetQuery(ctx context.Context, out io.Writer, usageDB *db.DB, dates []string, defs *querydef.QueryDefinitions, target querydef.Target, aliases map[string]string) error {
 	views, err := targetDimensionViews(defs, target)
 	if err != nil {
 		return err
 	}
 	q := querier.New(usageDB)
+	if err := printQueryStatisticsHeader(ctx, out, q, dates); err != nil {
+		return err
+	}
 	for _, view := range views {
 		view.Aliases = aliases
 		result, err := q.RunDimensionView(ctx, dates, view)
@@ -340,6 +349,10 @@ func executeQueryDates(ctx context.Context, out io.Writer, usageDB *db.DB, dates
 func executeQueryDatesWithAliases(ctx context.Context, out io.Writer, usageDB *db.DB, dates []string, view queryView, aliases map[string]string) error {
 	q := querier.New(usageDB)
 
+	if err := printQueryStatisticsHeader(ctx, out, q, dates); err != nil {
+		return err
+	}
+
 	var result string
 	var err error
 	switch view {
@@ -363,6 +376,43 @@ func executeQueryDatesWithAliases(ctx context.Context, out io.Writer, usageDB *d
 
 	fmt.Fprintln(out, result)
 	return showErrorWarningsContext(ctx, out, usageDB, dates)
+}
+
+// printQueryStatisticsHeader 查询新鲜度指标并把统一信息区写到 out。
+// 每个 query 执行入口在最开头调用一次;调用方保证 dates 非空(日期解析先于 DB 打开)。
+func printQueryStatisticsHeader(ctx context.Context, out io.Writer, q *querier.Querier, dates []string) error {
+	fresh, err := q.Freshness(ctx, dates)
+	if err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("failed to query data freshness", "查询数据新鲜度失败"), err)
+	}
+	first, last := querier.DateBounds(dates)
+	fmt.Fprint(out, queryStatisticsHeader(first, last, fresh))
+	return nil
+}
+
+// queryStatisticsHeader 渲染所有 query 输出共用的统计信息区:固定标题、
+// 本次查询的实际日期范围、范围内消息事件边界(数据截至)与全库最近一次
+// 成功采集完成时间。缺数据的两项分别显示 em dash。标题不携带执行时间或日期。
+func queryStatisticsHeader(first, last string, fresh querier.Freshness) string {
+	rangeText := first
+	if first != last {
+		rangeText = first + " ~ " + last
+	}
+	through := emDash
+	if fresh.MaxMessageTS > 0 {
+		through = time.UnixMilli(fresh.MaxMessageTS).Local().Format(time.DateTime)
+	}
+	collected := emDash
+	if !fresh.LastCollection.IsZero() {
+		collected = fresh.LastCollection.Format(time.DateTime)
+	}
+	var sb strings.Builder
+	sb.WriteString(ui.Bi("Usage statistics", "使用统计") + "\n")
+	fmt.Fprintf(&sb, "%s: %s\n", ui.Bi("Query range", "统计范围"), rangeText)
+	fmt.Fprintf(&sb, "%s: %s\n", ui.Bi("Data through", "数据截至"), through)
+	fmt.Fprintf(&sb, "%s: %s\n", ui.Bi("Last successful collection", "最近成功采集"), collected)
+	sb.WriteString("\n")
+	return sb.String()
 }
 
 func showErrorWarnings(out io.Writer, usageDB *db.DB, dates []string) error {

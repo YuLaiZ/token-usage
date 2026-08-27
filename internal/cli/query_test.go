@@ -6,12 +6,14 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/model"
+	"github.com/YuLaiZ/token-usage/internal/querier"
 )
 
 // TestNewQueryCmd_NoOldFlags 断言 删除的旧 flag 已全部不存在，
@@ -555,5 +557,228 @@ VALUES ('m1', 's', 'claude', '2026-07-09', 0, 'mod', 'source-a', '', 100),
 	}
 	if strings.Contains(out, "source-a") || strings.Contains(out, "router-b") {
 		t.Errorf("别名合并后不得残留原始标签:\n%s", out)
+	}
+}
+
+// ---- 统一统计信息区（范围 / 数据截至 / 最近成功采集） ----
+
+// TestQueryStatisticsHeader_Rendering 锁定信息区文案与三类边界形态:
+// 标题不带日期、单日只显示该日、闭区间显示 a ~ b、两项时间缺数据时显示 em dash。
+func TestQueryStatisticsHeader_Rendering(t *testing.T) {
+	ts := time.Date(2026, 8, 9, 12, 34, 56, 0, time.UTC)
+	collected := time.Date(2026, 8, 20, 9, 30, 45, 0, time.UTC)
+
+	cases := []struct {
+		name          string
+		first, last   string
+		fresh         querier.Freshness
+		wantContains  []string
+		wantNoContain []string
+	}{
+		{
+			name:  "single day",
+			first: "2026-08-09", last: "2026-08-09",
+			fresh: querier.Freshness{MaxMessageTS: ts.UnixMilli(), LastCollection: collected.Local()},
+			wantContains: []string{
+				"Usage statistics / 使用统计\n",
+				"Query range / 统计范围: 2026-08-09\n",
+				"Data through / 数据截至: " + ts.Local().Format(time.DateTime) + "\n",
+				"Last successful collection / 最近成功采集: " + collected.Local().Format(time.DateTime) + "\n",
+			},
+			wantNoContain: []string{"~"},
+		},
+		{
+			name:  "closed range shows both endpoints once",
+			first: "2026-08-01", last: "2026-08-07",
+			fresh:         querier.Freshness{},
+			wantContains:  []string{"Query range / 统计范围: 2026-08-01 ~ 2026-08-07\n", "—"},
+			wantNoContain: []string{"0001-01-01"},
+		},
+		{
+			name:  "no data and no collection log show em dash",
+			first: "2026-08-09", last: "2026-08-09",
+			fresh: querier.Freshness{},
+			wantContains: []string{
+				"Data through / 数据截至: —\n",
+				"Last successful collection / 最近成功采集: —\n",
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := queryStatisticsHeader(c.first, c.last, c.fresh)
+			for _, want := range c.wantContains {
+				if !strings.Contains(got, want) {
+					t.Errorf("header should contain %q:\ngot: %q", want, got)
+				}
+			}
+			for _, no := range c.wantNoContain {
+				if strings.Contains(got, no) {
+					t.Errorf("header should not contain %q:\ngot: %q", no, got)
+				}
+			}
+		})
+	}
+
+	// 信息区以标题开头,恰好四行内容 + 一个分隔空行。
+	got := queryStatisticsHeader("2026-08-01", "2026-08-07", querier.Freshness{})
+	if !strings.HasPrefix(got, "Usage statistics / 使用统计\n") {
+		t.Errorf("header must start with the fixed title line, got %q", got)
+	}
+	if lines := strings.Split(strings.TrimRight(got, "\n"), "\n"); len(lines) != 4 {
+		t.Errorf("header body must be exactly 4 lines, got %d: %q", len(lines), got)
+	}
+	if !strings.HasSuffix(got, "\n\n") {
+		t.Errorf("header must end with a blank separator line before the tables, got %q", got)
+	}
+}
+
+// TestRunQuery_StatisticsHeaderOnBuiltinView 断言内置视图输出以统一信息区开始且只出现一次。
+func TestRunQuery_StatisticsHeaderOnBuiltinView(t *testing.T) {
+	usageDB, _ := db.Open(":memory:")
+	defer usageDB.Close()
+	if err := insertOneMessage(usageDB, "2026-06-09", "claude"); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := &bytes.Buffer{}
+	if err := executeQueryDates(context.Background(), buf, usageDB, []string{"2026-06-09"}, viewClient); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	const title = "Usage statistics / 使用统计"
+	if !strings.HasPrefix(out, title+"\n") {
+		t.Errorf("output must start with the statistics header:\n%s", out)
+	}
+	if n := strings.Count(out, title); n != 1 {
+		t.Errorf("statistics header must appear exactly once, got %d:\n%s", n, out)
+	}
+	for _, label := range []string{"Query range / 统计范围:", "Data through / 数据截至:", "Last successful collection / 最近成功采集:"} {
+		if n := strings.Count(out, label); n != 1 {
+			t.Errorf("label %q must appear exactly once, got %d:\n%s", label, n, out)
+		}
+	}
+	// 空库场景:既无消息也无采集记录,两项时间均为 em dash。
+	if !strings.Contains(out, "Data through / 数据截至: —") ||
+		!strings.Contains(out, "Last successful collection / 最近成功采集: —") {
+		t.Errorf("empty database should show em dashes for both time fields:\n%s", out)
+	}
+	// 范围行为查询的实际单日参数。
+	if !strings.Contains(out, "Query range / 统计范围: 2026-06-09\n") {
+		t.Errorf("range line should echo the queried single date:\n%s", out)
+	}
+}
+
+// TestRunQuery_StatisticsHeaderOnceForGroup 断言组合多表输出中信息区只在最开头出现一次。
+func TestRunQuery_StatisticsHeaderOnceForGroup(t *testing.T) {
+	rawGroup := map[string]any{
+		"subqueries": map[string]any{"mpc": "model,provider"},
+		"groups":     map[string]any{"group_q": "client,model,provider,mpc"},
+	}
+	cmd, buf := newQueryOutputCmd()
+	if err := runQueryCustomWithDeps(cmd, "group_q", []string{"20260709"}, loadWithRaw(rawGroup, nil), memOpen(t)); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	const title = "Usage statistics / 使用统计"
+	if n := strings.Count(out, title); n != 1 {
+		t.Errorf("group output must print the header exactly once (not per table), got %d:\n%s", n, out)
+	}
+	if idx := strings.Index(out, title); idx > strings.Index(out, "按客户端分组") {
+		t.Errorf("header must precede the first table:\n%s", out)
+	}
+	if !strings.HasPrefix(out, title+"\n") {
+		t.Errorf("group output must start with the statistics header:\n%s", out)
+	}
+}
+
+// TestRunQuery_DataThroughFromRealTimestamps 断言数据截至取范围内最大非零毫秒 ts 并按本机时区显示到秒。
+func TestRunQuery_DataThroughFromRealTimestamps(t *testing.T) {
+	usageDB, _ := db.Open(":memory:")
+	defer usageDB.Close()
+	maxTS := time.Date(2026, 7, 9, 23, 59, 59, 0, time.UTC)
+	msgs := []model.Message{
+		{ID: "m-low", SessionID: "s", Client: "claude", Date: "2026-07-09", TS: time.Date(2026, 7, 9, 8, 0, 0, 0, time.UTC).UnixMilli()},
+		{ID: "m-max", SessionID: "s", Client: "claude", Date: "2026-07-09", TS: maxTS.UnixMilli()},
+	}
+	if _, err := db.UpsertMessages(context.Background(), usageDB, msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := &bytes.Buffer{}
+	if err := executeQueryDates(context.Background(), buf, usageDB, []string{"2026-07-09"}, viewClient); err != nil {
+		t.Fatal(err)
+	}
+	wantThrough := "Data through / 数据截至: " + maxTS.Local().Format(time.DateTime) + "\n"
+	if !strings.Contains(buf.String(), wantThrough) {
+		t.Errorf("data-through should show the max in-range ts in local seconds:\nwant %q\ngot %s", wantThrough, buf.String())
+	}
+}
+
+// TestRunQuery_LastCollectionShownInLocalTime 断言最近成功采集按本机时区展示 UTC 的 collected_at。
+func TestRunQuery_LastCollectionShownInLocalTime(t *testing.T) {
+	usageDB, _ := db.Open(":memory:")
+	defer usageDB.Close()
+	if err := insertOneMessage(usageDB, "2026-07-09", "claude"); err != nil {
+		t.Fatal(err)
+	}
+	insertCollectionLogAt(t, usageDB, "2026-07-09", "claude", "2026-07-10 02:00:00")
+	wantUTC := time.Date(2026, 7, 10, 2, 0, 0, 0, time.UTC)
+
+	buf := &bytes.Buffer{}
+	if err := executeQueryDates(context.Background(), buf, usageDB, []string{"2026-07-09"}, viewClient); err != nil {
+		t.Fatal(err)
+	}
+	wantColl := "Last successful collection / 最近成功采集: " + wantUTC.Local().Format(time.DateTime) + "\n"
+	if !strings.Contains(buf.String(), wantColl) {
+		t.Errorf("last collection should convert UTC text to local timezone:\nwant %q\ngot %s", wantColl, buf.String())
+	}
+}
+
+// insertCollectionLogAt 以固定 UTC 文本写入 collection_log(collected_at 由 SQLite 默认生成,需手工指定才能锁定转换)。
+func insertCollectionLogAt(t *testing.T, usageDB *db.DB, date, source, collectedAtUTC string) {
+	t.Helper()
+	if _, err := usageDB.ExecContext(context.Background(),
+		`INSERT INTO collection_log (date, source, session_count, collected_at) VALUES (?, ?, 1, ?)`,
+		date, source, collectedAtUTC); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRunQuery_SummarySingleRangeLine 断言 summary 的统计范围只由统一信息区承载:
+// 不再保留旧 Date range 行,单日也不出现 a ~ a 重复形态。
+func TestRunQuery_SummarySingleRangeLine(t *testing.T) {
+	usageDB, _ := db.Open(":memory:")
+	defer usageDB.Close()
+	if err := insertOneMessage(usageDB, "2026-07-09", "claude"); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := &bytes.Buffer{}
+	if err := executeQueryDates(context.Background(), buf, usageDB, []string{"2026-07-09"}, viewSummary); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if n := strings.Count(out, "Query range / 统计范围:"); n != 1 {
+		t.Errorf("summary must show the range exactly once via the header, got %d:\n%s", n, out)
+	}
+	if !strings.Contains(out, "Query range / 统计范围: 2026-07-09\n") {
+		t.Errorf("single-day summary range should show the day alone:\n%s", out)
+	}
+	if strings.Contains(out, "Date range / 日期范围") {
+		t.Errorf("summary must not keep the legacy Date range line:\n%s", out)
+	}
+	if strings.Contains(out, "2026-07-09 ~ 2026-07-09") {
+		t.Errorf("single-day summary must not render a same-day a ~ a range:\n%s", out)
+	}
+
+	buf2 := &bytes.Buffer{}
+	if err := executeQueryDates(context.Background(), buf2, usageDB, []string{"2026-07-08", "2026-07-09"}, viewSummary); err != nil {
+		t.Fatal(err)
+	}
+	out2 := buf2.String()
+	if strings.Count(out2, "2026-07-08 ~ 2026-07-09") != 1 {
+		t.Errorf("range summary should carry both endpoints exactly once in the header:\n%s", out2)
 	}
 }
