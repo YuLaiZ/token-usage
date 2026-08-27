@@ -91,6 +91,7 @@ func newQueryCmdWithDeps(load func() (*config.Config, error), open func(string) 
 		cmd.AddCommand(newQuerySubCmd(meta.name, meta.short, meta.view))
 	}
 	cmd.AddCommand(newQueryCustomCmd())
+	cmd.AddCommand(newQueryListCmdWithDeps(load))
 
 	return cmd
 }
@@ -324,6 +325,128 @@ func runQueryCustomWithDeps(
 		return err
 	}
 	return runQueryNamedWithDeps(cmd, name, dates, load, open)
+}
+
+// newQueryListCmd 构造生产用 list 子命令(固定使用 loadConfig)。
+func newQueryListCmd() *cobra.Command {
+	return newQueryListCmdWithDeps(loadConfig)
+}
+
+// newQueryListCmdWithDeps 构造 query list 静态子命令;load 可注入供包内测试。
+// 它只读取有效配置并渲染已解析定义:不调用 dbOpener、不查询 usage.db、
+// 不打印统计信息区、不读取采集错误、不修改任何配置或运行状态。
+func newQueryListCmdWithDeps(load func() (*config.Config, error)) *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List configured query views / 列出已配置查询视图",
+		Long: ui.Bi(
+			"List configured query views from the effective config: default behavior, built-in query commands, custom subqueries and groups, plus how to invoke each view. This command only reads configuration; it never opens the usage database or reads collection data.",
+			"列出有效配置中的已配置查询视图：默认行为、内置查询命令、自定义子查询与组合查询，以及各视图的调用方式。本命令只读取配置；不打开使用数据库、不读取采集数据。",
+		),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return fmt.Errorf("%s", ui.Bi(
+					fmt.Sprintf("list accepts no positional args (got %d)", len(args)),
+					fmt.Sprintf("list 不接受位置参数(当前 %d 个)", len(args)),
+				))
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runQueryListWithDeps(cmd.OutOrStdout(), load)
+		},
+	}
+}
+
+// queryDefaultCategory 把默认项映射为「来源 × 目标类别」的双语显示类别:
+// 回退来源固定为内置回退,其余按目标 Kind 区分内置视图/自定义子查询/组合查询。
+func queryDefaultCategory(defs *querydef.QueryDefinitions) string {
+	switch {
+	case defs.DefaultIsFallback:
+		return ui.Bi("built-in fallback", "内置回退")
+	case defs.Default.Kind == querydef.TargetBuiltin:
+		return ui.Bi("built-in view", "内置视图")
+	case defs.Default.Kind == querydef.TargetCustom:
+		return ui.Bi("custom subquery", "自定义子查询")
+	default:
+		return ui.Bi("group", "组合查询")
+	}
+}
+
+// runQueryListWithDeps 是 query list 的内部 runner:仅加载配置并渲染
+// parseQueryDefinitions 的结果,供直接执行与可注入测试共用。输出顺序固定:
+// 标题 → 默认行为 → 调用说明 → 内置表 → 自定义子查询 → 组合查询。
+func runQueryListWithDeps(out io.Writer, load func() (*config.Config, error)) error {
+	cfg, err := load()
+	if err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
+	}
+	defs, err := parseQueryDefinitions(cfg)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(out, ui.Bi("Configured query views", "已配置查询视图"))
+
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, ui.Bi("Default behavior", "默认行为"))
+	fmt.Fprintf(out, "token-usage query -> %s (%s)\n", defs.Default.Name, queryDefaultCategory(defs))
+
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, ui.Bi("Configured view invocation", "已配置视图调用"))
+	fmt.Fprintf(out, "%s: token-usage query <name> [date]\n", ui.Bi("Direct", "简写"))
+	fmt.Fprintf(out, "%s: token-usage query custom <name> [date] (%s)\n", ui.Bi("Explicit", "显式"), ui.Bi("equivalent", "等价"))
+
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, ui.Bi("Built-in query commands", "内置查询命令"))
+	builtin := ui.NewTable([]string{ui.Bi("Command", "命令"), ui.Bi("Purpose", "用途")}, ui.AlignLeft, ui.AlignLeft)
+	for _, meta := range queryBuiltinCmds {
+		builtin.Row("token-usage query "+meta.name, meta.short)
+	}
+	queryListWriteTable(out, builtin)
+
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, ui.Bi("Custom subqueries", "自定义子查询"))
+	if len(defs.Subqueries) == 0 {
+		fmt.Fprintln(out, ui.Bi("None", "无"))
+	} else {
+		subs := ui.NewTable([]string{ui.Bi("Command", "命令"), ui.Bi("Dimensions", "维度")}, ui.AlignLeft, ui.AlignLeft)
+		for _, s := range defs.Subqueries {
+			dims := make([]string, len(s.Dimensions))
+			for i, d := range s.Dimensions {
+				dims[i] = string(d)
+			}
+			subs.Row("token-usage query "+s.Name, strings.Join(dims, ","))
+		}
+		queryListWriteTable(out, subs)
+	}
+
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, ui.Bi("Groups", "组合查询"))
+	if len(defs.Groups) == 0 {
+		fmt.Fprintln(out, ui.Bi("None", "无"))
+	} else {
+		groups := ui.NewTable([]string{ui.Bi("Command", "命令"), ui.Bi("Members", "成员")}, ui.AlignLeft, ui.AlignLeft)
+		for _, g := range defs.Groups {
+			members := make([]string, len(g.Items))
+			for i, item := range g.Items {
+				members[i] = item.Name
+			}
+			groups.Row("token-usage query "+g.Name, strings.Join(members, ","))
+		}
+		queryListWriteTable(out, groups)
+	}
+	return nil
+}
+
+// queryListWriteTable 写出框线表并补足尾随换行;分区之间由调用方再输出空行,
+// 保证「空分区显示 None / 无」与表格分区的版式节奏一致。
+func queryListWriteTable(out io.Writer, table *ui.Table) {
+	s := table.String()
+	if !strings.HasSuffix(s, "\n") {
+		s += "\n"
+	}
+	fmt.Fprint(out, s)
 }
 
 // queryDBPath 返回查询用数据库路径。

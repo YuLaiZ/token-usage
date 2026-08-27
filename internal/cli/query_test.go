@@ -3,8 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +18,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/model"
 	"github.com/YuLaiZ/token-usage/internal/querier"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // TestNewQueryCmd_NoOldFlags 断言 删除的旧 flag 已全部不存在，
@@ -45,6 +49,7 @@ func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 		"session":  "View session details / 查看会话明细",
 		"summary":  "View summary / 查看总览摘要",
 		"custom":   "Run a configured custom or group query / 执行已配置的自定义或组合查询",
+		"list":     "List configured query views / 列出已配置查询视图",
 	}
 
 	got := map[string]bool{}
@@ -1187,6 +1192,9 @@ func TestRunQuery_StaticRoutingAndTreeStable(t *testing.T) {
 	if got, _, err := root.Find([]string{"custom"}); err != nil || got.Name() != "custom" {
 		t.Errorf("custom 应由静态子命令命中: %v %q", err, got.Name())
 	}
+	if got, _, err := root.Find([]string{"list"}); err != nil || got.Name() != "list" {
+		t.Errorf("list 应由静态子命令命中: %v %q", err, got.Name())
+	}
 	if got, _, err := root.Find([]string{"mpc"}); err != nil || got.Name() != "query" {
 		t.Errorf("非静态首参数应由根命令处理: %v %q", err, got.Name())
 	}
@@ -1194,13 +1202,13 @@ func TestRunQuery_StaticRoutingAndTreeStable(t *testing.T) {
 	for _, sub := range root.Commands() {
 		names[sub.Name()] = true
 	}
-	for _, want := range []string{"client", "model", "provider", "project", "session", "summary", "custom"} {
+	for _, want := range []string{"client", "model", "provider", "project", "session", "summary", "custom", "list"} {
 		if !names[want] {
 			t.Errorf("缺少静态子命令 %q", want)
 		}
 	}
-	if len(root.Commands()) != 7 {
-		t.Errorf("静态命令树应恰为 7 个子命令: %v", root.Commands())
+	if len(root.Commands()) != 8 {
+		t.Errorf("静态命令树应恰为 8 个子命令: %v", root.Commands())
 	}
 
 	// 执行过具名查询后命令树不变:配置中的名称不会注册为动态子命令。
@@ -1223,5 +1231,419 @@ func TestRunQuery_StaticRoutingAndTreeStable(t *testing.T) {
 	}
 	if got, _, err := cmd.Find([]string{"mpc"}); err != nil || got.Name() != "query" {
 		t.Errorf("执行后非静态首参数仍应由根命令处理: %v %q", err, got.Name())
+	}
+}
+
+// ---- query list 只读发现 ----
+
+// writeConfigForHome 在给定 home 下写入 .token-usage/config.toml。
+func writeConfigForHome(t *testing.T, home, content string) {
+	t.Helper()
+	dir := filepath.Join(home, ".token-usage")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 静态帮助合同:query -h 在无配置、有效配置与坏 query 配置三态下输出
+// 完全一致;测试用 t.Setenv 同时隔离 HOME 与 USERPROFILE 到临时目录,
+// 不读取开发机真实配置;帮助生成不触发配置加载语义上的差异。
+func TestNewQueryCmd_StaticHelpAcrossConfigStates(t *testing.T) {
+	helpSnapshot := func(home string) string {
+		t.Helper()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		cmd := newQueryCmd()
+		buf := &bytes.Buffer{}
+		cmd.SetOut(buf)
+		cmd.SetErr(buf)
+		cmd.SetArgs([]string{"--help"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("query --help: %v", err)
+		}
+		return buf.String()
+	}
+
+	states := []struct {
+		name    string
+		content string // 空串表示不创建配置文件
+	}{
+		{name: "no config", content: ""},
+		{name: "valid config", content: config.DefaultConfigTemplate()},
+		{name: "broken config", content: "[query\nfoo="},
+	}
+	var baseline string
+	for _, st := range states {
+		t.Run(st.name, func(t *testing.T) {
+			home := t.TempDir()
+			if st.content != "" {
+				writeConfigForHome(t, home, st.content)
+			}
+			got := helpSnapshot(home)
+			if baseline == "" {
+				baseline = got
+				return
+			}
+			if got != baseline {
+				t.Errorf("帮助文本随配置状态变化:\n--- first ---\n%s\n--- %s ---\n%s", baseline, st.name, got)
+			}
+		})
+	}
+}
+
+// list 命令树与参数合同:Cobra 静态路由命中(不进入根命令名称分派——若落入
+// 根分派,list 会被当作视图名而报未知视图);零参数成功;一/多个位置参数在
+// 配置加载前返回双语错误(非 cobra.NoArgs 英文默认文本)。
+func TestRunQueryList_TreeRoutingAndArgs(t *testing.T) {
+	cmd, buf := newQueryOutputCmdWithDeps(loadWithRaw(nil, nil), memOpen(t))
+	cmd.SetArgs([]string{"list"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("query list 应由静态子命令命中并成功: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Configured query views / 已配置查询视图") {
+		t.Fatalf("应输出 list 正文:\n%s", out)
+	}
+	if strings.Contains(out, "unknown query view") || strings.Contains(out, "未知的查询视图") {
+		t.Fatalf("list 不应进入根命令名称分派:\n%s", out)
+	}
+
+	// 多余位置参数在配置加载前失败:list 子命令与根共用同一注入 loader,
+	// 哨兵 loader 一旦被调用即记数;同时禁止 cobra.NoArgs 英文默认文案。
+	loadCalls := 0
+	sentinelLoad := func() (*config.Config, error) {
+		loadCalls++
+		return nil, errors.New("sentinel-load")
+	}
+	argsCmd, _ := newQueryOutputCmdWithDeps(sentinelLoad, memOpen(t))
+	for _, extra := range [][]string{{"extra"}, {"20260709"}, {"a", "b"}} {
+		full := append([]string{"list"}, extra...)
+		argsCmd.SetArgs(full)
+		err := argsCmd.Execute()
+		if err == nil {
+			t.Fatalf("%v 应拒绝", full)
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "/") {
+			t.Errorf("list 超参错误应为双语: %q", msg)
+		}
+		if !strings.Contains(msg, fmt.Sprintf("%d", len(extra))) {
+			t.Errorf("超参错误应含实际数量 %d: %q", len(extra), msg)
+		}
+		for _, forbidden := range []string{
+			"positional arguments were not accepted",
+			"unknown command",
+			"加载配置失败",
+			"failed to load config",
+			"sentinel-load",
+		} {
+			if strings.Contains(msg, forbidden) {
+				t.Errorf("错误不得为 cobra.NoArgs 默认文案或已触发配置加载(%q): %q", forbidden, msg)
+			}
+		}
+	}
+	if loadCalls != 0 {
+		t.Errorf("参数错误不得加载配置,loader 被调用 %d 次", loadCalls)
+	}
+}
+
+// 默认行为四类状态:缺 [query]/空段/空白 default → built-in fallback / 内置回退;
+// 显式内置 default → built-in view / 内置视图;显式子查询 → custom subquery / 自定义子查询;
+// 显式组合 → group / 组合查询。名称与类别逐字断言。
+func TestRunQueryList_DefaultBehaviorCategories(t *testing.T) {
+	withSubGroup := map[string]any{
+		"subqueries": map[string]any{"mpc": "model,provider"},
+		"groups":     map[string]any{"g": "client,mpc"},
+	}
+	cases := []struct {
+		name        string
+		raw         map[string]any
+		wantText    string // 默认行为整行形态前缀
+		wantContext string // 类别双语全文
+	}{
+		{
+			name:        "missing query section",
+			raw:         nil,
+			wantText:    "token-usage query -> client (",
+			wantContext: "built-in fallback / 内置回退",
+		},
+		{
+			name:        "empty query section",
+			raw:         map[string]any{},
+			wantText:    "token-usage query -> client (",
+			wantContext: "built-in fallback / 内置回退",
+		},
+		{
+			name:        "blank default",
+			raw:         map[string]any{"default": "   "},
+			wantText:    "token-usage query -> client (",
+			wantContext: "built-in fallback / 内置回退",
+		},
+		{
+			name:        "explicit builtin default",
+			raw:         map[string]any{"default": "model"},
+			wantText:    "token-usage query -> model (",
+			wantContext: "built-in view / 内置视图",
+		},
+		{
+			name:        "explicit subquery default",
+			raw:         map[string]any{"default": "mpc", "subqueries": map[string]any{"mpc": "model,provider"}},
+			wantText:    "token-usage query -> mpc (",
+			wantContext: "custom subquery / 自定义子查询",
+		},
+		{
+			name:        "explicit group default",
+			raw:         withSubGroupAndDefault(withSubGroup, "g"),
+			wantText:    "token-usage query -> g (",
+			wantContext: "group / 组合查询",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := &bytes.Buffer{}
+			if err := runQueryListWithDeps(buf, loadWithRaw(tc.raw, nil)); err != nil {
+				t.Fatalf("runQueryListWithDeps: %v", err)
+			}
+			out := buf.String()
+			idx := strings.Index(out, "Default behavior / 默认行为")
+			if idx < 0 || !strings.Contains(out[idx:], "\n"+tc.wantText+tc.wantContext+")") {
+				t.Errorf("默认行为行应为 %s%s):\n%s", tc.wantText, tc.wantContext, out)
+			}
+		})
+	}
+}
+
+func withSubGroupAndDefault(raw map[string]any, def string) map[string]any {
+	out := map[string]any{}
+	for k, v := range raw {
+		out[k] = v
+	}
+	out["default"] = def
+	return out
+}
+
+// 固定输出结构:分区顺序恒为 标题→默认行为→调用说明→内置表→自定义子查询→组合查询;
+// 内置表恰六行且用途逐字等于静态元数据 Short;调用说明各出现一次且声明等价;
+// 每条配置只渲染一条不含 [date] 占位符的简写完整命令([date] 全文仅出现在两行说明中);
+// custom/list 的 Short 不作为内置视图行出现;空分区显示 None / 无而非空表头;
+// 成功输出不含统计信息区或采集异常提示。
+func TestRunQueryList_OutputContract(t *testing.T) {
+	raw := map[string]any{
+		"default":    "grp_z",
+		"subqueries": map[string]any{"zeta": "provider,model", "alpha": "model,project"},
+		"groups":     map[string]any{"grp_z": "client,zeta", "grp_a": "model,provider"},
+	}
+	buf := &bytes.Buffer{}
+	if err := runQueryListWithDeps(buf, loadWithRaw(raw, nil)); err != nil {
+		t.Fatalf("runQueryListWithDeps: %v", err)
+	}
+	out := buf.String()
+
+	markers := []string{
+		"Configured query views / 已配置查询视图",
+		"Default behavior / 默认行为",
+		"Configured view invocation / 已配置视图调用",
+		ui.Bi("Direct", "简写"),
+		ui.Bi("Explicit", "显式"),
+		"Built-in query commands / 内置查询命令",
+		"Custom subqueries / 自定义子查询",
+		"Groups / 组合查询",
+	}
+	last := -1
+	for _, m := range markers {
+		idx := strings.Index(out, m)
+		if idx < 0 {
+			t.Fatalf("缺分区标记 %q:\n%s", m, out)
+		}
+		if idx <= last {
+			t.Errorf("分区顺序错误:%q 出现在前一标记之前\n%s", m, out)
+		}
+		last = idx
+	}
+
+	// 调用说明一次且声明等价。
+	for _, want := range []string{
+		ui.Bi("Direct", "简写") + ": token-usage query <name> [date]",
+		ui.Bi("Explicit", "显式") + ": token-usage query custom <name> [date]",
+	} {
+		if n := strings.Count(out, want); n != 1 {
+			t.Errorf("调用说明 %q 应恰一次,实际 %d:\n%s", want, n, out)
+		}
+	}
+	if !strings.Contains(out, "(equivalent / 等价)") {
+		t.Errorf("显式说明应标注等价:\n%s", out)
+	}
+	// [date] 字面占位符只属于两行调用说明。
+	if n := strings.Count(out, "[date]"); n != 2 {
+		t.Errorf("[date] 应只出现在两行调用说明中,实际 %d 次:\n%s", n, out)
+	}
+
+	// 内置表:六行固定命令,用途等于元数据 Short。
+	for _, meta := range queryBuiltinCmds {
+		cell := "token-usage query " + meta.name
+		if strings.Count(out, cell) != 1 {
+			t.Errorf("内置行 %q 应恰一次:\n%s", cell, out)
+		}
+		if !strings.Contains(out, meta.short) {
+			t.Errorf("内置用途文案应复用元数据 Short %q:\n%s", meta.short, out)
+		}
+	}
+	// custom/list 不作为内置视图行出现(其 Short 在正文任何位置都不应渲染)。
+	for _, forbidden := range []string{
+		"Run a configured custom or group query",
+		"List configured query views",
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("固定操作入口不得作为内置视图行出现(%q):\n%s", forbidden, out)
+		}
+	}
+
+	// 配置行的简写完整命令唯一且不含日期占位符。
+	for _, name := range []string{"zeta", "alpha", "grp_z", "grp_a"} {
+		cell := "token-usage query " + name
+		if strings.Count(out, cell) != 1 {
+			t.Errorf("配置行 %q 应恰一次:\n%s", cell, out)
+		}
+	}
+	if strings.Count(out, "token-usage query client") != 1 ||
+		strings.Count(out, "token-usage query model") != 1 {
+		t.Errorf("内置行每条命令恰一次,配置行不得重复它们:\n%s", out)
+	}
+
+	// 名称字节序稳定(alpha<zeta, grp_a<grp_z),CSV 维持声明顺序。
+	if !(strings.Index(out, "token-usage query alpha") < strings.Index(out, "token-usage query zeta")) {
+		t.Errorf("子查询行应按名称字节序:\n%s", out)
+	}
+	if !(strings.Index(out, "token-usage query grp_a") < strings.Index(out, "token-usage query grp_z")) {
+		t.Errorf("组合行应按名称字节序:\n%s", out)
+	}
+	if !strings.Contains(out, "provider,model") || strings.Contains(out, "model,provider,") {
+		t.Errorf("维度 CSV 应保持声明顺序 provider,model(已 TrimSpace):\n%s", out)
+	}
+	if !strings.Contains(out, "client,zeta") || strings.Contains(out, ", zeta") || strings.Contains(out, "zeta, ") {
+		t.Errorf("成员 CSV 应保持声明顺序 client,zeta(不夹带空格):\n%s", out)
+	}
+
+	// 无统计区/采集提示。
+	for _, absent := range []string{"Usage statistics", "采集异常", "collection errors"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("list 是只读发现命令,不应输出 %q:\n%s", absent, out)
+		}
+	}
+}
+
+// 空分区显示 None / 无而非空表头;存在内容时正文不出现 None。
+func TestRunQueryList_EmptySectionsShowNone(t *testing.T) {
+	buf := &bytes.Buffer{}
+	if err := runQueryListWithDeps(buf, loadWithRaw(nil, nil)); err != nil {
+		t.Fatalf("runQueryListWithDeps: %v", err)
+	}
+	out := buf.String()
+	if n := strings.Count(out, ui.Bi("None", "无")); n != 2 {
+		t.Errorf("两个空分区应各显示 None / 无,实际 %d 次:\n%s", n, out)
+	}
+
+	buf2 := &bytes.Buffer{}
+	raw := map[string]any{"subqueries": map[string]any{"mpc": "model,provider"}}
+	if err := runQueryListWithDeps(buf2, loadWithRaw(raw, nil)); err != nil {
+		t.Fatalf("runQueryListWithDeps: %v", err)
+	}
+	// 子查询有定义、组合为空时,仅组合分区恰好一个 None。
+	if strings.Contains(buf2.String(), "Groups / 组合查询") &&
+		strings.Count(buf2.String(), ui.Bi("None", "无")) != 1 {
+		t.Errorf("仅空组合分区应有一个 None:\n%s", buf2.String())
+	}
+}
+
+// 错误可定位:配置加载失败、CSV 错误、断开引用、顶层 RawQuery 问题均按既有
+// 双语定位错误返回,绝不渲染成空列表(None 只表达「确实没有定义」)。
+func TestRunQueryList_ErrorsAreLocalizable(t *testing.T) {
+	failLoad := func() (*config.Config, error) { return nil, errors.New("boom-file") }
+	buf := &bytes.Buffer{}
+	err := runQueryListWithDeps(buf, failLoad)
+	if err == nil || !strings.Contains(err.Error(), "加载配置失败") || !strings.Contains(err.Error(), "boom-file") {
+		t.Fatalf("配置加载失败应包装双语错误并携带原因: %v", err)
+	}
+	if buf.String() != "" {
+		t.Errorf("错误路径不得输出正文:\n%s", buf.String())
+	}
+
+	cases := []struct {
+		name string
+		raw  map[string]any
+		want []string
+	}{
+		{"csv error", map[string]any{"subqueries": map[string]any{"mpc": "model,"}}, []string{"query.subqueries.mpc"}},
+		{"broken reference", map[string]any{"groups": map[string]any{"g": "client,nope"}}, []string{"query.groups.g", `"nope"`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := &bytes.Buffer{}
+			err := runQueryListWithDeps(buf, loadWithRaw(tc.raw, nil))
+			if err == nil {
+				t.Fatal("应报错")
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("错误未包含 %q: %q", w, err.Error())
+				}
+			}
+			if strings.Contains(buf.String(), ui.Bi("None", "无")) {
+				t.Errorf("坏定义不得渲染为 None:\n%s", buf.String())
+			}
+		})
+	}
+
+	t.Run("top-level issues", func(t *testing.T) {
+		issues := map[string]config.RawQueryTopLevelIssue{
+			"Query": {Name: "Query", Value: "x", Kind: config.RawQueryIssueNameConflict},
+		}
+		buf := &bytes.Buffer{}
+		err := runQueryListWithDeps(buf, loadWithRaw(nil, issues))
+		if err == nil || !strings.Contains(err.Error(), `"Query"`) || !strings.Contains(err.Error(), "name_conflict") {
+			t.Fatalf("顶层问题应列名与类别: %v", err)
+		}
+		if buf.String() != "" {
+			t.Errorf("错误路径不得输出正文:\n%s", buf.String())
+		}
+	})
+}
+
+// 零 DB 副作用:全局 dbOpener 替换为计数函数后,list 在有效定义下成功且计数为零;
+// 数据目录指向不存在 usage.db 的临时目录同样成功;输出无统计区与采集提示。
+func TestRunQueryList_NeverOpensDB(t *testing.T) {
+	orig := dbOpener
+	calls := 0
+	dbOpener = func(path string) (*db.DB, error) {
+		calls++
+		return db.Open(":memory:")
+	}
+	defer func() { dbOpener = orig }()
+
+	raw := map[string]any{
+		"default":    "mpc",
+		"subqueries": map[string]any{"mpc": "model,provider"},
+		"groups":     map[string]any{"g": "client,mpc"},
+	}
+	tmpData := t.TempDir() // 目录内不存在 usage.db
+	load := func() (*config.Config, error) {
+		return &config.Config{DataDir: tmpData, RawQuery: raw}, nil
+	}
+	cmd, buf := newQueryOutputCmdWithDeps(load, memOpen(t))
+	cmd.SetArgs([]string{"list"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("query list: %v", err)
+	}
+	out := buf.String()
+	if calls != 0 {
+		t.Errorf("全局 dbOpener 计数应为 0,实际 %d", calls)
+	}
+	for _, absent := range []string{"Usage statistics", "采集异常", "collection errors"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("list 输出不应含 %q:\n%s", absent, out)
+		}
 	}
 }
