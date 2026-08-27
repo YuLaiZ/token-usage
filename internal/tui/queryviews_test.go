@@ -541,3 +541,24 @@ func TestQueryViews_RecoveryDoesNotListValidEntriesBesideErrors(t *testing.T) {
 		t.Errorf("default 应保留: %v", got)
 	}
 }
+
+// validateQueryName 即时校验合同:保留名(含新增 list)在新增子查询与组合查询的
+// 输入现场即被拒并提示保留名不可用,不拖到保存前整体校验;普通合法名称放行。
+func TestValidateQueryName_RejectsReservedImmediately(t *testing.T) {
+	draft := &config.Config{DataDir: "/x"}
+	for _, table := range []string{"subqueries", "groups"} {
+		got := validateQueryName(draft, "list", table)
+		if got == "" || (!strings.Contains(got, "reserved name") && !strings.Contains(got, "保留名不可用")) {
+			t.Errorf("在 %s 新增 %q 应当场报保留名,得到: %q", table, "list", got)
+		}
+	}
+	// 既有保留名回归:同一条件链不得因收敛到单一来源而漏判。
+	for _, name := range []string{"client", "session", "custom"} {
+		if got := validateQueryName(draft, name, "subqueries"); !strings.Contains(got, "reserved name") && !strings.Contains(got, "保留名不可用") {
+			t.Errorf("既有保留名 %q 应被即时拒绝,得到: %q", name, got)
+		}
+	}
+	if got := validateQueryName(draft, "mpc", "subqueries"); got != "" {
+		t.Errorf("普通合法名称应通过即时校验: %q", got)
+	}
+}

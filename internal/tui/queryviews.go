@@ -652,13 +652,12 @@ func (p *subqueryListPage) View() string {
 }
 
 // validateQueryName 校验新增名称:非空、合法标识符、不与保留名/既有定义冲突。
-// 委托 querydef 同一规则(通过子表写入再整体校验的方式保持单一真相源)。
+// 保留名判断复用 querydef 单一来源(list 等新增保留名随 querydef 同步生效)。
 func validateQueryName(draft *config.Config, name string, table string) string {
 	if name == "" {
 		return ui.Bi("name must not be empty", "名称不能为空")
 	}
-	if name == "client" || name == "model" || name == "provider" || name == "project" ||
-		name == "session" || name == "summary" || name == "custom" {
+	if querydef.IsReservedName(name) {
 		return ui.Bi("reserved name", "保留名不可用")
 	}
 	for _, r := range name {

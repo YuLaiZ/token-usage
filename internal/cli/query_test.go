@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -86,17 +87,46 @@ func TestNewQueryCmd_SubcommandMaxOneArg(t *testing.T) {
 	}
 }
 
-// TestNewQueryCmd_BareQueryAcceptsDateArg 断言裸 query 仍接受 0 或 1 个位置参数。
-func TestNewQueryCmd_BareQueryAcceptsDateArg(t *testing.T) {
+// TestNewQueryCmd_RootArgsContract 断言根命令新 Args 合同:零、一、二个位置参数
+// 均通过(默认视图日期 / 视图名 / 视图名加日期),三项及以上在加载配置与打开 DB
+// 之前返回专用的双语四形态用法错误。
+func TestNewQueryCmd_RootArgsContract(t *testing.T) {
 	cmd := newQueryCmd()
-	if err := cmd.Args(cmd, []string{}); err != nil {
-		t.Errorf("裸 query 0 参数应通过: %v", err)
+	for _, n := range []int{0, 1, 2} {
+		args := make([]string, n)
+		for i := range args {
+			args[i] = "arg"
+		}
+		if err := cmd.Args(cmd, args); err != nil {
+			t.Errorf("根命令 %d 个参数应通过: %v", n, err)
+		}
 	}
-	if err := cmd.Args(cmd, []string{"20260101"}); err != nil {
-		t.Errorf("裸 query 1 参数应通过: %v", err)
+	for _, args := range [][]string{{"a", "b", "c"}, {"a", "b", "c", "d"}} {
+		err := cmd.Args(cmd, args)
+		if err == nil {
+			t.Fatalf("%d 个参数应报错", len(args))
+		}
+		msg := err.Error()
+		for _, want := range []string{"no args", "date", "view name", "/"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("超参用法错误应为双语并说明四种形态(缺 %q): %q", want, msg)
+			}
+		}
 	}
-	if err := cmd.Args(cmd, []string{"20260101", "20260102"}); err == nil {
-		t.Error("裸 query 2 参数应报错")
+}
+
+// TestNewQueryCmd_RootHelpPresentsBothForms 断言根命令帮助静态展示
+// 「名称加可选日期」与「纯日期」两种调用形态及 custom 等价写法;
+// 构造命令树不加载配置(无配置环境下同样可断言)。
+func TestNewQueryCmd_RootHelpPresentsBothForms(t *testing.T) {
+	cmd := newQueryCmd()
+	if !strings.Contains(cmd.Use, "<name>") || !strings.Contains(cmd.Use, "YYYYMMDD") {
+		t.Errorf("Use 应静态展示视图名与日期两种形态: %q", cmd.Use)
+	}
+	for _, want := range []string{"token-usage query <name>", "query custom <name>"} {
+		if !strings.Contains(cmd.Long, want) {
+			t.Errorf("Long 应含示例 %q: %q", want, cmd.Long)
+		}
 	}
 }
 
@@ -780,5 +810,418 @@ func TestRunQuery_SummarySingleRangeLine(t *testing.T) {
 	out2 := buf2.String()
 	if strings.Count(out2, "2026-07-08 ~ 2026-07-09") != 1 {
 		t.Errorf("range summary should carry both endpoints exactly once in the header:\n%s", out2)
+	}
+}
+
+// ---- 根命令快捷分派(query <name> [date])与共用具名执行链 ----
+
+// parseQueryInvocation 表驱动合同:
+//   - 零参数/合法单日期或区间 → 默认目标;
+//   - 非数字首字符单参数 → 具名目标 + 今天;
+//   - 名称加合法日期/区间 → 具名目标 + 解析后的日期列表;
+//   - 数字开头单参数非法日期 → 复用既有单参数日期错误;
+//   - 两参数数字首参数(第二参数无论合法与否) → 固定优先报“此位置须为视图名称”
+//     的双语用法错误,不再检查第二参数;
+//   - 合法名称加非法日期 → 复用单元素 parseDateArgs 的日期形态错误,
+//     绝不出现“仅接受 0 或 1 个位置参数”的参数个数错误。
+func TestParseQueryInvocation(t *testing.T) {
+	today := time.Now().Format("2006-01-02")
+	cases := []struct {
+		name      string
+		args      []string
+		wantNamed bool
+		wantName  string
+		wantDates []string
+		wantErr   []string // 非空时期望错误包含这些子串
+		wantNoErr []string // 错误不得包含这些子串
+	}{
+		{
+			name:      "zero args selects default and today",
+			args:      nil,
+			wantDates: []string{today},
+		},
+		{
+			name:      "single legal date selects default",
+			args:      []string{"20260709"},
+			wantDates: []string{"2026-07-09"},
+		},
+		{
+			name:      "single legal range selects default",
+			args:      []string{"20260709-20260711"},
+			wantDates: []string{"2026-07-09", "2026-07-10", "2026-07-11"},
+		},
+		{
+			name:      "non-digit single arg is a view name with today",
+			args:      []string{"mpc"},
+			wantNamed: true,
+			wantName:  "mpc",
+			wantDates: []string{today},
+		},
+		{
+			name:      "name plus date selects named target",
+			args:      []string{"group_q", "20260709"},
+			wantNamed: true,
+			wantName:  "group_q",
+			wantDates: []string{"2026-07-09"},
+		},
+		{
+			name:      "name plus range selects named target",
+			args:      []string{"mpc", "20260709-20260710"},
+			wantNamed: true,
+			wantName:  "mpc",
+			wantDates: []string{"2026-07-09", "2026-07-10"},
+		},
+		{
+			name:      "digit-leading invalid single date reuses existing date error",
+			args:      []string{"20260132"},
+			wantErr:   []string{"invalid date args", `"20260132"`, "/"},
+			wantNoErr: []string{"expected 0 or 1 positional arg"},
+		},
+		{
+			name:      "two args digit-first rejects first as needing a name (legal second)",
+			args:      []string{"20260709", "20260710"},
+			wantErr:   []string{"view name", "/", "token-usage query <name>", "/"},
+			wantNoErr: []string{"expected 0 or 1 positional arg", "unknown query view"},
+		},
+		{
+			name:      "two args digit-first rejects without checking second arg",
+			args:      []string{"20260709", "notadate"},
+			wantErr:   []string{"view name", "/"},
+			wantNoErr: []string{"notadate", "expected 0 or 1 positional arg"},
+		},
+		{
+			name:      "name plus bad date reuses single-element date form error",
+			args:      []string{"mpc", "notadate"},
+			wantErr:   []string{"invalid date args", `"notadate"`, "/"},
+			wantNoErr: []string{"expected 0 or 1 positional arg"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inv, err := parseQueryInvocation(tc.args)
+			if len(tc.wantErr) > 0 {
+				if err == nil {
+					t.Fatalf("应报错,得到 %+v", inv)
+				}
+				msg := err.Error()
+				for _, want := range tc.wantErr {
+					if !strings.Contains(msg, want) {
+						t.Errorf("错误 %q 未包含 %q", msg, want)
+					}
+				}
+				// 反向锚定优先级合同:这些子串不得出现在错误中。
+				for _, no := range tc.wantNoErr {
+					if strings.Contains(msg, no) {
+						t.Errorf("错误不应包含 %q: %q", no, msg)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseQueryInvocation(%v): %v", tc.args, err)
+			}
+			if inv.named != tc.wantNamed || inv.name != tc.wantName {
+				t.Errorf("target = (%v,%q), want (%v,%q)", inv.named, inv.name, tc.wantNamed, tc.wantName)
+			}
+			if strings.Join(inv.dates, ",") != strings.Join(tc.wantDates, ",") {
+				t.Errorf("dates = %v, want %v", inv.dates, tc.wantDates)
+			}
+		})
+	}
+
+	// 三项及以上同样由纯分派函数给出同一份用法错误(Args 校验的第一道防线)。
+	_, err := parseQueryInvocation([]string{"a", "b", "c"})
+	if err == nil || !strings.Contains(err.Error(), "3") || !strings.Contains(err.Error(), "/") {
+		t.Errorf("三个参数应报双语超参用法错误: %v", err)
+	}
+}
+
+// newQueryCmdWithDeps 构造可注入配置加载与 DB 打开的 query 根命令(测试接线);
+// 生产入口 newQueryCmd 固定传入 loadConfig 与 dbOpener。
+func newQueryOutputCmdWithDeps(load func() (*config.Config, error), open func(string) (*db.DB, error)) (*cobra.Command, *bytes.Buffer) {
+	cmd := newQueryCmdWithDeps(load, open)
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	return cmd, buf
+}
+
+// openWithWarning 打开内存库、写入两条消息并为 2026-07-09 记录一条采集异常,
+// 使每次具名执行都覆盖统计信息区、表格与末尾异常告警三段输出。
+func openWithWarning(t *testing.T) func(string) (*db.DB, error) {
+	t.Helper()
+	base := memOpen(t)
+	return func(path string) (*db.DB, error) {
+		usageDB, err := base(path)
+		if err != nil {
+			return nil, err
+		}
+		db.RecordError(context.Background(), usageDB, "2026-07-09", "claude", "boom", "")
+		return usageDB, nil
+	}
+}
+
+// 直接写法与 custom 写法对一个子查询和一个组合查询在无日期、单日、日期范围下
+// 输出逐字相同;统计信息区恰好一次、异常告警只在末尾一次。
+// custom 侧经由其入口管线 parseDateArgs("query custom"示例文案)+共用具名执行链,
+// 与生产 RunE 同构且注入同一对 deps,保证输出可比、不触碰真实环境。
+func TestRunQuery_DirectNameEquivalentToCustom(t *testing.T) {
+	open := openWithWarning(t)
+	rawGroup := map[string]any{
+		"default":    "client",
+		"subqueries": map[string]any{"mpc": "model,provider"},
+		"groups":     map[string]any{"group_q": "client,model,provider,mpc"},
+	}
+	load := loadWithRaw(rawGroup, nil)
+
+	runDirect := func(args []string) string {
+		t.Helper()
+		cmd, buf := newQueryOutputCmdWithDeps(load, open)
+		cmd.SetArgs(append([]string{}, args...))
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("direct %v: %v", args, err)
+		}
+		return buf.String()
+	}
+	runCustom := func(args []string) string {
+		t.Helper()
+		var dateArgs []string
+		if len(args) > 1 {
+			dateArgs = args[1:]
+		}
+		cmd, buf := newQueryOutputCmd()
+		if err := runQueryCustomWithDeps(cmd, args[0], dateArgs, load, open); err != nil {
+			t.Fatalf("custom %v: %v", args, err)
+		}
+		return buf.String()
+	}
+
+	forms := [][]string{
+		{"mpc"},
+		{"mpc", "20260709"},
+		{"mpc", "20260708-20260710"},
+		{"group_q"},
+		{"group_q", "20260709"},
+		{"group_q", "20260708-20260710"},
+	}
+	for _, form := range forms {
+		directOut := runDirect(form)
+		customOut := runCustom(form)
+		if directOut != customOut {
+			t.Errorf("%v 两种写法输出不同:\ndirect:\n%s\ncustom:\n%s", form, directOut, customOut)
+		}
+		if n := strings.Count(directOut, "Usage statistics / 使用统计"); n != 1 {
+			t.Errorf("%v 统计信息区应恰一次,实际 %d:\n%s", form, n, directOut)
+		}
+		// 今天形态的范围不含已记录异常的日期,告警按既有合同缺省;
+		// 显式日期形态均覆盖 2026-07-09,应恰一次并出现在全部表之后。
+		if len(form) == 1 {
+			if strings.Count(directOut, "boom") != 0 || strings.Contains(directOut, "采集异常") {
+				t.Errorf("%v 不应出现范围外告警:\n%s", form, directOut)
+			}
+			continue
+		}
+		if strings.Count(directOut, "boom") != 1 {
+			t.Errorf("%v 异常告警应恰一次:\n%s", form, directOut)
+		}
+	}
+
+	// 组合查询顺序与告警位置单独锚定(输出两侧逐字相等已隐含,这里显式给出诊断锚点)。
+	out := runDirect([]string{"group_q", "20260709"})
+	if !(strings.Index(out, "按客户端分组") < strings.Index(out, "按模型分组") &&
+		strings.Index(out, "按模型分组") < strings.Index(out, "按供应商分组") &&
+		strings.Index(out, "按供应商分组") < strings.Index(out, "自定义视图 mpc")) {
+		t.Errorf("组合表未按声明顺序输出:\n%s", out)
+	}
+	if strings.Index(out, "自定义视图 mpc") > strings.Index(out, "boom") {
+		t.Errorf("告警应在全部表之后:\n%s", out)
+	}
+}
+
+// 注入依赖后的根命令 Execute:零参数与单日期形态仍真实执行 query.default。
+func TestRunQuery_RootExecutesDefaultTarget(t *testing.T) {
+	open := memOpen(t)
+	rawDefault := map[string]any{
+		"default":    "mpc",
+		"subqueries": map[string]any{"mpc": "model,provider"},
+	}
+	load := loadWithRaw(rawDefault, nil)
+
+	cmd, buf := newQueryOutputCmdWithDeps(load, open)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("零参数根命令: %v", err)
+	}
+	if out := buf.String(); !strings.Contains(out, "自定义视图 mpc") {
+		t.Errorf("零参数应执行 default 指向的自定义视图:\n%s", out)
+	}
+
+	cmd2, buf2 := newQueryOutputCmdWithDeps(load, open)
+	cmd2.SetArgs([]string{"20260709"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("单日期根命令: %v", err)
+	}
+	out2 := buf2.String()
+	if !strings.Contains(out2, "自定义视图 mpc") {
+		t.Errorf("单日期仍应执行 default 目标:\n%s", out2)
+	}
+	if !strings.Contains(out2, "Query range / 统计范围: 2026-07-09\n") {
+		t.Errorf("日期应被解析并进入统计范围行:\n%s", out2)
+	}
+}
+
+// 根命令各错误路径均在打开 DB 前失败;坏定义不阻断内置静态视图。
+func TestRunQuery_RootErrorsBeforeDB(t *testing.T) {
+	opens := 0
+	countingOpen := func(p string) (*db.DB, error) {
+		opens++
+		return db.Open(":memory:")
+	}
+	assertNoOpen := func(t *testing.T, stage string) {
+		t.Helper()
+		if opens != 0 {
+			t.Fatalf("%s 不应打开 DB,实际 %d 次", stage, opens)
+		}
+	}
+
+	run := func(args ...string) error {
+		t.Helper()
+		cmd, _ := newQueryOutputCmdWithDeps(loadWithRaw(nil, nil), countingOpen)
+		cmd.SetArgs(args)
+		err := cmd.Execute()
+		assertNoOpen(t, fmt.Sprintf("%v", args))
+		return err
+	}
+
+	// 超参与数字首参数两参数形态。
+	err := run("a", "b", "c")
+	if err == nil || !strings.Contains(err.Error(), "/") {
+		t.Errorf("超参应报双语用法错误: %v", err)
+	}
+	err = run("20260709", "20260710")
+	if err == nil || !strings.Contains(err.Error(), "view name") {
+		t.Errorf("数字首参数两参数应报须为视图名称: %v", err)
+	}
+	// 非法第二日期。
+	err = run("mpc", "20260132")
+	if err == nil || !strings.Contains(err.Error(), "20260132") {
+		t.Errorf("非法第二日期应报日期形态错误: %v", err)
+	}
+	// 未知具名视图。
+	rawSub := map[string]any{"subqueries": map[string]any{"mpc": "model,provider"}}
+	unkCmd, _ := newQueryOutputCmdWithDeps(loadWithRaw(rawSub, nil), countingOpen)
+	unkCmd.SetArgs([]string{"ghost"})
+	err = unkCmd.Execute()
+	assertNoOpen(t, "未知名称")
+	if err == nil || !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("未知名称应报未知查询视图: %v", err)
+	}
+	// CSV 错误。
+	badCSV := loadWithRaw(map[string]any{"subqueries": map[string]any{"mpc": "model,"}}, nil)
+	csvCmd, _ := newQueryOutputCmdWithDeps(badCSV, countingOpen)
+	csvCmd.SetArgs([]string{"mpc"})
+	err = csvCmd.Execute()
+	assertNoOpen(t, "CSV 错误")
+	if err == nil || !strings.Contains(err.Error(), "query.subqueries.mpc") {
+		t.Errorf("CSV 错误应定位键: %v", err)
+	}
+	// 断开引用。
+	brokenRef := loadWithRaw(map[string]any{"groups": map[string]any{"g": "client,nope"}}, nil)
+	refCmd, _ := newQueryOutputCmdWithDeps(brokenRef, countingOpen)
+	refCmd.SetArgs([]string{"g"})
+	err = refCmd.Execute()
+	assertNoOpen(t, "断开引用")
+	if err == nil || !strings.Contains(err.Error(), "query.groups.g") {
+		t.Errorf("断开引用应定位键: %v", err)
+	}
+	// RawQuery 顶层问题。
+	issues := map[string]config.RawQueryTopLevelIssue{
+		"Query": {Name: "Query", Value: "x", Kind: config.RawQueryIssueNameConflict},
+	}
+	issueCmd, _ := newQueryOutputCmdWithDeps(loadWithRaw(nil, issues), countingOpen)
+	issueCmd.SetArgs([]string{"g"})
+	err = issueCmd.Execute()
+	assertNoOpen(t, "顶层问题")
+	if err == nil || !strings.Contains(err.Error(), "Query") {
+		t.Errorf("顶层问题应在具名路径拒绝并定位: %v", err)
+	}
+
+	// 坏 query 定义不阻断六个内置静态视图(内置子命令经 runQueryWithDeps 保持既有路径)。
+	for _, v := range []queryView{viewClient, viewModel, viewProvider, viewProject, viewSessions, viewSummary} {
+		cmdB, _ := newQueryOutputCmd()
+		if err := runQueryWithDeps(cmdB, nil, v, loadWithRaw(nil, issues), memOpen(t)); err != nil {
+			t.Errorf("内置视图 %d 受坏配置阻断: %v", v, err)
+		}
+	}
+}
+
+// custom 的日期错误示例必须指向真实存在的命令形态:
+// "token-usage query custom 20260701",不得出现不存在的裸 "token-usage custom"。
+func TestRunQueryCustom_DateErrorExampleIsValidCommand(t *testing.T) {
+	open := memOpen(t)
+	run := func(dateArgs ...string) string {
+		t.Helper()
+		cmd, _ := newQueryOutputCmd()
+		err := runQueryCustomWithDeps(cmd, "mpc", dateArgs, loadWithRaw(nil, nil), open)
+		if err == nil {
+			t.Fatalf("custom %v 应报日期错误", dateArgs)
+		}
+		return err.Error()
+	}
+	for _, dc := range [][]string{{"notadate"}, {"20260709-20260732"}} {
+		msg := run(dc...)
+		if !strings.Contains(msg, "token-usage query custom 20260701") {
+			t.Errorf("日期错误示例应为有效命令 token-usage query custom 20260701: %q", msg)
+		}
+		// 有效示例是 "token-usage query custom ...",两者之间不可能出现
+		// 紧邻的 "token-usage custom",该子串即代表无效旧示例。
+		if strings.Contains(msg, "token-usage custom") {
+			t.Errorf("不得出现不存在的裸 token-usage custom 示例: %q", msg)
+		}
+	}
+}
+
+// Cobra 级路由:静态子命令优先命中;非静态首参数留在根命令做名称分派;
+// 用户定义名不会被动态注册进命令树。
+func TestRunQuery_StaticRoutingAndTreeStable(t *testing.T) {
+	root := newQueryCmd()
+	if got, _, err := root.Find([]string{"custom"}); err != nil || got.Name() != "custom" {
+		t.Errorf("custom 应由静态子命令命中: %v %q", err, got.Name())
+	}
+	if got, _, err := root.Find([]string{"mpc"}); err != nil || got.Name() != "query" {
+		t.Errorf("非静态首参数应由根命令处理: %v %q", err, got.Name())
+	}
+	names := map[string]bool{}
+	for _, sub := range root.Commands() {
+		names[sub.Name()] = true
+	}
+	for _, want := range []string{"client", "model", "provider", "project", "session", "summary", "custom"} {
+		if !names[want] {
+			t.Errorf("缺少静态子命令 %q", want)
+		}
+	}
+	if len(root.Commands()) != 7 {
+		t.Errorf("静态命令树应恰为 7 个子命令: %v", root.Commands())
+	}
+
+	// 执行过具名查询后命令树不变:配置中的名称不会注册为动态子命令。
+	open := memOpen(t)
+	rawSub := map[string]any{"subqueries": map[string]any{"mpc": "model,provider"}}
+	cmd, buf := newQueryOutputCmdWithDeps(loadWithRaw(rawSub, nil), open)
+	cmd.SetArgs([]string{"mpc"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "自定义视图 mpc") {
+		t.Fatalf("具名直接写法应成功执行:\n%s", buf.String())
+	}
+	// Execute 会为独立执行的根命令自动补挂 help/completion;
+	// 树稳定性以行为合同断言:mpc 未被注册,仍路由回 query 根命令做名称分派。
+	for _, sub := range cmd.Commands() {
+		if sub.Name() == "mpc" {
+			t.Errorf("配置名 %q 被动态注册为子命令", sub.Name())
+		}
+	}
+	if got, _, err := cmd.Find([]string{"mpc"}); err != nil || got.Name() != "query" {
+		t.Errorf("执行后非静态首参数仍应由根命令处理: %v %q", err, got.Name())
 	}
 }

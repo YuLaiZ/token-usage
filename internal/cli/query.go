@@ -35,31 +35,82 @@ const (
 	viewDefault
 )
 
+// queryBuiltinCmd 是一个内置查询命令的静态元数据。
+type queryBuiltinCmd struct {
+	name  string
+	short string
+	view  queryView
+}
+
+// queryBuiltinCmds 是六个内置查询命令的唯一元数据来源:子命令注册与
+// query list 内置表渲染共用,避免 Short 与列表文案漂移。
+// custom/list 是固定操作入口而非内置视图,不入此表。
+var queryBuiltinCmds = []queryBuiltinCmd{
+	{"client", "Group by client (default) / 按客户端分组（默认）", viewClient},
+	{"model", "Group by model / 按模型分组", viewModel},
+	{"provider", "Group by provider / 按供应商分组", viewProvider},
+	{"project", "Group by project / 按项目分组", viewProject},
+	{"session", "View session details / 查看会话明细", viewSessions},
+	{"summary", "View summary / 查看总览摘要", viewSummary},
+}
+
 func newQueryCmd() *cobra.Command {
+	return newQueryCmdWithDeps(loadConfig, dbOpener)
+}
+
+// newQueryCmdWithDeps 构造 query 根命令;load/open 可注入供包内测试根命令的
+// 真实 RunE 接线(生产路径传入 loadConfig 与 dbOpener)。六个内置子命令与
+// custom 保持既有执行路径;用户配置中的名称绝不动态 AddCommand。
+func newQueryCmdWithDeps(load func() (*config.Config, error), open func(string) (*db.DB, error)) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "query [YYYYMMDD|YYYYMMDD-YYYYMMDD]",
+		Use:   "query [<name> [YYYYMMDD|YYYYMMDD-YYYYMMDD] | YYYYMMDD|YYYYMMDD-YYYYMMDD]",
 		Short: "Query token usage statistics / 查询 token 使用统计",
 		Long: ui.Bi(
-			"Query token usage statistics. Accepts one optional positional arg: a single date YYYYMMDD or a range YYYYMMDD-YYYYMMDD; defaults to today.",
-			"查询 token 使用统计。可附加一个位置参数：单个日期 YYYYMMDD 或日期范围 YYYYMMDD-YYYYMMDD；缺省时默认今天。",
+			"Query token usage statistics. With no args, runs the default view (query.default, built-in fallback client). Accepts either a date for the default view or a configured view name plus an optional date: a single date YYYYMMDD or a range YYYYMMDD-YYYYMMDD. Examples: token-usage query <name> [date]; equivalent explicit form: token-usage query custom <name> [date].",
+			"查询 token 使用统计。无参数时执行默认视图（query.default，内置回退 client）。可附加一个日期作用于默认视图，或指定已配置视图名加可选日期：单个日期 YYYYMMDD 或区间 YYYYMMDD-YYYYMMDD。示例：token-usage query <name> [date]；等价显式写法：token-usage query custom <name> [date]。",
 		),
-		Args: cobra.MaximumNArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 2 {
+				return queryUsageError(len(args))
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQuery(cmd, args, viewDefault)
+			inv, err := parseQueryInvocation(args)
+			if err != nil {
+				return err
+			}
+			if inv.named {
+				return runQueryNamedWithDeps(cmd, inv.name, inv.dates, load, open)
+			}
+			return runQueryWithDeps(cmd, args, viewDefault, load, open)
 		},
 	}
 
-	cmd.AddCommand(
-		newQuerySubCmd("client", "Group by client (default) / 按客户端分组（默认）", viewClient),
-		newQuerySubCmd("model", "Group by model / 按模型分组", viewModel),
-		newQuerySubCmd("provider", "Group by provider / 按供应商分组", viewProvider),
-		newQuerySubCmd("project", "Group by project / 按项目分组", viewProject),
-		newQuerySubCmd("session", "View session details / 查看会话明细", viewSessions),
-		newQuerySubCmd("summary", "View summary / 查看总览摘要", viewSummary),
-		newQueryCustomCmd(),
-	)
+	for _, meta := range queryBuiltinCmds {
+		cmd.AddCommand(newQuerySubCmd(meta.name, meta.short, meta.view))
+	}
+	cmd.AddCommand(newQueryCustomCmd())
 
 	return cmd
+}
+
+// queryUsageError 是根命令位置参数超限的专用双语用法错误:
+// 说明允许「无参数、一个日期、一个名称、名称加一个日期」四种形态。
+func queryUsageError(got int) error {
+	return fmt.Errorf("%s", ui.Bi(
+		fmt.Sprintf("query accepts at most 2 positional args (no args, one date YYYYMMDD or range, one view name, or a view name plus one date), got %d. Examples: token-usage query 20260701 | token-usage query <name> <date>", got),
+		fmt.Sprintf("query 至多接受 2 个位置参数（无参数、一个日期 YYYYMMDD 或区间、一个视图名、视图名加一个日期），当前 %d 个。示例：token-usage query 20260701 | token-usage query <name> <date>", got),
+	))
+}
+
+// queryFirstNameMustBeViewNameError 两参数形态且首参数以数字开头时的专用双语错误:
+// 该位置须为视图名称,给出简写与纯日期两种示例,不再检查第二参数。
+func queryFirstNameMustBeViewNameError(arg string) error {
+	return fmt.Errorf("%s", ui.Bi(
+		fmt.Sprintf("invalid arg %q: with two positional args the first must be a configured view name. Examples: token-usage query <name> <date> | token-usage query <date>", arg),
+		fmt.Sprintf("无效参数 %q：两个位置参数时第一个必须是已配置视图名。示例：token-usage query <name> <date> | token-usage query <date>", arg),
+	))
 }
 
 // newQuerySubCmd 构造 query 的一个子命令。子命令仅选定视图，
@@ -162,20 +213,76 @@ func runQueryWithDeps(
 	return executeQueryDatesWithAliases(cmdContext(cmd), cmd.OutOrStdout(), usageDB, dates, view, cfg.ProviderAliases)
 }
 
-// runQueryCustomWithDeps 执行 query custom <name> [date]:
-// 日期先解析,日期合法后加载配置并校验 query 定义与名称,最后才打开数据库。
-func runQueryCustomWithDeps(
+// queryInvocation 是 query 根命令位置参数的分派结果。
+type queryInvocation struct {
+	// named 为 true 时按具名已配置视图执行(name 来自 query.subqueries/groups);
+	// false 时走既有默认目标路径(query.default)。
+	named bool
+	name  string
+	dates []string // 规范化后的 YYYY-MM-DD 列表
+}
+
+// parseQueryInvocation 是 query 根命令的纯参数分派函数:
+// 只处理参数个数与日期,不加载配置、不初始化日志、不打开 DB。
+//
+//   - 零参数:默认目标,今天;
+//   - 一个参数:以 ASCII 数字开头按日期/区间解析(非法时复用既有单参数日期错误),
+//     其余视为视图名并使用今天;
+//   - 两个参数:仅允许「视图名 + 日期」;首参数以数字开头时固定优先报
+//     「此位置须为视图名称」的双语用法错误,且不再检查第二参数;
+//   - 三个及以上:同一份双语超参用法错误。
+func parseQueryInvocation(args []string) (*queryInvocation, error) {
+	switch len(args) {
+	case 0:
+		return &queryInvocation{dates: []string{todayDate()}}, nil
+	case 1:
+		if startsWithASCIIDigit(args[0]) {
+			dates, err := parseDateArgs(args, true, "query")
+			if err != nil {
+				return nil, err
+			}
+			return &queryInvocation{dates: dates}, nil
+		}
+		return &queryInvocation{named: true, name: args[0], dates: []string{todayDate()}}, nil
+	default:
+		if len(args) > 2 {
+			return nil, queryUsageError(len(args))
+		}
+		if startsWithASCIIDigit(args[0]) {
+			return nil, queryFirstNameMustBeViewNameError(args[0])
+		}
+		// 第二日期以单元素切片校验,复用日期形态错误而不触发
+		// parseDateArgs 的「仅接受 0 或 1 个参数」分支。
+		dates, err := parseDateArgs([]string{args[1]}, true, "query")
+		if err != nil {
+			return nil, err
+		}
+		return &queryInvocation{named: true, name: args[0], dates: dates}, nil
+	}
+}
+
+func startsWithASCIIDigit(s string) bool {
+	if s == "" {
+		return false
+	}
+	return s[0] >= '0' && s[0] <= '9'
+}
+
+func todayDate() string {
+	return time.Now().Format("2006-01-02")
+}
+
+// runQueryNamedWithDeps 是直接写法与 custom 写法共用的具名执行链:
+// 入口各自完成日期校验后调用;依次加载配置 → 解析 query 定义 → 按名解析
+// target → 打开 DB → executeTargetQuery。配置名合法性判定仍收敛在
+// querydef.Parse 与 resolveTarget,坏定义错误不打开 DB 且可定位。
+func runQueryNamedWithDeps(
 	cmd *cobra.Command,
 	name string,
-	dateArgs []string,
+	dates []string,
 	load func() (*config.Config, error),
 	open func(string) (*db.DB, error),
 ) error {
-	dates, err := parseDateArgs(dateArgs, true, "custom")
-	if err != nil {
-		return err
-	}
-
 	cfg, err := load()
 	if err != nil {
 		return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
@@ -200,6 +307,23 @@ func runQueryCustomWithDeps(
 	defer usageDB.Close()
 
 	return executeTargetQuery(cmdContext(cmd), cmd.OutOrStdout(), usageDB, dates, defs, target, cfg.ProviderAliases)
+}
+
+// runQueryCustomWithDeps 执行 query custom <name> [date]:
+// 日期先解析(示例文案为完整命令形态 "query custom"),随后进入与直接写法
+// 共用的具名执行链。
+func runQueryCustomWithDeps(
+	cmd *cobra.Command,
+	name string,
+	dateArgs []string,
+	load func() (*config.Config, error),
+	open func(string) (*db.DB, error),
+) error {
+	dates, err := parseDateArgs(dateArgs, true, "query custom")
+	if err != nil {
+		return err
+	}
+	return runQueryNamedWithDeps(cmd, name, dates, load, open)
 }
 
 // queryDBPath 返回查询用数据库路径。

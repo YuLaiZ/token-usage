@@ -54,7 +54,7 @@ func TestParse_SuccessfulDefinitions(t *testing.T) {
 	}
 }
 
-// 未配置(RawQuery nil 或空 map)时默认等价 client。
+// 未配置(RawQuery nil 或空 map)时默认等价 client,且默认来源标记为内置回退。
 func TestParse_UnconfiguredFallsBackToClient(t *testing.T) {
 	for name, in := range map[string]Input{
 		"nil":   {},
@@ -66,6 +66,9 @@ func TestParse_UnconfiguredFallsBackToClient(t *testing.T) {
 		}
 		if defs.Default.Name != "client" || defs.Default.Kind != TargetBuiltin {
 			t.Errorf("%s: Default = %+v, want client/TargetBuiltin", name, defs.Default)
+		}
+		if !defs.DefaultIsFallback {
+			t.Errorf("%s: 缺失 default 应标记 DefaultIsFallback", name)
 		}
 	}
 }
@@ -84,6 +87,9 @@ func TestParse_EmptySectionsFallBackToClient(t *testing.T) {
 	}
 	if len(defs.Subqueries) != 0 || len(defs.Groups) != 0 {
 		t.Errorf("空子表不应产生定义: %+v / %+v", defs.Subqueries, defs.Groups)
+	}
+	if !defs.DefaultIsFallback {
+		t.Errorf("空 [query] 段的默认回退应标记 DefaultIsFallback")
 	}
 }
 
@@ -186,6 +192,16 @@ func TestParse_StructuralErrors(t *testing.T) {
 			wantSub: []string{"query.subqueries.custom", "custom"},
 		},
 		{
+			name:    "reserved name list",
+			raw:     map[string]any{"subqueries": map[string]any{"list": "model,provider"}},
+			wantSub: []string{"query.subqueries.list", "list"},
+		},
+		{
+			name:    "reserved name list in groups",
+			raw:     map[string]any{"groups": map[string]any{"list": "client,model"}},
+			wantSub: []string{"query.groups.list", "list"},
+		},
+		{
 			name:    "invalid name uppercase",
 			raw:     map[string]any{"subqueries": map[string]any{"BadName": "model,provider"}},
 			wantSub: []string{"query.subqueries.BadName", `"BadName"`},
@@ -247,6 +263,35 @@ func TestParse_DefaultBehavior(t *testing.T) {
 		if defs.Default.Name != "client" || defs.Default.Kind != TargetBuiltin {
 			t.Errorf("Default = %+v, want client", defs.Default)
 		}
+		if !defs.DefaultIsFallback {
+			t.Errorf("空白 default 回退应标记 DefaultIsFallback")
+		}
+	})
+
+	t.Run("nil and missing default are fallback", func(t *testing.T) {
+		defs, err := Parse(Input{RawQuery: map[string]any{"default": nil}})
+		if err != nil {
+			t.Fatalf("nil default: %v", err)
+		}
+		if defs.Default.Name != "client" || defs.Default.Kind != TargetBuiltin {
+			t.Errorf("nil default Default = %+v, want client", defs.Default)
+		}
+		if !defs.DefaultIsFallback {
+			t.Errorf("显式 nil default 应与缺失同样标记回退")
+		}
+	})
+
+	t.Run("explicit builtin is not fallback", func(t *testing.T) {
+		defs, err := Parse(base("model"))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if defs.Default.Name != "model" || defs.Default.Kind != TargetBuiltin {
+			t.Errorf("Default = %+v, want model/TargetBuiltin", defs.Default)
+		}
+		if defs.DefaultIsFallback {
+			t.Errorf("显式内置默认不得标记回退")
+		}
 	})
 
 	t.Run("trimmed match", func(t *testing.T) {
@@ -257,6 +302,9 @@ func TestParse_DefaultBehavior(t *testing.T) {
 		if defs.Default.Name != "mpc" || defs.Default.Kind != TargetCustom {
 			t.Errorf("Default = %+v, want mpc/TargetCustom", defs.Default)
 		}
+		if defs.DefaultIsFallback {
+			t.Errorf("显式子查询默认不得标记回退")
+		}
 	})
 
 	t.Run("group default", func(t *testing.T) {
@@ -266,6 +314,25 @@ func TestParse_DefaultBehavior(t *testing.T) {
 		}
 		if defs.Default.Kind != TargetGroup {
 			t.Errorf("Default = %+v, want TargetGroup", defs.Default)
+		}
+		if defs.DefaultIsFallback {
+			t.Errorf("显式组合默认不得标记回退")
+		}
+	})
+
+	t.Run("reserved list default rejected", func(t *testing.T) {
+		defs, err := Parse(Input{RawQuery: map[string]any{"default": "list"}})
+		if err == nil {
+			t.Fatal("default=list 应按未知默认项拒绝而不是回退")
+		}
+		if defs != nil {
+			t.Errorf("拒绝时不应返回定义: %+v", defs)
+		}
+		msg := err.Error()
+		for _, sub := range []string{"query.default", `"list"`, "client"} {
+			if !strings.Contains(msg, sub) {
+				t.Errorf("错误 %q 未包含 %q", msg, sub)
+			}
 		}
 	})
 
@@ -440,5 +507,49 @@ func TestParse_EarlierErrorDoesNotPolluteLaterValidGroups(t *testing.T) {
 	}
 	if strings.Contains(msg, "query.groups.good_group") {
 		t.Errorf("合法组合 good_group 被误报: %q", msg)
+	}
+}
+
+// IsReservedName 是保留名的单一语义来源:六个内置视图名与 custom/list 固定入口
+// 均为保留名;普通合法名称(含以保留名为前缀/后缀的词)不是保留名。
+func TestIsReservedName(t *testing.T) {
+	for _, name := range []string{"client", "model", "provider", "project", "session", "summary", "custom", "list"} {
+		if !IsReservedName(name) {
+			t.Errorf("IsReservedName(%q) = false, 应为 true", name)
+		}
+	}
+	for _, name := range []string{"mpc", "group_q", "my-custom", "lists", "List", ""} {
+		if IsReservedName(name) {
+			t.Errorf("IsReservedName(%q) = true, 应为 false", name)
+		}
+	}
+}
+
+// 保留名错误的双语列表由同一有序来源生成:两张表的 list 拒绝错误都必须
+// 完整列出八个名称(含 list),缺一即文案漂移。
+func TestParse_ReservedNameErrorListsAllEightNames(t *testing.T) {
+	reserved := []string{"client", "model", "provider", "project", "session", "summary", "custom", "list"}
+	for _, section := range []struct{ table, path string }{
+		{"subqueries", "query.subqueries.list"},
+		{"groups", "query.groups.list"},
+	} {
+		_, err := Parse(Input{RawQuery: map[string]any{
+			section.table: map[string]any{"list": "model,model"},
+		}})
+		if err == nil {
+			t.Fatalf("%s 中定义 list 应按保留名拒绝", section.table)
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, section.path) {
+			t.Errorf("错误未定位到 %s: %q", section.path, msg)
+		}
+		if !strings.Contains(msg, "/") {
+			t.Errorf("保留名错误应为双语形态: %q", msg)
+		}
+		for _, name := range reserved {
+			if !strings.Contains(msg, name) {
+				t.Errorf("保留名错误列表缺少 %q: %q", name, msg)
+			}
+		}
 	}
 }

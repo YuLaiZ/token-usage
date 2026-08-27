@@ -50,11 +50,29 @@ func builtinDimensionList() string {
 	return strings.Join(parts, ", ")
 }
 
-// reservedNames 不能用作自定义子查询或组合查询名:
-// 内置视图名与既有显式子命令名(custom 是固定入口名)。
-var reservedNames = map[string]bool{
-	"client": true, "model": true, "provider": true, "project": true,
-	"session": true, "summary": true, "custom": true,
+// reservedNameOrder 是保留名的有序切片,也是错误文案中展示顺序的唯一来源:
+// 六个内置视图名与 custom/list 两个固定入口名。
+var reservedNameOrder = []string{
+	"client", "model", "provider", "project", "session", "summary", "custom", "list",
+}
+
+// reservedNames 由 reservedNameOrder 派生的成员集合,供语义判断使用。
+var reservedNames = func() map[string]bool {
+	set := make(map[string]bool, len(reservedNameOrder))
+	for _, name := range reservedNameOrder {
+		set[name] = true
+	}
+	return set
+}()
+
+// IsReservedName 报告 name 是否为 query 视图保留名(内置视图名与 custom/list
+// 固定入口)。TUI 即时校验等外部调用方应使用本谓词,不复制名单。
+func IsReservedName(name string) bool {
+	return reservedNames[name]
+}
+
+func reservedNameList() string {
+	return strings.Join(reservedNameOrder, ", ")
 }
 
 // namePattern 自定义名:小写 ASCII 标识符,首字符为字母,后续允许字母、数字、_、-。
@@ -107,10 +125,13 @@ type QueryGroup struct {
 
 // QueryDefinitions 是解析成功的只读执行图,不与输入 raw map/slice 共享任何引用。
 // Subqueries/Groups 按名称字节序稳定排列;两者的内部声明顺序逐项保留。
+// DefaultIsFallback 表示默认项来自缺失/空白 query.default 的内置回退:
+// true 时 Default 恒为 client;显式配置的 default(含内置视图)不标记回退。
 type QueryDefinitions struct {
-	Default    Target
-	Subqueries []CustomSubquery
-	Groups     []QueryGroup
+	Default           Target
+	DefaultIsFallback bool
+	Subqueries        []CustomSubquery
+	Groups            []QueryGroup
 }
 
 // Parse 把 raw query 状态解析为已验证的定义。
@@ -167,7 +188,7 @@ func Parse(in Input) (*QueryDefinitions, error) {
 	errs = append(errs, subErrs...)
 	groups, groupErrs := parseGroups(in.RawQuery["groups"], subs)
 	errs = append(errs, groupErrs...)
-	defTarget, defErr := parseDefault(in.RawQuery["default"], subs, groups)
+	defTarget, defFallback, defErr := parseDefault(in.RawQuery["default"], subs, groups)
 	if defErr != nil {
 		errs = append(errs, defErr)
 	}
@@ -175,7 +196,12 @@ func Parse(in Input) (*QueryDefinitions, error) {
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
-	return &QueryDefinitions{Default: defTarget, Subqueries: subs, Groups: groups}, nil
+	return &QueryDefinitions{
+		Default:           defTarget,
+		DefaultIsFallback: defFallback,
+		Subqueries:        subs,
+		Groups:            groups,
+	}, nil
 }
 
 // parseSubqueries 解析 query.subqueries;名称合法、值必须是 CSV 字符串。
@@ -312,30 +338,31 @@ func parseGroups(raw any, subs []CustomSubquery) ([]QueryGroup, []error) {
 	return groups, errs
 }
 
-// parseDefault 解析 query.default:TrimSpace 后匹配内置/自定义/组合;空白回退 client。
-func parseDefault(raw any, subs []CustomSubquery, groups []QueryGroup) (Target, error) {
+// parseDefault 解析 query.default:TrimSpace 后匹配内置/自定义/组合;缺失、nil 或
+// 空白回退 client,并以后续布尔值标记这一回退来源。
+func parseDefault(raw any, subs []CustomSubquery, groups []QueryGroup) (Target, bool, error) {
 	if raw == nil {
-		return Target{Name: string(DimensionClient), Kind: TargetBuiltin}, nil
+		return Target{Name: string(DimensionClient), Kind: TargetBuiltin}, true, nil
 	}
 	text, ok := raw.(string)
 	if !ok {
-		return Target{}, typeError("query.default", raw, "a string / 一个字符串")
+		return Target{}, false, typeError("query.default", raw, "a string / 一个字符串")
 	}
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
-		return Target{Name: string(DimensionClient), Kind: TargetBuiltin}, nil
+		return Target{Name: string(DimensionClient), Kind: TargetBuiltin}, true, nil
 	}
 	if isBuiltinDimension(trimmed) {
-		return Target{Name: trimmed, Kind: TargetBuiltin}, nil
+		return Target{Name: trimmed, Kind: TargetBuiltin}, false, nil
 	}
 	for _, s := range subs {
 		if s.Name == trimmed {
-			return Target{Name: trimmed, Kind: TargetCustom}, nil
+			return Target{Name: trimmed, Kind: TargetCustom}, false, nil
 		}
 	}
 	for _, g := range groups {
 		if g.Name == trimmed {
-			return Target{Name: trimmed, Kind: TargetGroup}, nil
+			return Target{Name: trimmed, Kind: TargetGroup}, false, nil
 		}
 	}
 	allowed := builtinDimensionList()
@@ -345,19 +372,20 @@ func parseDefault(raw any, subs []CustomSubquery, groups []QueryGroup) (Target, 
 	for _, g := range groups {
 		allowed += ", " + g.Name
 	}
-	return Target{}, errors.New(ui.Bi(
+	return Target{}, false, errors.New(ui.Bi(
 		fmt.Sprintf("unknown query.default %q (allowed: %s)", trimmed, allowed),
 		fmt.Sprintf("未知的 query.default %q(允许: %s)", trimmed, allowed),
 	))
 }
 
-// checkDefinitionName 校验自定义/组合查询名:小写标识符且不与保留名冲突。
+// checkDefinitionName 校验自定义/组合查询名:小写标识符且不与保留名冲突;
+// 保留名错误列表从 reservedNameOrder 有序生成,不另写名单。
 func checkDefinitionName(section, name string) error {
 	path := section + "." + name
-	if reservedNames[name] {
+	if IsReservedName(name) {
 		return errors.New(ui.Bi(
-			fmt.Sprintf("reserved name in %s: %q (reserved: client, model, provider, project, session, summary, custom)", path, name),
-			fmt.Sprintf("%s 使用了保留名 %q(保留: client, model, provider, project, session, summary, custom)", path, name),
+			fmt.Sprintf("reserved name in %s: %q (reserved: %s)", path, name, reservedNameList()),
+			fmt.Sprintf("%s 使用了保留名 %q(保留: %s)", path, name, reservedNameList()),
 		))
 	}
 	if !namePattern.MatchString(name) {
