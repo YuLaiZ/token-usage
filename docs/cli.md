@@ -183,14 +183,17 @@ token-usage collect retry --client codex
 Queries token-usage statistics. Output is always a table (there is no `--format`) and is aggregated directly from `messages`, without a materialized summary table.
 
 ```text
-token-usage query [date]             # runs query.default; equivalent to client when unconfigured
-token-usage query client [date]      # built-in views
+token-usage query                      # today, runs query.default; equivalent to client when unconfigured
+token-usage query <date>               # date or range for the default view
+token-usage query client [date]        # built-in views
 token-usage query model [date]
 token-usage query provider [date]
 token-usage query project [date]
 token-usage query session [date]
 token-usage query summary [date]
-token-usage query custom <name> [date]  # runs a configured subquery or group by name
+token-usage query <name> [date]        # direct shorthand for a configured subquery or group
+token-usage query custom <name> [date] # explicit equivalent of the line above; kept as-is
+token-usage query list                 # lists configured views; reads config only, never opens the database
 ```
 
 Every query command starts its output with a shared statistics header, printed exactly once no matter how many tables follow:
@@ -225,25 +228,26 @@ mpc = "model,provider,client"          # one multi-dimensional table
 group_q = "client,model,provider,mpc"  # several tables in this order
 ```
 
-- `query custom <name> [date]` runs the named subquery (one table) or group (tables in declared order); the name is a positional argument, so it cannot be confused with the date. Unknown or reserved names are rejected. Date errors take precedence over name/definition errors, and both are reported before the database is opened.
+- `query <name> [date]` and `query custom <name> [date]` are equivalent spellings for the same configured subquery (one table) or group (tables in declared order): same target and same output, validated under the same rules — name resolution, reserved-name rejection, date validation order (date errors take precedence over name/definition errors), and every failure happening before the database opens. Error examples naturally show each spelling's own command form (`token-usage query 20260701` vs `token-usage query custom 20260701`). The direct name is positional argument dispatch on the root `query` command — configured names never become dynamic subcommands. With two positional args the first must be the view name; a digit-leading first arg (`token-usage query 20260701 20260702`) is rejected before the config is loaded with a bilingual usage error naming both accepted forms.
+- Unknown or reserved names are rejected before the database is opened, and date errors take precedence over name/definition errors; both surface in either spelling.
 - A subquery selects at least 2 distinct built-in dimensions (`client`/`model`/`provider`/`project`); the declared order is the column order. A group selects at least 2 distinct items from built-in views plus defined subqueries; groups cannot reference groups.
-- View names are lowercase identifiers (a letter first, then letters, digits, `_`, `-`) and must not collide with `client`/`model`/`provider`/`project`/`session`/`summary`/`custom`. Values are comma-separated; every segment is trimmed, so `"model, provider"` equals `"model,provider"`.
+- View names are lowercase identifiers (a letter first, then letters, digits, `_`, `-`) and must not collide with `client`/`model`/`provider`/`project`/`session`/`summary`/`custom`/`list`. Values are comma-separated; every segment is trimmed, so `"model, provider"` equals `"model,provider"`. If a handwritten subquery or group was named `list`, rename it before upgrading: newer binaries reject the name because `query list` became a static discovery command.
 - `query.default` is matched after trimming; whitespace means "use client". It may reference a built-in view, a subquery, or a group; `session` and `summary` are not referable.
+- `query list` takes no positional args and prints a fixed structure in one pass: default behavior (`token-usage query -> <name> (<category>)`), one-time invocation hint showing the direct and explicit forms as equivalent, six built-in commands with their purposes, then every configured subquery and group as a single copy-pasteable command for today (such as `token-usage query mpc`) together with its dimensions or members CSV; empty sections say `None`. It only reads the effective config and parses definitions — it never opens `usage.db`, prints statistics, reads collection errors, accepts a date, or changes any state. Bad definitions still fail there with the same localized errors instead of being hidden behind an empty section.
 
 `query provider` (and the provider dimension of any custom view) prefers router attribution, then the collector's provider value. Historical empty values remain unattributed; the query does not infer a provider from the client. `provider_aliases` is applied before composite keys are formed: aliases with the same value are combined into one row in every view, without changing `usage.db`.
 
-Query configuration is display-only. Semantic errors (broken references, malformed CSV, unknown keys, top-level conflicts such as `[query]` alongside `[Query]`, or a non-table root like `query = "x"`) make `query`, `query custom`, and TUI saves fail with the offending key; `collect`, `status`, `start`, the daemon, `config set`, and `config show` keep working and preserve the offending entries. The TUI "Query views" page (press `v` in the main menu) edits this section with guided selection and shows a recovery list when the raw section cannot be parsed. Before downgrading to a version without query-view support, remove the whole `[query]`, `[query.subqueries]`, and `[query.groups]` sections: older versions reject any non-empty query section.
+Query configuration is display-only. Semantic errors (broken references, malformed CSV, unknown keys, top-level conflicts such as `[query]` alongside `[Query]`, or a non-table root like `query = "x"`) make the default path (bare `query` and `query <date>`), every named invocation (`query <name>` / `query custom <name>`), `query list`, and TUI saves fail with the offending key; the six static built-in views, `collect`, `status`, `start`, the daemon, `config set`, and `config show` keep working and preserve the offending entries. The TUI "Query views" page (press `v` in the main menu) edits this section with guided selection and shows a recovery list when the raw section cannot be parsed. Before downgrading to a version without query-view support, remove the whole `[query]`, `[query.subqueries]`, and `[query.groups]` sections: older versions reject any non-empty query section.
 
 Examples:
 
 ```bash
 token-usage query                    # today, runs the configured default (client when unconfigured)
-token-usage query model              # today, grouped by model
-token-usage query provider           # today, grouped by provider
 token-usage query 20260701-20260721  # date range, default view
-token-usage query custom mpc         # today, the mpc multi-dimensional table
-token-usage query custom group_q 20260701  # four tables in declared order
+token-usage query mpc                # today, the mpc multi-dimensional table (direct shorthand)
+token-usage query custom group_q 20260701  # explicit spelling: four tables in declared order
 token-usage query summary 20260701   # single-day overview
+token-usage query list               # list configured views without touching the database
 ```
 
 ## errors

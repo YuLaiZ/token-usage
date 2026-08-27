@@ -123,7 +123,9 @@ token-usage collect
 | `collect retry` | 重试 `collection_errors` 中未解决失败组（`--client X` 限定） |
 | `query [日期]` | 查询统计（默认今日，执行 `query.default` 配置的视图，未配置时等价按客户端分组）；分组视图末行显示 `Total / 总计` |
 | `query client/model/provider/project/session/summary [日期]` | 对应内置视图查询 |
-| `query custom <name> [日期]` | 执行 `[query.subqueries]`（一张多维表）或 `[query.groups]`（按顺序多张表）中定义的视图 |
+| `query <name> [日期]` | 直接按名称执行已配置的子查询或组合查询（根命令位置参数分派，配置名称不会注册为动态子命令）；与下方显式写法目标与输出一致，并遵循同一套校验规则（用法示例各自展示自身命令形态） |
+| `query custom <name> [日期]` | `query <name> [日期]` 的等价显式写法；执行 `[query.subqueries]`（一张多维表）或 `[query.groups]`（按顺序多张表）中定义的视图 |
+| `query list` | 只读列出已配置查询视图（默认行为、内置命令、自定义子查询、组合查询）；只读取配置，不打开 usage 数据库，也不接受日期 |
 | `errors [YYYYMMDD]` | 查看采集异常（`--source X` / `--unresolved`） |
 
 日期为位置参数：`YYYYMMDD` 单日或 `YYYYMMDD-YYYYMMDD` 闭区间；无 `--date` 标志。
@@ -361,7 +363,7 @@ max_days = 7
 >
 > **供应商别名**：`provider_aliases` 只影响 `query provider` 的供应商标签与分组；key 必须与采集或路由回填得到的原始 provider 名完全一致。修改不会改写 `usage.db`，也无需采集或回填；下一次查询立即生效。历史空值保持“未归因”。
 >
-> **查询视图**：`[query]` 是纯展示配置。视图名须为小写标识符，且不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`custom` 冲突。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突）只会让 `query`、`query custom` 与 TUI 保存失败并定位到具体配置键；`collect`、`status`、`start`、守护进程、`config set`、`config show` 不受影响，且原样保留问题项。TUI 提供「查询视图」引导页（主菜单按 `v`）完成子查询、组合查询与默认视图的选择式配置，无需手写 CSV；raw 段无法解析时先进入恢复列表，逐项按 `enter` 修复。query 配置出错不会阻塞无关单项修改，可继续用 `config set`；`config set`/`config get` 不支持通过 dotted key 直接读写 query 定义（`config set` 仍会整体重写配置文件并原样保留 raw query 段）。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]` 段：旧版本会拒绝任何非空 query 段（空 `[query]` 段可放行）。
+> **查询视图**：`[query]` 是纯展示配置。视图名须为小写标识符，且不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`custom`/`list` 冲突；若历史手写的子查询或组合查询名为 `list`，升级前请先重命名（新版二进制把该名称保留给静态的 `query list` 发现子命令）。已配置视图可直接 `query <name> [日期]` 执行，也可显式 `query custom <name> [日期]`——两者等价，直接名称是位置参数分派而非动态子命令。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突）只会让默认路径（裸 `query` 与 `query <日期>`）、具名调用（`query <name>` / `query custom <name>`）、`query list` 与 TUI 保存失败并定位到具体配置键；六个静态内置视图以及 `collect`、`status`、`start`、守护进程、`config set`、`config show` 不受影响，且原样保留问题项。TUI 提供「查询视图」引导页（主菜单按 `v`）完成子查询、组合查询与默认视图的选择式配置，无需手写 CSV；raw 段无法解析时先进入恢复列表，逐项按 `enter` 修复。query 配置出错不会阻塞无关单项修改，可继续用 `config set`；`config set`/`config get` 不支持通过 dotted key 直接读写 query 定义（`config set` 仍会整体重写配置文件并原样保留 raw query 段）。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]` 段：旧版本会拒绝任何非空 query 段（空 `[query]` 段可放行）。
 
 ## 平台支持
 

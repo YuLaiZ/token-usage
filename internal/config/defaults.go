@@ -77,7 +77,7 @@ autostart = false   # 开机自启（macOS launchd / Windows 注册表）
 # 裸 query 的执行对象由 default 指定，未配置时等价按客户端分组；
 # 子查询从内置维度组合多维表（至少 2 个，顺序即列顺序）；
 # 组合查询按声明顺序连续输出多张表（至少 2 项，不能嵌套组合查询）。
-# 名称需为小写标识符且不与 client/model/provider/project/session/summary/custom 冲突。
+# 名称需为小写标识符且不与 client/model/provider/project/session/summary/custom/list 冲突。
 # [query]
 # default = "group_q"
 # [query.subqueries]

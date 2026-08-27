@@ -86,7 +86,7 @@ graph TB
 - `sync_state` 记录每个 client 各 source 的增量游标，collector 和 router adapter 各自读写自己的 source。
 - collector 部分源失败时，已成功解析的消息、会话和 router 数据仍事务落库，但不写 `collection_log`、不解决历史错误、不推进 `sync_state`；后续普通采集或 retry 会按幂等 UPSERT 重放仍有缺口的区间。
 - 查询层（querier）直接 JOIN `messages`（+ `sessions` 元数据）实时聚合，无中间汇总表。全部分组视图共用一条维度化管线（维度 → 原始聚合 → alias 合并后的复合键 → 稳定排序 → 表格），末行输出同一日期范围独立聚合的 `Total / 总计`；会话明细与总览摘要不追加。供应商别名在组合键形成前合并行,不回写 `messages`。
-- 裸 `query` 执行 `[query]` 配置的默认对象（未配置回退 client）；`query custom <name>` 执行指定名称的子查询或组合查询。语义校验只发生在这两条路径与 TUI 保存前，由 `internal/querydef` 完成；query 配置无效不会阻塞采集、status、守护进程、`config set` 与 `config show`，它们继续透传并原样写回问题项。
+- 裸 `query` 执行 `[query]` 配置的默认对象（未配置回退 client）；`query <name>` 在根命令上按位置参数分派到具名子查询/组合查询，与显式写法 `query custom <name>` 共用同一条具名执行链；`query list` 只依据已解析定义渲染配置视图，绝不打开数据库。定义名称为小写标识符，不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`custom`/`list` 冲突。语义校验只发生在这些路径（默认、直接/显式具名、list）与 TUI 保存前，由 `internal/querydef` 完成；query 配置无效不会阻塞六个静态内置视图，也不会阻塞采集、status、守护进程、`config set` 与 `config show`，它们继续透传并原样写回问题项。
 - Codex rollout 解析器仅在事件含有效 `total_token_usage` 时，以同一 `limit_id` 最近签名或紧邻 token 事件的完整 `(total,last)` 签名识别重播；不做全表去重，以保留合法计数器重置。去重只影响本次内存解析，不会自动清理既有数据库中的历史重复消息。
 
 ## 数据库表
@@ -150,7 +150,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 用户执行命令 → 加载配置 → 执行采集/查询/配置编辑 → 输出结果 → 退出
 ```
 
-命令组：`version`（多行详细输出）、Cobra 内置 `completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`session`/`summary`，另加 `custom <name>`）、`errors`、`start`、`status`、`stop`、`restart`，以及 Hidden 内部命令 `_run`。根命令另带 `-v, --version` flag（单行短输出）。
+命令组：`version`（多行详细输出）、Cobra 内置 `completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`session`/`summary`，另加 `custom <name>` 与只读的 `list`）、`errors`、`start`、`status`、`stop`、`restart`，以及 Hidden 内部命令 `_run`。根命令另带 `-v, --version` flag（单行短输出）。
 
 直接执行 `token-usage`（不带任何参数）只会打印帮助信息，既不启动 TUI 也不启动守护进程。命令树、参数、标志、退出码与示例的完整参考见 [CLI 参考](cli.zh-CN.md)。
 
@@ -360,7 +360,7 @@ fileutil → 标准库（+ Windows 经 golang.org/x/sys）
 | `version`（子命令） + `--version`/`-v`（flag） | `internal/cli/version.go` + `internal/cli/root.go`（`buildinfo.Current()` 在 root 装配处取一次） |
 | `completion <bash|zsh|fish|powershell>` | Cobra 内置命令，向 stdout 生成 Shell 补全脚本 |
 | `collect` / `collect all` / `collect router` / `collect retry` | `internal/cli/collect*.go` |
-| `query` / `query <view>` / `query custom <name>` | `internal/cli/query.go`（维度聚合在 `internal/querier`，视图定义在 `internal/querydef`） |
+| `query` / `query <name>` / `query custom <name>` / `query list` | `internal/cli/query.go`（维度聚合在 `internal/querier`，视图定义在 `internal/querydef`） |
 | `errors` | `internal/cli/errors.go` |
 | `config` / `config show` / `config get` / `config set` / `config init` | `internal/cli/config_tui.go` / `config_show.go` / `config_get.go` / `config_set.go` / `init.go` |
 | `start` / `stop` / `restart` / `status` | `internal/cli/{start,stop,restart,status}.go` |

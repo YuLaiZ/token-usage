@@ -183,14 +183,17 @@ token-usage collect retry --client codex
 查询 token 使用统计，输出固定为表格（无 `--format`）。从 `messages` 实时聚合，不依赖物化汇总表。
 
 ```text
-token-usage query [日期]             # 执行 query.default,未配置时等价 client
-token-usage query client [日期]      # 内置视图
+token-usage query                      # 今日,执行 query.default,未配置时等价 client
+token-usage query <日期>               # 默认视图的日期或区间
+token-usage query client [日期]        # 内置视图
 token-usage query model [日期]
 token-usage query provider [日期]
 token-usage query project [日期]
 token-usage query session [日期]
 token-usage query summary [日期]
-token-usage query custom <name> [日期]  # 按名称执行已配置的子查询或组合查询
+token-usage query <name> [日期]        # 已配置子查询/组合查询的直接简写
+token-usage query custom <name> [日期] # 上一行的等价显式写法,原样保留
+token-usage query list                 # 列出已配置视图;只读配置,不打开数据库
 ```
 
 每条 query 命令的输出都以一个统一的统计信息区开始，无论后面输出多少张表都只打印一次：
@@ -225,25 +228,26 @@ mpc = "model,provider,client"          # 一张多维表
 group_q = "client,model,provider,mpc"  # 按此顺序连续输出多张表
 ```
 
-- `query custom <name> [日期]` 执行指定名称的子查询（一张表）或组合查询（按声明顺序多张表）；名称是位置参数，不会与日期混淆。未知名称与保留名会被拒绝。日期错误优先于名称/定义错误，且两者都在打开数据库之前报告。
+- `query <name> [日期]` 与 `query custom <name> [日期]` 是同一已配置子查询（一张表）或组合查询（按声明顺序多张表）的等价写法：目标与输出一致，并遵循同一套校验规则——名称解析、保留名拒绝、日期校验顺序（日期错误优先于名称/定义错误）、全部失败都发生在打开数据库之前。错误示例各自展示自身命令形态（`token-usage query 20260701` 与 `token-usage query custom 20260701`）。直接名称走根命令的位置参数分派——配置中的名称不会注册为动态子命令。两个位置参数时第一个必须是视图名；数字开头的首参数（如 `token-usage query 20260701 20260702`）会在加载配置前以双语用法错误拒绝，并给出两种可接受形态的示例。
+- 未知名称与保留名在打开数据库之前被拒绝；日期错误优先于名称/定义错误。两种写法边界一致。
 - 子查询从内置维度（`client`/`model`/`provider`/`project`）中至少选择 2 个不同维度，声明顺序即列顺序；组合查询从内置视图与已定义子查询中至少选择 2 个不同成员，组合查询不能引用组合查询。
-- 视图名为小写标识符（首字符字母，后续字母、数字、`_`、`-`），不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`custom` 冲突。值按逗号分隔，每段自动去除首尾空格，`"model, provider"` 与 `"model,provider"` 等价。
+- 视图名为小写标识符（首字符字母，后续字母、数字、`_`、`-`），不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`custom`/`list` 冲突。值按逗号分隔，每段自动去除首尾空格，`"model, provider"` 与 `"model,provider"` 等价。若历史手写的子查询或组合查询名为 `list`，升级前请先重命名：新版二进制会将该名称按保留名拒绝（`query list` 已成为静态发现子命令）。
 - `query.default` 匹配前去除首尾空格，空白等同未设置并回退 client；可引用内置视图、子查询或组合查询，`session` 与 `summary` 不可引用。
+- `query list` 不接受位置参数，单次固定顺序输出：默认行为（`token-usage query -> <name> (<类别>)`）、一次性的调用说明（简写与显式两形态等价）、六个内置命令及其用途，随后把每个已配置子查询/组合查询各渲染为一条今天即可复制执行的完整命令（如 `token-usage query mpc`）附维度或成员 CSV；空分区显示 `None`。它只读取有效配置并解析定义——不打开 `usage.db`、不打印统计信息区、不读取采集异常、不接受日期、不修改任何状态。定义损坏时仍按既有定位错误失败，不会伪装成空列表。
 
 `query provider`（以及任何自定义视图中的 provider 维度）优先使用路由归因，其次使用采集器的供应商值；历史空值保持未归因，查询不会依据客户端推断供应商。`provider_aliases` 在组合键形成前生效：相同别名在每个视图中合并为同一行，且不会修改 `usage.db`。
 
-query 配置是纯展示配置。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突、`query = "x"` 根值非表）只会使 `query`、`query custom` 与 TUI 保存失败并定位具体配置键；`collect`、`status`、`start`、守护进程、`config set`、`config show` 不受影响，且原样保留问题项。TUI「查询视图」页（主菜单按 `v`）以选择方式编辑该段，raw 段无法解析时先显示恢复列表。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]` 段：旧版本会拒绝任何非空 query 段。
+query 配置是纯展示配置。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突、`query = "x"` 根值非表）只会使默认路径（裸 `query` 与 `query <日期>`）、全部具名调用（`query <name>` / `query custom <name>`）、`query list` 与 TUI 保存失败并定位具体配置键；六个静态内置视图以及 `collect`、`status`、`start`、守护进程、`config set`、`config show` 不受影响，且原样保留问题项。TUI「查询视图」页（主菜单按 `v`）以选择方式编辑该段，raw 段无法解析时先显示恢复列表。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]` 段：旧版本会拒绝任何非空 query 段。
 
 示例：
 
 ```bash
 token-usage query                    # 今日，执行配置的默认视图（未配置时按客户端分组）
-token-usage query model              # 今日，按模型分组
-token-usage query provider           # 今日，按供应商分组
 token-usage query 20260701-20260721  # 区间，默认视图
-token-usage query custom mpc         # 今日，mpc 多维表
-token-usage query custom group_q 20260701  # 按声明顺序输出四张表
+token-usage query mpc                # 今日，mpc 多维表（直接简写）
+token-usage query custom group_q 20260701  # 显式写法：按声明顺序输出四张表
 token-usage query summary 20260701   # 单日总览
+token-usage query list               # 列出已配置视图，不触碰数据库
 ```
 
 ## errors
