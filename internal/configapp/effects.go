@@ -258,12 +258,14 @@ func hasRouterDBPathDiff(prev, curr normalizedCfg, name string) bool {
 // normalizedCfg 把 *config.Config 归一化为非 nil、含非 nil map 的等价结构，
 // 使后续比较不必到处判 nil。AnalyzeConfigEffects 的比较都基于归一化结果。
 type normalizedCfg struct {
-	DataDir         string
-	Daemon          config.DaemonConfig
-	Log             config.LogConfig
-	Clients         map[string]config.Client
-	Routers         map[string]config.RouterConfig
-	ProviderAliases map[string]string
+	DataDir                string
+	Daemon                 config.DaemonConfig
+	Log                    config.LogConfig
+	Clients                map[string]config.Client
+	Routers                map[string]config.RouterConfig
+	ProviderAliases        map[string]string
+	RawQuery               map[string]any
+	RawQueryTopLevelIssues map[string]config.RawQueryTopLevelIssue
 }
 
 func normalize(c *config.Config) normalizedCfg {
@@ -280,6 +282,9 @@ func normalize(c *config.Config) normalizedCfg {
 	n.Clients = copyClients(c.Clients)
 	n.Routers = copyRouters(c.Routers)
 	n.ProviderAliases = copyStringMap(c.ProviderAliases)
+	// raw query 参与归一化与 effective 等价比较(保存后不误报「有效配置未变化」),
+	// 但 runtimeAffectingChange 不检查它:query 是纯展示配置,只写盘、无运行时副作用。
+	n.RawQuery, n.RawQueryTopLevelIssues = config.CloneRawQueryState(c)
 	return n
 }
 

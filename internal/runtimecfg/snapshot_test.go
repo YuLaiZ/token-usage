@@ -149,6 +149,84 @@ func TestLoadUserConfigSnapshot_PreservesProviderAliasKeyCase(t *testing.T) {
 	}
 }
 
+// 无关命令(collect/status/start/daemon)经 snapshot + ValidateUserConfig + LoadEffectiveConfig
+// 读取配置:坏 query(顶层冲突、根值非表、内部未知形态)不得阻塞这条链,raw 状态原样传播。
+func TestLoadUserConfigSnapshot_BadQueryDoesNotBlockEffectiveChain(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		wantRawOnly bool // true: 合法 RawQuery(内部未知形态);false: 顶层问题态
+	}{
+		{
+			name:    "top-level name conflict",
+			content: "data_dir = \"/tmp/x\"\n[query]\ndefault = \"a\"\n[Query]\ndefault = \"b\"\n",
+		},
+		{
+			name:    "root not table",
+			content: "data_dir = \"/tmp/x\"\nquery = \"x\"\n",
+		},
+		{
+			name:        "inner unknown shapes",
+			content:     "data_dir = \"/tmp/x\"\n[query]\nunknown_key = [1, 2]\n[query.nested]\ninner = \"v\"\n",
+			wantRawOnly: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := writeConfigBytes(t, []byte(tt.content))
+			snap, err := LoadUserConfigSnapshot(p)
+			if err != nil {
+				t.Fatalf("坏 query 不应阻塞 snapshot 读取: %v", err)
+			}
+			if !snap.Exists || snap.Config == nil {
+				t.Fatal("Exists=true 且 Config 非 nil 期望")
+			}
+			if err := ValidateUserConfig(snap.Config); err != nil {
+				t.Fatalf("全局校验不应解释 query 语义: %v", err)
+			}
+			if _, err := LoadEffectiveConfig(p, envForTest(newStandardProvider())); err != nil {
+				t.Fatalf("坏 query 不应阻塞 LoadEffectiveConfig: %v", err)
+			}
+			if tt.wantRawOnly {
+				if snap.Config.RawQuery == nil || snap.Config.RawQueryTopLevelIssues != nil {
+					t.Errorf("内部未知形态应保留在 RawQuery: %#v / %#v",
+						snap.Config.RawQuery, snap.Config.RawQueryTopLevelIssues)
+				}
+			} else if snap.Config.RawQuery != nil {
+				// 顶层问题态只填 issues,不静默回退 RawQuery。
+				t.Errorf("问题态 RawQuery 应为 nil: %#v", snap.Config.RawQuery)
+			}
+		})
+	}
+}
+
+// 合法 query 段在 snapshot 中传播 RawQuery;缺失 query 时两个载体保持 nil
+// (initMaps 不得为 raw 载体制造空 map)。
+func TestLoadUserConfigSnapshot_RawQueryCarrierPropagation(t *testing.T) {
+	p := writeConfigBytes(t, []byte("data_dir = \"/tmp/x\"\n[query.subqueries]\nmpc = \"model,provider\"\n"))
+	snap, err := LoadUserConfigSnapshot(p)
+	if err != nil {
+		t.Fatalf("LoadUserConfigSnapshot: %v", err)
+	}
+	sub, ok := snap.Config.RawQuery["subqueries"].(map[string]any)
+	if !ok || sub["mpc"] != "model,provider" {
+		t.Errorf("RawQuery 未传播: %#v", snap.Config.RawQuery)
+	}
+	if snap.Config.RawQueryTopLevelIssues != nil {
+		t.Errorf("合法 query 不应产生 issues: %#v", snap.Config.RawQueryTopLevelIssues)
+	}
+
+	pNone := writeConfigBytes(t, []byte("data_dir = \"/tmp/x\"\n"))
+	snapNone, err := LoadUserConfigSnapshot(pNone)
+	if err != nil {
+		t.Fatalf("LoadUserConfigSnapshot: %v", err)
+	}
+	if snapNone.Config.RawQuery != nil || snapNone.Config.RawQueryTopLevelIssues != nil {
+		t.Errorf("缺失 query 时两载体必须为 nil(不初始化空 map): %#v / %#v",
+			snapNone.Config.RawQuery, snapNone.Config.RawQueryTopLevelIssues)
+	}
+}
+
 func TestLoadUserConfigSnapshot_RejectsUnknownNestedFields(t *testing.T) {
 	tests := []struct {
 		name    string

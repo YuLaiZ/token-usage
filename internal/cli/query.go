@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/querier"
+	"github.com/YuLaiZ/token-usage/internal/querydef"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
@@ -24,6 +26,8 @@ const (
 	viewProject
 	viewSessions
 	viewSummary
+	// viewDefault 表示裸 query:执行 query.default 指向的对象(未配置时等价 client)。
+	viewDefault
 )
 
 func newQueryCmd() *cobra.Command {
@@ -36,7 +40,7 @@ func newQueryCmd() *cobra.Command {
 		),
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQuery(cmd, args, viewClient)
+			return runQuery(cmd, args, viewDefault)
 		},
 	}
 
@@ -47,6 +51,7 @@ func newQueryCmd() *cobra.Command {
 		newQuerySubCmd("project", "Group by project / 按项目分组", viewProject),
 		newQuerySubCmd("session", "View session details / 查看会话明细", viewSessions),
 		newQuerySubCmd("summary", "View summary / 查看总览摘要", viewSummary),
+		newQueryCustomCmd(),
 	)
 
 	return cmd
@@ -69,7 +74,43 @@ func newQuerySubCmd(name, short string, view queryView) *cobra.Command {
 	}
 }
 
-// runQuery 是 query 及其六个子命令的公共执行入口。
+// newQueryCustomCmd 构造 query custom 子命令:<name> 引用 query.subqueries 或
+// query.groups 中已定义的对象。独立命令(不复用单日期参数工厂),参数为
+// RangeArgs(1,2) 且缺参/超参错误为双语;日期解析先于配置与数据库打开。
+func newQueryCustomCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "custom <name> [YYYYMMDD|YYYYMMDD-YYYYMMDD]",
+		Short: "Run a configured custom or group query / 执行已配置的自定义或组合查询",
+		Long: ui.Bi(
+			"Run a custom or group query defined in config.toml ([query.subqueries] or [query.groups]). Accepts the view name plus one optional date arg: a single date YYYYMMDD or a range YYYYMMDD-YYYYMMDD; defaults to today.",
+			"执行 config.toml 中定义的自定义或组合查询（[query.subqueries] 或 [query.groups]）。参数为视图名加一个可选日期：单个日期 YYYYMMDD 或日期范围 YYYYMMDD-YYYYMMDD；缺省时默认今天。",
+		),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) < 1 {
+				return errors.New(ui.Bi(
+					"custom requires a query view name and accepts at most one optional date arg",
+					"custom 需要一个查询视图名,至多再附加一个可选日期参数",
+				))
+			}
+			if len(args) > 2 {
+				return fmt.Errorf("%s", ui.Bi(
+					fmt.Sprintf("custom accepts at most 2 args (view name and optional date), got %d", len(args)),
+					fmt.Sprintf("custom 至多接受 2 个参数(视图名和可选日期),当前 %d 个", len(args)),
+				))
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var dateArgs []string
+			if len(args) > 1 {
+				dateArgs = args[1:]
+			}
+			return runQueryCustomWithDeps(cmd, args[0], dateArgs, loadConfig, dbOpener)
+		},
+	}
+}
+
+// runQuery 是 query 及其子命令的公共执行入口。
 func runQuery(cmd *cobra.Command, args []string, view queryView) error {
 	return runQueryWithDeps(cmd, args, view, loadConfig, dbOpener)
 }
@@ -92,6 +133,20 @@ func runQueryWithDeps(
 		return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 	}
 
+	// 裸 query:解析 query.default 指向的对象;querydef 语义错误只在此路径拒绝。
+	if view == viewDefault {
+		defs, err := parseQueryDefinitions(cfg)
+		if err != nil {
+			return err
+		}
+		usageDB, err := open(queryDBPath(cfg))
+		if err != nil {
+			return fmt.Errorf("%s: %w", ui.Bi("failed to open database", "打开数据库失败"), err)
+		}
+		defer usageDB.Close()
+		return executeDefaultQuery(cmdContext(cmd), cmd.OutOrStdout(), usageDB, dates, defs, cfg.ProviderAliases)
+	}
+
 	dbPath := filepath.Join(cfg.DataDir, "usage.db")
 	usageDB, err := open(dbPath)
 	if err != nil {
@@ -100,6 +155,165 @@ func runQueryWithDeps(
 	defer usageDB.Close()
 
 	return executeQueryDatesWithAliases(cmdContext(cmd), cmd.OutOrStdout(), usageDB, dates, view, cfg.ProviderAliases)
+}
+
+// runQueryCustomWithDeps 执行 query custom <name> [date]:
+// 日期先解析,日期合法后加载配置并校验 query 定义与名称,最后才打开数据库。
+func runQueryCustomWithDeps(
+	cmd *cobra.Command,
+	name string,
+	dateArgs []string,
+	load func() (*config.Config, error),
+	open func(string) (*db.DB, error),
+) error {
+	dates, err := parseDateArgs(dateArgs, true, "custom")
+	if err != nil {
+		return err
+	}
+
+	cfg, err := load()
+	if err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
+	}
+
+	defs, err := parseQueryDefinitions(cfg)
+	if err != nil {
+		return err
+	}
+	target, ok := resolveTarget(defs, name)
+	if !ok {
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("unknown query view %q (use a name defined in query.subqueries or query.groups)", name),
+			fmt.Sprintf("未知的查询视图 %q(请使用 query.subqueries 或 query.groups 中定义的名称)", name),
+		))
+	}
+
+	usageDB, err := open(queryDBPath(cfg))
+	if err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("failed to open database", "打开数据库失败"), err)
+	}
+	defer usageDB.Close()
+
+	return executeTargetQuery(cmdContext(cmd), cmd.OutOrStdout(), usageDB, dates, defs, target, cfg.ProviderAliases)
+}
+
+// queryDBPath 返回查询用数据库路径。
+func queryDBPath(cfg *config.Config) string {
+	return filepath.Join(cfg.DataDir, "usage.db")
+}
+
+// parseQueryDefinitions 把 config raw query 状态适配为 querydef 输入并解析。
+func parseQueryDefinitions(cfg *config.Config) (*querydef.QueryDefinitions, error) {
+	issues := make(map[string]querydef.TopLevelIssue, len(cfg.RawQueryTopLevelIssues))
+	for name, issue := range cfg.RawQueryTopLevelIssues {
+		issues[name] = querydef.TopLevelIssue{Name: issue.Name, Kind: string(issue.Kind)}
+	}
+	return querydef.Parse(querydef.Input{
+		RawQuery:               cfg.RawQuery,
+		RawQueryTopLevelIssues: issues,
+	})
+}
+
+// executeDefaultQuery 执行 query.default 指向的对象。
+func executeDefaultQuery(ctx context.Context, out io.Writer, usageDB *db.DB, dates []string, defs *querydef.QueryDefinitions, aliases map[string]string) error {
+	return executeTargetQuery(ctx, out, usageDB, dates, defs, defs.Default, aliases)
+}
+
+// resolveTarget 按名称解析 custom 子命令的执行对象。
+// 只允许 query.subqueries 与 query.groups 中定义的名称;内置视图与保留名
+// 不属于 custom 的可引用集合,统一按未知名称报错。
+func resolveTarget(defs *querydef.QueryDefinitions, name string) (querydef.Target, bool) {
+	for _, s := range defs.Subqueries {
+		if s.Name == name {
+			return querydef.Target{Name: name, Kind: querydef.TargetCustom}, true
+		}
+	}
+	for _, g := range defs.Groups {
+		if g.Name == name {
+			return querydef.Target{Name: name, Kind: querydef.TargetGroup}, true
+		}
+	}
+	return querydef.Target{}, false
+}
+
+// executeTargetQuery 把目标展开为渲染序列并逐表输出;全部表完成后统一输出一次异常警告。
+func executeTargetQuery(ctx context.Context, out io.Writer, usageDB *db.DB, dates []string, defs *querydef.QueryDefinitions, target querydef.Target, aliases map[string]string) error {
+	views, err := targetDimensionViews(defs, target)
+	if err != nil {
+		return err
+	}
+	q := querier.New(usageDB)
+	for _, view := range views {
+		view.Aliases = aliases
+		result, err := q.RunDimensionView(ctx, dates, view)
+		if err != nil {
+			return fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
+		}
+		fmt.Fprintln(out, result)
+	}
+	return showErrorWarningsContext(ctx, out, usageDB, dates)
+}
+
+// targetDimensionViews 把目标展开为维度视图渲染序列:
+// builtin 是一张单维表;custom 是一张多维表;group 按声明顺序展开成员。
+func targetDimensionViews(defs *querydef.QueryDefinitions, target querydef.Target) ([]querier.DimensionView, error) {
+	switch target.Kind {
+	case querydef.TargetBuiltin:
+		view, err := builtinDimensionView(target.Name)
+		return []querier.DimensionView{view}, err
+	case querydef.TargetCustom:
+		for _, s := range defs.Subqueries {
+			if s.Name != target.Name {
+				continue
+			}
+			dims := make([]string, len(s.Dimensions))
+			for i, d := range s.Dimensions {
+				dims[i] = string(d)
+			}
+			return []querier.DimensionView{{
+				Dimensions: dims,
+				TitleEn:    "Custom view " + s.Name,
+				TitleZh:    "自定义视图 " + s.Name,
+			}}, nil
+		}
+	case querydef.TargetGroup:
+		for _, g := range defs.Groups {
+			if g.Name != target.Name {
+				continue
+			}
+			var views []querier.DimensionView
+			for _, item := range g.Items {
+				sub, err := targetDimensionViews(defs, item)
+				if err != nil {
+					return nil, err
+				}
+				views = append(views, sub...)
+			}
+			return views, nil
+		}
+	}
+	return nil, fmt.Errorf("%s", ui.Bi(
+		fmt.Sprintf("unknown query target %q", target.Name),
+		fmt.Sprintf("未知的查询目标 %q", target.Name),
+	))
+}
+
+// builtinDimensionView 返回内置单维视图的渲染定义(标题与内置子命令一致)。
+func builtinDimensionView(name string) (querier.DimensionView, error) {
+	switch name {
+	case "client":
+		return querier.DimensionView{Dimensions: []string{"client"}, TitleEn: "Group by client", TitleZh: "按客户端分组"}, nil
+	case "model":
+		return querier.DimensionView{Dimensions: []string{"model"}, TitleEn: "Group by model", TitleZh: "按模型分组"}, nil
+	case "provider":
+		return querier.DimensionView{Dimensions: []string{"provider"}, TitleEn: "Group by provider", TitleZh: "按供应商分组"}, nil
+	case "project":
+		return querier.DimensionView{Dimensions: []string{"project"}, TitleEn: "Group by project", TitleZh: "按项目分组"}, nil
+	}
+	return querier.DimensionView{}, fmt.Errorf("%s", ui.Bi(
+		fmt.Sprintf("unknown query dimension %q", name),
+		fmt.Sprintf("未知查询维度 %q", name),
+	))
 }
 
 // executeQuery 执行 query 的视图分发核心逻辑（不依赖 cobra，便于单测）：

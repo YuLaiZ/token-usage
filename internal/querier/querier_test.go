@@ -461,3 +461,287 @@ func TestSessionsLongTitleTruncated(t *testing.T) {
 		t.Fatalf("长标题行未出现于输出:\n%s", result)
 	}
 }
+
+// ---- 通用维度聚合与总计行 ----
+
+// 四个内置分组视图各追加唯一 Total / 总计 行;Sessions 与 Summary 不追加。
+func TestGroupViews_AppendSingleTotalRow(t *testing.T) {
+	q := setupMessageFixture(t)
+	views := []struct {
+		name string
+		run  func() (string, error)
+	}{
+		{"ByClient", func() (string, error) { return q.ByClient(context.Background(), bothDates) }},
+		{"ByModel", func() (string, error) { return q.ByModel(context.Background(), bothDates) }},
+		{"ByProvider", func() (string, error) { return q.ByProvider(context.Background(), bothDates, nil) }},
+		{"ByProject", func() (string, error) { return q.ByProject(context.Background(), bothDates) }},
+	}
+	for _, v := range views {
+		out, err := v.run()
+		if err != nil {
+			t.Fatalf("%s: %v", v.name, err)
+		}
+		if n := strings.Count(out, "Total / 总计"); n != 1 {
+			t.Errorf("%s 应恰有一行 Total / 总计,实际 %d:\n%s", v.name, n, out)
+		}
+	}
+	sessions, err := q.Sessions(context.Background(), bothDates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sessions, "Total / 总计") {
+		t.Errorf("Sessions 不应追加总计行:\n%s", sessions)
+	}
+	summary, err := q.Summary(context.Background(), bothDates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Summary 仅保留字段标签形态的 Total / 总计(键值行),不追加表格总计行。
+	if n := strings.Count(summary, "Total / 总计"); n != 1 {
+		t.Errorf("Summary 应只含一个 Total 字段标签,实际 %d:\n%s", n, summary)
+	}
+}
+
+// 总计行各字段与同日期 summary 对应字段一致;Cache Hit 按全量公式独立核对。
+func TestGroupViews_TotalRowMatchesSummary(t *testing.T) {
+	q := setupMessageFixture(t)
+	out, err := q.ByClient(context.Background(), bothDates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := q.Summary(context.Background(), bothDates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// fixture 两行聚合:requests=2, fresh=1400→1.40 K, output=100, cache_read=600,
+	// reasoning=100, total=2200→2.20 K;CacheHit=600/(1400+600+0)=30.00%。
+	for _, want := range []string{"2.20 K", "1.40 K"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ByClient 总计行应含 %q:\n%s", want, out)
+		}
+		if !strings.Contains(summary, want) {
+			t.Errorf("Summary 应含对应字段 %q:\n%s", want, summary)
+		}
+	}
+	// summary 没有 Cache Hit 列,总计行 Cache Hit 按全量公式独立断言:600/(1400+600+0)。
+	if want := formatCacheHit(1400, 600, 0); want != "30.00%" || !strings.Contains(out, want) {
+		t.Errorf("ByClient 总计行 Cache Hit 应为 30.00%%:\n%s", out)
+	}
+	// output=100、cache read=600、reasoning=100 在两侧均为原值显示。
+	for _, want := range []string{"600", "100"} {
+		if !strings.Contains(out, want) || !strings.Contains(summary, want) {
+			t.Errorf("字段 %q 应同时出现在两份输出:\n%s\n%s", want, out, summary)
+		}
+	}
+}
+
+// mpc 三维分组的列顺序、总量与表头;零记录日期输出表头 + 零值总计。
+func TestRunDimensionView_MultidimensionalAndZeroRecords(t *testing.T) {
+	q := setupMessageFixture(t)
+	out, err := q.RunDimensionView(context.Background(), bothDates, DimensionView{
+		Dimensions: []string{"model", "provider", "client"},
+		TitleEn:    "Custom view mpc", TitleZh: "自定义视图 mpc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Custom view mpc / 自定义视图 mpc") {
+		t.Errorf("输出应含双语标题:\n%s", out)
+	}
+	if !strings.Contains(out, "claude-sonnet-4") || !strings.Contains(out, "Anthropic") {
+		t.Errorf("三维表应含模型与供应商维度值:\n%s", out)
+	}
+	if n := strings.Count(out, "Total / 总计"); n != 1 {
+		t.Errorf("应恰有一行总计,实际 %d:\n%s", n, out)
+	}
+	if !strings.Contains(out, "2.20 K") {
+		t.Errorf("三维表总量应与全量一致(2.20 K):\n%s", out)
+	}
+
+	// 维度顺序改变只改变列顺序,不改变总量。
+	out2, err := q.RunDimensionView(context.Background(), bothDates, DimensionView{
+		Dimensions: []string{"client", "model", "provider"},
+		TitleEn:    "Custom view cmp", TitleZh: "自定义视图 cmp",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out2, "2.20 K") {
+		t.Errorf("维度重排后总量不变:\n%s", out2)
+	}
+
+	// 零记录日期:表头 + 零值总计行(不是 no-data 文案)。
+	zero, err := q.RunDimensionView(context.Background(), []string{"2099-01-01"}, DimensionView{
+		Dimensions: []string{"model", "provider", "client"},
+		TitleEn:    "Custom view mpc", TitleZh: "自定义视图 mpc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(zero, "no data") || strings.Contains(zero, "无数据") {
+		t.Errorf("合法日期零记录不得显示 no-data:\n%s", zero)
+	}
+	if !strings.Contains(zero, "Total / 总计") || !strings.Contains(zero, "0.00%") {
+		t.Errorf("零记录应为表头 + 零值总计:\n%s", zero)
+	}
+}
+
+// len(dates)==0 防御分支保留既有 no-data 文案,不渲染总计行。
+func TestRunDimensionView_NoDataBranchKept(t *testing.T) {
+	q := setupMessageFixture(t)
+	out, err := q.RunDimensionView(context.Background(), nil, DimensionView{
+		Dimensions: []string{"model"},
+		TitleEn:    "Group by model", TitleZh: "按模型分组",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "Group by model - no data / 按模型分组 - 无数据" {
+		t.Errorf("no-data 文案变化: %q", out)
+	}
+}
+
+// provider 有效值优先 router_provider;alias 在组合键形成前合并且不改 messages。
+func TestRunDimensionView_ProviderAliasMergesBeforeCompositeKey(t *testing.T) {
+	q := setupMessageFixture(t)
+	// 两条记录其余维度相同,provider 经 alias 合并;第三条空 provider 保持未归因。
+	msgs := []model.Message{
+		{ID: "md-a", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 3100, Model: "same-model", Provider: "source-a", Project: "p", TotalTokens: 100, FreshInputTokens: 10},
+		{ID: "md-b", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 3200, Model: "same-model", Provider: "x", RouterProvider: "router-b", Project: "p", TotalTokens: 200, FreshInputTokens: 20},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	out, err := q.RunDimensionView(context.Background(), []string{"2026-07-11"}, DimensionView{
+		Dimensions: []string{"model", "provider", "client"},
+		TitleEn:    "Custom view mpc", TitleZh: "自定义视图 mpc",
+		Aliases: map[string]string{"source-a": "Merged provider", "router-b": "Merged provider"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(out, "Merged provider") != 1 {
+		t.Errorf("alias 应在组合键形成前合并为一行:\n%s", out)
+	}
+	if strings.Contains(out, "source-a") || strings.Contains(out, "router-b") {
+		t.Errorf("合并后不得残留原始 provider 标签:\n%s", out)
+	}
+	var provider, routerProvider string
+	if err := q.db.QueryRow(`SELECT provider, router_provider FROM messages WHERE id='md-b' AND client=?`, model.ClientClaudeCode).Scan(&provider, &routerProvider); err != nil {
+		t.Fatal(err)
+	}
+	if provider != "x" || routerProvider != "router-b" {
+		t.Errorf("查询不得修改 messages 归因: %q/%q", provider, routerProvider)
+	}
+
+	// 未归因:router 与 provider 均空保持独立显示。
+	if _, err := db.UpsertMessages(context.Background(), q.db, []model.Message{
+		{ID: "md-c", SessionID: "sess-alpha", Client: model.ClientCodexApp, Date: "2026-07-11", TS: 3300, Model: "same-model", TotalTokens: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out2, err := q.RunDimensionView(context.Background(), []string{"2026-07-11"}, DimensionView{
+		Dimensions: []string{"model", "provider", "client"},
+		TitleEn:    "Custom view mpc", TitleZh: "自定义视图 mpc",
+		Aliases: map[string]string{"source-a": "Merged provider", "router-b": "Merged provider"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out2, "(unattributed)") || !strings.Contains(out2, "(未归因)") {
+		t.Errorf("未归因保持独立显示:\n%s", out2)
+	}
+}
+
+// project 未分类与 client/model 空值显示规则不变。
+func TestRunDimensionView_EmptyDimensionValuesKeepDisplayRules(t *testing.T) {
+	q := setupMessageFixture(t)
+	if _, err := db.UpsertMessages(context.Background(), q.db, []model.Message{
+		{ID: "md-empty-model", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 3400, Project: "", TotalTokens: 5},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := q.RunDimensionView(context.Background(), []string{"2026-07-11"}, DimensionView{
+		Dimensions: []string{"model", "project"},
+		TitleEn:    "Custom view", TitleZh: "自定义视图",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "(uncategorized)") || !strings.Contains(out, "(未分类)") {
+		t.Errorf("空 project 应显示未分类:\n%s", out)
+	}
+	// 空 model 保持源字段空值显示(不补写任何占位标签)。
+	if strings.Contains(out, "(unknown)") || strings.Contains(out, "(未知)") {
+		t.Errorf("空 model 不应补写占位标签:\n%s", out)
+	}
+}
+
+// 排序:total 降序,同 total 按完整显示键元组升序;同一配置下输出稳定。
+func TestRunDimensionView_StableSort(t *testing.T) {
+	q := setupMessageFixture(t)
+	// 三条同 total 的消息,按 client 键升序断言行序。
+	msgs := []model.Message{
+		{ID: "st-c", SessionID: "sess-alpha", Client: model.ClientZhipuAutoClaw, Date: "2026-07-11", TS: 3500, Model: "m", TotalTokens: 10},
+		{ID: "st-b", SessionID: "sess-alpha", Client: model.ClientCodexApp, Date: "2026-07-11", TS: 3600, Model: "m", TotalTokens: 10},
+		{ID: "st-a", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 3700, Model: "m", TotalTokens: 10},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	view := DimensionView{Dimensions: []string{"client"}, TitleEn: "Group by client", TitleZh: "按客户端分组"}
+	out1, err := q.RunDimensionView(context.Background(), []string{"2026-07-11"}, view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2, err := q.RunDimensionView(context.Background(), []string{"2026-07-11"}, view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out1 != out2 {
+		t.Errorf("同一配置下输出应稳定:\n%s\n%s", out1, out2)
+	}
+	// 同 total 行按显示键升序:三个 client 显示名按字节序排列。
+	lines := strings.Split(out1, "\n")
+	var keyOrder []string
+	for _, ln := range lines {
+		if strings.Contains(ln, "│") && !strings.Contains(ln, "Total / 总计") {
+			cells := strings.Split(strings.Trim(ln, "│"), "│")
+			if len(cells) > 1 {
+				key := strings.TrimSpace(cells[0])
+				if key != "" && !strings.Contains(key, "Client") && key != "客户端" {
+					keyOrder = append(keyOrder, key)
+				}
+			}
+		}
+	}
+	if len(keyOrder) < 3 {
+		t.Fatalf("应有至少三个分组行:\n%s", out1)
+	}
+	for i := 1; i < len(keyOrder); i++ {
+		if keyOrder[i-1] > keyOrder[i] {
+			t.Errorf("同 total 行未按键升序: %v\n%s", keyOrder, out1)
+			break
+		}
+	}
+}
+
+// 未知维度名被白名单拒绝,不得拼进 SQL。
+func TestRunDimensionView_RejectsUnknownDimension(t *testing.T) {
+	q := setupMessageFixture(t)
+	_, err := q.RunDimensionView(context.Background(), bothDates, DimensionView{
+		Dimensions: []string{"client", "hacker; DROP TABLE"},
+		TitleEn:    "x", TitleZh: "x",
+	})
+	if err == nil {
+		t.Fatal("未知维度必须被拒绝")
+	}
+}
+
+// 空维度列表被拒绝(至少一个维度)。
+func TestRunDimensionView_RejectsEmptyDimensions(t *testing.T) {
+	q := setupMessageFixture(t)
+	if _, err := q.RunDimensionView(context.Background(), bothDates, DimensionView{TitleEn: "x", TitleZh: "x"}); err == nil {
+		t.Fatal("空维度列表必须被拒绝")
+	}
+}

@@ -76,3 +76,30 @@ func TestContains_Helper(t *testing.T) {
 		t.Error("contains 不应误匹配")
 	}
 }
+
+// cloneConfig 对两个 raw 载体递归深拷贝,mutation probe 无共享引用。
+func TestCloneConfig_RawQueryMutationProbe(t *testing.T) {
+	src := &config.Config{
+		DataDir:  "/d",
+		RawQuery: map[string]any{"sub": map[string]any{"list": []any{int64(1)}}},
+		RawQueryTopLevelIssues: map[string]config.RawQueryTopLevelIssue{
+			"Query": {Name: "Query", Value: map[string]any{"k": []any{"v"}}, Kind: config.RawQueryIssueNameConflict},
+		},
+	}
+	clone := cloneConfig(src)
+	if clone.RawQuery == nil || clone.RawQueryTopLevelIssues == nil {
+		t.Fatal("clone 应保留两个 raw 载体")
+	}
+	src.RawQuery["sub"].(map[string]any)["list"].([]any)[0] = int64(9)
+	if got := clone.RawQuery["sub"].(map[string]any)["list"].([]any)[0]; got != int64(1) {
+		t.Errorf("clone RawQuery 深层共享引用: got %v", got)
+	}
+	src.RawQueryTopLevelIssues["Query"].Value.(map[string]any)["k"].([]any)[0] = "mutated"
+	if got := clone.RawQueryTopLevelIssues["Query"].Value.(map[string]any)["k"].([]any)[0]; got != "v" {
+		t.Errorf("clone issues 深层共享引用: got %v", got)
+	}
+	clone.RawQuery["sub"].(map[string]any)["new"] = "x"
+	if _, ok := src.RawQuery["sub"].(map[string]any)["new"]; ok {
+		t.Error("clone 侧写入泄漏到源")
+	}
+}

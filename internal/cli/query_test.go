@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
+	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/model"
 )
@@ -38,6 +41,7 @@ func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 		"project":  "Group by project / 按项目分组",
 		"session":  "View session details / 查看会话明细",
 		"summary":  "View summary / 查看总览摘要",
+		"custom":   "Run a configured custom or group query / 执行已配置的自定义或组合查询",
 	}
 
 	got := map[string]bool{}
@@ -275,5 +279,272 @@ func TestShowErrorWarnings_QueryFailureIsReturned(t *testing.T) {
 	usageDB.Close()
 	if err := showErrorWarnings(io.Discard, usageDB, []string{"2026-06-09"}); err == nil {
 		t.Fatal("closed DB warning query must return error")
+	}
+}
+
+// ---- 可配置默认视图与 custom 命令 ----
+
+// newQueryOutputCmd 构造带输出捕获的 query 命令(供 deps 注入路径)。
+func newQueryOutputCmd() (*cobra.Command, *bytes.Buffer) {
+	cmd := newQueryCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	return cmd, buf
+}
+
+// memOpen 打开内存库并插入两条可观测消息。
+func memOpen(t *testing.T) func(string) (*db.DB, error) {
+	t.Helper()
+	return func(string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { usageDB.Close() })
+		if err := insertOneMessage(usageDB, "2026-07-09", "claude"); err != nil {
+			t.Fatal(err)
+		}
+		if err := insertOneMessage(usageDB, "2026-07-09", "codex"); err != nil {
+			t.Fatal(err)
+		}
+		return usageDB, nil
+	}
+}
+
+func loadWithRaw(raw map[string]any, issues map[string]config.RawQueryTopLevelIssue) func() (*config.Config, error) {
+	return func() (*config.Config, error) {
+		return &config.Config{DataDir: "/mem", RawQuery: raw, RawQueryTopLevelIssues: issues}, nil
+	}
+}
+
+// 裸 query 未配置时执行 client;默认设为 custom 输出一张多维表;默认设为 group 按声明顺序输出多张表。
+func TestRunQuery_DefaultTargets(t *testing.T) {
+	open := memOpen(t)
+
+	cmd, buf := newQueryOutputCmd()
+	if err := runQueryWithDeps(cmd, nil, viewDefault, loadWithRaw(nil, nil), open); err != nil {
+		t.Fatalf("未配置裸 query: %v", err)
+	}
+	if !strings.Contains(buf.String(), "按客户端分组") {
+		t.Errorf("未配置裸 query 应等价 client:\n%s", buf)
+	}
+
+	cmd2, buf2 := newQueryOutputCmd()
+	rawCustom := map[string]any{
+		"default":    "mpc",
+		"subqueries": map[string]any{"mpc": "model,provider,client"},
+	}
+	if err := runQueryWithDeps(cmd2, nil, viewDefault, loadWithRaw(rawCustom, nil), open); err != nil {
+		t.Fatalf("默认 custom: %v", err)
+	}
+	out2 := buf2.String()
+	if !strings.Contains(out2, "自定义视图 mpc") {
+		t.Errorf("默认 custom 应输出自定义视图标题:\n%s", out2)
+	}
+	if strings.Contains(out2, "按客户端分组") || strings.Contains(out2, "按供应商分组") {
+		t.Errorf("默认 custom 只输出一张多维表:\n%s", out2)
+	}
+
+	cmd3, buf3 := newQueryOutputCmd()
+	rawGroup := map[string]any{
+		"default":    "group_q",
+		"subqueries": map[string]any{"mpc": "model,provider,client"},
+		"groups":     map[string]any{"group_q": "client,model,provider,mpc"},
+	}
+	if err := runQueryWithDeps(cmd3, nil, viewDefault, loadWithRaw(rawGroup, nil), open); err != nil {
+		t.Fatalf("默认 group: %v", err)
+	}
+	out3 := buf3.String()
+	for _, want := range []string{"按客户端分组", "按模型分组", "按供应商分组", "自定义视图 mpc"} {
+		if !strings.Contains(out3, want) {
+			t.Errorf("group 应按声明顺序输出各表,缺 %q:\n%s", want, out3)
+		}
+	}
+	// 声明顺序:client 表在 model 表前,mpc 表最后。
+	if !(strings.Index(out3, "按客户端分组") < strings.Index(out3, "按模型分组") &&
+		strings.Index(out3, "按模型分组") < strings.Index(out3, "按供应商分组") &&
+		strings.Index(out3, "按供应商分组") < strings.Index(out3, "自定义视图 mpc")) {
+		t.Errorf("group 输出顺序与声明不一致:\n%s", out3)
+	}
+	// query custom group_q <date> 与默认执行同一对象。
+	cmd4, buf4 := newQueryOutputCmd()
+	if err := runQueryCustomWithDeps(cmd4, "group_q", []string{"20260709"}, loadWithRaw(rawGroup, nil), open); err != nil {
+		t.Fatalf("custom group_q: %v", err)
+	}
+	if !strings.Contains(buf4.String(), "自定义视图 mpc") || strings.Count(buf4.String(), "Total / 总计") != 4 {
+		t.Errorf("custom group_q 应与默认同一对象(四张表各含总计):\n%s", buf4.String())
+	}
+}
+
+// custom 参数合同:RangeArgs(1,2)、双语缺参/超参错误;日期错误优先于名称/定义错误。
+func TestRunQueryCustom_ArgsAndPrecedence(t *testing.T) {
+	cmd, _ := newQueryOutputCmd()
+	custom, _, err := cmd.Find([]string{"custom"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := custom.Args(custom, nil); err == nil {
+		t.Error("0 参数应报错")
+	} else if !strings.Contains(err.Error(), "/") {
+		t.Errorf("缺参错误应为双语: %v", err)
+	}
+	if err := custom.Args(custom, []string{"mpc"}); err != nil {
+		t.Errorf("1 参数应通过: %v", err)
+	}
+	if err := custom.Args(custom, []string{"mpc", "20260709"}); err != nil {
+		t.Errorf("2 参数应通过: %v", err)
+	}
+	if err := custom.Args(custom, []string{"mpc", "20260709", "x"}); err == nil {
+		t.Error("3 参数应报错")
+	} else if !strings.Contains(err.Error(), "/") {
+		t.Errorf("超参错误应为双语: %v", err)
+	}
+
+	open := memOpen(t)
+	badDate := []string{"notadate"}
+	// 非法名称 + 非法日期:日期错误优先。
+	cmd2, _ := newQueryOutputCmd()
+	err = runQueryCustomWithDeps(cmd2, "Bad Name", badDate, loadWithRaw(nil, nil), open)
+	if err == nil || !strings.Contains(err.Error(), "notadate") {
+		t.Errorf("非法名称+非法日期应报日期错误: %v", err)
+	}
+	// 非法名称 + 合法日期:名称/定义错误,且不打开 DB。
+	openCalls := 0
+	openCount := func(p string) (*db.DB, error) {
+		openCalls++
+		return db.Open(":memory:")
+	}
+	cmd3, _ := newQueryOutputCmd()
+	err = runQueryCustomWithDeps(cmd3, "Bad Name", nil, loadWithRaw(nil, nil), openCount)
+	if err == nil {
+		t.Fatal("非法名称+合法日期应报名称错误")
+	}
+	if openCalls != 0 {
+		t.Errorf("名称错误不得打开 DB,实际打开 %d 次", openCalls)
+	}
+	// 未知名称(定义合法):定义错误,不打开 DB。
+	cmd4, _ := newQueryOutputCmd()
+	err = runQueryCustomWithDeps(cmd4, "nope", nil, loadWithRaw(map[string]any{
+		"subqueries": map[string]any{"mpc": "model,provider"},
+	}, nil), openCount)
+	if err == nil || !strings.Contains(err.Error(), "nope") {
+		t.Errorf("未知名称应报错并含名称: %v", err)
+	}
+	if openCalls != 0 {
+		t.Errorf("未知名称不得打开 DB")
+	}
+}
+
+// issues、CSV 错误、断开引用只挡裸 query/custom;内置显式子命令保持可用。
+func TestRunQuery_BadQueryConfigOnlyBlocksDefaultAndCustom(t *testing.T) {
+	open := memOpen(t)
+	issues := map[string]config.RawQueryTopLevelIssue{
+		"Query": {Name: "Query", Value: "x", Kind: config.RawQueryIssueNameConflict},
+	}
+
+	cmd, _ := newQueryOutputCmd()
+	if err := runQueryWithDeps(cmd, nil, viewModel, loadWithRaw(nil, issues), open); err != nil {
+		t.Fatalf("内置 model 不受坏 query 配置影响: %v", err)
+	}
+	cmd2, _ := newQueryOutputCmd()
+	if err := runQueryWithDeps(cmd2, nil, viewDefault, loadWithRaw(nil, issues), open); err == nil {
+		t.Fatal("issues 非空时裸 query 必须拒绝")
+	}
+	cmd3, _ := newQueryOutputCmd()
+	if err := runQueryCustomWithDeps(cmd3, "mpc", nil, loadWithRaw(nil, issues), open); err == nil {
+		t.Fatal("issues 非空时 custom 必须拒绝")
+	}
+
+	// CSV 错误与断开引用。
+	csvBad := map[string]any{"subqueries": map[string]any{"mpc": "model,"}}
+	cmd4, _ := newQueryOutputCmd()
+	if err := runQueryWithDeps(cmd4, nil, viewDefault, loadWithRaw(csvBad, nil), open); err == nil {
+		t.Fatal("CSV 错误应拒绝裸 query")
+	}
+	brokenRef := map[string]any{"groups": map[string]any{"g": "client,nope"}}
+	cmd5, _ := newQueryOutputCmd()
+	if err := runQueryCustomWithDeps(cmd5, "g", nil, loadWithRaw(brokenRef, nil), open); err == nil {
+		t.Fatal("断开引用应拒绝 custom")
+	}
+	// session/summary 不能被 default 引用。
+	sessionDefault := map[string]any{"default": "session"}
+	cmd6, _ := newQueryOutputCmd()
+	if err := runQueryWithDeps(cmd6, nil, viewDefault, loadWithRaw(sessionDefault, nil), open); err == nil {
+		t.Fatal("default 引用 session 应拒绝")
+	}
+}
+
+// group 输出多个表后只出现一次采集异常警告。
+func TestRunQuery_GroupSingleWarning(t *testing.T) {
+	open := func(p string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		if err := insertOneMessage(usageDB, "2026-07-09", "claude"); err != nil {
+			return nil, err
+		}
+		db.RecordError(context.Background(), usageDB, "2026-07-09", "claude", "boom", "")
+		return usageDB, nil
+	}
+	rawGroup := map[string]any{
+		"default":    "group_q",
+		"subqueries": map[string]any{"mpc": "model,provider"},
+		"groups":     map[string]any{"group_q": "client,model,provider,mpc"},
+	}
+	cmd, buf := newQueryOutputCmd()
+	if err := runQueryWithDeps(cmd, []string{"20260709"}, viewDefault, loadWithRaw(rawGroup, nil), open); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if n := strings.Count(out, "采集异常"); n != 1 {
+		t.Errorf("四张表后应只输出一次异常警告,实际 %d:\n%s", n, out)
+	}
+	if n := strings.Count(out, "boom"); n != 1 {
+		t.Errorf("异常详情应只出现一次,实际 %d:\n%s", n, out)
+	}
+	// 警告在所有表之后。
+	if strings.Index(out, "自定义视图 mpc") > strings.Index(out, "采集异常") {
+		t.Errorf("警告应在全部表完成后输出:\n%s", out)
+	}
+}
+
+// default/custom 的 provider 别名与分组视图一致生效。
+func TestRunQuery_DefaultAliasesApplied(t *testing.T) {
+	open := func(p string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		if _, err := usageDB.ExecContext(context.Background(), `
+INSERT INTO messages (id, session_id, client, date, ts, model, provider, router_provider, total_tokens)
+VALUES ('m1', 's', 'claude', '2026-07-09', 0, 'mod', 'source-a', '', 100),
+       ('m2', 's', 'claude', '2026-07-09', 0, 'mod', 'x', 'router-b', 200)`); err != nil {
+			return nil, err
+		}
+		return usageDB, nil
+	}
+	rawCustom := map[string]any{
+		"default":    "mpc",
+		"subqueries": map[string]any{"mpc": "model,provider"},
+	}
+	cmd, buf := newQueryOutputCmd()
+	load := func() (*config.Config, error) {
+		return &config.Config{
+			DataDir:         "/mem",
+			RawQuery:        rawCustom,
+			ProviderAliases: map[string]string{"source-a": "Merged provider", "router-b": "Merged provider"},
+		}, nil
+	}
+	if err := runQueryWithDeps(cmd, []string{"20260709"}, viewDefault, load, open); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if strings.Count(out, "Merged provider") != 1 {
+		t.Errorf("default 自定义视图的 provider 别名应合并:\n%s", out)
+	}
+	if strings.Contains(out, "source-a") || strings.Contains(out, "router-b") {
+		t.Errorf("别名合并后不得残留原始标签:\n%s", out)
 	}
 }

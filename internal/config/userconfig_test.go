@@ -111,6 +111,122 @@ unexpected = "value"
 	}
 }
 
+// query 剥离与重编码路径不得放宽既有非 query 严格性:未知键、类型错误、
+// 非 ASCII 顶层键、TOML 语法错误仍按原类别失败。
+func TestParseUserConfig_NonQueryStrictnessPreserved(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "unknown top-level key",
+			content: `unexpected = true`,
+			want:    "unexpected",
+		},
+		{
+			name: "unknown nested field",
+			content: `
+[clients.claude]
+enabled = true
+unexpected = "value"
+`,
+			want: "unexpected",
+		},
+		{
+			name: "type error keeps key path",
+			content: `
+[daemon]
+poll_interval = "notanumber"
+`,
+			want: "poll_interval",
+		},
+		{
+			name:    "non-ascii top-level key is unknown key",
+			content: `["QUÉRY"]` + "\ndefault = \"a\"\n",
+			want:    "解析配置文件失败",
+		},
+		{
+			// mapstructure 把 "-" tag 当字面字段名;字面 "-" 非空表键必须仍按解析错误拒绝,
+			// 不得静默进入 raw query 载体而放宽严格性(空表形态新旧版本均静默,属既有行为)。
+			name:    "literal dash key still rejected",
+			content: "\"-\" = {a = 1}\n",
+			want:    "解析配置文件失败",
+		},
+		{
+			name:    "toml syntax error fails at read stage",
+			content: `data_dir = `,
+			want:    "读取配置文件失败",
+		},
+		{
+			name: "unknown key still rejected alongside valid query",
+			content: `
+unexpected = true
+[query.subqueries]
+mpc = "model,provider"
+`,
+			want: "unexpected",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseUserConfig([]byte(tt.content))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err=%v, want 包含 %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// provider_aliases 的原始大小写恢复与 query raw 状态互不影响:
+// 合法 query 与顶层冲突 query 同时存在时,别名语义保持原样。
+func TestParseUserConfig_ProviderAliasesCoexistWithQueryStates(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "valid query",
+			content: `[provider_aliases]
+"OpenCode-Completions" = "OpenCode-Display"
+[query.subqueries]
+mpc = "model,provider"
+`,
+		},
+		{
+			name: "conflicting query variants",
+			content: `[provider_aliases]
+"OpenCode-Completions" = "OpenCode-Display"
+[query]
+default = "a"
+[Query]
+default = "b"
+`,
+		},
+		{
+			name: "non-table query root",
+			content: `[provider_aliases]
+"OpenCode-Completions" = "OpenCode-Display"
+query = "x"
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := ParseUserConfig([]byte(tt.content))
+			if err != nil {
+				t.Fatalf("ParseUserConfig: %v", err)
+			}
+			if got := cfg.ProviderAliases["OpenCode-Completions"]; got != "OpenCode-Display" {
+				t.Errorf("alias key 大小写被改写: %#v", cfg.ProviderAliases)
+			}
+			if _, ok := cfg.ProviderAliases["opencode-completions"]; ok {
+				t.Errorf("alias key was lowercased: %#v", cfg.ProviderAliases)
+			}
+		})
+	}
+}
+
 // LoadUserConfigAuto 从默认路径加载
 func TestLoadUserConfigAuto_DefaultPath(t *testing.T) {
 	dir := t.TempDir()

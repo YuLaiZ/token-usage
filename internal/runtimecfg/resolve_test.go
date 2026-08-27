@@ -471,3 +471,33 @@ func TestClientSupportsRouter_OnlyClaude(t *testing.T) {
 		}
 	}
 }
+
+// raw query 状态随有效化深拷贝传播:effective 层与用户层不共享嵌套 map/slice 引用。
+func TestResolveEffectiveConfig_RawQueryDeepCopyPropagation(t *testing.T) {
+	user := &config.Config{
+		DataDir:  "/d",
+		RawQuery: map[string]any{"sub": map[string]any{"list": []any{int64(1)}}},
+		RawQueryTopLevelIssues: map[string]config.RawQueryTopLevelIssue{
+			"Query": {Name: "Query", Value: map[string]any{"k": []any{"v"}}, Kind: config.RawQueryIssueNameConflict},
+		},
+	}
+	eff, err := ResolveEffectiveConfig(user, ResolveEnv{Home: "/h", GOOS: "linux", DefaultPaths: newStandardProvider()})
+	if err != nil {
+		t.Fatalf("ResolveEffectiveConfig: %v", err)
+	}
+	if eff.RawQuery == nil || eff.RawQueryTopLevelIssues == nil {
+		t.Fatal("raw query 状态应传播到 effective 层")
+	}
+	user.RawQuery["sub"].(map[string]any)["list"].([]any)[0] = int64(9)
+	if got := eff.RawQuery["sub"].(map[string]any)["list"].([]any)[0]; got != int64(1) {
+		t.Errorf("RawQuery 深层 slice 共享引用: got %v", got)
+	}
+	user.RawQueryTopLevelIssues["Query"].Value.(map[string]any)["k"].([]any)[0] = "mutated"
+	if got := eff.RawQueryTopLevelIssues["Query"].Value.(map[string]any)["k"].([]any)[0]; got != "v" {
+		t.Errorf("issues 深层 slice 共享引用: got %v", got)
+	}
+	eff.RawQuery["sub"].(map[string]any)["new"] = "x"
+	if _, ok := user.RawQuery["sub"].(map[string]any)["new"]; ok {
+		t.Error("effective 侧写入泄漏到用户层")
+	}
+}

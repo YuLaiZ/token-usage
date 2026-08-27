@@ -430,3 +430,68 @@ func sortStrings(s []string) {
 		}
 	}
 }
+
+// raw query 变化是纯写盘变化:不触发 restart、collect 或 router backfill。
+func TestAnalyzeConfigEffects_RawQueryChangeIsWriteOnly(t *testing.T) {
+	base := func() *config.Config {
+		return &config.Config{DataDir: "/d", RawQuery: map[string]any{"default": "mpc"}}
+	}
+	effects := AnalyzeConfigEffects(base(), base())
+	if effects.RuntimeChanged {
+		t.Error("raw query 变化不属于运行时变化")
+	}
+	if len(effects.FullCollectClients) != 0 || len(effects.RouterBackfillClients) != 0 {
+		t.Errorf("raw query 变化不得触发采集: %v / %v", effects.FullCollectClients, effects.RouterBackfillClients)
+	}
+	if effects.DataDirMigration != nil {
+		t.Error("raw query 变化不产生 data_dir 迁移")
+	}
+}
+
+// 问题态 query 同样不产生任何运行时效果。
+func TestAnalyzeConfigEffects_QueryIssuesWriteOnly(t *testing.T) {
+	prev := &config.Config{DataDir: "/d"}
+	curr := &config.Config{
+		DataDir: "/d",
+		RawQueryTopLevelIssues: map[string]config.RawQueryTopLevelIssue{
+			"query": {Name: "query", Value: "x", Kind: config.RawQueryIssueRootNotTable},
+		},
+	}
+	effects := AnalyzeConfigEffects(prev, curr)
+	if effects.RuntimeChanged || len(effects.FullCollectClients) != 0 || len(effects.RouterBackfillClients) != 0 {
+		t.Errorf("问题态 query 不得触发运行时效果: %+v", effects)
+	}
+}
+
+// normalize 深拷贝 raw 载体:两次归一化之间修改入参不共享引用。
+func TestNormalize_RawQueryDeepCopy(t *testing.T) {
+	c := &config.Config{
+		DataDir:  "/d",
+		RawQuery: map[string]any{"sub": map[string]any{"list": []any{int64(1)}}},
+		RawQueryTopLevelIssues: map[string]config.RawQueryTopLevelIssue{
+			"Query": {Name: "Query", Value: map[string]any{"k": []any{"v"}}, Kind: config.RawQueryIssueNameConflict},
+		},
+	}
+	n1 := normalize(c)
+	c.RawQuery["sub"].(map[string]any)["list"].([]any)[0] = int64(9)
+	c.RawQueryTopLevelIssues["Query"].Value.(map[string]any)["k"].([]any)[0] = "mutated"
+	n2 := normalize(c)
+	if got := n1.RawQuery["sub"].(map[string]any)["list"].([]any)[0]; got != int64(1) {
+		t.Errorf("normalize 后 RawQuery 共享引用: got %v", got)
+	}
+	if got := n2.RawQuery["sub"].(map[string]any)["list"].([]any)[0]; got != int64(9) {
+		t.Errorf("第二次 normalize 应看到新值: got %v", got)
+	}
+	if got := n1.RawQueryTopLevelIssues["Query"].Value.(map[string]any)["k"].([]any)[0]; got != "v" {
+		t.Errorf("normalize 后 issues 共享引用: got %v", got)
+	}
+	// effective 等价判断包含 raw:raw 不同则不等价(保存后不误报未变化)。
+	c3 := &config.Config{DataDir: "/d", RawQuery: map[string]any{"default": "a"}}
+	c4 := &config.Config{DataDir: "/d", RawQuery: map[string]any{"default": "b"}}
+	if effectiveEqual(c3, c4) {
+		t.Error("raw query 不同的两份配置不得判为 effective 等价")
+	}
+	if !effectiveEqual(c3, c3) {
+		t.Error("同一配置(含 raw)应 effective 等价")
+	}
+}

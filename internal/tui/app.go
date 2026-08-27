@@ -468,6 +468,8 @@ func cloneConfig(c *config.Config) *config.Config {
 			clone.ProviderAliases[k] = v
 		}
 	}
+	// raw query 载体递归深拷贝,草稿/基线/保存快照间不共享嵌套引用。
+	clone.RawQuery, clone.RawQueryTopLevelIssues = config.CloneRawQueryState(c)
 	return &clone
 }
 

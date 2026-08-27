@@ -4,6 +4,25 @@ import (
 	"path/filepath"
 )
 
+// RawQueryIssueKind 标记一个 query 顶层问题项的类别。
+type RawQueryIssueKind string
+
+const (
+	// RawQueryIssueNameConflict:顶层键 ASCII 小写归一后等于 "query",
+	// 但存在大小写变体或并非唯一精确小写 "query"。
+	RawQueryIssueNameConflict RawQueryIssueKind = "name_conflict"
+	// RawQueryIssueRootNotTable:精确小写 "query" 顶层键的值不是表。
+	RawQueryIssueRootNotTable RawQueryIssueKind = "root_not_table"
+)
+
+// RawQueryTopLevelIssue 保存一个 query 顶层问题项的原始顶层名称、完整 raw 值和类别。
+// 它不是用户 TOML 键,仅是内存态问题载体;序列化时按原始名称与原始值形态写回。
+type RawQueryTopLevelIssue struct {
+	Name  string
+	Value any
+	Kind  RawQueryIssueKind
+}
+
 type Config struct {
 	DataDir         string                  `mapstructure:"data_dir" toml:"data_dir"`
 	Clients         map[string]Client       `mapstructure:"clients" toml:"clients,omitempty"`
@@ -11,6 +30,13 @@ type Config struct {
 	Daemon          DaemonConfig            `mapstructure:"daemon" toml:"daemon,omitempty"`
 	Log             LogConfig               `mapstructure:"log" toml:"log,omitempty"`
 	ProviderAliases map[string]string       `mapstructure:"provider_aliases" toml:"provider_aliases,omitempty"`
+
+	// RawQuery 保存唯一精确小写 [query] 段的完整子树(内部原始键大小写与值类型原样保留)。
+	// RawQueryTopLevelIssues 保存顶层名称冲突或根值非表的全部问题项。两者互斥,
+	// 任一配置快照只能有一个非空;均不参与 struct 编码,由序列化层手工写回,
+	// 语义校验延迟到 query 子系统与 TUI 保存前执行。
+	RawQuery               map[string]any                   `mapstructure:"-" toml:"-"`
+	RawQueryTopLevelIssues map[string]RawQueryTopLevelIssue `mapstructure:"-" toml:"-"`
 }
 
 type Client struct {

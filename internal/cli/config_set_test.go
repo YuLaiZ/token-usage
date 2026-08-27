@@ -660,3 +660,41 @@ router = "legacy_non_router"
 		t.Errorf("ApplyConfig 收到的 codex router 应已清空, got %q", got)
 	}
 }
+
+// 含问题态 query 的配置不阻塞 config set;写盘后 query 原样保留(透传,不做语义校验)。
+func TestConfigSetCmd_QueryIssuesTransparency(t *testing.T) {
+	setupHomeConfig(t, "data_dir = \"/x\"\n[query]\nunknown = [1]\n[Query]\ndefault = \"b\"\n")
+	applyFn := realApplyFuncForTest(t)
+
+	var out, errOut bytes.Buffer
+	if err := runConfigSet(context.Background(), &out, &errOut, "daemon.poll_interval", "60", false, applyFn); err != nil {
+		t.Fatalf("config set: %v (stderr=%q)", err, errOut.String())
+	}
+	if !strings.Contains(out.String(), "✓ daemon.poll_interval = 60") {
+		t.Errorf("stdout: %q", out.String())
+	}
+	home := os.Getenv("HOME")
+	cfg, err := config.LoadUserConfig(filepath.Join(home, ".token-usage", "config.toml"))
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if cfg.Daemon.PollInterval != 60 {
+		t.Errorf("PollInterval=%d want 60", cfg.Daemon.PollInterval)
+	}
+	if cfg.RawQuery != nil || cfg.RawQueryTopLevelIssues == nil {
+		t.Fatalf("问题态应保留: %#v / %#v", cfg.RawQuery, cfg.RawQueryTopLevelIssues)
+	}
+	for _, name := range []string{"query", "Query"} {
+		issue, ok := cfg.RawQueryTopLevelIssues[name]
+		if !ok {
+			t.Errorf("issues 缺少 %q: %#v", name, cfg.RawQueryTopLevelIssues)
+			continue
+		}
+		if issue.Kind != config.RawQueryIssueNameConflict {
+			t.Errorf("issues[%q].Kind = %q", name, issue.Kind)
+		}
+	}
+	if _, ok := cfg.RawQueryTopLevelIssues["query"].Value.(map[string]any); !ok {
+		t.Errorf("query 项内容失真: %#v", cfg.RawQueryTopLevelIssues["query"].Value)
+	}
+}

@@ -1209,3 +1209,68 @@ func TestApplyConfig_ExactTrace_DataDirMigration(t *testing.T) {
 		t.Errorf("Cleanup:/old 应在两次 Inspect 之后，trace=%v", tc.trace)
 	}
 }
+
+// raw query 变化:写盘保存并保留问题态;不触发 restart/collect;
+// effective 等价判断含 raw,不得误报「有效配置未变化(仅写法规范化)」。
+func TestApplyConfig_RawQueryChangeSavedAndPreserved(t *testing.T) {
+	home := t.TempDir()
+	initialRaw := []byte("data_dir = \"/d\"\n[query.subqueries]\nmpc = \"model,provider\"\n")
+	writeFile(t, home, string(initialRaw))
+	ctrl := &fakeControlPort{inspectState: control.RuntimeState{Running: false}}
+	as := &fakeAutoStart{status: service.AutoStartStatus{Exists: false}, platform: "launchd"}
+	app := newApp(t, home, ctrl, as)
+
+	current := &config.Config{
+		DataDir:  "/d",
+		RawQuery: map[string]any{"subqueries": map[string]any{"mpc": "model,provider,client"}},
+	}
+	res, err := app.ApplyConfig(context.Background(), testRevision(initialRaw), current, false)
+	if err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	if !res.Saved {
+		t.Error("raw query 变化应写盘")
+	}
+	if res.Effects.RuntimeChanged || len(res.Effects.FullCollectClients) != 0 || len(res.Effects.RouterBackfillClients) != 0 {
+		t.Errorf("query 变化不得触发运行时动作: %+v", res.Effects)
+	}
+	if !strings.Contains(res.SuccessMessage, "配置已保存") {
+		t.Errorf("raw query 变化不得误报「有效配置未变化」: %q", res.SuccessMessage)
+	}
+	got, err := config.LoadUserConfig(filepath.Join(home, ".token-usage", "config.toml"))
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.RawQuery == nil || got.RawQueryTopLevelIssues != nil {
+		t.Errorf("磁盘应保留合法 query 段: %#v / %#v", got.RawQuery, got.RawQueryTopLevelIssues)
+	}
+
+	// 问题态写盘:含 issues 的 current 保存后磁盘仍是问题态,ApplyConfig 不被阻塞。
+	home2 := t.TempDir()
+	initial2 := []byte("data_dir = \"/d2\"\n")
+	writeFile(t, home2, string(initial2))
+	app2 := newApp(t, home2, ctrl, as)
+	cur2 := &config.Config{
+		DataDir: "/d2",
+		RawQueryTopLevelIssues: map[string]config.RawQueryTopLevelIssue{
+			"query": {Name: "query", Value: "x", Kind: config.RawQueryIssueRootNotTable},
+		},
+	}
+	res2, err := app2.ApplyConfig(context.Background(), testRevision(initial2), cur2, false)
+	if err != nil {
+		t.Fatalf("问题态不得阻塞 ApplyConfig: %v", err)
+	}
+	if !res2.Saved {
+		t.Error("问题态 raw 变化应写盘")
+	}
+	got2, err := config.LoadUserConfig(filepath.Join(home2, ".token-usage", "config.toml"))
+	if err != nil {
+		t.Fatalf("reload2: %v", err)
+	}
+	if got2.RawQuery != nil || got2.RawQueryTopLevelIssues == nil {
+		t.Errorf("磁盘应保留问题态: %#v / %#v", got2.RawQuery, got2.RawQueryTopLevelIssues)
+	}
+	if got2.RawQueryTopLevelIssues["query"].Value != "x" {
+		t.Errorf("问题项内容失真: %#v", got2.RawQueryTopLevelIssues["query"])
+	}
+}

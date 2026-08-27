@@ -217,6 +217,8 @@ func deepCopy(c *config.Config) *config.Config {
 	if c.ProviderAliases != nil {
 		cp.ProviderAliases = copyStringMap(c.ProviderAliases)
 	}
+	// raw query 状态递归深拷贝传播(不影响运行时校验与 effect,仅保证快照独立)。
+	cp.RawQuery, cp.RawQueryTopLevelIssues = config.CloneRawQueryState(c)
 	return &cp
 }
 

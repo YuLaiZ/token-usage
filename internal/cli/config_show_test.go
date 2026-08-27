@@ -492,3 +492,39 @@ func TestConfigShow_NoRuntimeSideEffects(t *testing.T) {
 func TestNewConfigShowCmd_ReturnsCommand(t *testing.T) {
 	var _ *cobra.Command = newConfigShowCmd()
 }
+
+// 合法与问题态 query 在 show(effective 输出)中原样保留,输出仍是合法 TOML。
+func TestConfigShow_QueryStatesPreserved(t *testing.T) {
+	setupHomeConfig(t, "[query.subqueries]\nmpc = \"model,provider\"\n")
+	out, err := runShow(t)
+	if err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	// query 键名与表头路径段统一双引号。
+	if !strings.Contains(out, `["query"."subqueries"]`) || !strings.Contains(out, `"mpc" = "model,provider"`) {
+		t.Errorf("合法 query 段应保留(双引号键形态):\n%s", out)
+	}
+	var top map[string]any
+	if err := toml.Unmarshal([]byte(out), &top); err != nil {
+		t.Fatalf("show 输出应仍是合法 TOML: %v\n%s", err, out)
+	}
+	if q, ok := top["query"].(map[string]any); !ok || q["subqueries"] == nil {
+		t.Errorf("query 段丢失: %#v", top["query"])
+	}
+
+	setupHomeConfig(t, "data_dir = \"/x\"\nquery = \"x\"\n")
+	out2, err := runShow(t)
+	if err != nil {
+		t.Fatalf("问题态 query 不得阻塞 config show: %v", err)
+	}
+	if !strings.Contains(out2, `"query" = "x"`) {
+		t.Errorf("根级标量问题项应按原样保留(双引号键形态):\n%s", out2)
+	}
+	var top2 map[string]any
+	if err := toml.Unmarshal([]byte(out2), &top2); err != nil {
+		t.Fatalf("问题态 show 输出应仍是合法 TOML: %v\n%s", err, out2)
+	}
+	if top2["query"] != "x" {
+		t.Errorf("问题项内容失真: %#v", top2["query"])
+	}
+}
