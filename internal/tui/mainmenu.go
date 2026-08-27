@@ -33,6 +33,7 @@ func newMainMenu(app *App) *mainMenu {
 			ui.Bi("Daemon", "守护进程"),
 			ui.Bi("Logs", "日志"),
 			ui.Bi("Provider aliases", "供应商别名"),
+			ui.Bi("Query views", "查询视图"),
 			ui.Bi("Data dir (read-only)", "数据目录(只读)"),
 		},
 	}
@@ -67,6 +68,8 @@ func (m *mainMenu) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.app.save()
+	case "v":
+		m.app.push(newQueryViewsPage(m.app))
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
@@ -88,6 +91,8 @@ func (m *mainMenu) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case 4:
 			m.app.push(newAliasesPage(m.app))
 		case 5:
+			m.app.push(newQueryViewsPage(m.app))
+		case 6:
 			// 数据目录(只读):进入说明页(固定 config 路径 + 迁移风险 + config set 命令)。
 			m.app.push(newDataDirPage(m.app))
 		}
@@ -138,6 +143,7 @@ func (m *mainMenu) View() string {
 			fmt.Sprintf("%d mappings", len(m.app.draft.ProviderAliases)),
 			fmt.Sprintf("%d 条映射", len(m.app.draft.ProviderAliases)),
 		),
+		queryViewsSummary(m.app.draft),
 		m.app.display.DataDir + " [" + ui.Bi("read-only", "只读") + "]",
 	}
 	for i, item := range m.items {
@@ -147,7 +153,7 @@ func (m *mainMenu) View() string {
 		}
 		s += cur + pad(item, menuColWidth) + summaries[i] + "\n"
 	}
-	s += "\n  s " + ui.Bi("Save", "保存") + "   q " + ui.Bi("Quit", "退出") + "   ? " + ui.Bi("Help", "帮助") + "\n"
+	s += "\n  s " + ui.Bi("Save", "保存") + "   v " + ui.Bi("Query views", "查询视图") + "   q " + ui.Bi("Quit", "退出") + "   ? " + ui.Bi("Help", "帮助") + "\n"
 	if m.showHelp {
 		s += "\n" + helpOverlay()
 	}
@@ -161,6 +167,7 @@ func helpOverlay() string {
   j/k 或 ↑/↓   ` + ui.Bi("Move up/down", "上下移动选择") + `
   enter        ` + ui.Bi("Open subpage / data-dir page", "进入子页 / 数据目录说明页") + `
   s            ` + ui.Bi("Save draft to disk (config.toml)", "保存草稿到磁盘(config.toml)") + `
+  v            ` + ui.Bi("Query views (custom/group/default)", "查询视图(自定义/组合/默认)") + `
   ?            ` + ui.Bi("Toggle this help", "打开/关闭本帮助层") + `
   q / esc      ` + ui.Bi("Quit (confirm layer if unsaved changes)", "退出(有未保存改动时进入确认层)") + `
 
@@ -178,6 +185,22 @@ data_dir:
   token-usage config set data_dir <path> --confirm-migrate
 
 ` + ui.Bi("Press esc or ? to close this help", "按 esc 或 ? 关闭帮助层")
+}
+
+// queryViewsSummary 返回 Query views 摘要:当前默认视图名(未配置时 client)。
+func queryViewsSummary(c *config.Config) string {
+	name := "client"
+	defTag := true
+	if c != nil && c.RawQuery != nil {
+		if def, ok := c.RawQuery["default"].(string); ok && strings.TrimSpace(def) != "" {
+			name = strings.TrimSpace(def)
+			defTag = false
+		}
+	}
+	if defTag {
+		return name + " (" + ui.Bi("default", "默认") + ")"
+	}
+	return name
 }
 
 // routerNames 返回已声明路由名(逗号分隔),无则「None / 无」

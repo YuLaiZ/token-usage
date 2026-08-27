@@ -29,7 +29,8 @@
 | `internal/cli/` | Cobra command assembly (config/collect/query/errors/start/status/stop/restart/version, built-in completion, and hidden `_run`). |
 | `internal/configapp/` | Configuration application layer: `ApplyConfig` atomically orchestrates revision protection, writing, autostart synchronization, and action suggestions under the control lock; `AnalyzeConfigEffects` is the impact matrix. |
 | `internal/runtimecfg/` | Configuration parsing boundary: `LoadEffectiveConfig` expands `~`, fills defaults and registry paths; also provides `ValidateUserConfig` and user-layer snapshots. |
-| `internal/config/` | User-configuration read/write, dotted-key get/set, and the default template. |
+| `internal/config/` | User-configuration read/write, dotted-key get/set, and the default template. Keeps the raw `[query]` section as an opaque carrier (`RawQuery` plus mutually exclusive `RawQueryTopLevelIssues`) so query semantics are never validated on the global load path. |
+| `internal/querydef/` | Pure-function parser that turns the raw query state into validated, read-only definitions (built-in dimensions, subqueries, groups, default); no file or DB access, and `internal/config` does not depend on it. |
 | `internal/control/` | Process-control layer: control lock, `Manager` Start/Stop/Restart/Inspect, and parent-child control leases. |
 | `internal/daemon/` | Daemon core: daemon lock, PID, detached spawn, and `startupCoordinator` (monitor ready → catch-up). |
 | `internal/runmeta/` | Daemon two-file metadata protocol: PID file plus runtime-state JSON. |
@@ -84,7 +85,8 @@ graph TB
 - The RouterAdapter reads CC Switch SQLite and produces `[]model.RouterLog`, which is written to `raw_router_logs`; it then looks up attribution by `message_id` and backfills `router_provider`/`router_model`/`router_name` in `messages`.
 - `sync_state` records the incremental cursor for every source of each client. Collectors and router adapters read and write their own sources independently.
 - When part of a collector's sources fail, successfully parsed messages, sessions, and router data are still committed transactionally. However, it does not write `collection_log`, resolve historical errors, or advance `sync_state`; a later normal collection or retry idempotently replays the incomplete range with UPSERT.
-- The query layer (`querier`) directly joins `messages` (plus `sessions` metadata) and aggregates in real time; there is no intermediate summary table.
+- The query layer (`querier`) directly joins `messages` (plus `sessions` metadata) and aggregates in real time; there is no intermediate summary table. All grouped views share one dimension-based pipeline (`dimensions → raw aggregates → alias-merged composite keys → stable sort → table`) and end with a `Total / 总计` row aggregated separately over the same date range; session details and the summary are exempt. Provider aliases merge rows before composite keys are formed, without rewriting `messages`.
+- The bare `query` runs the target configured in `[query]` (`default` falls back to client when unconfigured); `query custom <name>` runs a named subquery or group. Semantic validation happens only on these two paths and on TUI saves, via `internal/querydef`; invalid query configuration never blocks collection, status, daemon, `config set`, or `config show`, which keep propagating and rewriting the offending entries verbatim.
 - The Codex rollout parser identifies a replay only when an event contains valid `total_token_usage`, using either the latest signature for the same `limit_id` or the complete `(total,last)` signature of the adjacent token event. It does not deduplicate the whole table, preserving legitimate counter resets. Deduplication only affects this in-memory parse and does not automatically clean historical duplicate messages already in the database.
 
 ## Database Tables
@@ -148,7 +150,7 @@ Queries directly SUM `fresh_input_tokens` and `total_tokens`: values come from t
 User runs a command → load configuration → collect/query/edit configuration → print results → exit
 ```
 
-Command groups: `version` (five-line detailed output), Cobra's built-in `completion`, `config` (interactive TUI with `show`/`init`/`get`/`set` subcommands), `collect` (with `all`/`router`/`retry`), `query` (with `client`/`model`/`provider`/`project`/`session`/`summary`), `errors`, `start`, `status`, `stop`, `restart`, and the hidden internal `_run`. The root command also has the `-v, --version` flag for one-line short output.
+Command groups: `version` (five-line detailed output), Cobra's built-in `completion`, `config` (interactive TUI with `show`/`init`/`get`/`set` subcommands), `collect` (with `all`/`router`/`retry`), `query` (with `client`/`model`/`provider`/`project`/`session`/`summary` plus `custom <name>`), `errors`, `start`, `status`, `stop`, `restart`, and the hidden internal `_run`. The root command also has the `-v, --version` flag for one-line short output.
 
 Running `token-usage` with no arguments only prints help; it neither starts the TUI nor the daemon. See the [CLI Reference](cli.md) for the full command tree, arguments, flags, exit codes, and examples.
 
@@ -358,7 +360,7 @@ See the [CLI Reference](cli.md) for command-level details (arguments, flags, exi
 | `version` subcommand + `--version`/`-v` flag | `internal/cli/version.go` + `internal/cli/root.go` (`buildinfo.Current()` is called once during root assembly). |
 | `completion <bash|zsh|fish|powershell>` | Cobra built-in command that writes shell completion scripts to stdout. |
 | `collect` / `collect all` / `collect router` / `collect retry` | `internal/cli/collect*.go` |
-| `query` / `query <view>` | `internal/cli/query.go` |
+| `query` / `query <view>` / `query custom <name>` | `internal/cli/query.go` (dimension aggregation in `internal/querier`; view definitions in `internal/querydef`) |
 | `errors` | `internal/cli/errors.go` |
 | `config` / `config show` / `config get` / `config set` / `config init` | `internal/cli/config_tui.go` / `config_show.go` / `config_get.go` / `config_set.go` / `init.go` |
 | `start` / `stop` / `restart` / `status` | `internal/cli/{start,stop,restart,status}.go` |

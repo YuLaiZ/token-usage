@@ -456,6 +456,15 @@ func TestRunQuery_BadQueryConfigOnlyBlocksDefaultAndCustom(t *testing.T) {
 		t.Fatal("issues 非空时 custom 必须拒绝")
 	}
 
+	// 根值非表(root_not_table)同样只拒绝裸 query/custom。
+	rootNotTable := map[string]config.RawQueryTopLevelIssue{
+		"query": {Name: "query", Value: "x", Kind: config.RawQueryIssueRootNotTable},
+	}
+	cmdB, _ := newQueryOutputCmd()
+	if err := runQueryWithDeps(cmdB, nil, viewDefault, loadWithRaw(nil, rootNotTable), open); err == nil {
+		t.Fatal("根值非表时裸 query 必须拒绝")
+	}
+
 	// CSV 错误与断开引用。
 	csvBad := map[string]any{"subqueries": map[string]any{"mpc": "model,"}}
 	cmd4, _ := newQueryOutputCmd()

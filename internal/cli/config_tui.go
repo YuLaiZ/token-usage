@@ -23,6 +23,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/configapp"
 	"github.com/YuLaiZ/token-usage/internal/control"
+	"github.com/YuLaiZ/token-usage/internal/querydef"
 	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
 	"github.com/YuLaiZ/token-usage/internal/service"
 	"github.com/YuLaiZ/token-usage/internal/tui"
@@ -76,7 +77,7 @@ func runConfigTUIContext(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return tui.Run(draft, display, diskRevision, apply)
+	return tui.Run(draft, display, diskRevision, apply, tuiQueryAdapter{})
 }
 
 func ensureDefaultConfig(ctx context.Context, mgr *control.Manager, path string) (bool, error) {
@@ -153,4 +154,17 @@ func newTUIApplyFuncWithManager(
 	return func(expectedRevision []byte, currentUser *config.Config) (configapp.ApplyConfigResult, error) {
 		return app.ApplyConfig(context.Background(), expectedRevision, currentUser, false)
 	}, nil
+}
+
+// tuiQueryAdapter 把 TUI 草稿的 raw query 状态适配为 querydef 解析与校验
+// (config raw → querydef.Input 的唯一适配点,与 query 命令共用语义)。
+type tuiQueryAdapter struct{}
+
+func (tuiQueryAdapter) Validate(cfg *config.Config) error {
+	_, err := parseQueryDefinitions(cfg)
+	return err
+}
+
+func (tuiQueryAdapter) Definitions(cfg *config.Config) (*querydef.QueryDefinitions, error) {
+	return parseQueryDefinitions(cfg)
 }

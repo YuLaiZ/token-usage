@@ -121,8 +121,9 @@ token-usage collect
 | `collect all` | 两阶段全采：messages 全历史 + router 全量回填（`--client X` 限定单客户端） |
 | `collect router --client X` | 仅 router 全量回填（不动 messages；`--client` 必填且须已配置 router） |
 | `collect retry` | 重试 `collection_errors` 中未解决失败组（`--client X` 限定） |
-| `query [日期]` | 查询统计（默认今日，按客户端分组） |
-| `query client/model/provider/project/session/summary [日期]` | 对应视图查询 |
+| `query [日期]` | 查询统计（默认今日，执行 `query.default` 配置的视图，未配置时等价按客户端分组）；分组视图末行显示 `Total / 总计` |
+| `query client/model/provider/project/session/summary [日期]` | 对应内置视图查询 |
+| `query custom <name> [日期]` | 执行 `[query.subqueries]`（一张多维表）或 `[query.groups]`（按顺序多张表）中定义的视图 |
 | `errors [YYYYMMDD]` | 查看采集异常（`--source X` / `--unresolved`） |
 
 日期为位置参数：`YYYYMMDD` 单日或 `YYYYMMDD-YYYYMMDD` 闭区间；无 `--date` 标志。
@@ -335,6 +336,14 @@ enabled = true
 [provider_aliases]
 "Zhipu AI Coding Plan" = "Zhipu GLM"
 
+# 自定义查询视图（可选；可用 TUI「查询视图」页引导配置，也可手工编辑）
+[query]
+default = "group_q"                    # 裸 query 的执行对象，未配置时等价按客户端分组
+[query.subqueries]
+mpc = "model,provider,client"          # 一张多维表，顺序即列顺序（至少 2 个内置维度）
+[query.groups]
+group_q = "client,model,provider,mpc"  # 按声明顺序连续输出多张表（至少 2 项，不能嵌套）
+
 [daemon]
 poll_interval = 30            # SQLitePoller 轮询间隔（秒）
 autostart = false             # 开机自启（macOS launchd / Windows 注册表）
@@ -349,6 +358,8 @@ max_days = 7
 > **路由归因现状**：当前只有 Claude（Code/Desktop）配置 `router = "cc_switch"` 会做消息级归因回填。配置入口会拒绝其他客户端（OpenCode/Codex/WorkBuddy/ZCode/AutoClaw）设置非空 `router`：`config set clients.X.router` 直接报错，TUI 也不提供该字段且保存校验拒绝；存量配置中已存在的值读取不受影响，其原始日志仍会写入 `raw_router_logs` 但不会回填 `messages`，因为 CC Switch 的 `app_type` 只识别 Claude 系列。
 >
 > **供应商别名**：`provider_aliases` 只影响 `query provider` 的供应商标签与分组；key 必须与采集或路由回填得到的原始 provider 名完全一致。修改不会改写 `usage.db`，也无需采集或回填；下一次查询立即生效。历史空值保持“未归因”。
+>
+> **查询视图**：`[query]` 是纯展示配置。视图名须为小写标识符，且不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`custom` 冲突。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突）只会让 `query`、`query custom` 与 TUI 保存失败并定位到具体配置键；`collect`、`status`、`start`、守护进程、`config set`、`config show` 不受影响，且原样保留问题项。TUI 提供「查询视图」引导页（主菜单按 `v`）完成子查询、组合查询与默认视图的选择式配置，无需手写 CSV；raw 段无法解析时先进入恢复列表，逐项按 `enter` 修复。query 配置出错不会阻塞无关单项修改，可继续用 `config set`；`config set`/`config get` 不支持通过 dotted key 直接读写 query 定义（`config set` 仍会整体重写配置文件并原样保留 raw query 段）。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]` 段：旧版本会拒绝任何非空 query 段（空 `[query]` 段可放行）。
 
 ## 平台支持
 

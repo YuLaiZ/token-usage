@@ -183,26 +183,53 @@ token-usage collect retry --client codex
 查询 token 使用统计，输出固定为表格（无 `--format`）。从 `messages` 实时聚合，不依赖物化汇总表。
 
 ```text
-token-usage query [日期]
-token-usage query client [日期]     # 默认视图，裸 query 与此等价
+token-usage query [日期]             # 执行 query.default,未配置时等价 client
+token-usage query client [日期]      # 内置视图
 token-usage query model [日期]
 token-usage query provider [日期]
 token-usage query project [日期]
 token-usage query session [日期]
 token-usage query summary [日期]
+token-usage query custom <name> [日期]  # 按名称执行已配置的子查询或组合查询
 ```
 
-缺省日期为今天。若查询的日期区间在 `collection_errors` 中存在未解决记录，结果末尾会附「采集异常」提示并列出条目，建议用 `errors` 查看详情、`collect retry` 重试。
+缺省日期为今天。若查询的日期区间在 `collection_errors` 中存在未解决记录，结果末尾会附「采集异常」提示并列出条目（组合查询输出多张表时，全部表结束后只提示一次），建议用 `errors` 查看详情、`collect retry` 重试。
 
-`query provider` 优先使用路由归因，其次使用采集器的供应商值；历史空值保持未归因，查询不会依据客户端推断供应商。`provider_aliases` 只在渲染此视图时生效：相同别名会合并为同一行，且不会修改 `usage.db`。
+所有分组视图（四个内置视图与全部自定义多维表）末行显示 `Total / 总计`，总计与表格使用同一日期范围独立聚合；会话明细与总览摘要不追加该行。
+
+### 可配置查询视图
+
+可选的 `[query]` 段配置裸 `query` 的执行对象与自定义视图：
+
+```toml
+[query]
+default = "group_q"                    # 未配置或空白等价 client
+
+[query.subqueries]
+mpc = "model,provider,client"          # 一张多维表
+
+[query.groups]
+group_q = "client,model,provider,mpc"  # 按此顺序连续输出多张表
+```
+
+- `query custom <name> [日期]` 执行指定名称的子查询（一张表）或组合查询（按声明顺序多张表）；名称是位置参数，不会与日期混淆。未知名称与保留名会被拒绝。日期错误优先于名称/定义错误，且两者都在打开数据库之前报告。
+- 子查询从内置维度（`client`/`model`/`provider`/`project`）中至少选择 2 个不同维度，声明顺序即列顺序；组合查询从内置视图与已定义子查询中至少选择 2 个不同成员，组合查询不能引用组合查询。
+- 视图名为小写标识符（首字符字母，后续字母、数字、`_`、`-`），不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`custom` 冲突。值按逗号分隔，每段自动去除首尾空格，`"model, provider"` 与 `"model,provider"` 等价。
+- `query.default` 匹配前去除首尾空格，空白等同未设置并回退 client；可引用内置视图、子查询或组合查询，`session` 与 `summary` 不可引用。
+
+`query provider`（以及任何自定义视图中的 provider 维度）优先使用路由归因，其次使用采集器的供应商值；历史空值保持未归因，查询不会依据客户端推断供应商。`provider_aliases` 在组合键形成前生效：相同别名在每个视图中合并为同一行，且不会修改 `usage.db`。
+
+query 配置是纯展示配置。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突、`query = "x"` 根值非表）只会使 `query`、`query custom` 与 TUI 保存失败并定位具体配置键；`collect`、`status`、`start`、守护进程、`config set`、`config show` 不受影响，且原样保留问题项。TUI「查询视图」页（主菜单按 `v`）以选择方式编辑该段，raw 段无法解析时先显示恢复列表。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]` 段：旧版本会拒绝任何非空 query 段。
 
 示例：
 
 ```bash
-token-usage query                    # 今日，按客户端分组
+token-usage query                    # 今日，执行配置的默认视图（未配置时按客户端分组）
 token-usage query model              # 今日，按模型分组
 token-usage query provider           # 今日，按供应商分组
-token-usage query 20260701-20260721  # 区间，按客户端分组
+token-usage query 20260701-20260721  # 区间，默认视图
+token-usage query custom mpc         # 今日，mpc 多维表
+token-usage query custom group_q 20260701  # 按声明顺序输出四张表
 token-usage query summary 20260701   # 单日总览
 ```
 

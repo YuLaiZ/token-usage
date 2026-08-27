@@ -183,26 +183,53 @@ token-usage collect retry --client codex
 Queries token-usage statistics. Output is always a table (there is no `--format`) and is aggregated directly from `messages`, without a materialized summary table.
 
 ```text
-token-usage query [date]
-token-usage query client [date]     # default view; bare query is equivalent
+token-usage query [date]             # runs query.default; equivalent to client when unconfigured
+token-usage query client [date]      # built-in views
 token-usage query model [date]
 token-usage query provider [date]
 token-usage query project [date]
 token-usage query session [date]
 token-usage query summary [date]
+token-usage query custom <name> [date]  # runs a configured subquery or group by name
 ```
 
-The default date is today. If the queried date range has unresolved entries in `collection_errors`, the results end with a collection-error notice and list the affected entries. Use `errors` for details and `collect retry` to retry them.
+The default date is today. If the queried date range has unresolved entries in `collection_errors`, the results end with a collection-error notice and list the affected entries; when several tables are output (a group), the notice appears once after all of them. Use `errors` for details and `collect retry` to retry them.
 
-`query provider` prefers router attribution, then the collector's provider value. Historical empty values remain unattributed; the query does not infer a provider from the client. `provider_aliases` is applied only while rendering this view: aliases with the same value are combined into one row, without changing `usage.db`.
+Every grouped view (the four built-in views and every custom multi-dimensional table) ends with a `Total / 总计` row computed from the same date range as the table; session details and the summary do not have this row.
+
+### Configurable query views
+
+The optional `[query]` section configures what the bare `query` runs and which custom views exist:
+
+```toml
+[query]
+default = "group_q"                    # unconfigured or whitespace means client
+
+[query.subqueries]
+mpc = "model,provider,client"          # one multi-dimensional table
+
+[query.groups]
+group_q = "client,model,provider,mpc"  # several tables in this order
+```
+
+- `query custom <name> [date]` runs the named subquery (one table) or group (tables in declared order); the name is a positional argument, so it cannot be confused with the date. Unknown or reserved names are rejected. Date errors take precedence over name/definition errors, and both are reported before the database is opened.
+- A subquery selects at least 2 distinct built-in dimensions (`client`/`model`/`provider`/`project`); the declared order is the column order. A group selects at least 2 distinct items from built-in views plus defined subqueries; groups cannot reference groups.
+- View names are lowercase identifiers (a letter first, then letters, digits, `_`, `-`) and must not collide with `client`/`model`/`provider`/`project`/`session`/`summary`/`custom`. Values are comma-separated; every segment is trimmed, so `"model, provider"` equals `"model,provider"`.
+- `query.default` is matched after trimming; whitespace means "use client". It may reference a built-in view, a subquery, or a group; `session` and `summary` are not referable.
+
+`query provider` (and the provider dimension of any custom view) prefers router attribution, then the collector's provider value. Historical empty values remain unattributed; the query does not infer a provider from the client. `provider_aliases` is applied before composite keys are formed: aliases with the same value are combined into one row in every view, without changing `usage.db`.
+
+Query configuration is display-only. Semantic errors (broken references, malformed CSV, unknown keys, top-level conflicts such as `[query]` alongside `[Query]`, or a non-table root like `query = "x"`) make `query`, `query custom`, and TUI saves fail with the offending key; `collect`, `status`, `start`, the daemon, `config set`, and `config show` keep working and preserve the offending entries. The TUI "Query views" page (press `v` in the main menu) edits this section with guided selection and shows a recovery list when the raw section cannot be parsed. Before downgrading to a version without query-view support, remove the whole `[query]`, `[query.subqueries]`, and `[query.groups]` sections: older versions reject any non-empty query section.
 
 Examples:
 
 ```bash
-token-usage query                    # today, grouped by client
+token-usage query                    # today, runs the configured default (client when unconfigured)
 token-usage query model              # today, grouped by model
 token-usage query provider           # today, grouped by provider
-token-usage query 20260701-20260721  # date range, grouped by client
+token-usage query 20260701-20260721  # date range, default view
+token-usage query custom mpc         # today, the mpc multi-dimensional table
+token-usage query custom group_q 20260701  # four tables in declared order
 token-usage query summary 20260701   # single-day overview
 ```
 

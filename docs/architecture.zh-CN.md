@@ -29,7 +29,8 @@
 | `internal/cli/` | Cobra 命令组装配（config/collect/query/errors/start/status/stop/restart/version、内置 completion + Hidden `_run`） |
 | `internal/configapp/` | 配置应用层：`ApplyConfig` 在 control lock 内原子编排（revision 保护、写盘、自启同步、动作建议）；`AnalyzeConfigEffects` 影响矩阵 |
 | `internal/runtimecfg/` | 配置解析边界：`LoadEffectiveConfig`（展开 `~`、补默认值、补 registry 默认路径）、`ValidateUserConfig`、用户层 snapshot |
-| `internal/config/` | 用户配置读写、dotted key get/set、默认模板 |
+| `internal/config/` | 用户配置读写、dotted key get/set、默认模板。`[query]` 段以 raw 载体原样保留（`RawQuery` 与互斥的 `RawQueryTopLevelIssues`），全局加载链不做 query 语义校验 |
+| `internal/querydef/` | 纯函数解析器：raw query 状态 → 已校验只读定义（内置维度、子查询、组合查询、默认视图）；不读文件不碰 DB，`internal/config` 不依赖它 |
 | `internal/control/` | 进程控制层：control lock、`Manager` 的 Start/Stop/Restart/Inspect、父子 control lease |
 | `internal/daemon/` | 守护进程主体：daemon lock、PID、detached spawn、`startupCoordinator`（monitor ready → catch-up） |
 | `internal/runmeta/` | 守护进程双文件元数据协议：PID 文件 + runtime-state JSON |
@@ -84,7 +85,8 @@ graph TB
 - RouterAdapter 读取 CC Switch SQLite，输出 `[]model.RouterLog`，写入 `raw_router_logs`；随后按 `message_id` 查询归因，把 `router_provider/router_model/router_name` 回填到 `messages`。
 - `sync_state` 记录每个 client 各 source 的增量游标，collector 和 router adapter 各自读写自己的 source。
 - collector 部分源失败时，已成功解析的消息、会话和 router 数据仍事务落库，但不写 `collection_log`、不解决历史错误、不推进 `sync_state`；后续普通采集或 retry 会按幂等 UPSERT 重放仍有缺口的区间。
-- 查询层（querier）直接 JOIN `messages`（+ `sessions` 元数据）实时聚合，无中间汇总表。
+- 查询层（querier）直接 JOIN `messages`（+ `sessions` 元数据）实时聚合，无中间汇总表。全部分组视图共用一条维度化管线（维度 → 原始聚合 → alias 合并后的复合键 → 稳定排序 → 表格），末行输出同一日期范围独立聚合的 `Total / 总计`；会话明细与总览摘要不追加。供应商别名在组合键形成前合并行,不回写 `messages`。
+- 裸 `query` 执行 `[query]` 配置的默认对象（未配置回退 client）；`query custom <name>` 执行指定名称的子查询或组合查询。语义校验只发生在这两条路径与 TUI 保存前，由 `internal/querydef` 完成；query 配置无效不会阻塞采集、status、守护进程、`config set` 与 `config show`，它们继续透传并原样写回问题项。
 - Codex rollout 解析器仅在事件含有效 `total_token_usage` 时，以同一 `limit_id` 最近签名或紧邻 token 事件的完整 `(total,last)` 签名识别重播；不做全表去重，以保留合法计数器重置。去重只影响本次内存解析，不会自动清理既有数据库中的历史重复消息。
 
 ## 数据库表
@@ -136,7 +138,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 | `collector/` | 从各数据源解析原始数据，输出 `CollectResult` | `Collector.Collect()`, `RouterAdapter.CollectLogs()` |
 | `engine/` | 采集编排：依赖装配、主循环、事务化写入、重试、结果校验 | `NewDeps()`, `RunCollect()`, `RunRetryWithDeps()`, `RunRouterBackfill()`, `ValidateResult()` |
 | `analyzer/` | 守护进程监控：ChangedFile/Incremental/router source 触发采集，debounce 合并，串行化锁 | `NewFromConfig()`, `JSONLWatcher`, `SQLitePoller` |
-| `querier/` | 从 messages 实时聚合查询，格式化输出 | `ByClient()`, `ByModel()`, `ByProject()`, `Sessions()`, `Summary()` |
+| `querier/` | 从 messages 实时聚合查询，格式化输出 | `ByClient()`, `ByModel()`, `ByProject()`, `RunDimensionView()`, `Sessions()`, `Summary()` |
 | `tui/` | 配置交互编辑 TUI（双模型 edit/display + 手动保存经 `ApplyConfig` + 自启 toggle） | `Run()` |
 | `logger/` | 基于 log/slog，按天轮转，自动清理 | `Init()` |
 
@@ -148,7 +150,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 用户执行命令 → 加载配置 → 执行采集/查询/配置编辑 → 输出结果 → 退出
 ```
 
-命令组：`version`（多行详细输出）、Cobra 内置 `completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`session`/`summary`）、`errors`、`start`、`status`、`stop`、`restart`，以及 Hidden 内部命令 `_run`。根命令另带 `-v, --version` flag（单行短输出）。
+命令组：`version`（多行详细输出）、Cobra 内置 `completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`session`/`summary`，另加 `custom <name>`）、`errors`、`start`、`status`、`stop`、`restart`，以及 Hidden 内部命令 `_run`。根命令另带 `-v, --version` flag（单行短输出）。
 
 直接执行 `token-usage`（不带任何参数）只会打印帮助信息，既不启动 TUI 也不启动守护进程。命令树、参数、标志、退出码与示例的完整参考见 [CLI 参考](cli.zh-CN.md)。
 
@@ -358,7 +360,7 @@ fileutil → 标准库（+ Windows 经 golang.org/x/sys）
 | `version`（子命令） + `--version`/`-v`（flag） | `internal/cli/version.go` + `internal/cli/root.go`（`buildinfo.Current()` 在 root 装配处取一次） |
 | `completion <bash|zsh|fish|powershell>` | Cobra 内置命令，向 stdout 生成 Shell 补全脚本 |
 | `collect` / `collect all` / `collect router` / `collect retry` | `internal/cli/collect*.go` |
-| `query` / `query <view>` | `internal/cli/query.go` |
+| `query` / `query <view>` / `query custom <name>` | `internal/cli/query.go`（维度聚合在 `internal/querier`，视图定义在 `internal/querydef`） |
 | `errors` | `internal/cli/errors.go` |
 | `config` / `config show` / `config get` / `config set` / `config init` | `internal/cli/config_tui.go` / `config_show.go` / `config_get.go` / `config_set.go` / `init.go` |
 | `start` / `stop` / `restart` / `status` | `internal/cli/{start,stop,restart,status}.go` |

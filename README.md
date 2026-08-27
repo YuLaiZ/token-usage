@@ -123,8 +123,9 @@ Running `token-usage` without arguments only prints help. See the **[CLI Referen
 | `collect all` | Two-phase full collection: all historical `messages`, then full router backfill; `--client X` limits it to one client. |
 | `collect router --client X` | Full router backfill only; does not touch `messages`; `--client` is required and the client must have a router configured. |
 | `collect retry` | Retries unresolved groups in `collection_errors`; `--client X` limits the client. |
-| `query [date]` | Queries usage statistics; defaults to today and groups by client. |
-| `query client/model/provider/project/session/summary [date]` | Queries the selected view. |
+| `query [date]` | Queries usage statistics; defaults to today and runs the view configured as `query.default` (equivalent to grouping by client when unconfigured). Grouped views end with a `Total / 总计` row. |
+| `query client/model/provider/project/session/summary [date]` | Queries the selected built-in view. |
+| `query custom <name> [date]` | Runs a view defined in `[query.subqueries]` (a multi-dimensional table) or `[query.groups]` (several tables in order). |
 | `errors [YYYYMMDD]` | Displays collection errors; supports `--source X` and `--unresolved`. |
 
 Dates are positional arguments: a single day is `YYYYMMDD`, and an inclusive range is `YYYYMMDD-YYYYMMDD`; there is no `--date` flag.
@@ -337,6 +338,14 @@ enabled = true
 [provider_aliases]
 "Zhipu AI Coding Plan" = "Zhipu GLM"
 
+# Custom query views (optional; edit via the TUI "Query views" page or by hand)
+[query]
+default = "group_q"                    # What the bare `query` runs; unconfigured means client
+[query.subqueries]
+mpc = "model,provider,client"          # Multi-dimensional table; the order is the column order (>= 2 built-in dimensions)
+[query.groups]
+group_q = "client,model,provider,mpc"  # Several tables in declared order (>= 2 items, no nesting)
+
 [daemon]
 poll_interval = 30            # SQLitePoller interval in seconds
 autostart = false             # Autostart (macOS launchd / Windows Registry)
@@ -351,6 +360,8 @@ max_days = 7
 > **Current router-attribution support**: only Claude (Code/Desktop) with `router = "cc_switch"` receives message-level attribution backfill. Configuration entry points reject a non-empty `router` on other clients (OpenCode/Codex/WorkBuddy/ZCode/AutoClaw): `config set clients.X.router` fails up front, and the TUI neither offers nor saves one. Existing configurations that already contain such a value are still read without errors; their raw logs would only be written to `raw_router_logs` without backfilling `messages`, because CC Switch recognizes only the Claude family in `app_type`.
 >
 > **Provider aliases**: `provider_aliases` changes only the labels and grouping in `query provider`; each key must exactly match the collected or router-backfilled provider value. It never rewrites `usage.db` or requires collection/backfill, so changes take effect on the next query. Historical empty values remain unattributed.
+>
+> **Query views**: `[query]` is a display-only configuration. View names must be lowercase identifiers that do not collide with `client`/`model`/`provider`/`project`/`session`/`summary`/`custom`. Semantic errors (broken references, malformed CSV, unknown keys, top-level conflicts such as `[query]` plus `[Query]`) reject only `query`, `query custom`, and TUI saves with a message pointing at the offending key; `collect`, `status`, `start`, `daemon`, `config set`, and `config show` keep working and preserve the offending entries verbatim. The TUI offers a guided "Query views" page (press `v` on the main menu) for creating subqueries, groups, and the default view without writing CSV by hand; when the raw section cannot be parsed it first shows a recovery list where each item is fixed with `enter`. Invalid query configuration never blocks unrelated single-value changes: use `config set` for those. `config set`/`config get` do not support reading or writing query definitions through dotted keys (`config set` still rewrites the whole file and preserves the raw query section verbatim). Before downgrading to a binary without query-view support, remove the whole `[query]`, `[query.subqueries]`, and `[query.groups]` sections: older versions reject any non-empty query section (an empty `[query]` section is tolerated).
 
 ## Platform Support
 

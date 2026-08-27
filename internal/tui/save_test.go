@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/configapp"
+	"github.com/YuLaiZ/token-usage/internal/querydef"
 	"github.com/YuLaiZ/token-usage/internal/service"
 )
 
@@ -411,4 +413,78 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// ---- 保存前 query 校验 ----
+
+// fakeQueryAdapter 是可注入的 QueryAdapter fake:err 控制校验结果。
+type fakeQueryAdapter struct {
+	err error
+}
+
+func (f fakeQueryAdapter) Validate(cfg *config.Config) error { return f.err }
+
+func (f fakeQueryAdapter) Definitions(cfg *config.Config) (*querydef.QueryDefinitions, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &querydef.QueryDefinitions{Default: querydef.Target{Name: "client", Kind: querydef.TargetBuiltin}}, nil
+}
+
+// save() 在创建异步 snapshot 前调用注入的 query 校验:失败时不调用 ApplyConfig、
+// 保留 draft,并提示「进入 Query views 修复」与「使用 config set 完成无关单项修改」两条出路。
+func TestApp_Save_QueryValidationRejectsSave(t *testing.T) {
+	draft := &config.Config{DataDir: "/x", Daemon: config.DaemonConfig{PollInterval: 42}}
+	a := newAppForTest(draft, draft, func(expectedRevision []byte, currentUser *config.Config) (configapp.ApplyConfigResult, error) {
+		t.Fatal("query 校验失败时不得调用 ApplyConfig")
+		return configapp.ApplyConfigResult{}, nil
+	}, fakeQueryAdapter{err: errors.New("invalid query config / 无效 query 配置")})
+	draft.Daemon.PollInterval = 43 // 构造基线后制造 dirty
+
+	cmd := a.save()
+	if cmd != nil {
+		t.Fatalf("校验失败应返回 nil cmd(不启动保存),实际 %T", cmd)
+	}
+	if !a.dirty() {
+		t.Error("校验失败必须保留 draft dirty")
+	}
+	if a.saving {
+		t.Error("校验失败不得进入 saving 态")
+	}
+	if !strings.Contains(a.statusMsg, "invalid query config") {
+		t.Errorf("提示应含校验错误: %q", a.statusMsg)
+	}
+	for _, want := range []string{"Query views", "config set"} {
+		if !strings.Contains(a.statusMsg, want) {
+			t.Errorf("拒绝提示应含出路 %q: %q", want, a.statusMsg)
+		}
+	}
+}
+
+// 校验通过时保存正常进行;未注入适配器(nil)保持既有行为。
+func TestApp_Save_QueryValidationPassesSavesNormally(t *testing.T) {
+	draft := &config.Config{DataDir: "/x", Daemon: config.DaemonConfig{PollInterval: 42}}
+	a := newAppForTest(draft, draft, nil)
+	a.query = fakeQueryAdapter{}
+	draft.Daemon.PollInterval = 50
+
+	cmd := a.save()
+	if cmd == nil {
+		t.Fatal("校验通过应正常启动保存")
+	}
+	msg := cmd()
+	sm, ok := msg.(saveMsg)
+	if !ok {
+		t.Fatalf("cmd 应产生 saveMsg,实际 %T", msg)
+	}
+	if sm.err == nil || !strings.Contains(sm.err.Error(), "保存回调不能为空") {
+		t.Errorf("nil apply 的错误应回流,实际 %v", sm.err)
+	}
+
+	// 未注入适配器:保持既有行为(不因 nil 适配器拒绝保存)。
+	a2 := newAppForTest(draft, draft, nil)
+	draft.Daemon.PollInterval = 60
+	if cmd := a2.save(); cmd == nil {
+		t.Fatal("nil 适配器不应阻断保存")
+	}
 }

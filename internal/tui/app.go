@@ -40,6 +40,7 @@ type App struct {
 	syncPending    bool           // 自启同步待重试(上次保存 AutoStart.Err!=nil)
 	quitAfterSave  bool           // 保存并退出:保存完成后若干净成功则 tea.Quit
 	confirmQuit    bool           // dirty 退出确认层:拦截 q/esc/ctrl+c,提供放弃/保存/返回
+	query          QueryAdapter   // 保存前 query 校验与 Query views 数据源(nil 仅测试,生产由 CLI 注入)
 
 	stack         []page
 	width, height int
@@ -76,7 +77,7 @@ type saveSkippedMsg struct{}
 // (data_dir 在 TUI 只读, 固定 confirmDataDirMigration=false)。draft/display 为
 // 双模型(用户层 + 运行时层);diskRevision 为进入时的磁盘 revision。
 // 进入 TUI 时 draft/display/diskRevision 必须来自同一次 snapshot 读取。
-func Run(draft, display *config.Config, diskRevision []byte, apply ApplyFunc) error {
+func Run(draft, display *config.Config, diskRevision []byte, apply ApplyFunc, query QueryAdapter) error {
 	if draft == nil {
 		return errors.New(ui.Bi("TUI user config must not be nil", "TUI 用户配置不能为空"))
 	}
@@ -92,6 +93,7 @@ func Run(draft, display *config.Config, diskRevision []byte, apply ApplyFunc) er
 		diskRevision: cloneBytes(diskRevision),
 		display:      display,
 		apply:        apply,
+		query:        query,
 	}
 	a.stack = []page{newMainMenu(a)}
 	p := tea.NewProgram(a, tea.WithAltScreen())
@@ -99,14 +101,18 @@ func Run(draft, display *config.Config, diskRevision []byte, apply ApplyFunc) er
 	return err
 }
 
-// newAppForTest 测试用构造(不启动真实 TUI)。apply 可为 nil(测试按需注入)。
-func newAppForTest(draft, display *config.Config, apply ApplyFunc) *App {
+// newAppForTest 测试用构造(不启动真实 TUI)。apply 可为 nil(测试按需注入);
+// 可选注入 query 适配器(Query views/保存校验测试用)。
+func newAppForTest(draft, display *config.Config, apply ApplyFunc, query ...QueryAdapter) *App {
 	a := &App{
 		draft:        draft,
 		diskBaseline: cloneConfig(draft),
 		diskRevision: []byte("rev-test"),
 		display:      display,
 		apply:        apply,
+	}
+	if len(query) > 0 {
+		a.query = query[0]
 	}
 	a.stack = []page{newMainMenu(a)}
 	return a
@@ -399,6 +405,17 @@ func (a *App) save() tea.Cmd {
 	if !a.dirty() && !a.syncPending {
 		a.statusMsg = noChangesMsg
 		return nil
+	}
+	// 保存前 query 校验:失败时拒绝保存、保留草稿,并给出两条出路
+	// (进入 Query views 修复,或用 config set 完成无关单项修改)。
+	if a.query != nil {
+		if err := a.query.Validate(a.draft); err != nil {
+			a.statusMsg = err.Error() + "\n" + ui.Bi(
+				"Fix it in Query views (press v on the main menu), or use `config set` for unrelated single-value changes",
+				"请进入 Query views 修复(主菜单按 v),或使用 config set 完成无关单项修改",
+			)
+			return nil
+		}
 	}
 	a.saving = true
 	a.saveGeneration++

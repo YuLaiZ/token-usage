@@ -73,6 +73,18 @@ autostart = false   # 开机自启（macOS launchd / Windows 注册表）
 [provider_aliases]
 # "Zhipu AI Coding Plan" = "Zhipu GLM"
 
+# 自定义查询视图（可选；默认不启用，按需取消注释）
+# 裸 query 的执行对象由 default 指定，未配置时等价按客户端分组；
+# 子查询从内置维度组合多维表（至少 2 个，顺序即列顺序）；
+# 组合查询按声明顺序连续输出多张表（至少 2 项，不能嵌套组合查询）。
+# 名称需为小写标识符且不与 client/model/provider/project/session/summary/custom 冲突。
+# [query]
+# default = "group_q"
+# [query.subqueries]
+# mpc = "model,provider,client"
+# [query.groups]
+# group_q = "client,model,provider,mpc"
+
 # 日志配置
 [log]
 level = "info"        # info / debug / warn / error

@@ -124,3 +124,28 @@ func TestDefaultConfigTemplate_AllClientsDisabledByDefault(t *testing.T) {
 		}
 	}
 }
+
+// 默认模板只含 query 注释示例,不写生效 query 段:
+// 解析后两个 raw 载体均为 nil,旧版本二进制可安全读取(降级兼容)。
+func TestDefaultConfigTemplate_QuerySectionCommentOnly(t *testing.T) {
+	template := DefaultConfigTemplate()
+	for _, want := range []string{"[query]", "subqueries", "groups", "default"} {
+		if !strings.Contains(template, want) {
+			t.Errorf("默认模板应含 query 注释示例(含 %q):\n%s", want, template)
+		}
+	}
+	cfg, err := ParseUserConfig([]byte(template))
+	if err != nil {
+		t.Fatalf("默认模板必须可解析: %v", err)
+	}
+	if cfg.RawQuery != nil || cfg.RawQueryTopLevelIssues != nil {
+		t.Errorf("默认模板不得写生效 query 段: %#v / %#v", cfg.RawQuery, cfg.RawQueryTopLevelIssues)
+	}
+	// 注释行必须是注释形态(不以生效键写出)。
+	for _, line := range strings.Split(template, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "default =") || strings.HasPrefix(trimmed, "mpc =") {
+			t.Errorf("模板不得包含生效的 query 键: %q", line)
+		}
+	}
+}

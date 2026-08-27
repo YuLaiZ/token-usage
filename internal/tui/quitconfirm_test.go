@@ -327,3 +327,21 @@ func TestQuitConfirm_ViewShowsOptions(t *testing.T) {
 		t.Errorf("确认层应含「返回编辑」,实际:\n%s", view)
 	}
 }
+
+// v 进入 Query views 后,主菜单 q 仍走 dirty 退出确认(键位不冲突回归)。
+func TestQuitConfirm_VOpensQueryViews_QStillConfirmsWhenDirty(t *testing.T) {
+	draft := &config.Config{DataDir: "/x"}
+	a := newAppForTest(draft, draft, nil)
+	m := a.stack[0].(*mainMenu)
+	m.Update(queryTestKeyMsg("v"))
+	if _, ok := a.stack[1].(*queryViewsPage); !ok {
+		t.Fatalf("v 应进入 Query views")
+	}
+	// 返回主菜单并制造 dirty 后按 q → 确认层。
+	a.pop()
+	draft.Daemon.PollInterval = 99
+	m.Update(queryTestKeyMsg("q"))
+	if !a.confirmQuit {
+		t.Fatal("dirty 时 q 应进入退出确认层")
+	}
+}
