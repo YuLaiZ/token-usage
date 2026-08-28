@@ -655,6 +655,10 @@ func queryStatisticsHeader(first, last string, fresh querier.Freshness) string {
 	}
 	var sb strings.Builder
 	sb.WriteString(ui.Bi("Usage statistics", "使用统计") + "\n")
+	sb.WriteString(ui.Bi("Units", "单位") + ":\n")
+	sb.WriteString("  1 K = 1,000 (thousand / 一千)\n")
+	sb.WriteString("  1 M = 1,000 K = 1,000,000 (million / 一百万)\n")
+	sb.WriteString("  1 B = 1,000 M = 1,000,000,000 (billion / 十亿)\n")
 	fmt.Fprintf(&sb, "%s: %s\n", ui.Bi("Query range", "统计范围"), rangeText)
 	fmt.Fprintf(&sb, "%s: %s\n", ui.Bi("Data through", "数据截至"), through)
 	fmt.Fprintf(&sb, "%s: %s\n", ui.Bi("Last successful collection", "最近成功采集"), collected)

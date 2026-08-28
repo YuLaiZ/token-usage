@@ -656,16 +656,30 @@ func TestQueryStatisticsHeader_Rendering(t *testing.T) {
 		})
 	}
 
-	// 信息区以标题开头,恰好四行内容 + 一个分隔空行。
+	// 信息区以标题开头,恰好八行内容(标题 + Units 标签 + 三行换算说明 + 三个信息行) + 一个分隔空行。
 	got := queryStatisticsHeader("2026-08-01", "2026-08-07", querier.Freshness{})
 	if !strings.HasPrefix(got, "Usage statistics / 使用统计\n") {
 		t.Errorf("header must start with the fixed title line, got %q", got)
 	}
-	if lines := strings.Split(strings.TrimRight(got, "\n"), "\n"); len(lines) != 4 {
-		t.Errorf("header body must be exactly 4 lines, got %d: %q", len(lines), got)
+	if lines := strings.Split(strings.TrimRight(got, "\n"), "\n"); len(lines) != 8 {
+		t.Errorf("header body must be exactly 8 lines, got %d: %q", len(lines), got)
 	}
 	if !strings.HasSuffix(got, "\n\n") {
 		t.Errorf("header must end with a blank separator line before the tables, got %q", got)
+	}
+	// Units 换算说明是面向用户的固定说明文案,整个四行块精确锁定,避免部分改动漏行或漂移;
+	// 且必须位于标题之后、Query range 之前。
+	unitsBlock := "Units / 单位:\n" +
+		"  1 K = 1,000 (thousand / 一千)\n" +
+		"  1 M = 1,000 K = 1,000,000 (million / 一百万)\n" +
+		"  1 B = 1,000 M = 1,000,000,000 (billion / 十亿)\n"
+	unitsIdx := strings.Index(got, unitsBlock)
+	rangeIdx := strings.Index(got, "Query range / 统计范围:")
+	if unitsIdx < 0 {
+		t.Errorf("header must contain the exact units block, got %q", got)
+	}
+	if unitsIdx < 0 || rangeIdx < 0 || unitsIdx > rangeIdx {
+		t.Errorf("units block must sit between the title and the query range line, got %q", got)
 	}
 }
 

@@ -497,6 +497,9 @@ func (q *Querier) Summary(ctx context.Context, dates []string) (string, error) {
 }
 
 func formatTokens(tokens int64) string {
+	if tokens >= 1000000000 {
+		return fmt.Sprintf("%.2f B", float64(tokens)/1000000000)
+	}
 	if tokens >= 1000000 {
 		return fmt.Sprintf("%.2f M", float64(tokens)/1000000)
 	}

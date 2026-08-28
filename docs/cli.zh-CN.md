@@ -196,15 +196,20 @@ token-usage query custom <name> [日期] # 上一行的等价显式写法,原样
 token-usage query list                 # 列出已配置视图;只读配置,不打开数据库
 ```
 
-每条 query 命令的输出都以一个统一的统计信息区开始，无论后面输出多少张表都只打印一次：
+每条接受日期参数的 query 命令的输出都以一个统一的统计信息区开始，无论后面输出多少张表都只打印一次（`query list` 只读配置、不打开数据库，没有统计信息区）：
 
 ```text
 Usage statistics / 使用统计
+Units / 单位:
+  1 K = 1,000 (thousand / 一千)
+  1 M = 1,000 K = 1,000,000 (million / 一百万)
+  1 B = 1,000 M = 1,000,000,000 (billion / 十亿)
 Query range / 统计范围: 2026-07-01 ~ 2026-07-21
 Data through / 数据截至: 2026-07-21 23:59:59
 Last successful collection / 最近成功采集: 2026-07-22 08:15:03
 ```
 
+- `Units / 单位` 说明所有表格与总览摘要中 token 数量的缩写口径：数值达到 1,000 / 1,000,000 / 1,000,000,000 后分别以 K / M / B 显示，统一保留两位小数。
 - `Query range / 统计范围` 回显本次实际日期参数：单日只显示该日，闭区间显示为 `YYYY-MM-DD ~ YYYY-MM-DD`。
 - `Data through / 数据截至` 是统计日期范围内最新的消息事件时间（`messages.ts`），按本机时区显示到秒。消息事件时间才是统计数据的时间边界；范围内没有消息时显示 `—`。
 - `Last successful collection / 最近成功采集` 是全库最近一次成功采集完成的时间（`collection_log.collected_at`，库内以 UTC 存储，展示时转换为本机时区）。它不代表每个客户端都已完整采集到该时刻；还没有任何成功采集记录时显示 `—`。
