@@ -2,7 +2,7 @@
 
 > 简体中文 | [English](README.md)
 
-本地 LLM 使用数据统计工具，用于采集、分析和查询各 AI 客户端的 token 使用情况。
+本地 LLM 使用数据统计工具：采集、分析、查询各 AI 客户端的 token 使用情况，并能把常看的数据沉淀成你自己的多维报表——全程无需 SQL。
 
 ## 功能特性
 
@@ -12,6 +12,7 @@
 - **Codex rollout 重播去重**：限流桶切换时重播的同一完整 token 快照不会重复计入，合法的重置和多轮调用仍会保留
 - **多数据源支持**：Claude Code/Desktop、OpenCode、Codex、WorkBuddy、ZCode、Zhipu-AutoClaw
 - **CC Switch 路由归因**：从 CC-Switch 代理日志回填真实 provider/model（当前仅 Claude 系列生效）
+- **自定义查询与组合视图**：无需 SQL，即可从 `client`、`model`、`provider`、`project` 创建具名多维报表；也能把内置视图和自定义查询编排为可复用、按顺序输出的报告组合。设置默认视图后，只需一条 `token-usage query` 就能打开常用报表；引导式配置 TUI 和 `query list` 让创建、维护和查找都很方便。
 - **双运行模式**：CLI 命令（单次执行）+ 守护进程（实时监控，nginx 风格后台启动）
 - **开机自启**：macOS launchd / Windows 注册表，config TUI 或 `config set` 一键开关
 - **按需启用**：所有客户端默认关闭，开启你实际使用的即可；数据源路径仍有开箱即用默认值
@@ -108,6 +109,36 @@ token-usage collect
 
 > **关于首次历史采集**：`collect all` 全量扫描所有已启用客户端的历史数据（不因 `collection_log` 跳过，按消息主键 upsert），并对配置了 router 的客户端做全量归因回填。
 > `collect <日期范围>` 默认按 `collection_log` 去重，只补采缺失日期；加 `--force` 强制重采覆盖。
+
+数据跑起来之后，把查询变成你的专属报告——见下一节。
+
+### 把查询变成你的专属报告
+
+内置视图能回答常见问题；更有特色的是，你可以把常看的统计结果沉淀成自己的报告。例如，先创建一张 model × provider × client 的交叉明细表，再把 client、model、provider 和这张明细表编排为一份按序输出的组合报告。全程无需 SQL、导出或电子表格。
+
+运行 `token-usage config`，在主菜单按 `v` 进入「**查询视图**」，按引导创建多维子查询、组合报告和默认视图。也可以直接在 `~/.token-usage/config.toml` 中保存这些可迁移的定义：
+
+```toml
+[query]
+default = "daily_stack"                    # 裸 `token-usage query` 就执行这份报告
+
+[query.subqueries]
+model_provider_client = "model,provider,client"  # 一张表；声明顺序就是列顺序
+
+[query.groups]
+daily_stack = "client,model,provider,model_provider_client"  # 按此顺序连续输出多张表
+```
+
+之后，就能像执行内置命令一样运行自己的报告：
+
+```bash
+token-usage query                           # 今天，执行配置的默认报告
+token-usage query model_provider_client     # 一张可复用的多维表
+token-usage query daily_stack 20260701-20260721  # 按顺序输出的多表报告
+token-usage query list                      # 不打开数据库，发现全部已配置视图
+```
+
+自定义子查询至少包含 `client`、`model`、`provider`、`project` 中的两个维度；组合查询至少包含两个内置视图或子查询，且不能嵌套。完整配置契约和校验规则见 [CLI 参考](docs/cli.zh-CN.md#可配置查询视图)。
 
 ## 命令速查
 
@@ -306,7 +337,7 @@ token-usage config set daemon.autostart false
 
 > `config show` 输出含本机路径：`~` 会展开；显式相对路径及其派生的默认路径（如 `data_dir` 派生的 `log.dir`、`state_dir` 派生的 `sessions_dir`）保持相对；其余 home-based 默认路径为绝对路径。对外分享前请检查是否含敏感信息。其输出也不是建议覆盖回用户配置文件的模板（回写会冻结默认路径并丢失注释）。
 
-下方示例展示的是客户端已启用状态；`config init` 生成的默认模板中所有客户端 `enabled = false`（`router` 行与 provider 别名均为注释示例）。
+下方示例展示的是客户端已启用状态；`config init` 生成的默认模板中所有客户端 `enabled = false`（`router` 行、provider 别名与查询视图均为注释示例）。
 
 ```toml
 # 数据目录（数据库、日志、PID、锁存放位置）
