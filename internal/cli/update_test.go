@@ -856,3 +856,313 @@ func TestUpdateCmd_ApplyRealFactoryWiresVersionProbe(t *testing.T) {
 		t.Fatal("Apply 路径必须注入生产 VersionProbe")
 	}
 }
+
+// ---- --force 受控出口（渲染分流 / sentinel / flag 合同）----
+
+// TestUpdateCmd_ForceFlagDefined update 必须定义 --force bool flag。
+func TestUpdateCmd_ForceFlagDefined(t *testing.T) {
+	root := newRootCmd(fixedInfo)
+	sub := findUpdateCmd(root)
+	if sub == nil {
+		t.Fatal("未找到 update 子命令")
+	}
+	forceFlag := sub.Flag("force")
+	if forceFlag == nil {
+		t.Fatal("update 必须定义 --force flag")
+	}
+	if forceFlag.Value.Type() != "bool" {
+		t.Errorf("--force 应为 bool 类型，实际 %q", forceFlag.Value.Type())
+	}
+}
+
+// TestUpdateCmd_ForcePassedToApply --force 被解析并传入 ApplyOptions.Force。
+func TestUpdateCmd_ForcePassedToApply(t *testing.T) {
+	stub := &stubUpdateService{
+		applyResult: update.ApplyResult{
+			CheckResult:       update.CheckResult{CurrentTag: "dev", TargetTag: "v0.2.0", UpdateAvailable: true},
+			ProvenanceChecked: true,
+			ProvenanceTrusted: false,
+			ProvenanceForced:  true,
+			Installed:         true,
+		},
+	}
+	withStubUpdateService(t, stub)
+
+	root := newRootCmd(fixedInfo)
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"update", "--force"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if stub.lastApply.Force != true {
+		t.Errorf("ApplyOptions.Force 应为 true，实际 %+v", stub.lastApply)
+	}
+}
+
+// TestUpdateCmd_NoForceByDefault 默认不带 --force 时 ApplyOptions.Force=false（默认行为不变）。
+func TestUpdateCmd_NoForceByDefault(t *testing.T) {
+	stub := &stubUpdateService{
+		applyResult: update.ApplyResult{
+			CheckResult: update.CheckResult{CurrentTag: "v0.1.0", TargetTag: "v0.1.0", UpdateAvailable: false},
+		},
+	}
+	withStubUpdateService(t, stub)
+
+	root := newRootCmd(fixedInfo)
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"update"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if stub.lastApply.Force != false {
+		t.Errorf("默认 ApplyOptions.Force 应为 false，实际 %+v", stub.lastApply)
+	}
+}
+
+// TestUpdateCmd_CheckForceComboRejected --check --force 组合显式拒绝（双语 sentinel 错误），
+// 不触发任何服务调用（Check 与 Apply 均不调用）。
+func TestUpdateCmd_CheckForceComboRejected(t *testing.T) {
+	stub := &stubUpdateService{}
+	withStubUpdateService(t, stub)
+
+	root := newRootCmd(fixedInfo)
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs([]string{"update", "--check", "--force"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("--check --force 组合应显式拒绝")
+	}
+	if !errors.Is(err, errCheckForceCombination) {
+		t.Errorf("err=%v，应保留组合拒绝 sentinel", err)
+	}
+	if stub.checkCalls != 0 || stub.applyCalls != 0 {
+		t.Errorf("组合拒绝不应触发服务调用，check=%d apply=%d", stub.checkCalls, stub.applyCalls)
+	}
+	if strings.Contains(out.String(), "Usage:") {
+		t.Errorf("领域错误不应输出 usage，stdout=%q", out.String())
+	}
+}
+
+// TestUpdateCmd_ApplyForceEligibleUntrustedPromptsForce 来源不可信但可 force（hash 失配）
+// 且未 force：输出含 --force 出口的新标题，返回 errUpdateForceRequired（非 0 语义不变），
+// 不再出现「无法安全覆盖」的表述。
+func TestUpdateCmd_ApplyForceEligibleUntrustedPromptsForce(t *testing.T) {
+	stub := &stubUpdateService{
+		applyResult: update.ApplyResult{
+			CheckResult:       update.CheckResult{CurrentTag: "v0.1.0", TargetTag: "v0.2.0", UpdateAvailable: true},
+			ProvenanceChecked: true,
+			ProvenanceTrusted: false,
+			ForceEligible:     true,
+			Reason:            "当前二进制 hash 与官方资产不一致",
+			BinaryPath:        "/usr/local/bin/token-usage",
+		},
+	}
+	withStubUpdateService(t, stub)
+
+	root := newRootCmd(fixedInfo)
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs([]string{"update"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("拒绝更新应返回非 0")
+	}
+	if !errors.Is(err, errUpdateForceRequired) {
+		t.Errorf("err=%v，应保留 errUpdateForceRequired 根因", err)
+	}
+	if errors.Is(err, errUpdateSourceUntrusted) {
+		t.Error("两类 sentinel 不得互相混淆")
+	}
+	got := out.String()
+	if !strings.Contains(got, "--force") {
+		t.Errorf("stdout 应提示 --force 出口，实际 %q", got)
+	}
+	if strings.Contains(got, "无法安全覆盖") {
+		t.Errorf("可 force 场景不得使用「无法安全覆盖」标题，stdout=%q", got)
+	}
+	if !strings.Contains(errOut.String(), "当前二进制 hash") {
+		t.Errorf("Reason 行应照旧写 stderr，实际 %q", errOut.String())
+	}
+}
+
+// TestUpdateCmd_ApplyNotForceEligibleKeepsSentinel 不可 force 的 untrusted（如 symlink）
+// 维持现行标题与 errUpdateSourceUntrusted。
+func TestUpdateCmd_ApplyNotForceEligibleKeepsSentinel(t *testing.T) {
+	stub := &stubUpdateService{
+		applyResult: update.ApplyResult{
+			CheckResult:       update.CheckResult{CurrentTag: "v0.1.0", TargetTag: "v0.2.0", UpdateAvailable: true},
+			ProvenanceChecked: true,
+			ProvenanceTrusted: false,
+			ForceEligible:     false,
+			Reason:            "当前可执行文件是符号链接",
+			BinaryPath:        "/usr/local/bin/token-usage",
+		},
+	}
+	withStubUpdateService(t, stub)
+
+	root := newRootCmd(fixedInfo)
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs([]string{"update"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("来源不可信应返回非 0")
+	}
+	if !errors.Is(err, errUpdateSourceUntrusted) {
+		t.Errorf("err=%v，应保留 errUpdateSourceUntrusted 根因", err)
+	}
+	if errors.Is(err, errUpdateForceRequired) {
+		t.Error("两类 sentinel 不得互相混淆")
+	}
+	got := out.String()
+	if !strings.Contains(got, "无法安全覆盖") {
+		t.Errorf("不可 force 场景应维持现行标题，实际 %q", got)
+	}
+	if strings.Contains(got, "--force") {
+		t.Errorf("不可 force 场景不应提示 --force 出口，stdout=%q", got)
+	}
+}
+
+// TestUpdateCmd_SentinelsNotContained 两个来源分流 sentinel 的错误文本互不包含，
+// 防止脚本侧用 strings.Contains 区分时误判。
+func TestUpdateCmd_SentinelsNotContained(t *testing.T) {
+	a := errUpdateForceRequired.Error()
+	b := errUpdateSourceUntrusted.Error()
+	if strings.Contains(a, b) || strings.Contains(b, a) {
+		t.Errorf("sentinel 错误文本不得互相包含：%q vs %q", a, b)
+	}
+}
+
+// TestUpdateCmd_ApplyForcedInstalledSucceeds force 安装成功（POSIX Installed）：
+// 输出注明 --force 强制覆盖的成功提示，退出 0——不得落入「来源不可信」非零分支（P0 回归）。
+func TestUpdateCmd_ApplyForcedInstalledSucceeds(t *testing.T) {
+	stub := &stubUpdateService{
+		applyResult: update.ApplyResult{
+			CheckResult:       update.CheckResult{CurrentTag: "dev", TargetTag: "v0.2.0", UpdateAvailable: true},
+			ProvenanceChecked: true,
+			ProvenanceTrusted: false,
+			ProvenanceForced:  true,
+			ReadyToInstall:    true,
+			Installed:         true,
+			ForceEligible:     true,
+			BinaryPath:        "/usr/local/bin/token-usage",
+			TargetAsset:       "token-usage-darwin-arm64",
+		},
+	}
+	withStubUpdateService(t, stub)
+
+	root := newRootCmd(fixedInfo)
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs([]string{"update"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("force 安装成功应退出 0，got %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "已更新") || !strings.Contains(got, "--force") {
+		t.Errorf("stdout 应注明 --force 强制覆盖的成功提示，实际 %q", got)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("成功状态不应写 stderr，实际 %q", errOut.String())
+	}
+}
+
+// TestUpdateCmd_ApplyForcedDeferredSucceeds force 下 Windows helper 排队：
+// 输出注明 --force 的排队提示，退出 0。
+func TestUpdateCmd_ApplyForcedDeferredSucceeds(t *testing.T) {
+	stub := &stubUpdateService{
+		applyResult: update.ApplyResult{
+			CheckResult:       update.CheckResult{CurrentTag: "v0.1.0", TargetTag: "v0.2.0", UpdateAvailable: true},
+			ProvenanceChecked: true,
+			ProvenanceTrusted: false,
+			ProvenanceForced:  true,
+			ReadyToInstall:    true,
+			Deferred:          true,
+			ForceEligible:     true,
+			TargetAsset:       "token-usage-windows-amd64.exe",
+		},
+	}
+	withStubUpdateService(t, stub)
+
+	root := newRootCmd(fixedInfo)
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs([]string{"update"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("force 排队状态应退出 0，got %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "后台替换已排队") || !strings.Contains(got, "--force") {
+		t.Errorf("stdout 应注明 --force 的排队提示，实际 %q", got)
+	}
+}
+
+// TestUpdateCmd_ApplyForcedIncompleteFails forced 但安装未完成：掉入既有失败分支，
+// 返回非 0，不再以「来源不可信」拒绝。
+func TestUpdateCmd_ApplyForcedIncompleteFails(t *testing.T) {
+	stub := &stubUpdateService{
+		applyResult: update.ApplyResult{
+			CheckResult:       update.CheckResult{CurrentTag: "dev", TargetTag: "v0.2.0", UpdateAvailable: true},
+			ProvenanceChecked: true,
+			ProvenanceTrusted: false,
+			ProvenanceForced:  true,
+			ReadyToInstall:    true,
+			ForceEligible:     true,
+		},
+	}
+	withStubUpdateService(t, stub)
+
+	root := newRootCmd(fixedInfo)
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs([]string{"update"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("安装未完成应返回非 0")
+	}
+	if !errors.Is(err, errUpdateIncomplete) {
+		t.Errorf("err=%v，应掉入未完成分支而非来源不可信", err)
+	}
+}
+
+// TestUpdateCmd_LongHelpDocumentsForce Long 帮助应包含 --force 用法行与豁免边界说明。
+func TestUpdateCmd_LongHelpDocumentsForce(t *testing.T) {
+	root := newRootCmd(fixedInfo)
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"update", "--help"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("update --help 不应失败: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "update --force") {
+		t.Errorf("帮助应含 --force 用法行，实际 %q", got)
+	}
+	for _, want := range []string{"re-signed", "dev"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("帮助应说明豁免边界（%s），实际 %q", want, got)
+		}
+	}
+	if !strings.Contains(got, "符号链接") && !strings.Contains(got, "symlink") {
+		t.Errorf("帮助应说明软链不可被 force，实际 %q", got)
+	}
+}

@@ -30,7 +30,7 @@ token-usage
 ├── restart
 ├── status
 ├── stop
-├── update                                # 从官方 GitHub Release 自更新（--check / --version）
+├── update                                # 从官方 GitHub Release 自更新（--check / --version / --force）
 └── _run                                  # Hidden，由 start/launchd/注册表拉起，勿直接调用
 ```
 
@@ -42,7 +42,7 @@ token-usage
 - 直接执行 `token-usage`（不带任何参数）只打印帮助，既不启动 TUI 也不启动守护进程。
 - 根命令带 `-v, --version` flag（单行短输出），同时提供 `version` 子命令（多行详细输出）；二者详见下文「version」。
 - `completion` 是 Cobra 提供的内置命令，只向标准输出生成 bash/zsh/fish/PowerShell 补全脚本，不读取配置或数据库。
-- `update` 是顶层自更新命令（标志 `--check` 与 `--version`）；它是唯一会改写当前运行二进制的命令，且仅当当前二进制是官方 Release 资产时才执行。详见下文「[update](#update)」。
+- `update` 是顶层自更新命令（标志 `--check`、`--version` 与 `--force`）；它是唯一会改写当前运行二进制的命令。默认仅当当前二进制是官方 Release 资产时才执行；`--force` 可显式覆盖已重签的官方资产、指定 tag 的 `go install` 产物或 dev 本地构建。详见下文「[update](#update)」。
 
 ## 通用约定
 
@@ -479,6 +479,7 @@ catch-up 经 analyzer 的串行化锁 Submit（与实时触发同一路径，保
 token-usage update
 token-usage update --check
 token-usage update --version <tag>
+token-usage update --force
 ```
 
 | 形式 | 作用 |
@@ -486,13 +487,15 @@ token-usage update --version <tag>
 | `update` | 更新到最新稳定版。若当前二进制同目录存在一次中断的 POSIX 更新留下的受限事务 journal，先完成恢复；之后仅当目标严格高于当前版本且当前来源可信时才继续新替换：下载资产、与 `SHA256SUMS` 清单比对 SHA256、stage `--version` 二次校验、替换二进制并按原运行态恢复 daemon。 |
 | `update --check` | 只读检查；不创建任何本地文件（不创建配置目录/锁/日志/数据库/服务定义）。 |
 | `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | 更新（或加 `--check` 后仅检查）指定精确版本 tag。`--version` 接受严格 Release tag（`v` 前缀、`MAJOR.MINOR.PATCH`、可选 `-rc.N`、无前导零）；非法值在任何网络请求前即报错。 |
+| `update --force` | 当前二进制来源非官方 Release 资产时仍强制覆盖，仅限两种豁免：与所报告版本官方资产 hash 不一致（按安装指引重签过的二进制、或 `go install pkg@vX.Y.Z` 产物），以及 dev 本地构建（`Version = dev`；直接构建的伪版本会被规范化为 `dev`）。全部结构检查与目标资产的 SHA256 / stage `--version` 校验照常执行；软链副本与非官方 tag 不可被 force。 |
 
-`--check` 与 `--version` 可组合，如 `update --check --version vX.Y.Z-rc.N` 只检查候选版。
+`--check` 与 `--version` 可组合，如 `update --check --version vX.Y.Z-rc.N` 只检查候选版。`--force` 不能与 `--check` 组合（该组合被显式拒绝）。
 
 标志：
 
 - `--check`（bool）：只读检查，不写本地文件。
 - `--version`（string）：目标 Release tag。接受 `vMAJOR.MINOR.PATCH` 与 `vMAJOR.MINOR.PATCH-rc.N`（无前导零，`N >= 1`，无 build metadata）。
+- `--force`（bool）：当前二进制非官方 Release 资产（已重签、go install、dev 本地构建）时仍强制覆盖；确切豁免边界见[信任与来源校验](#信任与来源校验)。
 
 `update` 不接受位置参数（`Args: NoArgs`）。
 
@@ -502,11 +505,20 @@ token-usage update --version <tag>
 
 ### 信任与来源校验
 
-`update` 仅在目标严格更高且当前来源可信时才覆盖当前二进制。满足以下任一条件即判定当前来源**不可信**（`update` 输出人工安装指引，不原地覆盖）：
+`update` 仅在目标严格更高且当前来源可信时才覆盖当前二进制。满足以下任一条件即判定当前来源**不可信**（默认 `update` 拒绝覆盖，输出人工安装指引）：
 
 - 当前 `Version` 为 `dev` 或伪版本（如来自 `make build`、`make build-all` 或 `go install`）；
 - 当前二进制不是普通文件，或为 symlink；
-- 当前二进制的 SHA256 与当前版本的官方资产 hash 不一致。
+- 当前二进制的 SHA256 与当前版本的官方资产 hash 不一致（如按安装指引重签过的二进制、`go install pkg@vX.Y.Z` 产物）。
+
+拒绝携带 `--force` 出口，但仅限两种豁免：
+
+- **hash 失配**（当前版本存在官方 Release 与清单，但本地内容不一致）：用 `--force` 再次执行即用官方资产覆盖，自动更新恢复正常；
+- **dev 本地构建**（`Version = dev`；直接构建的伪版本会被规范化为 `dev`，这是 `update --force` 唯一接受的 dev 形态；不存在可比的官方 Release 与清单，从未发生 hash 比较）：`update --force` 把安装切换为官方 Release 资产。
+
+软链副本与非官方 tag 不可被 force——其余一切拒绝原因都只能手动安装。`--force` 不跳过任何检查：结构前置仍然把关，目标资产仍要下载、与 `SHA256SUMS` 比对 SHA256、并经 stage `--version` 二次校验后才可能替换当前二进制。`--force` 安装完成以注明 `--force` 的成功提示退出 0；绝不谎报来源可信。
+
+在 macOS 上，拒绝信息会区分「带本地 ad-hoc 签名的二进制」（经签名探测识别）并明确列出重签官方资产的可能性；其他平台及探测不可用时降级为通用文案，但同样列出已重签可能项与相同的 `--force` 出口。
 
 唯一受信仓库为 `YuLaiZ/token-usage`；下载 URL 重构、清单与分阶段安装信任链见[架构设计](architecture.zh-CN.md)。
 
@@ -515,11 +527,11 @@ token-usage update --version <tag>
 ### 退出码
 
 - `0`：已完成的预期状态——无稳定 Release、已是最新、发现可更新（`--check`）、Windows 后台替换已排队，或恢复确认上次中断时新二进制已经落地。
-- 非 `0`：指定 tag 不存在、当前来源无法安全覆盖、下载/清单/checksum/stage `--version` 校验被拒绝、恢复后回到旧版本、安装尚未完成、安装/回滚/daemon 重启失败，或 `--version` 非法。
+- 非 `0`：指定 tag 不存在、当前来源未通过校验且未携带 `--force`（hash 失配或 dev 本地构建）、或来源根本不可被 force（软链 / 非官方 tag）、下载/清单/checksum/stage `--version` 校验被拒绝、恢复后回到旧版本、安装尚未完成、安装/回滚/daemon 重启失败，或 `--version` 非法。
 
 ### 副作用边界
 
-`update --check` 完全只读。真正 `update` 发现已有事务 journal 时先完成恢复；否则仅在确有更新且来源可信时才停 daemon → 替换二进制 → 重启；无更新时不启停 daemon，也不重写 `config.toml`、数据库、日志、macOS LaunchAgent plist 或 Windows 注册表。
+`update --check` 完全只读。真正 `update` 发现已有事务 journal 时先完成恢复；否则仅在确有更新且来源检查通过——可信，或经 `--force` 显式覆盖——时才停 daemon → 替换二进制 → 重启；无更新时不启停 daemon，也不重写 `config.toml`、数据库、日志、macOS LaunchAgent plist 或 Windows 注册表。
 
 ### Windows 异步替换
 

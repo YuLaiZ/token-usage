@@ -9,7 +9,7 @@ This document covers every installation method in detail: the recommended instal
 Configuration, database, and logs always live under `~/.token-usage` (Windows: `%USERPROFILE%\.token-usage`). The script and manual binary installations also put the binary there — `~/.token-usage/bin/token-usage` (Windows: `%USERPROFILE%\.token-usage\bin\token-usage.exe`) — exposed through your user PATH, with no sudo or administrator privileges needed; `go install` and the direct development build (`go build`) place the binary elsewhere (see their sections). The methods differ in upgrade semantics:
 
 - **Official Release binary** (installed by the script below, by the AI-agent instruction, or manually): supports in-place self-update — the binary is the real file on PATH, which is exactly what the self-update source check requires.
-- **Built from source** (`make build` / `go build`): reports `Version = dev` or a pseudo-version and cannot self-update; upgrade by rebuilding and replacing the file manually.
+- **Built from source** (`make build` / `go build`): reports `Version = dev` (plain-build pseudo-versions are normalized to `dev`) and cannot self-update by default; run `token-usage update --force` to switch to an official Release asset (automatic updates then work normally), or rebuild and replace the file manually.
 
 Published assets (the platforms with official binaries — also the platforms supported by self-update):
 
@@ -64,7 +64,7 @@ token-usage update --check          # only check; writes no local files
 token-usage update --version vX.Y.Z # update (or check) a specific release tag
 ```
 
-`update` only replaces the current binary when it is the official Release asset for the reported version — its SHA256 must match the official asset hash for that version. Development builds (`Version = dev` or a pseudo-version from `make build`, `make build-all`, or `go install`), symlinked copies, and version/hash mismatches are treated as untrusted: `update` prints manual-install guidance instead of overwriting. Self-update supports exactly the platforms with official assets (`darwin/arm64`, `darwin/amd64`, `windows/amd64`); on any other platform, `update` reports that there is no official asset and asks you to install manually. See [trust and source verification](cli.md#trust-and-source-verification) in the CLI Reference for the full rules, exit codes, side effects, and the Windows asynchronous-replacement note.
+`update` only replaces the current binary when it is the official Release asset for the reported version — its SHA256 must match the official asset hash for that version. Development builds (`Version = dev` or a pseudo-version from `make build`, `make build-all`, or `go install`), symlinked copies, and version/hash mismatches are treated as untrusted: a plain `update` refuses to overwrite and prints manual-install guidance. Of these, a hash mismatch (a re-signed binary or `go install pkg@vX.Y.Z`) and a dev build can be overridden explicitly with `update --force`; symlinked copies and non-official tags cannot. Self-update supports exactly the platforms with official assets (`darwin/arm64`, `darwin/amd64`, `windows/amd64`); on any other platform, `update` reports that there is no official asset and asks you to install manually. See [trust and source verification](cli.md#trust-and-source-verification) in the CLI Reference for the full rules, exit codes, side effects, and the Windows asynchronous-replacement note.
 
 > **Why no symlink into PATH:** the self-update source check requires the running executable to be the real binary file. A call through a symlink resolves to the symlink path and is rejected. That is why this layout puts `~/.token-usage/bin` itself on PATH instead of placing a link in another directory.
 
@@ -106,6 +106,8 @@ Open a new terminal and verify with `token-usage --help` and `token-usage versio
 > ```
 >
 > Removing the attribute alone (`xattr -d com.apple.quarantine ...`) may not be enough because Gatekeeper caches its verdict. Files downloaded with `curl` (or the official script) never get the attribute and are unaffected.
+>
+> Note the side effect: re-signing rewrites the binary's signature section, so its SHA256 no longer matches the official `SHA256SUMS` and a plain `token-usage update` treats the binary as unverified and refuses to overwrite. Run `token-usage update --force` to have the update replace it with an official asset (automatic updates then work normally again), or install manually.
 
 ### Windows — official Release asset
 
@@ -155,7 +157,7 @@ git clone https://github.com/YuLaiZ/token-usage.git && cd token-usage
 make build   # produces ./token-usage (make build-all produces dist/token-usage-windows-amd64.exe)
 ```
 
-Put the built binary into the bin directory and add it to your PATH exactly as in the official-asset steps above (`~/.token-usage/bin/token-usage` on macOS, `%USERPROFILE%\.token-usage\bin\token-usage.exe` on Windows). A source-built binary reports `Version = dev` or a pseudo-version and cannot self-update; to upgrade, rebuild and replace the file under the bin directory manually.
+Put the built binary into the bin directory and add it to your PATH exactly as in the official-asset steps above (`~/.token-usage/bin/token-usage` on macOS, `%USERPROFILE%\.token-usage\bin\token-usage.exe` on Windows). A source-built binary reports `Version = dev` (plain-build pseudo-versions are normalized to `dev`) and cannot self-update by default; run `token-usage update --force` to switch to an official Release asset (automatic updates then work normally), or rebuild and replace the file under the bin directory manually.
 
 ## go install (requires Go)
 

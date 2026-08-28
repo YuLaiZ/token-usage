@@ -73,7 +73,7 @@ See the [CLI Reference](docs/cli.md) for the full set of flags, exit codes, and 
 #### Other installation methods
 
 - [Manual binary installation (same layout)](docs/install.md#manual-binary-installation-same-layout): download and SHA256-verify an official asset by hand and configure the PATH yourself — equivalent to Option A, including self-update.
-- [`go install` / building from source](docs/install.md): requires a Go toolchain; such binaries report `Version = dev` or a pseudo-version and cannot self-update (see [trust and source verification](docs/cli.md#trust-and-source-verification)).
+- [`go install` / building from source](docs/install.md): requires a Go toolchain. `go install pkg@vX.Y.Z` (and `@latest` when it resolves to a release) keeps the real tag, is refused by default, and `token-usage update --force` overwrites it via the hash-mismatch exemption; direct builds report `Version = dev` (plain-build pseudo-versions are normalized to `dev`) with the same `--force` override (see [trust and source verification](docs/cli.md#trust-and-source-verification)).
 
 To uninstall or migrate from an earlier layout, see [Uninstall and migration](docs/install.md#uninstall-and-migration).
 
@@ -192,9 +192,9 @@ Every date-based query command opens its output with a bilingual statistics head
 
 | Command | Purpose |
 |------|------|
-| `update` | Updates the current binary to the latest stable release when it is an official Release asset and its source is trusted; `--check` only checks, `--version vX.Y.Z[-rc.N]` targets a specific tag. |
+| `update` | Updates the current binary to the latest stable release when it is an official Release asset and its source is trusted; `--check` only checks, `--version vX.Y.Z[-rc.N]` targets a specific tag, and `--force` overwrites a re-signed official asset, a `go install` of a tagged version, or a dev build (symlinks and non-official tags cannot be forced). |
 
-> Only a binary installed from an official Release can self-update; `make build`/`go install`/symlinked copies fall back to manual-install guidance. See the [CLI Reference](docs/cli.md) for flags, exit codes, side effects, and the Windows asynchronous-replacement note.
+> A binary installed from an official Release self-updates normally. Re-signed official assets (macOS Gatekeeper fix), `go install` of a tagged version, and dev/local builds are refused by default; `token-usage update --force` overrides exactly those and keeps all integrity checks. Symlinked copies and non-official tags cannot be forced and fall back to manual-install guidance. See the [CLI Reference](docs/cli.md) for flags, exit codes, side effects, and the Windows asynchronous-replacement note.
 
 ### Shell completion (optional)
 

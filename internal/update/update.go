@@ -31,7 +31,8 @@ var ErrDeferredToHelper = errors.New(ui.Bi(
 // update.go 实现更新判定与编排骨架：Service.Check（只读判定）与 Service.Apply（带来源校验的执行）。
 //
 // 判定顺序（与 provenance.go 的来源校验解耦）：
-//  1. 解析当前版本；dev / 非正式 tag → Check 与 Apply 均拒绝；
+//  1. 解析当前版本；dev / 非正式 tag → Check 与 Apply 均拒绝
+//    （update --force 时 dev 例外：结构前置与目标资产校验照常执行后覆盖）；
 //  2. 查询目标 Release；目标不严格更高 → 「无需更新」，Check 不写文件，Apply 不做来源校验；
 //  3. （仅 Apply，且确有更新时）来源校验：当前二进制是否为官方 Release 资产；
 //  4. （仅 Apply，来源可信时）准备下载安装——本任务定义结果类型与集成点，
@@ -155,6 +156,10 @@ type Installer interface {
 type CheckOptions struct {
 	// TargetTag 目标 Release tag；空字符串表示查询 latest 稳定版。
 	TargetTag string
+	// Force 允许 dev 当前版本通过判定（dev 无版本语义，可被任何合法目标替换，
+	// 不做版本序比较）。它只由 Apply 按 ApplyOptions.Force 内部传入；
+	// --check 命令分支恒为 false 且 --check --force 组合已在 CLI 层被拒绝。
+	Force bool
 }
 
 // CheckResult 是 Service.Check 的判定结果，携带供 CLI 展示的全部信息。
@@ -176,6 +181,11 @@ type CheckResult struct {
 type ApplyOptions struct {
 	// TargetTag 目标 Release tag；空字符串表示查询 latest 稳定版。
 	TargetTag string
+	// Force 允许在来源具备豁免资格（hash 失配 / dev 本地构建，见
+	// ProvenanceExemption.ForceEligible）时跳过来源信任要求继续安装：
+	// 结构前置与目标资产 SHA256 校验全部照常执行，软链 / 非官方 tag 等
+	// 白名单外来源不可豁免。
+	Force bool
 }
 
 // ApplyResult 是 Service.Apply 的执行结果，携带供 CLI 展示的状态字段。
@@ -186,6 +196,13 @@ type ApplyResult struct {
 	ProvenanceChecked bool
 	// ProvenanceTrusted 来源是否可信。
 	ProvenanceTrusted bool
+	// ProvenanceForced 本次在 --force 下跳过来源信任要求继续安装。
+	// 仅在 force 生效（来源具备豁免资格且申请携带 Force）时置位；
+	// ProvenanceTrusted 保持 false，不谎报 trusted。
+	ProvenanceForced bool
+	// ForceEligible 当前来源具备 force 豁免资格（ProvenanceExemption.ForceEligible）。
+	// 供渲染层区分「可 force 而未 force」与「不可 force」两类拒绝文案。
+	ForceEligible bool
 	// Reason 不可信或拒绝安装的原因（Trusted=true 且 ReadyToInstall=true 时为空）。
 	Reason string
 	// BinaryPath 当前可执行文件路径（来源校验执行时填充）。
@@ -214,15 +231,16 @@ type ApplyResult struct {
 // Check 只做判定第 1/2 步：解析当前版本 + 查询目标 Release + 比较。
 // 不创建任何本地文件，不做来源校验，不下载。
 //
-// 当前版本为 dev 或非正式 tag 时返回 error（非法当前版本，无法判定更新）。
+// 当前版本为 dev 或非正式 tag 时返回 error（非法当前版本，无法判定更新）；
+// opts.Force=true 时 dev 放行——dev 无版本语义，查询到合法目标即视为可更新。
 // 目标 Release 查询返回 ErrNoStableRelease / ErrVersionNotFound 时翻译为结果标记，不返回 error；
 // 其它查询错误（含瞬时网络错误）原样透传。
 func (s *Service) Check(ctx context.Context, opts CheckOptions) (CheckResult, error) {
 	if err := s.validateForCheck(); err != nil {
 		return CheckResult{}, err
 	}
-	// 第 1 步：解析当前版本。dev / 非正式 tag 直接拒绝。
-	current, err := s.parseCurrent()
+	// 第 1 步：解析当前版本。dev / 非正式 tag 直接拒绝（force 的 dev 除外）。
+	current, err := s.parseCurrent(opts.Force)
 	if err != nil {
 		return CheckResult{}, err
 	}
@@ -244,6 +262,15 @@ func (s *Service) Check(ctx context.Context, opts CheckOptions) (CheckResult, er
 		return CheckResult{}, fmt.Errorf("%s: %w", ui.Bi("failed to fetch target release", "查询目标 Release 失败"), ferr)
 	}
 
+	// dev + force：dev 无版本语义，可被任何合法目标替换，不做版本序比较。
+	if s.CurrentVersion == "dev" {
+		return CheckResult{
+			CurrentTag:      "dev",
+			TargetTag:       target.Tag,
+			UpdateAvailable: true,
+		}, nil
+	}
+
 	// 比较：目标严格高于当前 → updateAvailable。
 	cmp := target.Version.Compare(current)
 	return CheckResult{
@@ -260,9 +287,11 @@ func (s *Service) Check(ctx context.Context, opts CheckOptions) (CheckResult, er
 //     可信时在 control lock 内消费上次 helper result + POSIX sweep；不可信/网络失败则跳过
 //     （consume 是 best-effort，不阻塞用户）；
 //  4. 若无更新 → 直接返回（可信时已消费了上次 result）；
-//  5. 确有更新且 provenance 失败 → 返回 error；
-//  6. 不可信 → 返回人工安装指引（绝不下载）；
-//  7. 可信 → VersionProbe（默认 CLI 工厂必注入）：版本不一致 → 拒绝安装；
+//  5. 确有更新且 provenance 失败 → 返回 error（编程错误不可被 force 豁免）；
+//  6. 不可信且未携带 force，或来源不具备豁免资格 → 返回人工安装指引（绝不下载）；
+//     force 且来源具备豁免资格（hash 失配 / dev 本地构建）→ 置 ProvenanceForced 继续
+//     安装（ProvenanceTrusted 保持 false，consume/sweep 仍不执行，目标资产校验照常）；
+//  7. 可信或 force 生效 → VersionProbe（默认 CLI 工厂必注入）：版本不一致 → 拒绝安装；
 //  8. 全部通过 → ReadyToInstall=true；
 //  9. 若注入 ControlManager + ConfigLoader：进入锁内编排
 //     Inspect →（运行中）Stop → Install →（原先运行）StartWithExecutable，
@@ -293,8 +322,9 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 		return result, nil
 	}
 
-	// 先做 Check（含当前版本解析与目标查询）。
-	checked, err := s.Check(ctx, CheckOptions{TargetTag: opts.TargetTag})
+	// 先做 Check（含当前版本解析与目标查询）。Force 由 Apply 内部传入：
+	// dev + force 不在 Check 处拒绝；--check 命令分支不传 force 且组合已被 CLI 拒绝。
+	checked, err := s.Check(ctx, CheckOptions{TargetTag: opts.TargetTag, Force: opts.Force})
 	if err != nil {
 		ul.step("check error: %v", err)
 		return result, err
@@ -304,7 +334,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 	// 来源校验提前到 Check 后（无论 UpdateAvailable），为 consume/sweep 提供可信门。
 	// 这样"升级成功后再次 update"（已是最新）也能消费上次的 result。
 	// 无更新 + provenance 网络失败或不可信 → 跳过 consume，仍返回"已是最新"。
-	prov, perr := VerifyProvenance(ctx, s.ProvenanceDeps, s.CurrentVersion, s.ReleaseClient)
+	prov, perr := VerifyProvenance(ctx, s.ProvenanceDeps, s.CurrentVersion, s.ReleaseClient, ProvenanceOptions{Force: opts.Force})
 	if perr == nil && prov.Trusted {
 		ul.step("provenance verified: trusted")
 		// 可信来源：在 control lock 内消费上次 helper result + POSIX sweep（best-effort）。
@@ -354,10 +384,23 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 	result.ProvenanceTrusted = prov.Trusted
 	result.BinaryPath = prov.BinaryPath
 	result.Reason = prov.Reason
+	result.ForceEligible = prov.Exemption.ForceEligible()
 
-	// 不可信：只返回目标版本与人工安装指引，绝不下载。
+	// 不可信：仅当申请携带 force 且来源具备豁免资格（显式白名单）才继续安装；
+	// 白名单外来源（symlink、非官方 tag、清单缺失等）force 不可救，
+	// 只返回目标版本与人工安装指引，绝不下载。
 	if !prov.Trusted {
-		return result, nil
+		if !opts.Force || !result.ForceEligible {
+			return result, nil
+		}
+		// force 生效：按豁免类别记录日志（dev 无 hash 比较事实，不得误报 hash 语义），
+		// ProvenanceTrusted 保持 false，不谎报 trusted。consume/sweep 仍不执行。
+		if prov.Exemption == ExemptionDevBuild {
+			ul.step("provenance source unverifiable: dev build (forced by --force); continuing install")
+		} else {
+			ul.step("provenance hash mismatch (forced by --force); continuing install")
+		}
+		result.ProvenanceForced = true
 	}
 
 	// 可信：标记「准备下载」。
@@ -801,12 +844,18 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 	return installOutcome{Installed: !deferred, Deferred: deferred}, nil
 }
 
-// parseCurrent 解析当前版本，dev / 非正式 tag 返回 error。
-func (s *Service) parseCurrent() (Version, error) {
+// parseCurrent 解析当前版本。dev / 非正式 tag 返回 error；force=true 时 dev 放行
+// （返回零值 Version，由调用方按 CurrentVersion=="dev" 走专用分支）。
+// dev 非 force 的错误文本携带 --force 出口：这是 dev 用户唯一能看到 force 提示的
+// 落点（该分支在渲染分流之前就中断），提示用完整命令避免与 --check 组合歧义。
+func (s *Service) parseCurrent(force bool) (Version, error) {
 	if s.CurrentVersion == "dev" {
+		if force {
+			return Version{}, nil
+		}
 		return Version{}, errors.New(ui.Bi(
-			"current version is dev; cannot determine updates, install an official release manually first",
-			"当前版本为 dev，无法判定更新；请先通过官方 Release 手动安装正式版",
+			"current version is dev (local build); run `token-usage update --force` to replace it with an official release asset, or install manually",
+			"当前版本为 dev（本地构建）；运行 `token-usage update --force` 可切换为官方 Release 资产，或手动安装正式版",
 		))
 	}
 	ver, err := ParseVersion(s.CurrentVersion)

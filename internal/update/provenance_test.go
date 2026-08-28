@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -195,7 +196,7 @@ func (f manifestFetcherFunc) FetchManifest(ctx context.Context, tag string) (*Ma
 func TestVerifyProvenance_DevRejected(t *testing.T) {
 	deps, _, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
 
-	res, err := VerifyProvenance(context.Background(), deps, "dev", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "dev", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -214,7 +215,7 @@ func TestVerifyProvenance_DevRejected(t *testing.T) {
 func TestVerifyProvenance_InvalidVersionRejected(t *testing.T) {
 	deps, _, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -231,7 +232,7 @@ func TestVerifyProvenance_SymlinkRejected(t *testing.T) {
 	deps, binPath, rc, _, ls, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
 	ls.infos[binPath] = fixtureFileInfo(t, "symlink")
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -248,7 +249,7 @@ func TestVerifyProvenance_DirectoryRejected(t *testing.T) {
 	deps, binPath, rc, _, ls, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
 	ls.infos[binPath] = fixtureFileInfo(t, "dir")
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -265,7 +266,7 @@ func TestVerifyProvenance_RelativePathRejected(t *testing.T) {
 	deps, binPath, rc, _, _, exe := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
 	exe.path = filepath.Base(binPath)
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -281,7 +282,7 @@ func TestVerifyProvenance_HashMismatchRejected(t *testing.T) {
 	wrong := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 	deps.Manifest = staticManifestFetcher(buildSumsBody("token-usage-darwin-arm64", wrong))
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -302,7 +303,7 @@ func TestVerifyProvenance_CurrentReleaseMissingAssets(t *testing.T) {
 	rc := &fakeReleaseClient{fetchErr: ErrVersionNotFound}
 	deps.Manifest = staticManifestFetcher(buildSumsBody("token-usage-darwin-arm64", sumHex([]byte("official-bin"))))
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -316,7 +317,7 @@ func TestVerifyProvenance_ManifestFetchFails(t *testing.T) {
 	deps, _, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
 	deps.Manifest = errorManifestFetcher(errors.New("网络不可达"))
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -331,7 +332,7 @@ func TestVerifyProvenance_UnsupportedPlatform(t *testing.T) {
 	deps.Goos = "linux" // 不受支持
 	deps.Manifest = staticManifestFetcher(buildSumsBody("token-usage-darwin-arm64", sumHex([]byte("official-bin"))))
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -356,7 +357,7 @@ func TestVerifyProvenance_ManifestMissingPlatformHash(t *testing.T) {
 		}}, nil
 	})
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -371,7 +372,7 @@ func TestVerifyProvenance_ManualOfficialCopyMatches(t *testing.T) {
 	deps, binPath, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", bin)
 	withMatchingManifest(&deps, bin)
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -402,7 +403,7 @@ func TestVerifyProvenance_ExecutableError(t *testing.T) {
 	exe.err = errors.New("readlink failed")
 	exe.path = ""
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -416,7 +417,7 @@ func TestVerifyProvenance_LstatError(t *testing.T) {
 	deps, binPath, rc, _, ls, _ := makeProvenanceDeps(t, "v0.1.0", []byte("x"))
 	ls.errs[binPath] = errors.New("permission denied")
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -430,7 +431,7 @@ func TestVerifyProvenance_ReadFileError(t *testing.T) {
 	deps, binPath, rc, fr, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("x"))
 	delete(fr.files, binPath)
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -444,7 +445,7 @@ func TestVerifyProvenance_ManifestParseError(t *testing.T) {
 	deps, _, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("x"))
 	deps.Manifest = staticManifestFetcher("garbage-not-a-manifest")
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -460,7 +461,7 @@ func TestVerifyProvenance_PrereleaseCurrentAllowed(t *testing.T) {
 	deps, _, rc, _, _, _ := makeProvenanceDeps(t, "v0.2.0-rc.1", bin)
 	deps.Manifest = staticManifestFetcher(buildSumsBody("token-usage-darwin-arm64", sumHex(bin)))
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.2.0-rc.1", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.2.0-rc.1", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -482,7 +483,7 @@ func TestVerifyProvenance_DoesNotCheckTarget(t *testing.T) {
 		return wrapped.FetchManifest(ctx, tag)
 	})
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -516,11 +517,308 @@ func TestVerifyProvenance_NilManifestFetcher(t *testing.T) {
 	deps, _, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
 	deps.Manifest = nil
 
-	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc)
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if res.Trusted {
 		t.Fatal("未注入 ManifestFetcher 应判定为 untrusted")
+	}
+}
+
+// ---- 签名探测与豁免资格（--force 出口）----
+
+// fakeSignatureProbe 记录调用次数与最近探测路径，返回预设结论，
+// 供断言「探测仅在 hash 失配分支触发」与文案分流。
+type fakeSignatureProbe struct {
+	calls    int
+	lastPath string
+	result   SignatureProbeResult
+}
+
+func (f *fakeSignatureProbe) ProbeSignature(ctx context.Context, binPath string) SignatureProbeResult {
+	f.calls++
+	f.lastPath = binPath
+	return f.result
+}
+
+// withWrongManifest 给 deps 注入一份与本地二进制 hash 不一致的 darwin/arm64 manifest
+// （模拟按安装指引重签 / go install pkg@vX.Y.Z 场景）。
+func withWrongManifest(deps *ProvenanceDeps) {
+	deps.Manifest = staticManifestFetcher(buildSumsBody("token-usage-darwin-arm64",
+		"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"))
+}
+
+// TestVerifyProvenance_HashMismatchAdhocRefinedReason：darwin + 探测到 ad-hoc 签名标记
+// → 细化文案（含 ad-hoc 细化句、重签可能项与 --force 出口），判定仍 untrusted。
+func TestVerifyProvenance_HashMismatchAdhocRefinedReason(t *testing.T) {
+	deps, binPath, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
+	withWrongManifest(&deps)
+	probe := &fakeSignatureProbe{result: SignatureAdhoc}
+	deps.SignatureProbe = probe
+
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if res.Trusted {
+		t.Fatal("ad-hoc 探测只影响文案，hash 失配仍应 untrusted")
+	}
+	if probe.calls != 1 || probe.lastPath != binPath {
+		t.Fatalf("probe 应以当前二进制路径调用一次，calls=%d lastPath=%q", probe.calls, probe.lastPath)
+	}
+	// 细化文案（en）与重签可能项、--force 出口。
+	if !strings.Contains(res.Reason, "ad-hoc") {
+		t.Errorf("细化文案应含 ad-hoc 细化句，reason=%q", res.Reason)
+	}
+	if !strings.Contains(res.Reason, "re-signed") || !strings.Contains(res.Reason, "--force") {
+		t.Errorf("细化文案应含重签可能项与 --force 出口，reason=%q", res.Reason)
+	}
+}
+
+// TestVerifyProvenance_HashMismatchUnknownGenericReason：darwin + 探测 unknown
+// （含探测失败降级）→ 通用文案：含重签可能项与 --force 出口，但不含 ad-hoc 细化句。
+func TestVerifyProvenance_HashMismatchUnknownGenericReason(t *testing.T) {
+	deps, _, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
+	withWrongManifest(&deps)
+	deps.SignatureProbe = &fakeSignatureProbe{result: SignatureUnknown}
+
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if res.Trusted {
+		t.Fatal("hash 失配应判定为 untrusted")
+	}
+	if !strings.Contains(res.Reason, "re-signed") || !strings.Contains(res.Reason, "--force") {
+		t.Errorf("通用文案应含已重签可能项与 --force 出口，reason=%q", res.Reason)
+	}
+	if strings.Contains(res.Reason, "ad-hoc") {
+		t.Errorf("通用文案不应含 ad-hoc 细化句，reason=%q", res.Reason)
+	}
+}
+
+// TestVerifyProvenance_HashMismatchNonDarwinSkipsProbe：非 darwin 平台 hash 失配
+// → 通用文案，且完全不调用 probe。
+func TestVerifyProvenance_HashMismatchNonDarwinSkipsProbe(t *testing.T) {
+	deps, _, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
+	deps.Goos = "windows"
+	deps.Goarch = "amd64"
+	deps.Manifest = staticManifestFetcher(buildSumsBody("token-usage-windows-amd64.exe",
+		"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"))
+	probe := &fakeSignatureProbe{result: SignatureAdhoc}
+	deps.SignatureProbe = probe
+
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if res.Trusted {
+		t.Fatal("hash 失配应判定为 untrusted")
+	}
+	if probe.calls != 0 {
+		t.Fatalf("非 darwin 平台不应调用 probe，calls=%d", probe.calls)
+	}
+	if !strings.Contains(res.Reason, "re-signed") || strings.Contains(res.Reason, "ad-hoc") {
+		t.Errorf("应降级通用文案（含已重签、不含 ad-hoc 细化句），reason=%q", res.Reason)
+	}
+}
+
+// TestVerifyProvenance_ProbeOnlyTriggeredOnHashMismatch：probe 仅在 hash 失配分支触发，
+// 其余失败路径零开销（不被调用）。
+func TestVerifyProvenance_ProbeOnlyTriggeredOnHashMismatch(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(deps *ProvenanceDeps, binPath string)
+	}{
+		{"symlink", func(deps *ProvenanceDeps, binPath string) {
+			// 由调用方注入 fakeLstat；此处仅破坏 manifest 之外的路径。
+		}},
+		{"manifest fetch fails", func(deps *ProvenanceDeps, binPath string) {
+			deps.Manifest = errorManifestFetcher(errors.New("network unreachable"))
+		}},
+		{"nil manifest fetcher", func(deps *ProvenanceDeps, binPath string) {
+			deps.Manifest = nil
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			deps, binPath, rc, _, ls, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
+			if tc.name == "symlink" {
+				ls.infos[binPath] = fixtureFileInfo(t, "symlink")
+			} else {
+				tc.mut(&deps, binPath)
+			}
+			probe := &fakeSignatureProbe{result: SignatureAdhoc}
+			deps.SignatureProbe = probe
+
+			if _, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{}); err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if probe.calls != 0 {
+				t.Fatalf("非 hash 失配路径不应调用 probe，calls=%d", probe.calls)
+			}
+		})
+	}
+}
+
+// TestVerifyProvenance_ExemptionAssignment：豁免枚举的赋值边界。
+//   - hash 失配：无论 force 与否一律置 ExemptionHashMismatch（赋值与 force 无关），
+//     且 BinaryPath 等诊断字段已填充；
+//   - 结构/清单失败（非绝对路径 / symlink / 非普通文件 / manifest 缺失）→ Exemption 为空
+//     （force 不可救）。
+func TestVerifyProvenance_ExemptionAssignment(t *testing.T) {
+	t.Run("hash mismatch force=false", func(t *testing.T) {
+		deps, binPath, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
+		withWrongManifest(&deps)
+
+		res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{Force: false})
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if res.Exemption != ExemptionHashMismatch {
+			t.Fatalf("Exemption = %q, want hash-mismatch", res.Exemption)
+		}
+		if res.BinaryPath != binPath {
+			t.Fatalf("BinaryPath = %q, want %q（诊断字段应已填充）", res.BinaryPath, binPath)
+		}
+	})
+	t.Run("hash mismatch force=true same assignment", func(t *testing.T) {
+		deps, _, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
+		withWrongManifest(&deps)
+
+		res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{Force: true})
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if res.Exemption != ExemptionHashMismatch {
+			t.Fatalf("赋值与 force 无关：Exemption = %q, want hash-mismatch", res.Exemption)
+		}
+	})
+	for _, tc := range []struct {
+		name string
+		mut  func(deps *ProvenanceDeps, binPath string)
+	}{
+		{"relative path", func(deps *ProvenanceDeps, binPath string) {
+			deps.Executable.(*fakeExecutableResolver).path = "token-usage"
+		}},
+		{"symlink", func(deps *ProvenanceDeps, binPath string) {
+			deps.Lstat.(*fakeLstat).infos[binPath] = fixtureFileInfo(t, "symlink")
+		}},
+		{"directory", func(deps *ProvenanceDeps, binPath string) {
+			deps.Lstat.(*fakeLstat).infos[binPath] = fixtureFileInfo(t, "dir")
+		}},
+		{"manifest missing", func(deps *ProvenanceDeps, binPath string) {
+			deps.Manifest = nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps, binPath, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
+			tc.mut(&deps, binPath)
+
+			res, err := VerifyProvenance(context.Background(), deps, "v0.1.0", rc, ProvenanceOptions{Force: true})
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if res.Exemption != "" {
+				t.Fatalf("结构/清单失败不应具豁免资格：Exemption = %q, want 空", res.Exemption)
+			}
+		})
+	}
+}
+
+// TestForceEligibleWhitelist：ForceEligible 是显式白名单——两种已定义豁免值为 true，
+// 空串与任意其他值（含未来可能新增的值）一律 false，权限边界不随枚举扩值隐式放宽。
+func TestForceEligibleWhitelist(t *testing.T) {
+	if !(ProvenanceExemption)(ExemptionHashMismatch).ForceEligible() {
+		t.Error("hash-mismatch 应在白名单内")
+	}
+	if !(ProvenanceExemption)(ExemptionDevBuild).ForceEligible() {
+		t.Error("dev-build 应在白名单内")
+	}
+	for _, v := range []ProvenanceExemption{"", "unknown-value", "tampered", "HASH-MISMATCH"} {
+		if (v).ForceEligible() {
+			t.Errorf("白名单外值 %q 不应可 force", v)
+		}
+	}
+}
+
+// TestVerifyProvenance_DevNoForceShortCircuit：dev 非 force → 维持现行短路：
+// untrusted、Exemption 为空、Reason 为 dev 原文（不提 --force）、不触网不读盘。
+func TestVerifyProvenance_DevNoForceShortCircuit(t *testing.T) {
+	deps, _, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
+
+	res, err := VerifyProvenance(context.Background(), deps, "dev", rc, ProvenanceOptions{Force: false})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if res.Trusted {
+		t.Fatal("dev 非 force 应 untrusted")
+	}
+	if res.Exemption != "" {
+		t.Fatalf("dev 非 force 无豁免资格，Exemption = %q", res.Exemption)
+	}
+	if res.BinaryPath != "" {
+		t.Fatalf("短路不应填充 BinaryPath，got %q", res.BinaryPath)
+	}
+	if !strings.Contains(res.Reason, "dev") {
+		t.Errorf("Reason 应保留 dev 原文，got %q", res.Reason)
+	}
+	if strings.Contains(res.Reason, "--force") {
+		t.Errorf("provenance 层 dev 非 force 文案不应含 --force（出口提示在 Check 层），got %q", res.Reason)
+	}
+	if len(rc.fetches) != 0 {
+		t.Fatalf("dev 短路不应查询 Release，fetches=%v", rc.fetches)
+	}
+}
+
+// TestVerifyProvenance_DevForceStructurePass：dev + force + 结构前置通过 →
+// 置 dev-build 豁免（不得置 hash-mismatch——dev 无可比对象）、BinaryPath 已填充、
+// Reason 为 dev 专用文案（不含 hash 表述）、不触网。
+func TestVerifyProvenance_DevForceStructurePass(t *testing.T) {
+	deps, binPath, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
+
+	res, err := VerifyProvenance(context.Background(), deps, "dev", rc, ProvenanceOptions{Force: true})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if res.Trusted {
+		t.Fatal("dev + force 也不可信（Trusted=false）")
+	}
+	if res.Exemption != ExemptionDevBuild {
+		t.Fatalf("Exemption = %q, want dev-build（不得置 hash-mismatch）", res.Exemption)
+	}
+	if res.BinaryPath != binPath {
+		t.Fatalf("BinaryPath = %q, want %q", res.BinaryPath, binPath)
+	}
+	if !strings.Contains(res.Reason, "dev") || !strings.Contains(res.Reason, "--force") {
+		t.Errorf("Reason 应为 dev 专用文案（含 dev 与 --force），got %q", res.Reason)
+	}
+	if strings.Contains(res.Reason, "mismatch") {
+		t.Errorf("dev 从未发生 hash 比较，Reason 不得使用 hash 失配表述，got %q", res.Reason)
+	}
+	if len(rc.fetches) != 0 {
+		t.Fatalf("dev + force 无可查询对象，不应查询 Release，fetches=%v", rc.fetches)
+	}
+}
+
+// TestVerifyProvenance_DevForceSymlinkRejected：dev + force + symlink → 对应结构失败
+// 分支，Exemption 为空（force 不可救），不置 dev-build。
+func TestVerifyProvenance_DevForceSymlinkRejected(t *testing.T) {
+	deps, binPath, rc, _, ls, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
+	ls.infos[binPath] = fixtureFileInfo(t, "symlink")
+
+	res, err := VerifyProvenance(context.Background(), deps, "dev", rc, ProvenanceOptions{Force: true})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if res.Trusted {
+		t.Fatal("symlink 应 untrusted")
+	}
+	if res.Exemption != "" {
+		t.Fatalf("结构失败 force 不可救，Exemption = %q, want 空", res.Exemption)
+	}
+	if !strings.Contains(res.Reason, "symlink") {
+		t.Errorf("Reason 应为 symlink 结构失败原因，got %q", res.Reason)
 	}
 }

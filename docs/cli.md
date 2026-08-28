@@ -30,7 +30,7 @@ token-usage
 ├── restart
 ├── status
 ├── stop
-├── update                                # self-update from official GitHub Releases (--check / --version)
+├── update                                # self-update from official GitHub Releases (--check / --version / --force)
 └── _run                                  # hidden; started by start/launchd/the Registry; do not invoke directly
 ```
 
@@ -42,7 +42,7 @@ Design points:
 - Running `token-usage` with no arguments only prints help; it starts neither the TUI nor the daemon.
 - The root command has a `-v, --version` flag for one-line short output and a `version` subcommand for multi-line detailed output; see [version](#version).
 - `completion` is Cobra's built-in command. It writes bash/zsh/fish/PowerShell completion scripts to standard output and reads neither configuration nor the database.
-- `update` is a top-level self-update command (flags `--check` and `--version`); it is the only command that rewrites the running binary, and only when the current binary is an official Release asset. See [update](#update).
+- `update` is a top-level self-update command (flags `--check`, `--version`, and `--force`); it is the only command that rewrites the running binary. By default it does so only when the current binary is an official Release asset; `--force` opts in to overwriting a re-signed official asset, a `go install` of a tagged version, or a dev build. See [update](#update).
 
 ## General Conventions
 
@@ -479,6 +479,7 @@ Updates the `token-usage` binary in place from official GitHub Releases. The CLI
 token-usage update
 token-usage update --check
 token-usage update --version <tag>
+token-usage update --force
 ```
 
 | Form | Purpose |
@@ -486,13 +487,15 @@ token-usage update --version <tag>
 | `update` | Updates to the latest stable release. If a restricted transaction journal from an interrupted POSIX update exists beside this binary, it is recovered first; a new replacement then proceeds only when the target is strictly higher than the current version and the current source is trusted. It downloads the asset, verifies its SHA256 against the `SHA256SUMS` manifest, stages a `--version` second check, replaces the binary, and restores the daemon to its previous run state. |
 | `update --check` | Read-only check; creates no local files (no configuration directory, lock, log, database, or service definition). |
 | `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | Updates (or, with `--check`, only checks) the specified exact release tag. `--version` accepts a strict release tag (`v` prefix, `MAJOR.MINOR.PATCH`, optional `-rc.N`, no leading zeros); an invalid value errors before any network request. |
+| `update --force` | Overwrites the current binary even when its source is not an official Release asset, for exactly two exemptions: a hash mismatch against the official asset of the reported version (a binary re-signed per the install guide, or `go install pkg@vX.Y.Z`), and a dev local build (`Version = dev`; plain-build pseudo-versions are normalized to `dev`). All structural checks and the target asset's SHA256 / staged `--version` verification still run; symlinked copies and non-official tags cannot be forced. |
 
-`--check` and `--version` may be combined; for example, `update --check --version vX.Y.Z-rc.N` checks a release candidate only.
+`--check` and `--version` may be combined; for example, `update --check --version vX.Y.Z-rc.N` checks a release candidate only. `--force` cannot be combined with `--check` (that combination is rejected explicitly).
 
 Flags:
 
 - `--check` (bool): read-only check; writes no local files.
 - `--version` (string): target release tag. Accepts `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-rc.N` (no leading zeros, `N >= 1`, no build metadata).
+- `--force` (bool): overwrite even if the current binary is not an official Release asset (re-signed, `go install`, or a dev build); see [trust and source verification](#trust-and-source-verification) for the exact exemption boundary.
 
 `update` takes no positional arguments (`Args: NoArgs`).
 
@@ -502,11 +505,20 @@ By default `update` resolves only the latest **stable** release and never select
 
 ### Trust and source verification
 
-`update` only replaces the current binary when the target is strictly higher and the current source is trusted. The current source is treated as **untrusted** (and `update` prints manual-install guidance instead of overwriting) when any of the following holds:
+`update` only replaces the current binary when the target is strictly higher and the current source is trusted. The current source is treated as **untrusted** (and a plain `update` refuses to overwrite, printing manual-install guidance instead) when any of the following holds:
 
 - the current `Version` is `dev` or a pseudo-version (e.g. from `make build`, `make build-all`, or `go install`);
 - the current binary is not a regular file, or is a symlink;
-- the current binary's SHA256 does not match the official asset hash for the current version.
+- the current binary's SHA256 does not match the official asset hash for the current version (e.g. a binary re-signed per the install guide, or `go install pkg@vX.Y.Z`).
+
+The refusal carries a `--force` escape hatch for exactly two exemptions:
+
+- **hash mismatch** (the current version has an official Release and manifest, but the local content differs): re-running with `--force` overwrites the binary with the official asset, so automatic updates resume;
+- **dev build** (`Version = dev`; plain-build pseudo-versions are normalized to `dev`, so this is the only dev form `update --force` accepts; no comparable official Release or manifest exists, so no hash comparison ever happened): `update --force` switches the installation to the official release asset.
+
+Symlinked copies and non-official tags cannot be forced — every other refusal reason always requires manual installation. `--force` never skips any check: structural checks still gate the replacement, and the target asset is still downloaded, SHA256-verified against `SHA256SUMS`, and stage-checked with `--version` before it may replace the current binary. A `--force` run is reported as successful with a `--force` note and exits 0; it is never reported as trusted.
+
+On macOS the refusal message distinguishes a locally ad-hoc signed binary (detected via a signature probe) and names the re-signed-official-asset possibility explicitly; on other platforms and whenever the probe is unavailable, the generic message still lists re-signing among the possible causes and mentions the same `--force` exit.
 
 The sole trusted repository is `YuLaiZ/token-usage`; see [Architecture](architecture.md) for the download-URL reconstruction, manifest, and staged-install trust chain.
 
@@ -515,11 +527,11 @@ This source gate applies to a new replacement. Recovering an already recorded lo
 ### Exit codes
 
 - `0` for expected completed states: no stable release available, already up to date, an update is available (`--check`), a Windows background replacement has been queued, or recovery confirms that the interrupted update had already installed the new binary.
-- Non-zero when the requested tag does not exist, the current source cannot be safely overwritten, download/manifest/checksum/staged-`--version` validation is rejected, recovery returns the binary to the old version, installation is incomplete, install/rollback/daemon-restart fails, or `--version` is invalid.
+- Non-zero when the requested tag does not exist, the current source is unverified and `--force` was not given (hash mismatch or dev build) or cannot be forced at all (symlink / non-official tag), download/manifest/checksum/staged-`--version` validation is rejected, recovery returns the binary to the old version, installation is incomplete, install/rollback/daemon-restart fails, or `--version` is invalid.
 
 ### Side-effect boundary
 
-`update --check` is fully read-only. A real `update` first resolves an existing transaction journal when present; otherwise it stops the daemon, replaces the binary, and restarts it only when an update is available and the source is trusted. It does not start or stop the daemon when no update is needed, and it does not rewrite `config.toml`, the database, logs, the macOS LaunchAgent plist, or the Windows Registry.
+`update --check` is fully read-only. A real `update` first resolves an existing transaction journal when present; otherwise it stops the daemon, replaces the binary, and restarts it only when an update is available and the source check passes — trusted, or overridden with `--force`. It does not start or stop the daemon when no update is needed, and it does not rewrite `config.toml`, the database, logs, the macOS LaunchAgent plist, or the Windows Registry.
 
 ### Windows asynchronous replacement
 

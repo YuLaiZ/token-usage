@@ -45,6 +45,8 @@ type UpdateService interface {
 var (
 	errRequestedUpdateVersionMissing = errors.New(ui.Bi("requested update version not found", "指定的更新版本不存在"))
 	errUpdateSourceUntrusted         = errors.New(ui.Bi("current install source cannot be safely overwritten", "当前来源无法安全覆盖"))
+	errUpdateForceRequired           = errors.New(ui.Bi("update refused: source not verified; run again with --force to overwrite, or install manually", "拒绝更新：来源未通过校验；使用 --force 再次执行以强制覆盖，或手动安装"))
+	errCheckForceCombination         = errors.New(ui.Bi("--check and --force cannot be combined", "--check 与 --force 不能组合使用"))
 	errUpdateVerificationFailed      = errors.New(ui.Bi("self-update verification failed", "自动更新校验未通过"))
 	errUpdateIncomplete              = errors.New(ui.Bi("self-update incomplete", "自动更新未完成"))
 )
@@ -83,12 +85,13 @@ func defaultUpdateServiceFactory(info buildinfo.Info, checkOnly bool) (UpdateSer
 		CurrentVersion: info.Version,
 		ReleaseClient:  releaseClient,
 		ProvenanceDeps: update.ProvenanceDeps{
-			Executable: osExecutable{},
-			Lstat:      osLstat{},
-			FileReader: osFileReader{},
-			Manifest:   downloader,
-			Goos:       goruntime.GOOS,
-			Goarch:     goruntime.GOARCH,
+			Executable:     osExecutable{},
+			Lstat:          osLstat{},
+			FileReader:     osFileReader{},
+			Manifest:       downloader,
+			SignatureProbe: update.NewExecSignatureProbe(),
+			Goos:           goruntime.GOOS,
+			Goarch:         goruntime.GOARCH,
 		},
 	}
 
@@ -168,16 +171,22 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 			"  token-usage update            Update to the latest stable version (replaces the binary and restores the daemon after provenance checks pass)\n"+
 			"  token-usage update --check    Only check for a newer version; make no changes\n"+
 			"  token-usage update --version vX.Y.Z   Update to the given version\n"+
-			"  token-usage update --check --version vX.Y.Z-rc.N   Only check the given pre-release\n\n"+
+			"  token-usage update --check --version vX.Y.Z-rc.N   Only check the given pre-release\n"+
+			"  token-usage update --force    Overwrite even if the current source is not an official Release asset\n\n"+
 			"--version accepts a strict release tag (vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N).\n"+
-			"If the source is untrusted (e.g. local build, go install) it never overwrites automatically and prints manual install instructions instead.",
+			"A plain update never overwrites a source that fails the official-asset checks (a re-signed binary, go install, a dev/local build, a symlinked copy, or a non-official tag); it prints manual install instructions instead.\n"+
+			"With --force the update overwrites a re-signed official asset, a `go install` of a tagged version, or a dev build, so automatic updates resume from the official channel; symlinked copies and non-official tags cannot be forced and always require manual installation.\n"+
+			"--check and --force cannot be combined.",
 			"检查并更新 token-usage 自身到最新稳定版或指定版本。\n\n"+
 				"  token-usage update            更新到最新稳定版（来源校验通过后替换二进制并恢复 daemon）\n"+
 				"  token-usage update --check    只检查是否有新版本，不做任何修改\n"+
 				"  token-usage update --version vX.Y.Z   更新到指定版本\n"+
-				"  token-usage update --check --version vX.Y.Z-rc.N   只检查指定候选版\n\n"+
+				"  token-usage update --check --version vX.Y.Z-rc.N   只检查指定候选版\n"+
+				"  token-usage update --force    当前来源非官方 Release 资产时仍强制覆盖\n\n"+
 				"--version 接受严格 Release tag（vMAJOR.MINOR.PATCH 或 vMAJOR.MINOR.PATCH-rc.N）。\n"+
-				"来源不可信（如本地构建、go install）时不自动覆盖，改为输出人工安装指引。"),
+				"默认不覆盖未通过官方资产校验的来源（已重签二进制、go install、dev 本地构建、软链副本、非官方 tag），改为输出人工安装指引。\n"+
+				"使用 --force 可强制覆盖已重签的官方资产、指定 tag 的 go install 产物或 dev 本地构建，使自动更新回归官方通道；软链副本与非官方 tag 不可被 force 覆盖，只能手动安装。\n"+
+				"--check 与 --force 不能组合。"),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUpdate(cmd, info)
@@ -185,6 +194,7 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 	}
 	cmd.Flags().Bool("check", false, ui.Bi("Only check for a newer version; do not update", "只检查是否有可更新版本，不执行更新"))
 	cmd.Flags().String("version", "", ui.Bi("Target release tag (e.g. vX.Y.Z or vX.Y.Z-rc.N)", "指定目标版本 tag（如 vX.Y.Z 或 vX.Y.Z-rc.N）"))
+	cmd.Flags().Bool("force", false, ui.Bi("Overwrite even if the current binary is not an official Release asset (re-signed, go install, or dev build)", "当前二进制非官方 Release 资产（已重签、go install、dev 本地构建）时仍强制覆盖"))
 	return cmd
 }
 
@@ -193,7 +203,14 @@ func runUpdate(cmd *cobra.Command, info buildinfo.Info) error {
 	out := cmd.OutOrStdout()
 	errOut := cmd.ErrOrStderr()
 	checkOnly, _ := cmd.Flags().GetBool("check")
+	forceFlag, _ := cmd.Flags().GetBool("force")
 	versionFlag, _ := cmd.Flags().GetString("version")
+
+	// --check 与 --force 组合显式拒绝：--check 是只读判定，force 没有可作用的对象，
+	// 静默忽略会让用户误以为 force 已生效。
+	if checkOnly && forceFlag {
+		return errCheckForceCombination
+	}
 
 	// --version 在任何网络/工厂调用之前严格校验；失败文本由 cobra 统一输出
 	//（Error: …），命令只返回带上下文的 error，不再手写 stderr（防 cause 双打）。
@@ -218,7 +235,7 @@ func runUpdate(cmd *cobra.Command, info buildinfo.Info) error {
 	if checkOnly {
 		return runUpdateCheck(ctx, svc, versionFlag, out)
 	}
-	return runUpdateApply(ctx, cmd, svc, versionFlag, out, errOut)
+	return runUpdateApply(ctx, cmd, svc, versionFlag, forceFlag, out, errOut)
 }
 
 // runUpdateCheck 执行只读判定并展示结果。
@@ -263,8 +280,8 @@ func renderCheckResult(out io.Writer, res update.CheckResult) error {
 // runUpdateApply 执行完整更新并展示结果。
 // NoStableRelease 与无更新是正常结果；指定 tag 不存在、来源不可信、校验拒绝或安装未完成
 // 均返回错误，避免自动化调用把未完成的更新当作成功。
-func runUpdateApply(ctx context.Context, cmd *cobra.Command, svc UpdateService, versionFlag string, out, errOut io.Writer) error {
-	res, err := svc.Apply(ctx, update.ApplyOptions{TargetTag: versionFlag})
+func runUpdateApply(ctx context.Context, cmd *cobra.Command, svc UpdateService, versionFlag string, force bool, out, errOut io.Writer) error {
+	res, err := svc.Apply(ctx, update.ApplyOptions{TargetTag: versionFlag, Force: force})
 	if err != nil {
 		// 失败 cause 由 cobra 单次输出；升级日志路径是 stdout 补充提示，保留。
 		if res.LogPath != "" {
@@ -284,11 +301,18 @@ func runUpdateApply(ctx context.Context, cmd *cobra.Command, svc UpdateService, 
 // 结果分支：
 //   - NoStableRelease：给出明确提示，退出 0；VersionNotFound 返回非 0；
 //   - 无更新：提示已是最新；
-//   - ProvenanceChecked=true 且 Trusted=false：来源不可信，输出人工安装指引并返回非 0；
+//   - ProvenanceForced=true 且 Installed=true：--force 强制覆盖安装完成（含 daemon 恢复），退出 0；
+//   - ProvenanceForced=true 且 Deferred=true：--force 下 Windows helper 已排队，退出 0；
+//   - ProvenanceChecked=true 且 Trusted=false 且未 forced：来源不可信——按 ForceEligible
+//     分流标题与 sentinel：可 force 而未 force（hash 失配）→ 提示 --force 出口并返回
+//     errUpdateForceRequired；不可 force（symlink / 非官方 tag 等）→ 维持人工安装指引
+//     并返回 errUpdateSourceUntrusted；两者均非 0 退出；
 //   - Installed=true：POSIX 已同步完成替换与 daemon 恢复，提示已更新；
 //   - Deferred=true：Windows helper 已排队，提示用户稍后验证并退出 0；
 //   - Recovered=true：上次中断事务已恢复；新版本已落地时退出 0，恢复旧版本时非 0；
 //   - ReadyToInstall=true 但未 Installed/Deferred：更新未完成，返回非 0。
+//   - forced 后安装未完成：落入既有 ReadyToInstall / UpdateAvailable 失败分支（非 0），
+//     不再重复「来源不可信」的指责。
 func renderApplyResult(out, errOut io.Writer, res update.ApplyResult) error {
 	switch {
 	case res.Recovered:
@@ -299,15 +323,33 @@ func renderApplyResult(out, errOut io.Writer, res update.ApplyResult) error {
 	case res.VersionNotFound:
 		fmt.Fprintln(out, ui.Bi("The requested version does not exist; retry with a valid release tag.", "指定的版本不存在，请用有效的 Release tag 重试。"))
 		return errRequestedUpdateVersionMissing
-	case res.ProvenanceChecked && !res.ProvenanceTrusted:
-		// 来源不可信：绝不自动覆盖。给出目标版本与人工安装指引。
+	case res.ProvenanceForced && res.Installed:
+		// --force 强制覆盖安装成功：先于「来源不可信」分支返回成功，退出 0。
+		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Updated and daemon restored (--force overwrite)", "已更新并恢复 daemon（--force 强制覆盖）"), res.CurrentTag, res.TargetTag)
+		fmt.Fprintln(out, ui.Bi("Run `token-usage version` to confirm the current version.", "可用 `token-usage version` 确认当前版本。"))
+		return nil
+	case res.ProvenanceForced && res.Deferred:
+		// --force 下 Windows 后台替换已排队：非错误的排队状态，退出 0。
+		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Background replacement queued (--force overwrite)", "后台替换已排队（--force 强制覆盖）"), res.CurrentTag, res.TargetTag)
+		fmt.Fprintln(out, ui.Bi("Later run `token-usage version` or `token-usage update --check` to confirm the final version.", "请稍后运行 `token-usage version` 或 `token-usage update --check` 确认最终版本。"))
+		return nil
+	case res.ProvenanceChecked && !res.ProvenanceTrusted && !res.ProvenanceForced:
+		// 来源不可信：绝不自动覆盖。按豁免资格分流标题与 sentinel（均为非 0 退出）：
+		// 可 force 而未 force（真实可达人群=hash 失配）→ 提示 --force 出口；
+		// 不可 force（symlink / 非官方 tag / 清单缺失等）→ 维持原表述。
 		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Update available", "发现可更新版本"), res.CurrentTag, res.TargetTag)
-		fmt.Fprintln(out, ui.Bi("Current install source cannot be safely overwritten; install manually:", "当前来源无法安全覆盖，请手动安装："))
+		sentinel := errUpdateSourceUntrusted
+		if res.ForceEligible {
+			fmt.Fprintln(out, ui.Bi("Update refused: source not verified; run again with `--force` to overwrite, or install manually:", "拒绝更新：来源未通过校验；使用 `--force` 再次执行以强制覆盖，或手动安装："))
+			sentinel = errUpdateForceRequired
+		} else {
+			fmt.Fprintln(out, ui.Bi("Current install source cannot be safely overwritten; install manually:", "当前来源无法安全覆盖，请手动安装："))
+		}
 		printManualInstallGuide(out, res.TargetTag)
 		if res.Reason != "" {
 			fmt.Fprintf(errOut, "%s：%s\n", ui.Bi("Reason", "原因"), res.Reason)
 		}
-		return errUpdateSourceUntrusted
+		return sentinel
 	case res.Installed:
 		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Updated and daemon restored", "已更新并恢复 daemon"), res.CurrentTag, res.TargetTag)
 		fmt.Fprintln(out, ui.Bi("Run `token-usage version` to confirm the current version.", "可用 `token-usage version` 确认当前版本。"))

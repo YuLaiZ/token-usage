@@ -71,7 +71,7 @@ token-usage update --version vX.Y.Z # 更新（或检查）指定版本 tag
 #### 其他安装方式
 
 - [手动二进制安装（同布局）](docs/install.zh-CN.md#手动二进制安装同布局)：手动下载官方资产并做 SHA256 校验、自行配置 PATH——与方式 A 等价，含自更新。
-- [go install / 源码构建](docs/install.zh-CN.md)：需要 Go 环境；产物 `Version = dev` 或伪版本，不能自更新（见 CLI 参考的[信任与来源校验](docs/cli.zh-CN.md#信任与来源校验)）。
+- [go install / 源码构建](docs/install.zh-CN.md)：需要 Go 环境。`go install pkg@vX.Y.Z`（`@latest` 解析到正式版时同理）的产物保留真实 tag，默认被拒，`token-usage update --force` 可按 hash 失配豁免覆盖；直接构建的产物 `Version = dev`（直接构建的伪版本会被规范化为 `dev`），同样可被 `--force` 覆盖（见 CLI 参考的[信任与来源校验](docs/cli.zh-CN.md#信任与来源校验)）。
 
 卸载或从旧布局迁移见[卸载与迁移](docs/install.zh-CN.md#卸载与迁移)。
 
@@ -190,9 +190,9 @@ token-usage query list                      # 不打开数据库，发现全部�
 
 | 命令 | 作用 |
 |------|------|
-| `update` | 当当前二进制是官方 Release 资产且来源可信时，自更新到最新稳定版；`--check` 只检查，`--version vX.Y.Z[-rc.N]` 指定版本 tag |
+| `update` | 当当前二进制是官方 Release 资产且来源可信时，自更新到最新稳定版；`--check` 只检查，`--version vX.Y.Z[-rc.N]` 指定版本 tag，`--force` 可覆盖已重签的官方资产、指定 tag 的 `go install` 产物或 dev 本地构建（软链与非官方 tag 不可被 force） |
 
-> 只有从官方 Release 安装的二进制才能自更新；`make build`/`go install`/软链副本会回退到人工安装指引。标志、退出码、副作用与 Windows 异步替换说明见 [CLI 参考](docs/cli.zh-CN.md)。
+> 从官方 Release 安装的二进制可正常自更新。已重签的官方资产（macOS Gatekeeper 修复）、指定 tag 的 `go install` 产物与 dev/本地构建默认被拒绝；`token-usage update --force` 恰好可覆盖这几类且不跳过任何完整性检查。软链副本与非官方 tag 不可被 force，回退到人工安装指引。标志、退出码、副作用与 Windows 异步替换说明见 [CLI 参考](docs/cli.zh-CN.md)。
 
 ### Shell 补全（可选）
 

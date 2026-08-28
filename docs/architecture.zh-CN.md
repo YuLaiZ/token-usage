@@ -305,7 +305,7 @@ catch-up 覆盖「最后一次手工 collect 到监听 ready」的窗口，因�
 
 1. 请求的 tag 严格解析（`vMAJOR.MINOR.PATCH[-rc.N]`，无前导零）。
 2. 目标版本严格高于当前版本。
-3. 校验当前二进制来源——其 SHA256 必须等于当前版本的官方资产 hash。当前为 `dev`/伪版本、非普通文件或 symlink、或 hash 不匹配，即判定来源不可信，输出人工安装指引而不覆盖。
+3. 校验当前二进制来源——其 SHA256 必须等于当前版本的官方资产 hash。当前为 `dev`/伪版本、非普通文件或 symlink、或 hash 不匹配，即判定来源不可信，输出人工安装指引而不覆盖。其中 hash 失配（如已重签的二进制或 `go install pkg@vX.Y.Z` 产物）与 dev 本地构建可经 `--force` 显式覆盖：结构前置与目标资产校验照常执行，consume/sweep 仍仅可信来源执行，结果标记为 forced 而绝不标记为 trusted。软链副本与非官方 tag 不可被 force。
 4. 下载目标资产并流式 SHA256，与 `SHA256SUMS` 清单（`ParseManifest`）比对。
 5. stage 后的二进制用 `--version` 二次校验通过后才允许替换在用二进制。
 6. 替换在 control lock 内完成（见下文）。
@@ -364,7 +364,7 @@ fileutil → 标准库（+ Windows 经 golang.org/x/sys）
 | `errors` | `internal/cli/errors.go` |
 | `config` / `config show` / `config get` / `config set` / `config init` | `internal/cli/config_tui.go` / `config_show.go` / `config_get.go` / `config_set.go` / `init.go` |
 | `start` / `stop` / `restart` / `status` | `internal/cli/{start,stop,restart,status}.go` |
-| `update` / `update --check` / `update --version` | `internal/cli/update.go`（核心在 `internal/update`；隐藏的 `_update-helper`/`_update-cleanup` 在 `internal/cli/update_helper*.go`） |
+| `update` / `update --check` / `update --version` / `update --force` | `internal/cli/update.go`（核心在 `internal/update`；隐藏的 `_update-helper`/`_update-cleanup` 在 `internal/cli/update_helper*.go`） |
 | `_run`（Hidden） | `internal/cli/run_internal.go` |
 
 > 历史变更：原 `token-usage run --daemon` 命令已删除，由 `start` + Hidden `_run` 取代。旧版用户脚本需迁移至 `token-usage start`。

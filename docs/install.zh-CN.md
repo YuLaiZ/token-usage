@@ -9,7 +9,7 @@
 配置、数据库与日志始终位于 `~/.token-usage`（Windows 为 `%USERPROFILE%\.token-usage`）。脚本安装与手动二进制安装还把二进制也放在这里——`~/.token-usage/bin/token-usage`（Windows 为 `%USERPROFILE%\.token-usage\bin\token-usage.exe`）——经用户 PATH 暴露命令，无需 sudo（Windows 无需管理员权限）；`go install` 与开发用直接构建（`go build`）的二进制位置见各自小节。各方式在升级语义上不同：
 
 - **官方 Release 二进制**（经下方脚本、AI Agent 指令或手动安装）：支持原地自更新——二进制是 PATH 上的真实文件，正是自更新来源校验所要求的形态。
-- **源码构建**（`make build` / `go build`）：`Version = dev` 或伪版本，不能自更新；升级=重新构建后手动替换文件。
+- **源码构建**（`make build` / `go build`）：`Version = dev`（直接构建的伪版本会被规范化为 `dev`），默认不能自更新；运行 `token-usage update --force` 可切换为官方 Release 资产（此后自动更新恢复正常），或重新构建后手动替换文件。
 
 已发布的资产（有官方二进制的平台——也是自更新支持的平台）：
 
@@ -64,7 +64,7 @@ token-usage update --check          # 只检查，不写任何本地文件
 token-usage update --version vX.Y.Z # 更新（或检查）指定版本 tag
 ```
 
-`update` 只在当前二进制是所报告版本的官方 Release 资产时才覆盖（当前二进制的 SHA256 必须等于该版本官方资产的 hash）。开发构建（`make build`、`make build-all` 或 `go install` 产物的 `dev` / 伪版本）、软链副本、版本或 hash 不匹配均判定来源不可信：`update` 不覆盖，而是输出人工安装指引。自更新仅支持有官方资产的平台（`darwin/arm64`、`darwin/amd64`、`windows/amd64`）；其他平台 `update` 会提示无官方资产、要求手动安装。完整信任规则、退出码、副作用与 Windows 异步替换说明见 CLI 参考的[信任与来源校验](cli.zh-CN.md#信任与来源校验)。
+`update` 只在当前二进制是所报告版本的官方 Release 资产时才覆盖（当前二进制的 SHA256 必须等于该版本官方资产的 hash）。开发构建（`make build`、`make build-all` 或 `go install` 产物的 `dev` / 伪版本）、软链副本、版本或 hash 不匹配均判定来源不可信：默认 `update` 拒绝覆盖，输出人工安装指引。其中 hash 失配（已重签的二进制或 `go install pkg@vX.Y.Z`）与 dev 本地构建可经 `update --force` 显式覆盖；软链与非官方 tag 不可。自更新仅支持有官方资产的平台（`darwin/arm64`、`darwin/amd64`、`windows/amd64`）；其他平台 `update` 会提示无官方资产、要求手动安装。完整信任规则、退出码、副作用与 Windows 异步替换说明见 CLI 参考的[信任与来源校验](cli.zh-CN.md#信任与来源校验)。
 
 > **为何不软链进 PATH**：自更新来源校验要求当前可执行文件是真实二进制文件；经软链调用时解析到软链路径会被拒绝。因此本布局直接把 `~/.token-usage/bin` 加入 PATH，而不是在其他目录放置链接。
 
@@ -105,6 +105,8 @@ export PATH="$HOME/.token-usage/bin:$PATH"
 > ```
 >
 > 仅移除隔离属性（`xattr -d com.apple.quarantine ...`）可能不够——Gatekeeper 会缓存判定结果。`curl`（或官方脚本）下载的文件不带该属性，不受影响。
+>
+> 注意副作用：重签会改写二进制的签名段，其 SHA256 随之与官方 `SHA256SUMS` 不再一致，默认 `token-usage update` 会判该二进制来源未通过校验并拒绝覆盖。运行 `token-usage update --force` 让更新用官方资产替换（此后自动更新恢复正常），或手动安装。
 
 ### Windows——官方 Release 资产
 
@@ -153,7 +155,7 @@ git clone https://github.com/YuLaiZ/token-usage.git && cd token-usage
 make build   # 产出 ./token-usage（make build-all 产 dist/token-usage-windows-amd64.exe）
 ```
 
-把构建产物按上方官方资产步骤放进 bin 目录并加入 PATH（macOS 为 `~/.token-usage/bin/token-usage`，Windows 为 `%USERPROFILE%\.token-usage\bin\token-usage.exe`）。源码构建产物 `Version = dev` 或伪版本，不能自更新；升级=重新构建后手动替换 bin 目录下的文件。
+把构建产物按上方官方资产步骤放进 bin 目录并加入 PATH（macOS 为 `~/.token-usage/bin/token-usage`，Windows 为 `%USERPROFILE%\.token-usage\bin\token-usage.exe`）。源码构建产物 `Version = dev`（直接构建的伪版本会被规范化为 `dev`），默认不能自更新；运行 `token-usage update --force` 可切换为官方 Release 资产（此后自动更新恢复正常），或重新构建后手动替换 bin 目录下的文件。
 
 ## go install（需 Go 环境）
 

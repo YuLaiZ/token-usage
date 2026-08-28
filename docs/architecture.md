@@ -305,7 +305,7 @@ For a new replacement, a run proceeds only when every link holds:
 
 1. The requested tag is parsed strictly (`vMAJOR.MINOR.PATCH[-rc.N]`; no leading zeros).
 2. The target version is strictly higher than the current one.
-3. The current binary's source is verified — its SHA256 must equal the official asset hash for the current version. A `dev`/pseudo version, a non-regular file or symlink, or a hash mismatch marks the source untrusted and yields manual-install guidance instead of an overwrite.
+3. The current binary's source is verified — its SHA256 must equal the official asset hash for the current version. A `dev`/pseudo version, a non-regular file or symlink, or a hash mismatch marks the source untrusted and yields manual-install guidance instead of an overwrite. A hash mismatch (e.g. a re-signed binary or `go install pkg@vX.Y.Z`) or a dev build can be overridden explicitly with `--force`: structural and target-asset checks still run, `consume`/`sweep` remain trusted-only, and the result is reported as forced, never as trusted. Symlinked copies and non-official tags cannot be forced.
 4. The target asset is downloaded with streaming SHA256 and compared against the `SHA256SUMS` manifest (`ParseManifest`).
 5. The staged binary is re-checked with `--version` (second check) before it may replace the live binary.
 6. Replacement happens inside the control lock (see below).
@@ -364,7 +364,7 @@ See the [CLI Reference](cli.md) for command-level details (arguments, flags, exi
 | `errors` | `internal/cli/errors.go` |
 | `config` / `config show` / `config get` / `config set` / `config init` | `internal/cli/config_tui.go` / `config_show.go` / `config_get.go` / `config_set.go` / `init.go` |
 | `start` / `stop` / `restart` / `status` | `internal/cli/{start,stop,restart,status}.go` |
-| `update` / `update --check` / `update --version` | `internal/cli/update.go` (core in `internal/update`; the hidden `_update-helper`/`_update-cleanup` helpers live in `internal/cli/update_helper*.go`) |
+| `update` / `update --check` / `update --version` / `update --force` | `internal/cli/update.go` (core in `internal/update`; the hidden `_update-helper`/`_update-cleanup` helpers live in `internal/cli/update_helper*.go`) |
 | `_run` (hidden) | `internal/cli/run_internal.go` |
 
 > Historical change: the former `token-usage run --daemon` command was removed and replaced by `start` plus hidden `_run`. Scripts written for older versions must migrate to `token-usage start`.
