@@ -98,6 +98,14 @@ export PATH="$HOME/.token-usage/bin:$PATH"
 
 新开终端，运行 `token-usage --help` 与 `token-usage version` 验证。
 
+> **用浏览器（而非 `curl`）下载的二进制？** 浏览器保存的文件带 `com.apple.quarantine` 隔离属性，而官方二进制是 ad-hoc 签名，Gatekeeper 不接受隔离文件的 ad-hoc 签名：首次运行会被静默杀掉（无任何输出，退出码 137）。就地重签即可修复：
+>
+> ```bash
+> codesign --sign - --force ~/.token-usage/bin/token-usage
+> ```
+>
+> 仅移除隔离属性（`xattr -d com.apple.quarantine ...`）可能不够——Gatekeeper 会缓存判定结果。`curl`（或官方脚本）下载的文件不带该属性，不受影响。
+
 ### Windows——官方 Release 资产
 
 ```powershell

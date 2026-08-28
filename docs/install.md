@@ -99,6 +99,14 @@ export PATH="$HOME/.token-usage/bin:$PATH"
 
 Open a new terminal and verify with `token-usage --help` and `token-usage version`.
 
+> **Downloaded the binary with a browser instead of `curl`?** Browser-saved files carry the `com.apple.quarantine` attribute, and the official binaries are ad-hoc signed, which Gatekeeper does not accept for quarantined files: the first run is killed silently (no output, exit code 137). Re-signing in place fixes it:
+>
+> ```bash
+> codesign --sign - --force ~/.token-usage/bin/token-usage
+> ```
+>
+> Removing the attribute alone (`xattr -d com.apple.quarantine ...`) may not be enough because Gatekeeper caches its verdict. Files downloaded with `curl` (or the official script) never get the attribute and are unaffected.
+
 ### Windows — official Release asset
 
 ```powershell
