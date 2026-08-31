@@ -17,6 +17,7 @@ token-usage
 ├── query [YYYYMMDD|YYYYMMDD-YYYYMMDD]
 │   ├── client [YYYYMMDD|YYYYMMDD-YYYYMMDD]  # 按客户端分组（默认视图）
 │   ├── model [YYYYMMDD|YYYYMMDD-YYYYMMDD]   # 按模型分组
+│   ├── provider [YYYYMMDD|YYYYMMDD-YYYYMMDD]# 按供应商分组
 │   ├── project [YYYYMMDD|YYYYMMDD-YYYYMMDD] # 按项目分组
 │   ├── session [YYYYMMDD|YYYYMMDD-YYYYMMDD]# 会话明细
 │   └── summary [YYYYMMDD|YYYYMMDD-YYYYMMDD] # 总览摘要
@@ -140,7 +141,7 @@ token-usage collect retry
 | 形式 | 作用 | 继承标志 |
 |------|------|----------|
 | `collect [日期]` | 对所有已启用客户端做一次增量采集（今天或指定日期），过程中同步读取 router 日志并回填归因 | `--client`、`--force` |
-| `collect all` | 两阶段全采：阶段 A 逐个 client 全历史 messages 采集（单 client 失败不阻断其他）；阶段 B 对配置了 router 的 client 全量回填归因 | `--client` |
+| `collect all` | 两阶段全采：阶段 A 逐个 client 扫描全历史 messages，且不读取 `collection_log`（单 client 失败不阻断其他）；阶段 B 对配置了 router 的 client 全量回填归因。消息按 `(client, id)` 幂等 UPSERT，可安全重复执行。 | `--client` |
 | `collect router --client <name>` | 仅 router 全量回填，不调用 client collector、不写 `collection_log`/`collection_errors`、不推进 cursor | `--client`（**必填**） |
 | `collect retry` | 重试 `collection_errors` 中未解决记录，按 (date, source) 分组逐组重采 | `--client` |
 
@@ -484,7 +485,7 @@ token-usage update --force
 
 | 形式 | 作用 |
 |------|------|
-| `update` | 更新到最新稳定版。若当前二进制同目录存在一次中断的 POSIX 更新留下的受限事务 journal，先完成恢复；之后仅当目标严格高于当前版本且当前来源可信时才继续新替换：下载资产、与 `SHA256SUMS` 清单比对 SHA256、stage `--version` 二次校验、替换二进制并按原运行态恢复 daemon。 |
+| `update` | 更新到最新稳定 Release。若当前二进制同目录存在一次中断的 POSIX 更新留下的受限事务 journal，先完成恢复；之后仅当目标严格高于当前版本且当前来源可信时才继续新替换：下载资产、与 `SHA256SUMS` 清单比对 SHA256、stage `--version` 二次校验、替换二进制并按原运行态恢复 daemon。 |
 | `update --check` | 只读检查；不创建任何本地文件（不创建配置目录/锁/日志/数据库/服务定义）。 |
 | `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | 更新（或加 `--check` 后仅检查）指定精确版本 tag。`--version` 接受严格 Release tag（`v` 前缀、`MAJOR.MINOR.PATCH`、可选 `-rc.N`、无前导零）；非法值在任何网络请求前即报错。 |
 | `update --force` | 当前二进制来源非官方 Release 资产时仍强制覆盖，仅限两种豁免：与所报告版本官方资产 hash 不一致（按安装指引重签过的二进制、或 `go install pkg@vX.Y.Z` 产物），以及 dev 本地构建（`Version = dev`；直接构建的伪版本会被规范化为 `dev`）。全部结构检查与目标资产的 SHA256 / stage `--version` 校验照常执行；软链副本与非官方 tag 不可被 force。 |
@@ -501,7 +502,7 @@ token-usage update --force
 
 ### 稳定版 / RC 选择
 
-默认 `update` 只解析最新**稳定版**，绝不选择 prerelease。只有用 `--version` 显式指定 rc tag（如 `--version vX.Y.Z-rc.N`）时才会查询/安装预发布版。
+默认 `update` 只解析最新**稳定** Release，绝不选择 prerelease。只有用 `--version` 显式指定 rc tag（如 `--version vX.Y.Z-rc.N`）时才会查询/安装预发布版。
 
 ### 信任与来源校验
 

@@ -84,6 +84,7 @@ graph TB
 - Collectors read the six client sources and produce `[]model.Message` plus `[]model.Session`; both are written to `messages` and `sessions` in one transaction.
 - The RouterAdapter reads CC Switch SQLite and produces `[]model.RouterLog`, which is written to `raw_router_logs`; it then looks up attribution by `message_id` and backfills `router_provider`/`router_model`/`router_name` in `messages`.
 - `sync_state` records the incremental cursor for every source of each client. Collectors and router adapters read and write their own sources independently.
+- Full collection (`collect all`) passes `Dates=nil`, so it does not consult `collection_log` date deduplication. Repeated scans remain safe because `messages` uses `(client, id)` UPSERT.
 - When part of a collector's sources fail, successfully parsed messages, sessions, and router data are still committed transactionally. However, it does not write `collection_log`, resolve historical errors, or advance `sync_state`; a later normal collection or retry idempotently replays the incomplete range with UPSERT.
 - The query layer (`querier`) directly joins `messages` (plus `sessions` metadata) and aggregates in real time; there is no intermediate summary table. All grouped views share one dimension-based pipeline (`dimensions → raw aggregates → alias-merged composite keys → stable sort → table`) and end with a `Total / 总计` row aggregated separately over the same date range; session details and the summary are exempt. Provider aliases merge rows before composite keys are formed, without rewriting `messages`.
 - The bare `query` runs the target configured in `[query]` (`default` falls back to client when unconfigured); `query <name>` dispatches positional args on the root command to a named subquery or group, sharing one execution chain with the explicit `query custom <name>`; `query list` renders configured views from the parsed definitions only and never opens the database. Definition names are lowercase identifiers that must not collide with `client`/`model`/`provider`/`project`/`session`/`summary`/`custom`/`list`. Semantic validation happens only on these paths (default, direct/custom name, list) and on TUI saves, via `internal/querydef`; invalid query configuration never blocks the six static built-in views and never blocks collection, status, daemon, `config set`, or `config show`, which keep propagating and rewriting the offending entries verbatim.
@@ -104,7 +105,7 @@ The schema is in `migrateV1` in `internal/db/schema.go` (`user_version=1`).
 | `file_scan_log` | File-scan checkpoints (`mtime`/`size`/`last_line_offset`). |
 | `raw_client_sessions` | Legacy session staging table; unused by the current production path. |
 
-### Token columns in `messages`
+### Token Columns in `messages`
 
 | Column | Meaning |
 |----|------|
@@ -144,7 +145,7 @@ Queries directly SUM `fresh_input_tokens` and `total_tokens`: values come from t
 
 ## Run Modes
 
-### CLI mode (one-off execution)
+### CLI Mode (One-Off Execution)
 
 ```
 User runs a command → load configuration → collect/query/edit configuration → print results → exit
@@ -156,7 +157,7 @@ Running `token-usage` with no arguments only prints help; it neither starts the 
 
 Use cases: manual invocation, scheduled cron jobs, and script integration.
 
-### Daemon mode (real-time monitoring)
+### Daemon Mode (Real-Time Monitoring)
 
 ```
 start spawns _run → parent-child lease grants authority → child obtains daemon lock → starts monitor goroutines
@@ -186,7 +187,7 @@ WorkBuddy's SQLite database is used only to look up titles and has no poller.
 
 Daemon control uses two locks, a parent-child lease protocol, two-file metadata, and a complete-file replacement contract. Together they preserve both “definition layer decoupled from runtime layer” and atomic control operations.
 
-### Control lock and daemon lock
+### Control Lock and Daemon Lock
 
 | Lock | Path | Held for | Purpose |
 |----|------|--------|------|
@@ -199,7 +200,7 @@ They are different concepts and are never directly nested in one process:
 - The `_run` child is considered successfully started only after committing the daemon lock; acquiring and releasing the control lock is separate from the daemon lock.
 - Control-lock acquisition waits for at most 15 seconds (polling every 100ms). Proactive context cancellation returns `Canceled`; a timeout (from the operation or the supplied context deadline) is uniformly mapped to `ErrControlLockTimeout` so callers can handle it consistently.
 
-### Parent-child control lease (avoids `start` deadlock)
+### Parent-Child Control Lease (Avoids `start` Deadlock)
 
 When `start`/`restart` spawns `_run`, the parent holds the control lock while it waits roughly five seconds for readiness. If the child also needed that lock, a deadlock would occur. The parent-child lease solves this:
 
@@ -214,7 +215,7 @@ Both `_run` startup paths meet the invariant that “a control lease exists cont
 - **Parent-lease path** (`_run` spawned by `start`): the parent authorizes the child while holding the control lock; the child does not acquire it.
 - **Independent path** (started directly by launchd/the Registry): without a valid parent lease, it acquires the control lock itself (15-second timeout). On timeout it exits successfully with code 0 instead of entering the main loop, avoiding conflict with an in-progress control operation and preventing launchd KeepAlive from immediately relaunching it on macOS.
 
-### Two-file metadata (PID + runtime-state)
+### Two-File Metadata (PID + Runtime-State)
 
 The daemon lock is the sole liveness source of truth. PID/runtime-state are **best-effort** location/status metadata: when they cannot be read, callers degrade safely (`status` shows “PID metadata unavailable” / “startup phase unknown”; start/stop take the safe error path) and never return a half-ready “ready” state.
 
@@ -227,7 +228,7 @@ The daemon lock is the sole liveness source of truth. PID/runtime-state are **be
 
 Cleanup has two forms: `CleanupStaleMetadata` cleans PID + state + precise temporary files according to the stale protocol after confirming the daemon lock is not held; `CleanupOwnedMetadata` cleans them on normal exit after confirming instanceID ownership. It independently checks ownership for PID and state so PID reuse cannot delete another generation's file.
 
-### Complete-file replacement contract
+### Complete-File Replacement Contract
 
 All persistent metadata/configuration writes use `fileutil.ReplaceCompleteFile`, avoiding partial or torn writes:
 
@@ -237,7 +238,7 @@ All persistent metadata/configuration writes use `fileutil.ReplaceCompleteFile`,
 
 This contract covers PID files, runtime-state, and `config.toml` (written by `ApplyConfig`). Remaining temporary files (for example after a crash) are removed by `CleanupKnownTempFiles` using an **exact basename prefix** only (never similar names, directories, or symlink targets), and only on a lock-held path.
 
-### Runtime state (`start`/`stop`/`restart`/`status`)
+### Runtime State (`start`/`stop`/`restart`/`status`)
 
 `start`: under the control lock, load configuration → determine liveness from the daemon lock → if already running, return its PID idempotently → otherwise detached-spawn `_run` with a parent lease → wait until all six readiness conditions hold (PID/instanceID in the PID file, daemon lock, and PID/instanceID/`monitor_ready` in runtime-state; poll for five seconds) → success. On timeout, it attempts to terminate only this child and cleans metadata only when the lock has been released and ownership still matches.
 
@@ -247,7 +248,7 @@ This contract covers PID files, runtime-state, and `config.toml` (written by `Ap
 
 `status`: read-only (`Inspect` does not acquire the control lock). It returns a consistent snapshot of runtime state, startup phase, data directory/poll interval, and five-state autostart drift detection.
 
-### Autostart state (definition layer decoupled from runtime layer)
+### Autostart State (Definition Layer Decoupled from Runtime Layer)
 
 `internal/service` splits autostart into two layers:
 
@@ -260,7 +261,7 @@ This contract covers PID files, runtime-state, and `config.toml` (written by `Ap
 
 **Drift detection**: `status` read-only compares configuration (autostart on/off) with the actual service state (`Exists` + `SpecMatches`) and distinguishes five states: enabled / autostart on but definition missing / content differs / autostart off but definition remains / not enabled. It only suggests saving configuration again; it never writes anything.
 
-### ApplyConfig (configuration application orchestration)
+### ApplyConfig (Configuration Application Orchestration)
 
 `configapp.Application.ApplyConfig` is the common entry point for `config set` and TUI saves. Under the control lock, it atomically completes ten stages: clean configuration temp files → reread raw configuration to calculate revision and compare it to `expectedRevision` (mismatch → `ErrConfigChangedExternally`, no write) → parse previous/current effective configurations → validate and check data-directory migration prerequisites → inspect runtime state → marshal once and decide whether to write/no-op based on raw changes → run `service.SyncWith` to synchronize autostart definitions (failures go to `PartialErrors` and do not roll back) → clean old stale metadata when `data_dir` changes → produce action suggestions with `AnalyzeConfigEffects` → release the lock.
 
@@ -277,7 +278,7 @@ This contract covers PID files, runtime-state, and `config.toml` (written by `Ap
 
 **Read-only effective-reading path**: `config show` reuses `cli.loadConfig()` → `runtimecfg.LoadEffectiveConfig` (the single parsing boundary of `LoadUserConfigSnapshot` → `ValidateUserConfig` → `ResolveEffectiveConfig`) and serializes TOML to stdout. It does not duplicate defaulting logic; it is read-only with no runtime side effects—it creates no config/database/log/daemon metadata, acquires no process lock, and does not synchronize autostart. In contrast, `config get` reads only raw user-configuration values (without expanding `~` or filling defaults).
 
-### Startup catch-up (closes the stop → collect → start data window)
+### Startup Catch-Up (Closes the stop → collect → start Data Window)
 
 `daemon.startupCoordinator` sequences monitor readiness → runtime-state → catch-up so incremental data created during stop → collect → start is not missed:
 
@@ -293,11 +294,11 @@ Catch-up covers the window from the last manual collection until monitoring is r
 
 `internal/update` carries the self-update core. The `update` CLI command only parses flags, assembles dependencies, and formats results — it calls `update.Service` through a narrow `Check`/`Apply` interface. The package directly imports `config`, `control`, `fileutil`, and the standard library, with the `buildinfo` version literal and `runtimecfg` effective config injected via seams rather than imported; it does **not** depend on `internal/cli`, keeping the core testable without cobra.
 
-### Official-source verification
+### Official-Source Verification
 
 The sole trusted repository is `YuLaiZ/token-usage`. Download URLs are reconstructed from a fixed prefix plus the verified tag and the expected asset name; the Release JSON's `browser_download_url` is never trusted. All HTTP is HTTPS-only with a fixed `User-Agent`, bounded timeouts, a response-size cap, and status-code checks.
 
-### Update trust chain
+### Update Trust Chain
 
 If a restricted same-directory POSIX transaction journal already exists, `Apply` resolves that local transaction before version comparison or source verification. This path introduces no new binary or download: its paths are derived from the current executable and journal nonce, and recovery rechecks the recorded hashes before it restores a consistent file and daemon state.
 
@@ -310,13 +311,13 @@ For a new replacement, a run proceeds only when every link holds:
 5. The staged binary is re-checked with `--version` (second check) before it may replace the live binary.
 6. Replacement happens inside the control lock (see below).
 
-By default only the latest **stable** release is selected; a prerelease is reached only through an explicit `--version v…-rc.N`.
+By default only the latest **stable** Release is selected; a prerelease is reached only through an explicit `--version v…-rc.N`.
 
-### Transaction and daemon coordination
+### Transaction and Daemon Coordination
 
 `control.Session` exposes lock-held `Stop` and `StartWithExecutable` (the latter takes an explicit new target path). Within one control-lock callback, `update` performs `Inspect` → (if running) `Stop` → install → (if it was running) `StartWithExecutable`, or rollback-restart. It does **not** nest `Manager.Start`/`Stop`/`Restart` inside the lock callback, which avoids self-deadlock. `update --check` creates no `control.Manager`, acquires no control lock, and creates no `~/.token-usage` configuration directory.
 
-### POSIX vs Windows replacement
+### POSIX vs Windows Replacement
 
 - **POSIX**: same-directory atomic rename. The installer writes a backup, renames the new binary into place, `fsync`s, and on failure rolls back; an interrupted run is recovered from its journal on the next `update` invocation.
 - **Windows**: staged replacement. The parent process (the running `update`) writes a helper plan, copies a hidden helper executable, captures the parent's process identity, and spawns the hidden helper; the parent then returns the sentinel `ErrDeferredToHelper`. `Apply` carries this as `ApplyResult.Deferred`, so the CLI can explicitly report that background replacement has been queued rather than confuse it with an incomplete installation. After the parent exits, the helper takes the control lock, replaces the running `.exe` with `MoveFileEx`, restarts the daemon if needed, and writes its result; a cleanup step (a hidden command on the new target) then removes the temporary files once the helper has exited. The helper waits on the parent/helper via explicit process identity (PID plus creation time), avoiding PID-reuse TOCTOU. The `_update-helper` and `_update-cleanup` commands are hidden internal commands (absent from `--help`) and must not be invoked directly.
@@ -425,7 +426,7 @@ max_days = 7
 
 ## Extensibility
 
-### Add a data source
+### Add a Data Source
 
 Adding a client collector requires all of the following; configuration alone cannot add one:
 
@@ -436,7 +437,7 @@ Adding a client collector requires all of the following; configuration alone can
 5. Design the log protocol (source structure), poller/cursor mechanism, and `app_type→client` mapping if router association is involved.
 6. Add corresponding tests (collector unit tests and daemon integration tests).
 
-### Add router middleware
+### Add Router Middleware
 
 1. Implement the `RouterAdapter` interface in `internal/collector/`.
 2. Declare `RouterCapabilities` (availability of provider/model/token data).
@@ -447,7 +448,7 @@ Adding a client collector requires all of the following; configuration alone can
 5. To provide message-level attribution for a client, implement log-protocol parsing (`message_id` extraction), the `app_type→client` mapping, attribution backfill, and tests. `db.QueryRouterLogsByMessageIDs` currently recognizes only `claude`/`claude-desktop` `app_type` values.
 6. No database-layer change is required; all routers share `raw_router_logs`.
 
-### Configuration-combination constraints
+### Configuration-Combination Constraints
 
 - Multiple routers can be configured globally (multiple `[routers.xxx]` sections), but each client can currently select at most one router (`clients.<name>.router` is a single value).
 - Router chains (a router feeding another router) and pre-aggregated/materialized summary tables are unsupported.
@@ -463,7 +464,7 @@ Cross-compilation with `make build-all` produces darwin (arm64/amd64) and window
 
 ### Builds
 
-The three Makefile targets `make build`, `make build-all`, and `make install` consistently inject `Version`, `Commit`, and `BuildTime` into `internal/buildinfo` with `-ldflags -X` (default `VERSION=dev`; there is currently no release tag). `buildinfo.Current()` takes one snapshot during root-command assembly, shared by the `--version`/`-v` flag and `version` subcommand.
+The three Makefile targets `make build`, `make build-all`, and `make install` consistently inject `Version`, `Commit`, and `BuildTime` into `internal/buildinfo` with `-ldflags -X` (default `VERSION=dev`; there is currently no Release tag). `buildinfo.Current()` takes one snapshot during root-command assembly, shared by the `--version`/`-v` flag and `version` subcommand.
 
 Without injected ldflags, values resolve through the following fallback chains (`debug.ReadBuildInfo`):
 

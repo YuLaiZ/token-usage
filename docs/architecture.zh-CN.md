@@ -84,6 +84,7 @@ graph TB
 - Collectors 读取 6 个客户端源，输出 `[]model.Message` + `[]model.Session`，在单事务内写入 `messages` 和 `sessions`。
 - RouterAdapter 读取 CC Switch SQLite，输出 `[]model.RouterLog`，写入 `raw_router_logs`；随后按 `message_id` 查询归因，把 `router_provider/router_model/router_name` 回填到 `messages`。
 - `sync_state` 记录每个 client 各 source 的增量游标，collector 和 router adapter 各自读写自己的 source。
+- 全量采集（`collect all`）传入 `Dates=nil`，不使用 `collection_log` 的日期去重；`messages` 按 `(client, id)` UPSERT，因此可安全重复扫描。
 - collector 部分源失败时，已成功解析的消息、会话和 router 数据仍事务落库，但不写 `collection_log`、不解决历史错误、不推进 `sync_state`；后续普通采集或 retry 会按幂等 UPSERT 重放仍有缺口的区间。
 - 查询层（querier）直接 JOIN `messages`（+ `sessions` 元数据）实时聚合，无中间汇总表。全部分组视图共用一条维度化管线（维度 → 原始聚合 → alias 合并后的复合键 → 稳定排序 → 表格），末行输出同一日期范围独立聚合的 `Total / 总计`；会话明细与总览摘要不追加。供应商别名在组合键形成前合并行,不回写 `messages`。
 - 裸 `query` 执行 `[query]` 配置的默认对象（未配置回退 client）；`query <name>` 在根命令上按位置参数分派到具名子查询/组合查询，与显式写法 `query custom <name>` 共用同一条具名执行链；`query list` 只依据已解析定义渲染配置视图，绝不打开数据库。定义名称为小写标识符，不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`custom`/`list` 冲突。语义校验只发生在这些路径（默认、直接/显式具名、list）与 TUI 保存前，由 `internal/querydef` 完成；query 配置无效不会阻塞六个静态内置视图，也不会阻塞采集、status、守护进程、`config set` 与 `config show`，它们继续透传并原样写回问题项。
@@ -310,7 +311,7 @@ catch-up 覆盖「最后一次手工 collect 到监听 ready」的窗口，因�
 5. stage 后的二进制用 `--version` 二次校验通过后才允许替换在用二进制。
 6. 替换在 control lock 内完成（见下文）。
 
-默认只选择最新**稳定版**；只有显式 `--version v…-rc.N` 才会触达预发布版。
+默认只选择最新**稳定** Release；只有显式 `--version v…-rc.N` 才会触达预发布版。
 
 ### 事务与 daemon 协调
 
@@ -462,7 +463,7 @@ max_days = 7
 
 ### 构建
 
-`make build`/`make build-all`/`make install` 三个 target 统一经 `-ldflags -X` 注入 `internal/buildinfo` 包的 `Version`/`Commit`/`BuildTime`（默认 `VERSION=dev`，当前无 release tag）。`buildinfo.Current()` 在根命令装配处取一次快照，供 `--version`/`-v` flag 与 `version` 子命令共享。
+`make build`/`make build-all`/`make install` 三个 target 统一经 `-ldflags -X` 注入 `internal/buildinfo` 包的 `Version`/`Commit`/`BuildTime`（默认 `VERSION=dev`，当前无 Release tag）。`buildinfo.Current()` 在根命令装配处取一次快照，供 `--version`/`-v` flag 与 `version` 子命令共享。
 
 未注入 ldflags 时按以下降级链解析（`debug.ReadBuildInfo`）：
 

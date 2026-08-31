@@ -17,6 +17,7 @@ token-usage
 ├── query [YYYYMMDD|YYYYMMDD-YYYYMMDD]
 │   ├── client [YYYYMMDD|YYYYMMDD-YYYYMMDD]  # group by client (default view)
 │   ├── model [YYYYMMDD|YYYYMMDD-YYYYMMDD]   # group by model
+│   ├── provider [YYYYMMDD|YYYYMMDD-YYYYMMDD]# group by provider
 │   ├── project [YYYYMMDD|YYYYMMDD-YYYYMMDD] # group by project
 │   ├── session [YYYYMMDD|YYYYMMDD-YYYYMMDD]# session details
 │   └── summary [YYYYMMDD|YYYYMMDD-YYYYMMDD] # overview summary
@@ -46,7 +47,7 @@ Design points:
 
 ## General Conventions
 
-### Date argument format
+### Date Argument Format
 
 | Command | Accepted form | Default |
 |------|----------|------|
@@ -55,7 +56,7 @@ Design points:
 
 `YYYYMMDD` is an eight-digit compact format (for example, `20260701`). `YYYY-MM-DD`, extra positional arguments, range endpoints shorter than eight digits, and an end date before the start date all fail with an error and command examples. A range expands into an inclusive per-day list.
 
-### Exit codes
+### Exit Codes
 
 `token-usage` maps a command error to an exit code in `main`:
 
@@ -64,7 +65,7 @@ Design points:
 
 The stdout/stderr contract for success and failure is described in each command section.
 
-### Flag scope
+### Flag Scope
 
 - `--client`: a **PersistentFlag** of `collect`, inherited by its `all`, `router`, and `retry` subcommands.
 - `--force`: a **LocalFlag** of `collect`, **not** inherited by subcommands (passing it to a subcommand returns an unknown-flag error).
@@ -140,7 +141,7 @@ token-usage collect retry
 | Form | Purpose | Inherited flags |
 |------|------|----------|
 | `collect [date]` | Incrementally collects all enabled clients for today or a specified date; reads router logs and backfills attribution during collection. | `--client`, `--force` |
-| `collect all` | Two-phase full collection: phase A collects all historical `messages` client by client (failure of one client does not stop the others); phase B fully backfills attribution for clients with a router configured. | `--client` |
+| `collect all` | Two-phase full collection: phase A scans all historical `messages` client by client without consulting `collection_log` (failure of one client does not stop the others); phase B fully backfills attribution for clients with a router configured. Messages use idempotent `(client, id)` UPSERT, so it is safe to rerun. | `--client` |
 | `collect router --client <name>` | Full router backfill only: does not call client collectors, write `collection_log`/`collection_errors`, or advance a cursor. | `--client` (**required**) |
 | `collect retry` | Retries unresolved `collection_errors` records, recollecting each `(date, source)` group. | `--client` |
 
@@ -218,7 +219,7 @@ The default date is today. If the queried date range has unresolved entries in `
 
 Every grouped view (the four built-in views and every custom multi-dimensional table) ends with a `Total / 总计` row computed from the same date range as the table; session details and the summary do not have this row.
 
-### Configurable query views
+### Configurable Query Views
 
 The optional `[query]` section configures what the bare `query` runs and which custom views exist:
 
@@ -346,7 +347,7 @@ token-usage config set <key> <value> --confirm-migrate   # only when migrating d
 
 **`data_dir` migration:** changing `data_dir` requires `--confirm-migrate`, and the old daemon **must be stopped** (the command rejects a running daemon before writing). Move `usage.db` and `logs` manually; PID/lock/runtime-state are not migrated and are cleaned by the stale protocol.
 
-### Supported dotted keys
+### Supported Dotted Keys
 
 | Area | Writable keys |
 |------|----------|
@@ -365,7 +366,7 @@ Supported clients are `claude`, `opencode`, `codex`, `workbuddy`, `zcode`, and `
 token-usage config set 'provider_aliases."Zhipu AI Coding Plan"' 'Zhipu GLM'
 ```
 
-### Autostart semantic boundary (important)
+### Autostart Semantic Boundary (Important)
 
 `config set daemon.autostart <bool>` (or the TUI toggle) only **synchronizes the autostart service definition** (a macOS plist or Windows Registry Run key). It **never starts or stops the current daemon**:
 
@@ -450,7 +451,7 @@ Read-only: `Inspect` does not acquire the process-control lock and determines li
 
 Autostart expresses only whether the daemon starts at the next login/reboot and is independent from whether the current daemon is running. The current runtime state is displayed separately; neither is inferred from the other.
 
-### Startup catch-up (closes the stop → collect → start data window)
+### Startup Catch-Up (Closes the stop → collect → start Data Window)
 
 After monitoring is established by `start`, the daemon performs **startup catch-up** to collect data created between the last manual `collect`/`collect all` and monitor readiness, closing the stop → collect → start data window.
 
@@ -464,7 +465,7 @@ Ordering contract (`daemon.startupCoordinator`):
 
 Catch-up is submitted through the analyzer serialization lock (the same path as real-time triggers, guaranteeing ordering and mutual exclusion). Therefore, if the daemon starts successfully and completes catch-up, incremental data generated between stop → collect → start is collected and is not missed because monitoring was not ready. Partial catch-up failures appear in `status` and `errors`.
 
-### _run (hidden)
+### _run (Hidden)
 
 An internal command started by `start` through detached spawn or directly by launchd / a Windows Registry Run key. It executes the daemon main loop and must not be invoked by users (it is absent from `--help`). Both startup paths satisfy the invariant that “a control lease exists continuously from reading effective configuration through acquiring the daemon lock”:
 
@@ -484,9 +485,9 @@ token-usage update --force
 
 | Form | Purpose |
 |------|---------|
-| `update` | Updates to the latest stable release. If a restricted transaction journal from an interrupted POSIX update exists beside this binary, it is recovered first; a new replacement then proceeds only when the target is strictly higher than the current version and the current source is trusted. It downloads the asset, verifies its SHA256 against the `SHA256SUMS` manifest, stages a `--version` second check, replaces the binary, and restores the daemon to its previous run state. |
+| `update` | Updates to the latest stable Release. If a restricted transaction journal from an interrupted POSIX update exists beside this binary, it is recovered first; a new replacement then proceeds only when the target is strictly higher than the current version and the current source is trusted. It downloads the asset, verifies its SHA256 against the `SHA256SUMS` manifest, stages a `--version` second check, replaces the binary, and restores the daemon to its previous run state. |
 | `update --check` | Read-only check; creates no local files (no configuration directory, lock, log, database, or service definition). |
-| `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | Updates (or, with `--check`, only checks) the specified exact release tag. `--version` accepts a strict release tag (`v` prefix, `MAJOR.MINOR.PATCH`, optional `-rc.N`, no leading zeros); an invalid value errors before any network request. |
+| `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | Updates (or, with `--check`, only checks) the specified exact Release tag. `--version` accepts a strict Release tag (`v` prefix, `MAJOR.MINOR.PATCH`, optional `-rc.N`, no leading zeros); an invalid value errors before any network request. |
 | `update --force` | Overwrites the current binary even when its source is not an official Release asset, for exactly two exemptions: a hash mismatch against the official asset of the reported version (a binary re-signed per the install guide, or `go install pkg@vX.Y.Z`), and a dev local build (`Version = dev`; plain-build pseudo-versions are normalized to `dev`). All structural checks and the target asset's SHA256 / staged `--version` verification still run; symlinked copies and non-official tags cannot be forced. |
 
 `--check` and `--version` may be combined; for example, `update --check --version vX.Y.Z-rc.N` checks a release candidate only. `--force` cannot be combined with `--check` (that combination is rejected explicitly).
@@ -494,16 +495,16 @@ token-usage update --force
 Flags:
 
 - `--check` (bool): read-only check; writes no local files.
-- `--version` (string): target release tag. Accepts `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-rc.N` (no leading zeros, `N >= 1`, no build metadata).
+- `--version` (string): target Release tag. Accepts `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-rc.N` (no leading zeros, `N >= 1`, no build metadata).
 - `--force` (bool): overwrite even if the current binary is not an official Release asset (re-signed, `go install`, or a dev build); see [trust and source verification](#trust-and-source-verification) for the exact exemption boundary.
 
 `update` takes no positional arguments (`Args: NoArgs`).
 
-### Stable / release-candidate selection
+### Stable / Release-Candidate Selection
 
-By default `update` resolves only the latest **stable** release and never selects a prerelease. A release candidate is consulted or installed only when you pass its tag explicitly with `--version` (for example `--version vX.Y.Z-rc.N`).
+By default `update` resolves only the latest **stable** Release and never selects a prerelease. A release candidate is consulted or installed only when you pass its tag explicitly with `--version` (for example `--version vX.Y.Z-rc.N`).
 
-### Trust and source verification
+### Trust and Source Verification
 
 `update` only replaces the current binary when the target is strictly higher and the current source is trusted. The current source is treated as **untrusted** (and a plain `update` refuses to overwrite, printing manual-install guidance instead) when any of the following holds:
 
@@ -514,7 +515,7 @@ By default `update` resolves only the latest **stable** release and never select
 The refusal carries a `--force` escape hatch for exactly two exemptions:
 
 - **hash mismatch** (the current version has an official Release and manifest, but the local content differs): re-running with `--force` overwrites the binary with the official asset, so automatic updates resume;
-- **dev build** (`Version = dev`; plain-build pseudo-versions are normalized to `dev`, so this is the only dev form `update --force` accepts; no comparable official Release or manifest exists, so no hash comparison ever happened): `update --force` switches the installation to the official release asset.
+- **dev build** (`Version = dev`; plain-build pseudo-versions are normalized to `dev`, so this is the only dev form `update --force` accepts; no comparable official Release or manifest exists, so no hash comparison ever happened): `update --force` switches the installation to the official Release asset.
 
 Symlinked copies and non-official tags cannot be forced — every other refusal reason always requires manual installation. `--force` never skips any check: structural checks still gate the replacement, and the target asset is still downloaded, SHA256-verified against `SHA256SUMS`, and stage-checked with `--version` before it may replace the current binary. A `--force` run is reported as successful with a `--force` note and exits 0; it is never reported as trusted.
 
@@ -524,16 +525,16 @@ The sole trusted repository is `YuLaiZ/token-usage`; see [Architecture](architec
 
 This source gate applies to a new replacement. Recovering an already recorded local transaction does not download or accept a new source: it uses only same-directory paths derived from the executable and journal nonce, and rechecks the recorded hashes before restoring a consistent state.
 
-### Exit codes
+### Exit Codes
 
-- `0` for expected completed states: no stable release available, already up to date, an update is available (`--check`), a Windows background replacement has been queued, or recovery confirms that the interrupted update had already installed the new binary.
+- `0` for expected completed states: no stable Release available, already up to date, an update is available (`--check`), a Windows background replacement has been queued, or recovery confirms that the interrupted update had already installed the new binary.
 - Non-zero when the requested tag does not exist, the current source is unverified and `--force` was not given (hash mismatch or dev build) or cannot be forced at all (symlink / non-official tag), download/manifest/checksum/staged-`--version` validation is rejected, recovery returns the binary to the old version, installation is incomplete, install/rollback/daemon-restart fails, or `--version` is invalid.
 
-### Side-effect boundary
+### Side-Effect Boundary
 
 `update --check` is fully read-only. A real `update` first resolves an existing transaction journal when present; otherwise it stops the daemon, replaces the binary, and restarts it only when an update is available and the source check passes — trusted, or overridden with `--force`. It does not start or stop the daemon when no update is needed, and it does not rewrite `config.toml`, the database, logs, the macOS LaunchAgent plist, or the Windows Registry.
 
-### Windows asynchronous replacement
+### Windows Asynchronous Replacement
 
 Replacing a running `.exe` is restricted on Windows, so the update hands the replacement off to a background helper and returns. Once that helper has been started, the command explicitly reports that the background replacement has been queued, exits `0`, and asks you to run `token-usage version` or `token-usage update --check` shortly to confirm the final version; it never claims completion. On macOS/POSIX the replacement is synchronous and atomic (same-directory backup + rename + fsync, with rollback on failure and journal recovery on the next `update` invocation).
 

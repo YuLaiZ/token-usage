@@ -80,6 +80,7 @@ make release-verify VERSION=vX.Y.Z[-rc.N]
 | 英文默认入口 | 中文对应版本 |
 |---|---|
 | `README.md` | `README.zh-CN.md` |
+| `docs/install.md` | `docs/install.zh-CN.md` |
 | `docs/architecture.md` | `docs/architecture.zh-CN.md` |
 | `docs/cli.md` | `docs/cli.zh-CN.md` |
 | `CONTRIBUTING.md` | `CONTRIBUTING.zh-CN.md` |

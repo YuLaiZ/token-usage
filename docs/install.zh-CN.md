@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/ins
 curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.sh | TAG=vX.Y.Z bash
 ```
 
-脚本自动检测 CPU 架构、下载最新稳定版官方 Release、按官方 `SHA256SUMS` 校验后无需 sudo 安装到 `~/.token-usage/bin/token-usage`，并自动清理旧布局安装位置的遗留副本（目录不可写时给出手动移除指引，该位置被目录占用或删除失败等其他情形打印对应人工处理指引，均不影响安装），再向 shell rc 文件追加 marker 块把 `~/.token-usage/bin` 加入用户 PATH（仅支持 zsh 与 bash——zsh 写 `~/.zshrc`；bash 写登录 shell 读取的第一个文件——`~/.bash_profile` 优先，其次 `.bash_login`、再次 `.profile`；其他 shell 下脚本会打印人工 PATH 配置指引）。新开终端运行 `token-usage version` 确认。需要安装 RC 时，显式传入准确 tag：`TAG=vX.Y.Z-rc.N`。
+脚本自动检测 CPU 架构、下载最新稳定官方 Release、按官方 `SHA256SUMS` 校验后无需 sudo 安装到 `~/.token-usage/bin/token-usage`，并自动清理旧布局安装位置的遗留副本（目录不可写时给出手动移除指引，该位置被目录占用或删除失败等其他情形打印对应人工处理指引，均不影响安装），再向 shell rc 文件追加 marker 块把 `~/.token-usage/bin` 加入用户 PATH（仅支持 zsh 与 bash——zsh 写 `~/.zshrc`；bash 写登录 shell 读取的第一个文件——`~/.bash_profile` 优先，其次 `.bash_login`、再次 `.profile`；其他 shell 下脚本会打印人工 PATH 配置指引）。新开终端运行 `token-usage version` 确认。需要安装 RC 时，显式传入准确 tag：`TAG=vX.Y.Z-rc.N`。
 
 > 非登录交互 shell 环境（部分 IDE 集成终端读取 `~/.bashrc` 而非登录文件）不会加载登录文件，需要时请自行补一行 `export PATH="$HOME/.token-usage/bin:$PATH"`；zsh 交互终端用户全部命中 `~/.zshrc`。
 
@@ -50,7 +50,7 @@ powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1"
 powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1" -Tag vX.Y.Z
 ```
 
-脚本下载最新稳定版官方 Release、按官方 `SHA256SUMS` 校验后无需管理员权限安装到 `%USERPROFILE%\.token-usage\bin\token-usage.exe`，并以保类型注册表直写把 `%USERPROFILE%\.token-usage\bin` 追加到用户 PATH（保持既有 `REG_EXPAND_SZ` 值类型与 `%VAR%` 条目原文），随后广播 `WM_SETTINGCHANGE` 使新终端无需注销即可获得新 PATH（广播失败时脚本会提示注销重登）。从开始菜单/任务栏启动新终端窗口，运行 `token-usage version` 确认。需要安装 RC 时，显式以 `-Tag vX.Y.Z-rc.N` 指定准确 tag。
+脚本下载最新稳定官方 Release、按官方 `SHA256SUMS` 校验后无需管理员权限安装到 `%USERPROFILE%\.token-usage\bin\token-usage.exe`，并以保类型注册表直写把 `%USERPROFILE%\.token-usage\bin` 追加到用户 PATH（保持既有 `REG_EXPAND_SZ` 值类型与 `%VAR%` 条目原文），随后广播 `WM_SETTINGCHANGE` 使新终端无需注销即可获得新 PATH（广播失败时脚本会提示注销重登）。从开始菜单/任务栏启动新终端窗口，运行 `token-usage version` 确认。需要安装 RC 时，显式以 `-Tag vX.Y.Z-rc.N` 指定准确 tag。
 
 > 旧 Windows 环境（TLS 1.2 以下）下第一步 `irm` 仍发生在脚本执行之前，脚本内的 TLS 兜底救不了它：请先在当前会话执行 `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12`，再运行第一步下载。
 
@@ -59,7 +59,7 @@ powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1" -Tag vX.Y.Z
 从官方 Release 安装的二进制可原地自更新：
 
 ```bash
-token-usage update                  # 更新到最新稳定版
+token-usage update                  # 更新到最新稳定 Release
 token-usage update --check          # 只检查，不写任何本地文件
 token-usage update --version vX.Y.Z # 更新（或检查）指定版本 tag
 ```
@@ -75,7 +75,7 @@ token-usage update --version vX.Y.Z # 更新（或检查）指定版本 tag
 ### macOS——官方 Release 资产
 
 ```bash
-# releases/latest/download/... 始终指向最新稳定版，不会解析到预发布。
+# releases/latest/download/... 始终指向最新稳定 Release，不会解析到预发布。
 # 如需安装指定版本，改用 Releases 页面对应 tag 的下载 URL。
 curl -fsSL -o token-usage-darwin-arm64 https://github.com/YuLaiZ/token-usage/releases/latest/download/token-usage-darwin-arm64
 curl -fsSL -o SHA256SUMS https://github.com/YuLaiZ/token-usage/releases/latest/download/SHA256SUMS
@@ -111,7 +111,7 @@ export PATH="$HOME/.token-usage/bin:$PATH"
 ### Windows——官方 Release 资产
 
 ```powershell
-# 从最新稳定版下载（latest/download 不会解析到预发布；指定版本用 Releases
+# 从最新稳定 Release 下载（latest/download 不会解析到预发布；指定版本用 Releases
 # 页面对应 tag 的 URL），再按该 Release 的 SHA256SUMS 校验 SHA256：
 curl.exe -fsSL -o token-usage-windows-amd64.exe https://github.com/YuLaiZ/token-usage/releases/latest/download/token-usage-windows-amd64.exe
 curl.exe -fsSL -o SHA256SUMS https://github.com/YuLaiZ/token-usage/releases/latest/download/SHA256SUMS
@@ -163,7 +163,7 @@ make build   # 产出 ./token-usage（make build-all 产 dist/token-usage-window
 go install github.com/YuLaiZ/token-usage/cmd/token-usage@latest
 ```
 
-二进制装到 `$GOBIN`（默认 `~/go/bin`），需自行确保该目录在 PATH 中。配置和日志仍在 `~/.token-usage/`。安装后可用 `token-usage --version` 验证。
+二进制装到 `$GOBIN`（默认 `~/go/bin`），需自行确保该目录在 PATH 中。配置和日志仍在 `~/.token-usage/`。安装后可用 `token-usage --version` 验证。通过正式 Release tag 安装的产物（如 `go install github.com/YuLaiZ/token-usage/cmd/token-usage@vX.Y.Z`）与官方资产并非字节完全一致；先运行一次 `token-usage update --force`，将其替换为一个官方 Release 资产，之后即可正常自更新。`@latest` 解析到正式 Release tag 时同样适用。若 `@latest` 解析到开发版本，请先查看 `token-usage version`：只有字面值为 `Version = dev` 的产物可用 `--force`，显式指定的伪版本须手动安装。
 
 ## 直接 go build（开发用）
 

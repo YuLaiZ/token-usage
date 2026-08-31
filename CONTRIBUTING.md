@@ -62,7 +62,7 @@ For documentation-only changes, at minimum verify that relative links resolve, c
 
 When changing a collector, router adapter, configuration behavior, or daemon lifecycle, include tests for the changed contract and update the architecture/CLI documentation where relevant. Preserve message-level token accounting semantics and do not silently change historical-data behavior.
 
-### Release builds (release-build / release-verify)
+### Release Builds (release-build / release-verify)
 
 The `make build` and `make build-all` targets inject `VERSION=dev` by default, so their artifacts report `version: dev` and **cannot** be published or self-updated. Before a release, build the three official assets and `SHA256SUMS` reproducibly and verify them locally:
 
@@ -80,6 +80,7 @@ English is the default public documentation. The Chinese versions are complete c
 | English default | Chinese counterpart |
 |---|---|
 | `README.md` | `README.zh-CN.md` |
+| `docs/install.md` | `docs/install.zh-CN.md` |
 | `docs/architecture.md` | `docs/architecture.zh-CN.md` |
 | `docs/cli.md` | `docs/cli.zh-CN.md` |
 | `CONTRIBUTING.md` | `CONTRIBUTING.zh-CN.md` |
