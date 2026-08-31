@@ -190,6 +190,10 @@ func workBuddyMessage(fileSessionID string, in workbuddyParsedMessage, modelMapp
 	}
 	provider := strings.TrimSpace(modelMapping[in.Model])
 	if provider == "" {
+		// 会话日志中的模型 id 被客户端小写化时，用小写键兜底匹配 models.json 条目。
+		provider = strings.TrimSpace(modelMapping[strings.ToLower(in.Model)])
+	}
+	if provider == "" {
 		// WorkBuddy 的 models.json 可能不包含当前模型；客户端来源仍可确定。
 		provider = model.ClientWorkBuddy
 	}
@@ -438,7 +442,8 @@ func workbuddyInferProject(directory string) string {
 }
 
 // loadWorkBuddyModelsMapping 加载 ~/.workbuddy/models.json
-// 返回 model短id -> vendor 映射（vendor 作为 provider）
+// 返回 model短id -> vendor 映射（vendor 作为 provider）；
+// 混合大小写条目额外补一条小写兜底键，应对会话日志中模型 id 被客户端小写化
 // 文件不存在视为空映射（用户未配置自定义模型）
 func loadWorkBuddyModelsMapping(workbuddyDir string) (map[string]string, error) {
 	data, err := os.ReadFile(filepath.Join(workbuddyDir, "models.json"))
@@ -457,10 +462,28 @@ func loadWorkBuddyModelsMapping(workbuddyDir string) (map[string]string, error) 
 		return nil, fmt.Errorf("解析 models.json 失败: %w", err)
 	}
 
-	mapping := make(map[string]string, len(models))
+	mapping := make(map[string]string, len(models)*2)
+	// 小写兜底键的来源条目 id：同一原始 id 的重复条目在其仍持有兜底键时
+	// 跟随精确键更新 vendor（全小写条目接管同名键后属主被撤销，不再跟随）；
+	// 不同大小写变体之间按条目顺序先到优先。
+	fallbackOwner := make(map[string]string, len(models))
 	for _, m := range models {
-		if m.ID != "" && m.Vendor != "" {
-			mapping[m.ID] = m.Vendor
+		if m.ID == "" || m.Vendor == "" {
+			continue
+		}
+		mapping[m.ID] = m.Vendor
+		// WorkBuddy 会话日志中的模型短 id 被客户端小写化，与条目 id 的大小写
+		// 可能不一致；补一条小写兜底键。该键已被其他条目（含全小写精确键、
+		// 其他大小写变体）占用时不覆盖；由相同原始 id 持有时跟随更新。
+		// 全小写条目的精确写入接管同名兜底键后撤销原属主更新权，防止后续
+		// 原混合 id 的重复条目反覆盖该精确值。
+		if lower := strings.ToLower(m.ID); lower != m.ID {
+			if _, exists := mapping[lower]; !exists || fallbackOwner[lower] == m.ID {
+				mapping[lower] = m.Vendor
+				fallbackOwner[lower] = m.ID
+			}
+		} else {
+			delete(fallbackOwner, m.ID)
 		}
 	}
 	return mapping, nil

@@ -245,6 +245,61 @@ func TestLoadWorkBuddyModelsMapping_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestLoadWorkBuddyModelsMapping_CaseInsensitiveFallbackKey(t *testing.T) {
+	content := `[
+		{"id":"GLM-5.3-Flash","vendor":"GLM Coding Plan"},
+		{"id":"gLM-5.3-FLASH","vendor":"Other Vendor"},
+		{"id":"deepseek-v4-flash","vendor":"DeepSeek"},
+		{"id":"glm-x","vendor":"A"},
+		{"id":"GLM-X","vendor":"B"},
+		{"id":"GLM-Y","vendor":"Old"},
+		{"id":"GLM-Y","vendor":"New"},
+		{"id":"GLM-Z","vendor":"First"},
+		{"id":"glm-z","vendor":"LowerTakesOver"},
+		{"id":"GLM-Z","vendor":"MustNotWin"}
+	]`
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "models.json"), []byte(content), 0644)
+
+	mapping, err := loadWorkBuddyModelsMapping(dir)
+	if err != nil {
+		t.Fatalf("loadWorkBuddyModelsMapping failed: %v", err)
+	}
+	// 精确键保留原始大小写条目
+	if mapping["GLM-5.3-Flash"] != "GLM Coding Plan" {
+		t.Errorf("mapping[GLM-5.3-Flash] = %q, want GLM Coding Plan", mapping["GLM-5.3-Flash"])
+	}
+	// 混合大小写条目补小写兜底键；小写键已被先到条目占用时不覆盖
+	if mapping["glm-5.3-flash"] != "GLM Coding Plan" {
+		t.Errorf("mapping[glm-5.3-flash] = %q, want GLM Coding Plan", mapping["glm-5.3-flash"])
+	}
+	// 先到的全小写精确键优先于后到混合条目的小写兜底键
+	if mapping["glm-x"] != "A" {
+		t.Errorf("mapping[glm-x] = %q, want A", mapping["glm-x"])
+	}
+	if mapping["GLM-X"] != "B" {
+		t.Errorf("mapping[GLM-X] = %q, want B", mapping["GLM-X"])
+	}
+	// 同一原始 id 的重复条目：小写兜底键跟随精确键一起更新（last-wins 一致）
+	if mapping["GLM-Y"] != "New" {
+		t.Errorf("mapping[GLM-Y] = %q, want New", mapping["GLM-Y"])
+	}
+	if mapping["glm-y"] != "New" {
+		t.Errorf("mapping[glm-y] = %q, want New (同一原始 id 的兜底键跟随更新)", mapping["glm-y"])
+	}
+	// 反向交叉：全小写条目接管兜底键后，原混合 id 的重复条目不得反覆盖该精确值
+	if mapping["glm-z"] != "LowerTakesOver" {
+		t.Errorf("mapping[glm-z] = %q, want LowerTakesOver (全小写精确键接管后不受原 id 重复反覆盖)", mapping["glm-z"])
+	}
+	if mapping["GLM-Z"] != "MustNotWin" {
+		t.Errorf("mapping[GLM-Z] = %q, want MustNotWin", mapping["GLM-Z"])
+	}
+	// 全小写条目不重复补键：8 个精确键（GLM-Y/GLM-Z 各两条重复合并）+ 2 个小写兜底键
+	if len(mapping) != 10 {
+		t.Errorf("expected 10 mappings, got %d", len(mapping))
+	}
+}
+
 // createWorkBuddyTestDB 在临时路径创建 workbuddy.db 测试库并插入 sessions
 func createWorkBuddyTestDB(t *testing.T, dbPath string) *sql.DB {
 	t.Helper()
@@ -836,6 +891,34 @@ func TestWorkBuddyCollector_ModelFallbackAndVendorMapping(t *testing.T) {
 	}
 	if got := byID["wb-map"].Provider; got != "DeepSeek" {
 		t.Errorf("wb-map Provider = %q, want DeepSeek (models.json vendor 映射)", got)
+	}
+}
+
+// 会话日志中的模型短 id 被客户端小写化（glm-5.3-flash），models.json 条目 id 为
+// 混合大小写（GLM-5.3-Flash）时，vendor 映射经小写兜底键命中；Model 字段保留原始值。
+func TestWorkBuddyCollector_ModelIdCaseInsensitiveVendorMapping(t *testing.T) {
+	jsonl := `{"id":"wb-ci","timestamp":1750001000000,"role":"assistant","sessionId":"s","cwd":"/tmp/p","providerData":{"model":"glm-5.3-flash","usage":{"inputTokens":100,"outputTokens":50,"totalTokens":150,"inputTokensDetails":[{"cached_tokens":0}]}}}
+`
+	root, projectsDir := buildWorkBuddyDir(t, "dir", "sess-001", jsonl)
+	os.WriteFile(filepath.Join(root, "models.json"), []byte(`[{"id":"GLM-5.3-Flash","vendor":"GLM Coding Plan"}]`), 0644)
+
+	cfg := &config.Config{Clients: map[string]config.Client{
+		"workbuddy": {Enabled: true, Paths: map[string]string{"projects_dir": projectsDir}},
+	}}
+	c := NewWorkBuddyCollector(cfg)
+	result, err := c.Collect(context.Background(), CollectRequest{}, slog.Default())
+	if err != nil {
+		t.Fatalf("Collect failed: %v", err)
+	}
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(result.Messages))
+	}
+	m := result.Messages[0]
+	if got := m.Provider; got != "GLM Coding Plan" {
+		t.Errorf("Provider = %q, want GLM Coding Plan (小写化模型 id 经小写兜底键命中)", got)
+	}
+	if got := m.Model; got != "glm-5.3-flash" {
+		t.Errorf("Model = %q, want glm-5.3-flash (保留会话日志原始值)", got)
 	}
 }
 
