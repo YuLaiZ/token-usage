@@ -13,10 +13,45 @@ import (
 
 type Querier struct {
 	db *db.DB
+	// outputColumns 是已校验的输出指标 ID 序列(不可变:构造/设置时拷贝入参,
+	// 渲染期间不被修改)。nil 时按默认七列渲染。
+	outputColumns []string
 }
 
 func New(d *db.DB) *Querier {
-	return &Querier{db: d}
+	return &Querier{db: d, outputColumns: ui.DefaultOutputColumns()}
+}
+
+// SetOutputColumns 设置输出指标列布局并返回防御性校验错误:
+// 序列必须非空、每个 ID 已知且不重复(大小写敏感)。入参被独立拷贝,
+// 调用方后续修改切片不影响本 Querier。
+func (q *Querier) SetOutputColumns(columns []string) error {
+	if len(columns) == 0 {
+		return errors.New(ui.Bi(
+			"output column layout requires at least one metric ID",
+			"输出列布局至少需要一个指标 ID",
+		))
+	}
+	seen := make(map[string]bool, len(columns))
+	for _, id := range columns {
+		if _, known := ui.OutputMetricHeader(id); !known {
+			return fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("unknown output metric %q (allowed: %s)", id, ui.OutputColumnIDList()),
+				fmt.Sprintf("未知输出指标 %q(允许: %s)", id, ui.OutputColumnIDList()),
+			))
+		}
+		if seen[id] {
+			return fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("duplicate output metric %q in layout", id),
+				fmt.Sprintf("输出列布局存在重复指标 %q", id),
+			))
+		}
+		seen[id] = true
+	}
+	layout := make([]string, len(columns))
+	copy(layout, columns)
+	q.outputColumns = layout
+	return nil
 }
 
 func (q *Querier) readyContext(ctx context.Context) (context.Context, error) {
@@ -55,17 +90,66 @@ type tableCol struct {
 	limit  int
 }
 
-// groupTailDefs 是全部 query 表格视图统一的前缀无关尾部列（数值区），
-// 保证各视图最后的列集合与顺序一致。Cache Create 不设列（常用客户端恒 0，
-// OpenCode 的缓存创建量并入命中率分母，需要绝对量时看 summary）。
-var groupTailDefs = []tableCol{
-	{ui.HRequests, ui.AlignRight, 0},
-	{ui.HInput, ui.AlignRight, 0},
-	{ui.HOutput, ui.AlignRight, 0},
-	{ui.HCacheRead, ui.AlignRight, 0},
-	{ui.HReasoning, ui.AlignRight, 0},
-	{ui.HTotal, ui.AlignRight, 0},
-	{ui.HCacheHit, ui.AlignRight, 0},
+// 全部 query 表格视图统一的前缀无关尾部指标区:布局驱动后按 Querier 当前
+// 指标序列生成,表头来自 ui 单一来源,单元格由描述符从完整聚合值计算
+// (cache_hit 始终读取含 cache_create 的完整聚合,展示开关不改统计值)。
+// metricColumn 是一个输出指标列的渲染描述符:双语表头 + 从聚合值生成单元格。
+type metricColumn struct {
+	header string
+	cell   func(agg groupAggregate) string
+}
+
+// metricColumnByID 是指标 ID → 描述符的唯一来源,与 ui 层 ID 集合同步。
+var metricColumnByID = map[string]metricColumn{
+	ui.MetricRequests: {ui.HRequests, func(a groupAggregate) string { return fmt.Sprintf("%d", a.requests) }},
+	ui.MetricInput:    {ui.HInput, func(a groupAggregate) string { return formatTokens(a.freshInput) }},
+	ui.MetricOutput:   {ui.HOutput, func(a groupAggregate) string { return formatTokens(a.outputTokens) }},
+	ui.MetricCacheRead: {ui.HCacheRead, func(a groupAggregate) string {
+		return formatTokens(a.cacheRead)
+	}},
+	ui.MetricCacheCreate: {ui.HCacheCreate, func(a groupAggregate) string {
+		return formatTokens(a.cacheCreate)
+	}},
+	ui.MetricReasoning: {ui.HReasoning, func(a groupAggregate) string { return formatTokens(a.reasoning) }},
+	ui.MetricTotal:     {ui.HTotal, func(a groupAggregate) string { return formatTokens(a.totalTokens) }},
+	ui.MetricCacheHit: {ui.HCacheHit, func(a groupAggregate) string {
+		return formatCacheHit(a.freshInput, a.cacheRead, a.cacheCreate)
+	}},
+}
+
+// metricColumns 返回当前布局的描述符序列。布局仅经 New/SetOutputColumns
+// 写入且已校验,此处直接查找;未知 ID 属内部不变式破坏,panic 早暴露。
+func (q *Querier) metricColumns() []metricColumn {
+	columns := q.outputColumns
+	if len(columns) == 0 {
+		columns = ui.DefaultOutputColumns()
+	}
+	metrics := make([]metricColumn, len(columns))
+	for i, id := range columns {
+		m, ok := metricColumnByID[id]
+		if !ok {
+			panic(fmt.Sprintf("querier: unvalidated output metric %q", id))
+		}
+		metrics[i] = m
+	}
+	return metrics
+}
+
+// metricTailCols 把描述符序列转为表格列定义(数值列右对齐、不限宽)。
+func metricTailCols(metrics []metricColumn) []tableCol {
+	cols := make([]tableCol, len(metrics))
+	for i, m := range metrics {
+		cols[i] = tableCol{header: m.header, align: ui.AlignRight, limit: 0}
+	}
+	return cols
+}
+
+// appendMetricCells 按描述符顺序把聚合值的单元格追加到 cells。
+func appendMetricCells(cells []string, metrics []metricColumn, agg groupAggregate) []string {
+	for _, m := range metrics {
+		cells = append(cells, m.cell(agg))
+	}
+	return cells
 }
 
 func buildTable(defs []tableCol) *ui.Table {
@@ -283,18 +367,29 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 		return "", err
 	}
 
+	metrics := q.metricColumns()
 	var sb strings.Builder
 	sb.WriteString(title + "\n")
-	defs := make([]tableCol, 0, len(dims)+len(groupTailDefs))
+	defs := make([]tableCol, 0, len(dims)+len(metrics))
 	for _, d := range dims {
 		defs = append(defs, tableCol{header: d.header, align: ui.AlignLeft, limit: 0})
 	}
-	defs = append(defs, groupTailDefs...)
+	defs = append(defs, metricTailCols(metrics)...)
 	t := buildTable(defs)
 	for _, row := range rowOrder {
-		addDimensionRow(t, row.parts[:len(dims)], row.agg)
+		cells := make([]string, 0, len(dims)+len(metrics))
+		cells = append(cells, row.parts[:len(dims)]...)
+		cells = appendMetricCells(cells, metrics, row.agg)
+		t.Row(cells...)
 	}
-	addDimensionTotalRow(t, len(dims), totals)
+	// 总计行:第一个维度列写 Total / 总计,其余维度列留空。
+	totalCells := make([]string, 0, len(dims)+len(metrics))
+	totalCells = append(totalCells, ui.Bi("Total", "总计"))
+	for i := 1; i < len(dims); i++ {
+		totalCells = append(totalCells, "")
+	}
+	totalCells = appendMetricCells(totalCells, metrics, totals)
+	t.Row(totalCells...)
 	sb.WriteString(t.String())
 	return sb.String(), nil
 }
@@ -314,36 +409,6 @@ func (q *Querier) rangeTotals(ctx context.Context, dates []string) (groupAggrega
 		return totals, fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
 	}
 	return totals, nil
-}
-
-func addDimensionRow(t *ui.Table, keys []string, agg groupAggregate) {
-	cells := make([]string, 0, len(keys)+7)
-	for _, k := range keys {
-		cells = append(cells, k)
-	}
-	cells = append(cells,
-		fmt.Sprintf("%d", agg.requests),
-		formatTokens(agg.freshInput), formatTokens(agg.outputTokens),
-		formatTokens(agg.cacheRead), formatTokens(agg.reasoning), formatTokens(agg.totalTokens),
-		formatCacheHit(agg.freshInput, agg.cacheRead, agg.cacheCreate),
-	)
-	t.Row(cells...)
-}
-
-// addDimensionTotalRow 渲染总计行:第一个维度列写 Total / 总计,其余维度列留空。
-func addDimensionTotalRow(t *ui.Table, dimCount int, totals groupAggregate) {
-	cells := make([]string, 0, dimCount+7)
-	cells = append(cells, ui.Bi("Total", "总计"))
-	for i := 1; i < dimCount; i++ {
-		cells = append(cells, "")
-	}
-	cells = append(cells,
-		fmt.Sprintf("%d", totals.requests),
-		formatTokens(totals.freshInput), formatTokens(totals.outputTokens),
-		formatTokens(totals.cacheRead), formatTokens(totals.reasoning), formatTokens(totals.totalTokens),
-		formatCacheHit(totals.freshInput, totals.cacheRead, totals.cacheCreate),
-	)
-	t.Row(cells...)
 }
 
 func (q *Querier) ByClient(ctx context.Context, dates []string) (string, error) {
@@ -417,14 +482,15 @@ func (q *Querier) Sessions(ctx context.Context, dates []string) (string, error) 
 
 	// Date（会话首条消息日期）与 ID 不设列：单日下日期恒等于查询日无信息、
 	// 跨日需要日期归属时按日分别查询更直接；会话 ID 是内部标识，标题已足够
-	// 区分常用场景。首条消息日期仍用于 SQL 排序。尾部数值列与分组表统一。
+	// 区分常用场景。首条消息日期仍用于 SQL 排序。尾部数值列由全局布局驱动。
 	// Title 是长自由文本（无版本区分价值），上限 30 截断保住表格总宽；
 	// 其余列（项目/客户端等分组键）自适应不截断。
+	metrics := q.metricColumns()
 	defs := append([]tableCol{
 		{ui.HClient, ui.AlignLeft, 0},
 		{ui.HProject, ui.AlignLeft, 0},
 		{ui.HTitle, ui.AlignLeft, 30},
-	}, groupTailDefs...)
+	}, metricTailCols(metrics)...)
 	t := buildTable(defs)
 
 	for rows.Next() {
@@ -439,10 +505,12 @@ func (q *Querier) Sessions(ctx context.Context, dates []string) (string, error) 
 		if project == "" {
 			project = ui.Bi("(uncategorized)", "(未分类)")
 		}
-		t.Row(client, project, title, fmt.Sprintf("%d", requestCount),
-			formatTokens(freshInput), formatTokens(outputTokens), formatTokens(cacheRead),
-			formatTokens(reasoning), formatTokens(totalTokens),
-			formatCacheHit(freshInput, cacheRead, cacheCreate))
+		agg := groupAggregate{
+			requests: requestCount, freshInput: freshInput, outputTokens: outputTokens,
+			cacheRead: cacheRead, cacheCreate: cacheCreate, reasoning: reasoning, totalTokens: totalTokens,
+		}
+		cells := appendMetricCells([]string{client, project, title}, metrics, agg)
+		t.Row(cells...)
 	}
 	if err := rows.Err(); err != nil {
 		return "", fmt.Errorf("%s: %w", ui.Bi("iterate session detail rows failed", "遍历会话明细结果失败"), err)

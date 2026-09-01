@@ -241,9 +241,36 @@ group_q = "client,model,provider,mpc"  # several tables in this order
 - `query.default` is matched after trimming; whitespace means "use client". It may reference a built-in view, a subquery, or a group; `session` and `summary` are not referable.
 - `query list` takes no positional args and prints a fixed structure in one pass: default behavior (`token-usage query -> <name> (<category>)`), one-time invocation hint showing the direct and explicit forms as equivalent, six built-in commands with their purposes, then every configured subquery and group as a single copy-pasteable command for today (such as `token-usage query mpc`) together with its dimensions or members CSV; empty sections say `None`. It only reads the effective config and parses definitions — it never opens `usage.db`, prints statistics, reads collection errors, accepts a date, or changes any state. Bad definitions still fail there with the same localized errors instead of being hidden behind an empty section.
 
+### Output Column Layout
+
+The optional `[query.output]` section defines one global, ordered list of metric columns shared by every query table:
+
+```toml
+[query.output]
+columns = ["requests", "input", "output", "total", "cache_hit"]
+```
+
+`columns` is an ordered string array: an ID appears → the column is shown, absent → hidden, and the array order is the column order of every table. Allowed IDs (case-sensitive):
+
+| ID | Header | Meaning |
+|---|---|---|
+| `requests` | Requests / 请求数 | message count |
+| `input` | Input / 输入 | fresh input tokens |
+| `output` | Output / 输出 | output tokens |
+| `cache_read` | Cache Read / 缓存读取 | cache read tokens |
+| `cache_create` | Cache Create / 缓存创建 | cache create tokens |
+| `reasoning` | Reasoning / 推理 | reasoning tokens |
+| `total` | Total / 总计 | source total tokens |
+| `cache_hit` | Cache Hit / 缓存命中 | cache_read / (fresh input + cache_read + cache_create) |
+
+- **Scope**: the layout applies to `query client`, `model`, `provider`, `project`, `session`, and every table of the bare query, named views (`query <name>` / `query custom <name>`), and groups. `query summary` is not covered — it keeps its complete vertical summary, including Cache Create; `query list` renders no data table. Dimension columns are always shown on the left of each table (the session table always shows Client/Project/Title first) and never take part in the layout.
+- **Default**: when `[query.output]` or `columns` is missing, the seven columns `requests, input, output, cache_read, reasoning, total, cache_hit` are used, so existing configs and outputs stay identical after an upgrade. `cache_create` is the first metric that is selectable but hidden by default; it always counts toward the Cache Hit denominator, so hiding or showing it never changes any statistic, sort order, or total.
+- **Validation**: `query.output` must be a table whose only key is `columns`; the array must be non-empty, its elements strings from the table above, without duplicates (whitespace around an element is trimmed). An empty array is not "restore defaults" — remove `query.output` (or `query.output.columns`) to restore the default layout. Errors are reported with the full config path and the offending value. `config set` cannot write `query.output.columns`; use the TUI Output columns page or edit the TOML by hand.
+- **Error boundary**: unrelated view-definition errors (`subqueries`/`groups`/`default`) never block the five layout-affected static table commands — a valid layout still applies. An invalid `query.output` itself fails those five commands before the database is opened. A top-level query problem (`[query]` alongside `[Query]`, or a non-table root) silently falls back to the default seven columns for the static table commands, while the bare query, named views, and `query list` keep failing with the existing localized errors. TUI saves always run the full query validation.
+
 `query provider` (and the provider dimension of any custom view) prefers router attribution, then the collector's provider value. Historical empty values remain unattributed; the query does not infer a provider from the client. `provider_aliases` is applied before composite keys are formed: aliases with the same value are combined into one row in every view, without changing `usage.db`.
 
-Query configuration is display-only. Semantic errors (broken references, malformed CSV, unknown keys, top-level conflicts such as `[query]` alongside `[Query]`, or a non-table root like `query = "x"`) make the default path (bare `query` and `query <date>`), every named invocation (`query <name>` / `query custom <name>`), `query list`, and TUI saves fail with the offending key; the six static built-in views, `collect`, `status`, `start`, the daemon, `config set`, and `config show` keep working and preserve the offending entries. The TUI "Query views" page (press `v` in the main menu) edits this section with guided selection and shows a recovery list when the raw section cannot be parsed. Before downgrading to a version without query-view support, remove the whole `[query]`, `[query.subqueries]`, and `[query.groups]` sections: older versions reject any non-empty query section.
+Query configuration is display-only. Semantic errors (broken references, malformed CSV, unknown keys, top-level conflicts such as `[query]` alongside `[Query]`, or a non-table root like `query = "x"`) make the default path (bare `query` and `query <date>`), every named invocation (`query <name>` / `query custom <name>`), `query list`, and TUI saves fail with the offending key; the five layout-affected static table commands (`client`/`model`/`provider`/`project`/`session`) fall back to the default seven columns on a top-level problem and otherwise keep their layout when only unrelated view definitions are broken, `query summary` is unaffected, and `collect`, `status`, `start`, the daemon, `config set`, and `config show` keep working and preserve the offending entries. In the TUI, `v` on the main menu opens the **Query** page with three entries — **Views** (custom subqueries, groups, default behavior), **Output columns** (the global metric layout, with `d` to restore the default), and **Provider aliases** — each showing a recovery list when its own part of the raw section cannot be parsed. Before downgrading to a version without query-view support, remove the whole `[query]`, `[query.subqueries]`, `[query.groups]`, and `[query.output]` sections: older versions reject any non-empty query section.
 
 Examples:
 
@@ -298,7 +325,7 @@ token-usage config init                # initialize the configuration file and d
 
 ### config (TUI)
 
-With no arguments, opens the interactive configuration TUI (`bubbletea`). If no configuration file exists, it first writes the default template, then opens the UI. You can edit clients, routers, daemon settings, logs, and provider aliases; `data_dir` is read-only in the TUI. Saving always goes through `ApplyConfig` (see [config set](#config-set)). Clients outside the router-capable family (currently every client except Claude) show no router field; an existing non-empty router value on such a client is still displayed so it can be cleared, and saving rejects a non-empty value (see the router guard under [config set](#config-set)).
+With no arguments, opens the interactive configuration TUI (`bubbletea`). If no configuration file exists, it first writes the default template, then opens the UI. You can edit clients, routers, daemon settings, logs, and query settings (the `v` Query page groups view definitions, the output column layout, and provider aliases); `data_dir` is read-only in the TUI. Saving always goes through `ApplyConfig` (see [config set](#config-set)). Clients outside the router-capable family (currently every client except Claude) show no router field; an existing non-empty router value on such a client is still displayed so it can be cleared, and saving rejects a non-empty value (see the router guard under [config set](#config-set)).
 
 ### config show
 

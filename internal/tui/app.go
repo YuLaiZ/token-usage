@@ -40,7 +40,7 @@ type App struct {
 	syncPending    bool           // 自启同步待重试(上次保存 AutoStart.Err!=nil)
 	quitAfterSave  bool           // 保存并退出:保存完成后若干净成功则 tea.Quit
 	confirmQuit    bool           // dirty 退出确认层:拦截 q/esc/ctrl+c,提供放弃/保存/返回
-	query          QueryAdapter   // 保存前 query 校验与 Query views 数据源(nil 仅测试,生产由 CLI 注入)
+	query          QueryAdapter   // 保存前 query 校验与 Query 子页(Views/Output columns)数据源(nil 仅测试,生产由 CLI 注入)
 
 	stack         []page
 	width, height int
@@ -406,13 +406,13 @@ func (a *App) save() tea.Cmd {
 		a.statusMsg = noChangesMsg
 		return nil
 	}
-	// 保存前 query 校验:失败时拒绝保存、保留草稿,并给出两条出路
-	// (进入 Query views 修复,或用 config set 完成无关单项修改)。
+	// 保存前 query 校验:失败时拒绝保存、保留草稿,并指明修复入口
+	// (Query 的 Views 或 Output columns)与无关单项修改的替代路径。
 	if a.query != nil {
 		if err := a.query.Validate(a.draft); err != nil {
 			a.statusMsg = err.Error() + "\n" + ui.Bi(
-				"Fix it in Query views (press v on the main menu), or use `config set` for unrelated single-value changes",
-				"请进入 Query views 修复(主菜单按 v),或使用 config set 完成无关单项修改",
+				"Draft kept; fix it in Query > Views or Output columns (press v on the main menu) before saving, or use `config set` for unrelated single-value changes",
+				"草稿已保留；请在 Query 的 Views 或 Output columns 修复（主菜单按 v）后再保存，或使用 config set 完成无关单值修改",
 			)
 			return nil
 		}

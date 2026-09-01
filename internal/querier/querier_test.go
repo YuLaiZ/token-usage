@@ -362,9 +362,10 @@ func TestFormatCacheHit(t *testing.T) {
 	}
 }
 
-// 尾部 7 列统一约定收口：分组表与 sessions 的表头英文行最后 7 列必须
-// 依次为 Requests / Input / Output / Cache Read / Reasoning / Total / Cache Hit。
-func TestQueryViewsTailColumnsLocked(t *testing.T) {
+// 默认布局锁定(升级不变合同):未设置输出列布局时,分组表与 sessions 的
+// 表头英文行最后 7 列依次为 Requests / Input / Output / Cache Read /
+// Reasoning / Total / Cache Hit,与历史版本逐字一致;cache_create 默认不显示。
+func TestQueryViewsDefaultLayoutLocked(t *testing.T) {
 	wantTail := []string{"Requests", "Input", "Output", "Cache Read", "Reasoning", "Total", "Cache Hit"}
 
 	headerCells := func(t *testing.T, out string) []string {

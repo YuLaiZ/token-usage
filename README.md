@@ -6,7 +6,7 @@ A local LLM usage analytics CLI. It collects token usage from the AI clients you
 
 ## Highlights
 
-- **Build the report you actually want — no SQL required.** Define a named multi-dimensional view from `client`, `model`, `provider`, and `project`; then compose built-in and custom views into a reusable, ordered report group. Set it as the default, discover it with `query list`, and run it by name.
+- **Build the report you actually want — no SQL required.** Define a named multi-dimensional view from `client`, `model`, `provider`, and `project`; then compose built-in and custom views into a reusable, ordered report group. Set it as the default, discover it with `query list`, run it by name, and choose the metric columns in table-based reports and their order.
 - Message/API-request-level accounting, including accurate attribution across dates, models, branches, and rewinds.
 - Collectors for Claude Code/Desktop, OpenCode, Codex, WorkBuddy, ZCode, and Zhipu-AutoClaw.
 - CC-Switch router attribution for the Claude family, backfilling the actual provider and model from proxy logs.
@@ -65,7 +65,7 @@ For manual installation, a pinned version, source builds, update trust rules, un
 
 ### 2. Configure in the TUI and Collect
 
-All clients start disabled. We recommend the guided configuration TUI: it initializes the configuration on first use, lets you enable the clients you use, and can also configure routers, the daemon, logs, aliases, and query views.
+All clients start disabled. We recommend the guided configuration TUI: it initializes the configuration on first use, lets you enable the clients you use, and can also configure routers, the daemon, logs, and query settings (view definitions, output columns, and aliases).
 
 ```bash
 token-usage config
@@ -93,7 +93,7 @@ token-usage query 20260701-20260721
 
 Dates are positional: `YYYYMMDD` for one day or `YYYYMMDD-YYYYMMDD` for an inclusive range.
 
-The real payoff is making a report fit the question you return to. In the TUI, open **Query views** to create a named multi-dimensional view, combine views into an ordered report group, and select its default. You can also define portable views in `~/.token-usage/config.toml`:
+The real payoff is making a report fit the question you return to. In the TUI, open **Query** (press `v` in the main menu) to create a named multi-dimensional view, combine views into an ordered report group, select its default, and choose which metric columns every table shows. You can also define portable views in `~/.token-usage/config.toml`:
 
 ```toml
 [query]
@@ -104,6 +104,11 @@ model_provider_client = "model,provider,client"
 
 [query.groups]
 daily_stack = "client,model,provider,model_provider_client"
+
+# One global, ordered metric-column layout for every query table
+# (optional; the default keeps today's seven columns).
+[query.output]
+columns = ["requests", "input", "output", "total", "cache_hit"]
 ```
 
 ```bash
@@ -112,7 +117,7 @@ token-usage query daily_stack 20260701-20260721
 token-usage query list
 ```
 
-`query list` reads only configuration and never opens the usage database, so it is a safe way to discover built-in and configured views. The [CLI Reference](docs/cli.md#configurable-query-views) describes the validation rules and complete command contract.
+`query list` reads only configuration and never opens the usage database, so it is a safe way to discover built-in and configured views. The optional `[query.output]` layout picks which metric columns appear — and in which order — in every query table (`cache_create` is available but hidden by default; `query summary` keeps its complete summary). The [CLI Reference](docs/cli.md#configurable-query-views) describes the validation rules and complete command contract.
 
 ## Command Cheat Sheet
 

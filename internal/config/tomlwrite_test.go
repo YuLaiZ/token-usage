@@ -684,3 +684,40 @@ func TestCloneRawQueryStateMutationProbe(t *testing.T) {
 		t.Errorf("nil 载体应保持 nil: %#v / %#v", nilRaw, nilIssues)
 	}
 }
+
+// [query.output].columns 数组的写回-读回往返:MarshalUserConfig 产出 TOML 后
+// ParseUserConfig 还原同序 []any 字符串数组,raw 状态不共享引用。
+func TestMarshalUserConfig_QueryOutputColumnsRoundTrip(t *testing.T) {
+	src := &Config{DataDir: "/x", RawQuery: map[string]any{
+		"subqueries": map[string]any{"mpc": "model,provider"},
+		"output":     map[string]any{"columns": []any{"total", "cache_create", "requests"}},
+	}}
+	data, err := MarshalUserConfig(src)
+	if err != nil {
+		t.Fatalf("MarshalUserConfig: %v", err)
+	}
+	parsed, err := ParseUserConfig(data)
+	if err != nil {
+		t.Fatalf("ParseUserConfig: %v\nTOML:\n%s", err, data)
+	}
+	output, ok := parsed.RawQuery["output"].(map[string]any)
+	if !ok {
+		t.Fatalf("query.output 应为表: %T\nTOML:\n%s", parsed.RawQuery["output"], data)
+	}
+	if len(output) != 1 {
+		t.Errorf("output 表只应含 columns: %v\nTOML:\n%s", output, data)
+	}
+	got, ok := output["columns"].([]any)
+	if !ok {
+		t.Fatalf("columns 应为 []any: %T\nTOML:\n%s", output["columns"], data)
+	}
+	want := []any{"total", "cache_create", "requests"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("columns 往返 = %v, want %v\nTOML:\n%s", got, want, data)
+	}
+	// 解析产物不与源 raw 共享引用。
+	output["columns"].([]any)[0] = "mutated"
+	if src.RawQuery["output"].(map[string]any)["columns"].([]any)[0] != "total" {
+		t.Error("解析产物与源 raw 共享了 []any 引用")
+	}
+}

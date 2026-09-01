@@ -204,6 +204,25 @@ func runQueryWithDeps(
 		return executeDefaultQuery(cmdContext(cmd), cmd.OutOrStdout(), usageDB, dates, defs, cfg.ProviderAliases)
 	}
 
+	// summary 不读取输出布局,保持既有完整摘要。
+	if view == viewSummary {
+		usageDB, err := open(queryDBPath(cfg))
+		if err != nil {
+			return fmt.Errorf("%s: %w", ui.Bi("failed to open database", "打开数据库失败"), err)
+		}
+		defer usageDB.Close()
+		return executeQueryDatesWithAliases(cmdContext(cmd), cmd.OutOrStdout(), usageDB, dates, view, cfg.ProviderAliases, nil)
+	}
+
+	// 静态表格命令只解析 query.output:无关的视图定义错误不阻断它们,
+	// 但布局自身错误在打开数据库前直接失败(该段决定它们如何渲染,
+	// 静默回退会掩盖用户配置错误)。顶层 query 问题态没有可信的
+	// [query.output],静默使用默认七列,保持静态视图不被顶层坏 query 阻断。
+	layout, err := staticTableOutputLayout(cfg)
+	if err != nil {
+		return err
+	}
+
 	dbPath := filepath.Join(cfg.DataDir, "usage.db")
 	usageDB, err := open(dbPath)
 	if err != nil {
@@ -211,7 +230,17 @@ func runQueryWithDeps(
 	}
 	defer usageDB.Close()
 
-	return executeQueryDatesWithAliases(cmdContext(cmd), cmd.OutOrStdout(), usageDB, dates, view, cfg.ProviderAliases)
+	return executeQueryDatesWithAliases(cmdContext(cmd), cmd.OutOrStdout(), usageDB, dates, view, cfg.ProviderAliases, layout)
+}
+
+// staticTableOutputLayout 为受布局影响的静态表格命令解析输出布局:
+// 顶层问题态返回默认布局(不报错),否则只把 query.output 的诊断作为
+// 该路径的开库前错误;视图定义错误被有意隔离(由完整 query 路径报告)。
+func staticTableOutputLayout(cfg *config.Config) ([]string, error) {
+	if len(cfg.RawQueryTopLevelIssues) > 0 {
+		return ui.DefaultOutputColumns(), nil
+	}
+	return querydef.ParseOutputLayout(querydef.Input{RawQuery: cfg.RawQuery})
 }
 
 // queryInvocation 是 query 根命令位置参数的分派结果。
@@ -454,16 +483,24 @@ func queryDBPath(cfg *config.Config) string {
 	return filepath.Join(cfg.DataDir, "usage.db")
 }
 
-// parseQueryDefinitions 把 config raw query 状态适配为 querydef 输入并解析。
-func parseQueryDefinitions(cfg *config.Config) (*querydef.QueryDefinitions, error) {
+// querydefInput 把 config raw query 状态适配为 querydef 输入的统一转换点:
+// config 侧顶层问题项映射为 querydef.TopLevelIssue,完整与局部解析入口
+// 共用同一顶层共同前置语义。静态表格命令的布局路径有意不经过本转换——
+// 它先预检顶层问题并提前返回默认布局,不消费诊断。
+func querydefInput(cfg *config.Config) querydef.Input {
 	issues := make(map[string]querydef.TopLevelIssue, len(cfg.RawQueryTopLevelIssues))
 	for name, issue := range cfg.RawQueryTopLevelIssues {
 		issues[name] = querydef.TopLevelIssue{Name: issue.Name, Kind: string(issue.Kind)}
 	}
-	return querydef.Parse(querydef.Input{
+	return querydef.Input{
 		RawQuery:               cfg.RawQuery,
 		RawQueryTopLevelIssues: issues,
-	})
+	}
+}
+
+// parseQueryDefinitions 把 config raw query 状态适配为 querydef 输入并完整解析。
+func parseQueryDefinitions(cfg *config.Config) (*querydef.QueryDefinitions, error) {
+	return querydef.Parse(querydefInput(cfg))
 }
 
 // executeDefaultQuery 执行 query.default 指向的对象。
@@ -488,14 +525,30 @@ func resolveTarget(defs *querydef.QueryDefinitions, name string) (querydef.Targe
 	return querydef.Target{}, false
 }
 
+// newLayoutQuerier 构造应用输出列布局的 Querier。columns 为 nil 时使用默认七列;
+// 非空序列经完整/局部解析已校验,此处防御性校验失败即内部不变式破坏。
+func newLayoutQuerier(usageDB *db.DB, columns []string) (*querier.Querier, error) {
+	q := querier.New(usageDB)
+	if len(columns) == 0 {
+		return q, nil
+	}
+	if err := q.SetOutputColumns(columns); err != nil {
+		return nil, fmt.Errorf("%s: %w", ui.Bi("invalid output column layout", "输出列布局不合法"), err)
+	}
+	return q, nil
+}
+
 // executeTargetQuery 把目标展开为渲染序列并逐表输出;全部表完成后统一输出一次异常警告。
-// 统一统计信息区只在全部表格前打印一次,不随表数量重复。
+// 统一统计信息区只在全部表格前打印一次,不随表数量重复;同一布局作用于每张表。
 func executeTargetQuery(ctx context.Context, out io.Writer, usageDB *db.DB, dates []string, defs *querydef.QueryDefinitions, target querydef.Target, aliases map[string]string) error {
 	views, err := targetDimensionViews(defs, target)
 	if err != nil {
 		return err
 	}
-	q := querier.New(usageDB)
+	q, err := newLayoutQuerier(usageDB, defs.OutputColumns)
+	if err != nil {
+		return err
+	}
 	if err := printQueryStatisticsHeader(ctx, out, q, dates); err != nil {
 		return err
 	}
@@ -590,18 +643,21 @@ func executeQueryContext(ctx context.Context, out io.Writer, usageDB *db.DB, arg
 }
 
 func executeQueryDates(ctx context.Context, out io.Writer, usageDB *db.DB, dates []string, view queryView) error {
-	return executeQueryDatesWithAliases(ctx, out, usageDB, dates, view, nil)
+	return executeQueryDatesWithAliases(ctx, out, usageDB, dates, view, nil, nil)
 }
 
-func executeQueryDatesWithAliases(ctx context.Context, out io.Writer, usageDB *db.DB, dates []string, view queryView, aliases map[string]string) error {
-	q := querier.New(usageDB)
+// executeQueryDatesWithAliases 执行静态视图;layout 为 nil 时使用默认七列布局。
+func executeQueryDatesWithAliases(ctx context.Context, out io.Writer, usageDB *db.DB, dates []string, view queryView, aliases map[string]string, layout []string) error {
+	q, err := newLayoutQuerier(usageDB, layout)
+	if err != nil {
+		return err
+	}
 
 	if err := printQueryStatisticsHeader(ctx, out, q, dates); err != nil {
 		return err
 	}
 
 	var result string
-	var err error
 	switch view {
 	case viewModel:
 		result, err = q.ByModel(ctx, dates)

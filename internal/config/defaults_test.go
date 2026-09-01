@@ -129,7 +129,7 @@ func TestDefaultConfigTemplate_AllClientsDisabledByDefault(t *testing.T) {
 // 解析后两个 raw 载体均为 nil,旧版本二进制可安全读取(降级兼容)。
 func TestDefaultConfigTemplate_QuerySectionCommentOnly(t *testing.T) {
 	template := DefaultConfigTemplate()
-	for _, want := range []string{"[query]", "subqueries", "groups", "default"} {
+	for _, want := range []string{"[query]", "subqueries", "groups", "default", "[query.output]", "columns", "cache_create"} {
 		if !strings.Contains(template, want) {
 			t.Errorf("默认模板应含 query 注释示例(含 %q):\n%s", want, template)
 		}
@@ -144,7 +144,7 @@ func TestDefaultConfigTemplate_QuerySectionCommentOnly(t *testing.T) {
 	// 注释行必须是注释形态(不以生效键写出)。
 	for _, line := range strings.Split(template, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "default =") || strings.HasPrefix(trimmed, "mpc =") {
+		if strings.HasPrefix(trimmed, "default =") || strings.HasPrefix(trimmed, "mpc =") || strings.HasPrefix(trimmed, "columns =") {
 			t.Errorf("模板不得包含生效的 query 键: %q", line)
 		}
 	}

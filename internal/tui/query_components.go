@@ -33,6 +33,9 @@ type orderedSelect struct {
 	selected   []string
 	cursor     int
 	done       selectOutcome
+	// label 把候选 ID 渲染为界面标签(如输出列的双语名);nil 时直接显示 ID。
+	// Selection 始终返回 ID,写盘语义不受显示标签影响。
+	label      func(id string) string
 	keyHandler func(key string) bool
 }
 
@@ -136,6 +139,19 @@ func (s *orderedSelect) Selection() []string {
 	return append([]string(nil), s.selected...)
 }
 
+// SetLabelResolver 注入 ID → 界面标签的解析函数(可选;nil 恢复显示 ID)。
+func (s *orderedSelect) SetLabelResolver(fn func(id string) string) {
+	s.label = fn
+}
+
+// displayName 返回候选的界面标签(ID 或 label 解析结果)。
+func (s *orderedSelect) displayName(id string) string {
+	if s.label != nil {
+		return s.label(id)
+	}
+	return id
+}
+
 // View 渲染候选列表(光标与选中标记)与有序预览。
 func (s *orderedSelect) View() string {
 	var b strings.Builder
@@ -149,12 +165,16 @@ func (s *orderedSelect) View() string {
 		if i == s.cursor {
 			cursor = "▸"
 		}
-		b.WriteString("  " + cursor + " " + mark + name + "\n")
+		b.WriteString("  " + cursor + " " + mark + s.displayName(name) + "\n")
 	}
 	if len(s.candidates) == 0 {
 		b.WriteString("  (" + ui.Bi("no candidates", "无候选") + ")\n")
 	}
-	b.WriteString("\n  " + ui.Bi("Selected order", "已选顺序") + ": " + previewOrder(s.selected) + "\n")
+	preview := make([]string, len(s.selected))
+	for i, id := range s.selected {
+		preview[i] = s.displayName(id)
+	}
+	b.WriteString("\n  " + ui.Bi("Selected order", "已选顺序") + ": " + previewOrder(preview) + "\n")
 	b.WriteString("\n  " + ui.Bi("↑/k ↓/j Move", "↑/k ↓/j 移动") + "   " + ui.Bi("space Select", "space 选择") + "   " +
 		ui.Bi("[ ] Reorder", "[ ] 调序") + "   " + ui.Bi("enter Confirm", "enter 确认") + "   " + ui.Bi("esc Cancel", "esc 取消") + "\n")
 	return b.String()

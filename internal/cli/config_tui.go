@@ -158,6 +158,8 @@ func newTUIApplyFuncWithManager(
 
 // tuiQueryAdapter 把 TUI 草稿的 raw query 状态适配为 querydef 解析与校验
 // (config raw → querydef.Input 的唯一适配点,与 query 命令共用语义)。
+// Validate/Definitions 用完整解析(保存门槛);Views/OutputLayout 是两个
+// 局部入口,分别服务 Views 页与 Output columns 页的隔离恢复态。
 type tuiQueryAdapter struct{}
 
 func (tuiQueryAdapter) Validate(cfg *config.Config) error {
@@ -167,4 +169,12 @@ func (tuiQueryAdapter) Validate(cfg *config.Config) error {
 
 func (tuiQueryAdapter) Definitions(cfg *config.Config) (*querydef.QueryDefinitions, error) {
 	return parseQueryDefinitions(cfg)
+}
+
+func (tuiQueryAdapter) Views(cfg *config.Config) (*querydef.ViewDefinitions, error) {
+	return querydef.ParseViews(querydefInput(cfg))
+}
+
+func (tuiQueryAdapter) OutputLayout(cfg *config.Config) ([]string, error) {
+	return querydef.ParseOutputLayout(querydefInput(cfg))
 }

@@ -6,7 +6,7 @@
 
 ## 核心能力
 
-- **把你真正想要的报表做出来，无需 SQL。** 从 `client`、`model`、`provider`、`project` 组合出具名多维视图，再把内置与自定义视图编排成可复用、按顺序输出的报表组合；设为默认、用 `query list` 查找，并按名称运行。
+- **把你真正想要的报表做出来，无需 SQL。** 从 `client`、`model`、`provider`、`project` 组合出具名多维视图，再把内置与自定义视图编排成可复用、按顺序输出的报表组合；设为默认、用 `query list` 查找、按名称运行，并统一选择表格型报表展示的指标列及其顺序。
 - 按消息/API 请求统计，准确处理跨日、多模型、分支与 rewind 的归因。
 - 支持 Claude Code/Desktop、OpenCode、Codex、WorkBuddy、ZCode 与 Zhipu-AutoClaw。
 - 支持 Claude 系列的 CC-Switch router 归因：通过代理日志回填实际 provider/model。
@@ -65,7 +65,7 @@ token-usage update --version vX.Y.Z # 更新指定 Release
 
 ### 2. 用 TUI 配置并采集
 
-所有客户端默认关闭。推荐使用引导式配置 TUI：首次运行会自动初始化，可在其中开启实际使用的客户端，也可配置 router、守护进程、日志、别名和查询视图。
+所有客户端默认关闭。推荐使用引导式配置 TUI：首次运行会自动初始化，可在其中开启实际使用的客户端，也可配置 router、守护进程、日志和查询设置（视图定义、输出列与别名）。
 
 ```bash
 token-usage config
@@ -93,7 +93,7 @@ token-usage query 20260701-20260721
 
 日期使用位置参数：`YYYYMMDD` 表示单日，`YYYYMMDD-YYYYMMDD` 表示包含首尾日期的范围。
 
-真正的价值在于围绕你反复关心的问题构建报表：在 TUI 中进入 **查询视图**，创建具名多维视图，组合成按顺序输出的报表组合，并选择其默认项。也可在 `~/.token-usage/config.toml` 中定义可迁移的视图：
+真正的价值在于围绕你反复关心的问题构建报表：在 TUI 中进入 **查询**（主菜单按 `v`），创建具名多维视图，组合成按顺序输出的报表组合，选择其默认项，并挑选所有表格共用的指标列。也可在 `~/.token-usage/config.toml` 中定义可迁移的视图：
 
 ```toml
 [query]
@@ -104,6 +104,11 @@ model_provider_client = "model,provider,client"
 
 [query.groups]
 daily_stack = "client,model,provider,model_provider_client"
+
+# 一份全局、有序的指标列布局，所有 query 表格共用
+# （可选；缺省保持现有七列）。
+[query.output]
+columns = ["requests", "input", "output", "total", "cache_hit"]
 ```
 
 ```bash
@@ -112,7 +117,7 @@ token-usage query daily_stack 20260701-20260721
 token-usage query list
 ```
 
-`query list` 仅读取配置、不打开 usage 数据库，适合安全查看内置和已配置视图。校验规则和完整命令契约见 [CLI 参考](docs/cli.zh-CN.md#可配置查询视图)。
+`query list` 仅读取配置、不打开 usage 数据库，适合安全查看内置和已配置视图。可选的 `[query.output]` 布局决定每张 query 表格显示哪些指标列及其顺序（`cache_create` 可选但默认隐藏；`query summary` 保持完整摘要）。校验规则和完整命令契约见 [CLI 参考](docs/cli.zh-CN.md#可配置查询视图)。
 
 ## 命令速查
 

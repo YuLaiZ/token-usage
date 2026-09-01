@@ -74,7 +74,7 @@ func TestMainMenu_HelpOpenSwallowsNavigation(t *testing.T) {
 func TestMainMenu_DataDirEntersReadOnlyPage(t *testing.T) {
 	a := newAppForTest(&config.Config{DataDir: "/x"}, &config.Config{DataDir: "/x"}, nil)
 	m := newMainMenu(a)
-	m.cursor = 6 // 数据目录(只读)
+	m.cursor = 5 // 数据目录(只读)
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if len(a.stack) != 2 {
 		t.Fatalf("enter 数据目录应 push 说明页, 栈长=%d", len(a.stack))
@@ -204,9 +204,9 @@ func keyMsg(s string) tea.KeyMsg {
 }
 
 // 帮助层包含 v Query views 键说明;q 退出语义保持。
-func TestMainMenu_HelpContainsQueryViewsKey(t *testing.T) {
+func TestMainMenu_HelpContainsQueryKey(t *testing.T) {
 	overlay := helpOverlay()
-	if !strings.Contains(overlay, "v") || !strings.Contains(overlay, "Query views") || !strings.Contains(overlay, "查询视图") {
-		t.Errorf("帮助层应说明 v Query views:\n%s", overlay)
+	if !strings.Contains(overlay, "v") || !strings.Contains(overlay, "Query") || !strings.Contains(overlay, "查询") {
+		t.Errorf("帮助层应说明 v Query:\n%s", overlay)
 	}
 }

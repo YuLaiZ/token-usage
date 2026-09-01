@@ -12,12 +12,19 @@ import (
 // defsAdapter 测试用生产语义适配器:config raw → querydef(与 CLI 注入同一语义)。
 type defsAdapter struct{}
 
-func (defsAdapter) Definitions(cfg *config.Config) (*querydef.QueryDefinitions, error) {
+// querydefTestInput 与生产 querydefInput 同语义的统一转换点:
+// config 顶层问题项映射为 querydef.TopLevelIssue,四个方法共用同一
+// 顶层共同前置语义。
+func querydefTestInput(cfg *config.Config) querydef.Input {
 	issues := make(map[string]querydef.TopLevelIssue, len(cfg.RawQueryTopLevelIssues))
 	for name, issue := range cfg.RawQueryTopLevelIssues {
 		issues[name] = querydef.TopLevelIssue{Name: issue.Name, Kind: string(issue.Kind)}
 	}
-	return querydef.Parse(querydef.Input{RawQuery: cfg.RawQuery, RawQueryTopLevelIssues: issues})
+	return querydef.Input{RawQuery: cfg.RawQuery, RawQueryTopLevelIssues: issues}
+}
+
+func (defsAdapter) Definitions(cfg *config.Config) (*querydef.QueryDefinitions, error) {
+	return querydef.Parse(querydefTestInput(cfg))
 }
 
 func (a defsAdapter) Validate(cfg *config.Config) error {
@@ -454,8 +461,8 @@ func TestQueryViews_PageLocalEscAndDirtySaveRejected(t *testing.T) {
 	if cmd != nil {
 		t.Error("保存应被拒绝(nil cmd)")
 	}
-	if !strings.Contains(a.statusMsg, "Query views") {
-		t.Errorf("拒绝提示应指引进 Query views: %q", a.statusMsg)
+	if !strings.Contains(a.statusMsg, "Output columns") || !strings.Contains(a.statusMsg, "Views") {
+		t.Errorf("拒绝提示应指引进 Query 的 Views/Output columns: %q", a.statusMsg)
 	}
 
 	// 修复后保存可通过。

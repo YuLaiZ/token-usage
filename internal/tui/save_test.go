@@ -12,6 +12,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/configapp"
 	"github.com/YuLaiZ/token-usage/internal/querydef"
 	"github.com/YuLaiZ/token-usage/internal/service"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // fakeApply 是可注入的 ApplyFunc fake。按调用顺序消费预设结果队列。
@@ -428,11 +429,25 @@ func (f fakeQueryAdapter) Definitions(cfg *config.Config) (*querydef.QueryDefini
 	if f.err != nil {
 		return nil, f.err
 	}
-	return &querydef.QueryDefinitions{Default: querydef.Target{Name: "client", Kind: querydef.TargetBuiltin}}, nil
+	return &querydef.QueryDefinitions{ViewDefinitions: querydef.ViewDefinitions{Default: querydef.Target{Name: "client", Kind: querydef.TargetBuiltin}}}, nil
+}
+
+func (f fakeQueryAdapter) Views(cfg *config.Config) (*querydef.ViewDefinitions, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &querydef.ViewDefinitions{Default: querydef.Target{Name: "client", Kind: querydef.TargetBuiltin}}, nil
+}
+
+func (f fakeQueryAdapter) OutputLayout(cfg *config.Config) ([]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return ui.DefaultOutputColumns(), nil
 }
 
 // save() 在创建异步 snapshot 前调用注入的 query 校验:失败时不调用 ApplyConfig、
-// 保留 draft,并提示「进入 Query views 修复」与「使用 config set 完成无关单项修改」两条出路。
+// 保留 draft,并提示「在 Query 的 Views/Output columns 修复」与「使用 config set 完成无关单值修改」两条出路。
 func TestApp_Save_QueryValidationRejectsSave(t *testing.T) {
 	draft := &config.Config{DataDir: "/x", Daemon: config.DaemonConfig{PollInterval: 42}}
 	a := newAppForTest(draft, draft, func(expectedRevision []byte, currentUser *config.Config) (configapp.ApplyConfigResult, error) {
@@ -454,7 +469,7 @@ func TestApp_Save_QueryValidationRejectsSave(t *testing.T) {
 	if !strings.Contains(a.statusMsg, "invalid query config") {
 		t.Errorf("提示应含校验错误: %q", a.statusMsg)
 	}
-	for _, want := range []string{"Query views", "config set"} {
+	for _, want := range []string{"Views", "Output columns", "config set", "草稿已保留"} {
 		if !strings.Contains(a.statusMsg, want) {
 			t.Errorf("拒绝提示应含出路 %q: %q", want, a.statusMsg)
 		}

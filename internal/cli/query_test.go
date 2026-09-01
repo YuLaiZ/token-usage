@@ -185,7 +185,7 @@ func TestExecuteQueryDatesWithAliases_AppliesProviderAlias(t *testing.T) {
 	buf := &bytes.Buffer{}
 	err = executeQueryDatesWithAliases(context.Background(), buf, usageDB, []string{"2026-08-25"}, viewProvider, map[string]string{
 		"raw-provider": "Display provider",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,8 +473,10 @@ func TestRunQueryCustom_ArgsAndPrecedence(t *testing.T) {
 	}
 }
 
-// issues、CSV 错误、断开引用只挡裸 query/custom;内置显式子命令保持可用。
-func TestRunQuery_BadQueryConfigOnlyBlocksDefaultAndCustom(t *testing.T) {
+// 坏 query 配置的边界:顶层问题态与视图定义错误只挡完整 query 路径
+// (裸 query/custom);五个静态表格命令不被阻断——顶层问题态静默使用
+// 默认布局,无关视图错误不阻止 query.output 布局生效。
+func TestRunQuery_BadQueryConfigBoundaryForStaticViews(t *testing.T) {
 	open := memOpen(t)
 	issues := map[string]config.RawQueryTopLevelIssue{
 		"Query": {Name: "Query", Value: "x", Kind: config.RawQueryIssueNameConflict},

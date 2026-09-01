@@ -84,6 +84,11 @@ autostart = false   # 开机自启（macOS launchd / Windows 注册表）
 # mpc = "model,provider,client"
 # [query.groups]
 # group_q = "client,model,provider,mpc"
+# 输出列布局（可选）：全部 query 表格共用的指标列顺序；
+# 缺省为 requests,input,output,cache_read,reasoning,total,cache_hit 七列。
+# 可选 ID 还有 cache_create（默认隐藏，仍参与缓存命中率分母）。
+# [query.output]
+# columns = ["requests", "input", "output", "total", "cache_hit"]
 
 # 日志配置
 [log]

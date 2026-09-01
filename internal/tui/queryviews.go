@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"sort"
 	"strings"
 
@@ -11,14 +12,130 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
-// QueryAdapter 是 TUI 保存前 query 校验与 Query views 编辑数据源的可注入适配器:
+// QueryAdapter 是 TUI 保存前 query 校验与 Query 子页编辑数据源的可注入适配器:
 // 把 config raw query 状态适配为 querydef 强类型解析。CLI 层注入生产实现,
-// 测试可注入 fake;接口同时暴露校验与取得 definitions 两种能力。
+// 测试可注入 fake;接口暴露完整校验、完整定义与两类局部读取四种能力:
+// Validate/Definitions 用完整 Parse(保存门槛),Views 只解析视图定义,
+// OutputLayout 只解析输出布局——两个局部入口彼此隔离恢复态。
 type QueryAdapter interface {
-	// Validate 校验草稿的 raw query 状态(语义校验,失败返回定位错误)。
+	// Validate 校验草稿的 raw query 状态(完整语义校验,失败返回定位错误)。
 	Validate(cfg *config.Config) error
-	// Definitions 返回草稿的强类型 query 定义(Query views 常规编辑页数据源)。
+	// Definitions 返回草稿的强类型完整 query 定义(含输出布局)。
 	Definitions(cfg *config.Config) (*querydef.QueryDefinitions, error)
+	// Views 只解析视图定义(default/subqueries/groups),忽略 output 的
+	// 合法/非法形态;顶层问题态返回共同前置诊断。
+	Views(cfg *config.Config) (*querydef.ViewDefinitions, error)
+	// OutputLayout 只解析 query.output,忽略视图定义与其他顶层键。
+	OutputLayout(cfg *config.Config) ([]string, error)
+}
+
+// queryParentItems Query 父页的三个平级子项。
+var queryParentItems = []string{
+	ui.Bi("Views", "查询视图"),
+	ui.Bi("Output columns", "输出列"),
+	ui.Bi("Provider aliases", "供应商别名"),
+}
+
+// queryParentPage 是 Query 父页:Views、Output columns 与 Provider aliases
+// 三个平级入口。父页自身不进入 query raw 恢复态——顶层问题与各自的
+// 定义错误由子页处理;Provider aliases 永远可直接进入。
+type queryParentPage struct {
+	app    *App
+	cursor int
+}
+
+func newQueryParentPage(app *App) *queryParentPage {
+	return &queryParentPage{app: app}
+}
+
+func (p *queryParentPage) title() string { return ui.Bi("Query", "查询") }
+func (p *queryParentPage) Init() tea.Cmd { return nil }
+
+func (p *queryParentPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	k, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return p, nil
+	}
+	switch k.String() {
+	case "esc":
+		p.app.pop()
+	case "up", "k":
+		if p.cursor > 0 {
+			p.cursor--
+		}
+	case "down", "j":
+		if p.cursor < len(queryParentItems)-1 {
+			p.cursor++
+		}
+	case "enter":
+		switch p.cursor {
+		case 0:
+			p.app.push(newQueryViewsPage(p.app))
+		case 1:
+			p.app.push(newOutputColumnsPage(p.app))
+		case 2:
+			p.app.push(newAliasesPage(p.app))
+		}
+	}
+	return p, nil
+}
+
+func (p *queryParentPage) View() string {
+	var b strings.Builder
+	b.WriteString(ui.Bi("Query", "查询") + "\n\n")
+	summaries := []string{queryViewsSummary(p.app.draft), outputColumnsSummary(p.app), aliasCountSummary(p.app.draft)}
+	for i, item := range queryParentItems {
+		cursor := "  "
+		if i == p.cursor {
+			cursor = "▸ "
+		}
+		b.WriteString(cursor + item + "  ·  " + summaries[i] + "\n")
+	}
+	b.WriteString("\n  " + ui.Bi("↑/k ↓/j Move", "↑/k ↓/j 移动") + "   " + ui.Bi("enter Open", "enter 进入") + "   " + ui.Bi("esc Back", "esc 返回") + "\n")
+	return b.String()
+}
+
+// aliasCountSummary 返回 provider alias 数量摘要。
+func aliasCountSummary(c *config.Config) string {
+	n := len(c.ProviderAliases)
+	return ui.Bi(fmtCount(n, "mapping", "条映射"), fmtCountZh(n))
+}
+
+// outputColumnsSummary 返回 Output columns 子项摘要:布局合法时显示有效列数
+// 及是否为默认布局;布局不合法或顶层问题态显示 recovery 标记,不显示列数。
+// 只读取 draft(不做 display 回退)。
+func outputColumnsSummary(app *App) string {
+	if app.query == nil || len(app.draft.RawQueryTopLevelIssues) > 0 {
+		return ui.Bi("needs recovery", "待恢复")
+	}
+	cols, err := app.query.OutputLayout(app.draft)
+	if err != nil {
+		return ui.Bi("needs recovery", "待恢复")
+	}
+	isDefault := len(cols) == 7 && strings.Join(cols, ",") == strings.Join(ui.DefaultOutputColumns(), ",")
+	if isDefault {
+		return ui.Bi("7 columns (default)", "7 列(默认)")
+	}
+	return ui.Bi(fmtCount(len(cols), "column", "列"), itoa(len(cols))+" 列")
+}
+
+// ---- query.output raw 读写(唯一内存形态:columns 为 []any 字符串数组) ----
+
+// setQueryOutputColumns 把 query.output 整表替换为仅含 columns 的字符串数组。
+// 整表替换(而非子键写入)确保恢复过的未知子键不会残留。
+func setQueryOutputColumns(cfg *config.Config, columns []string) {
+	arr := make([]any, len(columns))
+	for i, c := range columns {
+		arr[i] = c
+	}
+	ensureRawQuery(cfg)["output"] = map[string]any{"columns": arr}
+}
+
+// deleteQueryOutput 删除整个 query.output 表(等价恢复默认布局)。
+func deleteQueryOutput(cfg *config.Config) {
+	if cfg.RawQuery != nil {
+		delete(cfg.RawQuery, "output")
+	}
 }
 
 // queryTopMenuItems Query views 首页的三个操作项。
@@ -151,7 +268,7 @@ func (p *queryViewsPage) View() string {
 			b.WriteString(cursor + item.desc + "\n      " + ui.Bi("enter:", "enter:") + " " + item.action + "\n")
 		}
 		b.WriteString("\n  " + ui.Bi("↑/k ↓/j Move", "↑/k ↓/j 移动") + "   " +
-			ui.Bi("enter Fix selected item", "enter 修复选中项") + "   " + ui.Bi("esc Back to main menu (draft kept)", "esc 返回主菜单(保留草稿)") + "\n")
+			ui.Bi("enter Fix selected item", "enter 修复选中项") + "   " + ui.Bi("esc Back to Query (draft kept)", "esc 返回 Query(保留草稿)") + "\n")
 		return b.String()
 	}
 	var b strings.Builder
@@ -340,12 +457,31 @@ func queryDefaultRaw(c *config.Config) (string, bool) {
 
 // buildRecoveryItems 从当前 draft 构建恢复态错误项:
 // 顶层问题项、未知顶层键、错误 default、错误条目;全部清除后返回空(常规态)。
-// 错误来源是统一的重分类入口与 querydef 校验,不维护第二套校验逻辑。
+// 视图错误来自 ParseViews 局部解析(query.output 的错误被隔离在 Output columns
+// 页);恢复项仅由 Diagnostic 的 Path/Kind 构建,不以错误文本子串判断归属。
 func buildRecoveryItems(app *App) []*recoveryItem {
-	var items []*recoveryItem
-	draft := app.draft
+	// 1. 顶层问题项:raw 状态直接构建(Views 与 Output columns 的共同前置)。
+	items := topLevelRecoveryItems(app.draft)
 
-	// 1. 顶层问题项:逐项提供删除。
+	// 其余错误依赖 querydef 局部解析;无适配器时只处理顶层问题项。
+	if app.query == nil {
+		return items
+	}
+	_, viewErr := app.query.Views(app.draft)
+	if viewErr == nil {
+		return items
+	}
+	for _, d := range diagnosticsOf(viewErr) {
+		if item := viewRecoveryItem(d); item != nil {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+// topLevelRecoveryItems 从 raw 顶层问题态逐项构建删除恢复项(按名称排序)。
+func topLevelRecoveryItems(draft *config.Config) []*recoveryItem {
+	var items []*recoveryItem
 	issueNames := make([]string, 0, len(draft.RawQueryTopLevelIssues))
 	for name := range draft.RawQueryTopLevelIssues {
 		issueNames = append(issueNames, name)
@@ -363,96 +499,87 @@ func buildRecoveryItems(app *App) []*recoveryItem {
 			},
 		})
 	}
+	return items
+}
 
-	// 其余错误依赖 querydef 校验结果;无适配器时只处理顶层问题项。
-	if app.query == nil {
-		return items
+// diagnosticsOf 从解析错误中提取结构化诊断列表。
+func diagnosticsOf(err error) []querydef.Diagnostic {
+	var ve *querydef.ValidationError
+	if errors.As(err, &ve) {
+		return ve.Issues
 	}
-	defs, defErr := app.query.Definitions(draft)
-	if defErr == nil {
-		return items
-	}
+	return nil
+}
 
-	// 2. 未知顶层键(query 段内、非 default/subqueries/groups)。
-	for _, key := range sortedQueryRawKeys(draft) {
-		switch key {
-		case "default", "subqueries", "groups":
-		default:
-			unknownKey := key
-			items = append(items, &recoveryItem{
-				desc:   ui.Bi("unknown query key \""+unknownKey+"\"", "未知 query 键 \""+unknownKey+"\""),
-				action: ui.Bi("delete this unknown key", "删除此未知键"),
-				apply: func(app *App) {
-					if app.draft.RawQuery != nil {
-						delete(app.draft.RawQuery, unknownKey)
-					}
-				},
-			})
+// viewRecoveryItem 按诊断的 Path/Kind 构建一个视图错误恢复项:
+//   - 未知 query 键(KindUnknownQueryKey):删除该键;
+//   - subqueries/groups 非表(KindViewsTableType):删除整表后重建;
+//   - default(KindDefault):删除 query.default 回退 client;
+//   - 条目级错误(名称/值类型/成员/重复/下限,Path 为 query.subqueries.<name>
+//     或 query.groups.<name>):只删该条目——跨表重名 Path 固定为
+//     query.groups.<name>,恢复动作删 group 以保留同名子查询。
+func viewRecoveryItem(d querydef.Diagnostic) *recoveryItem {
+	switch d.Kind {
+	case querydef.KindUnknownQueryKey:
+		key := strings.TrimPrefix(d.Path, "query.")
+		if key == d.Path {
+			return nil
 		}
-	}
-
-	// 3. 错误 default:恢复为 client(删除显式键)。
-	if _, hasDefault := draft.RawQuery["default"]; hasDefault && errorMentions(defErr, "query.default") {
-		items = append(items, &recoveryItem{
+		unknownKey := key
+		return &recoveryItem{
+			desc:   ui.Bi("unknown query key \""+unknownKey+"\"", "未知 query 键 \""+unknownKey+"\""),
+			action: ui.Bi("delete this unknown key", "删除此未知键"),
+			apply: func(app *App) {
+				if app.draft.RawQuery != nil {
+					delete(app.draft.RawQuery, unknownKey)
+				}
+			},
+		}
+	case querydef.KindViewsTableType:
+		switch d.Path {
+		case "query.subqueries":
+			return &recoveryItem{
+				desc:   ui.Bi("query.subqueries is not a table", "query.subqueries 不是表"),
+				action: ui.Bi("delete the subqueries table", "删除 subqueries 表"),
+				apply:  func(app *App) { delete(ensureRawQuery(app.draft), "subqueries") },
+			}
+		case "query.groups":
+			return &recoveryItem{
+				desc:   ui.Bi("query.groups is not a table", "query.groups 不是表"),
+				action: ui.Bi("delete the groups table", "删除 groups 表"),
+				apply:  func(app *App) { delete(ensureRawQuery(app.draft), "groups") },
+			}
+		}
+		return nil
+	case querydef.KindDefault:
+		return &recoveryItem{
 			desc:   ui.Bi("invalid query.default", "query.default 不合法"),
 			action: ui.Bi("reset default to client (delete query.default)", "恢复 default 为 client(删除 query.default)"),
-			apply: func(app *App) {
-				clearQueryDefault(app.draft)
-			},
-		})
-	}
-
-	// 4. 错误条目:按错误消息中的配置键路径归位,提供删除后按引导重建。
-	for _, name := range sortedTableKeys(queryRawTable(draft, "subqueries")) {
-		subName := name
-		if errorMentions(defErr, "query.subqueries."+subName) {
-			items = append(items, &recoveryItem{
+			apply:  func(app *App) { clearQueryDefault(app.draft) },
+		}
+	case querydef.KindDefinitionName, querydef.KindDefinitionValueType,
+		querydef.KindDefinitionItem, querydef.KindDuplicateItem, querydef.KindMinimumItems,
+		querydef.KindCrossTableDuplicate:
+		// 跨表重名 Path 固定为 query.groups.<name>:删 group 保留同名子查询。
+		if name := strings.TrimPrefix(d.Path, "query.subqueries."); name != d.Path {
+			subName := name
+			return &recoveryItem{
 				desc:   ui.Bi("invalid subquery \""+subName+"\"", "自定义子查询 \""+subName+"\" 不合法"),
 				action: ui.Bi("delete this entry and recreate it via guided pages", "删除此条目后按引导重新创建"),
-				apply: func(app *App) {
-					deleteQuerySubquery(app.draft, subName)
-				},
-			})
+				apply:  func(app *App) { deleteQuerySubquery(app.draft, subName) },
+			}
 		}
-	}
-	for _, name := range sortedTableKeys(queryRawTable(draft, "groups")) {
-		gName := name
-		if errorMentions(defErr, "query.groups."+gName) {
-			items = append(items, &recoveryItem{
+		if name := strings.TrimPrefix(d.Path, "query.groups."); name != d.Path {
+			gName := name
+			return &recoveryItem{
 				desc:   ui.Bi("invalid group \""+gName+"\"", "组合查询 \""+gName+"\" 不合法"),
 				action: ui.Bi("delete this entry and recreate it via guided pages", "删除此条目后按引导重新创建"),
-				apply: func(app *App) {
-					deleteQueryGroup(app.draft, gName)
-				},
-			})
+				apply:  func(app *App) { deleteQueryGroup(app.draft, gName) },
+			}
 		}
+		return nil
 	}
-
-	// 5. 无法归位的残余错误(如 subqueries/groups 本身类型错误):整键删除。
-	if t, ok := draft.RawQuery["subqueries"]; ok && !isStringTable(t) {
-		items = append(items, &recoveryItem{
-			desc:   ui.Bi("query.subqueries is not a table of strings", "query.subqueries 不是字符串表"),
-			action: ui.Bi("delete the subqueries table", "删除 subqueries 表"),
-			apply:  func(app *App) { delete(ensureRawQuery(app.draft), "subqueries") },
-		})
-	}
-	if t, ok := draft.RawQuery["groups"]; ok && !isStringTable(t) {
-		items = append(items, &recoveryItem{
-			desc:   ui.Bi("query.groups is not a table of strings", "query.groups 不是字符串表"),
-			action: ui.Bi("delete the groups table", "删除 groups 表"),
-			apply:  func(app *App) { delete(ensureRawQuery(app.draft), "groups") },
-		})
-	}
-	if v, ok := draft.RawQuery["default"]; ok && !isString(v) {
-		items = append(items, &recoveryItem{
-			desc:   ui.Bi("query.default is not a string", "query.default 不是字符串"),
-			action: ui.Bi("delete query.default", "删除 query.default"),
-			apply:  func(app *App) { clearQueryDefault(app.draft) },
-		})
-	}
-
-	_ = defs
-	return items
+	return nil
 }
 
 // currentQueryTopLevelEntries 汇总当前 draft 的全部 query 顶层项(两载体并集)。
@@ -465,17 +592,6 @@ func currentQueryTopLevelEntries(cfg *config.Config) map[string]any {
 		entries[name] = issue.Value
 	}
 	return entries
-}
-
-// errorMentions 报告 joined error 中任一分支包含 sub(joined 错误按分支逐一检查)。
-func errorMentions(err error, sub string) bool {
-	if err == nil {
-		return false
-	}
-	if strings.Contains(err.Error(), sub) {
-		return true
-	}
-	return false
 }
 
 func sortedQueryRawKeys(c *config.Config) []string {

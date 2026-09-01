@@ -241,9 +241,36 @@ group_q = "client,model,provider,mpc"  # 按此顺序连续输出多张表
 - `query.default` 匹配前去除首尾空格，空白等同未设置并回退 client；可引用内置视图、子查询或组合查询，`session` 与 `summary` 不可引用。
 - `query list` 不接受位置参数，单次固定顺序输出：默认行为（`token-usage query -> <name> (<类别>)`）、一次性的调用说明（简写与显式两形态等价）、六个内置命令及其用途，随后把每个已配置子查询/组合查询各渲染为一条今天即可复制执行的完整命令（如 `token-usage query mpc`）附维度或成员 CSV；空分区显示 `None`。它只读取有效配置并解析定义——不打开 `usage.db`、不打印统计信息区、不读取采集异常、不接受日期、不修改任何状态。定义损坏时仍按既有定位错误失败，不会伪装成空列表。
 
+### 输出列布局
+
+可选的 `[query.output]` 段定义一份全局、有序的指标列布局，所有 query 表格共用：
+
+```toml
+[query.output]
+columns = ["requests", "input", "output", "total", "cache_hit"]
+```
+
+`columns` 是有序字符串数组：出现即显示、缺失即隐藏，数组顺序就是每张表的列顺序。允许的 ID（大小写敏感）：
+
+| ID | 表头 | 含义 |
+|---|---|---|
+| `requests` | Requests / 请求数 | 消息数 |
+| `input` | Input / 输入 | fresh input tokens |
+| `output` | Output / 输出 | output tokens |
+| `cache_read` | Cache Read / 缓存读取 | cache read tokens |
+| `cache_create` | Cache Create / 缓存创建 | cache create tokens |
+| `reasoning` | Reasoning / 推理 | reasoning tokens |
+| `total` | Total / 总计 | 源 total tokens |
+| `cache_hit` | Cache Hit / 缓存命中 | cache_read / (fresh input + cache_read + cache_create) |
+
+- **适用范围**：布局作用于 `query client`、`model`、`provider`、`project`、`session`，以及裸 query、具名视图（`query <name>` / `query custom <name>`）与组合查询展开的每张表。`query summary` 不适用——它保持完整纵向摘要（含 Cache Create）；`query list` 不渲染数据表。维度列始终显示在每张表左侧（session 表固定先显示 Client/Project/Title），不参与布局。
+- **默认值**：缺失 `[query.output]` 或缺失 `columns` 时使用 `requests, input, output, cache_read, reasoning, total, cache_hit` 七列，升级后既有配置与输出保持不变。`cache_create` 是首个可选但默认隐藏的指标；它始终计入缓存命中率分母，显示或隐藏都不改变任何统计值、排序与总计。
+- **校验规则**：`query.output` 必须是表且只允许 `columns` 一个子键；数组非空、元素为上表中的字符串、不得重复（元素首尾空格自动去除）。空数组不是「恢复默认」——恢复默认应删除 `query.output`（或 `query.output.columns`）。错误会报出完整配置路径与具体值。`config set` 不支持写入 `query.output.columns`，请使用 TUI 的 Output columns 页或手工编辑 TOML。
+- **错误边界**：无关的视图定义错误（`subqueries`/`groups`/`default`）不阻断五个受布局影响的静态表格命令——合法布局仍生效。`query.output` 自身不合法时，这五个命令在打开数据库前失败。顶层 query 问题（`[query]` 与 `[Query]` 并存、根值非表）下静态表格命令静默回退默认七列，裸 query、具名视图与 `query list` 仍按既有定位错误失败。TUI 保存始终执行完整 query 校验。
+
 `query provider`（以及任何自定义视图中的 provider 维度）优先使用路由归因，其次使用采集器的供应商值；历史空值保持未归因，查询不会依据客户端推断供应商。`provider_aliases` 在组合键形成前生效：相同别名在每个视图中合并为同一行，且不会修改 `usage.db`。
 
-query 配置是纯展示配置。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突、`query = "x"` 根值非表）只会使默认路径（裸 `query` 与 `query <日期>`）、全部具名调用（`query <name>` / `query custom <name>`）、`query list` 与 TUI 保存失败并定位具体配置键；六个静态内置视图以及 `collect`、`status`、`start`、守护进程、`config set`、`config show` 不受影响，且原样保留问题项。TUI「查询视图」页（主菜单按 `v`）以选择方式编辑该段，raw 段无法解析时先显示恢复列表。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]` 段：旧版本会拒绝任何非空 query 段。
+query 配置是纯展示配置。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突、`query = "x"` 根值非表）只会使默认路径（裸 `query` 与 `query <日期>`）、全部具名调用（`query <name>` / `query custom <name>`）、`query list` 与 TUI 保存失败并定位具体配置键；五个受布局影响的静态表格命令（`client`/`model`/`provider`/`project`/`session`）在顶层问题态回退默认七列、仅无关视图定义损坏时保持合法布局，`query summary` 不受影响，`collect`、`status`、`start`、守护进程、`config set`、`config show` 不受影响且原样保留问题项。TUI 主菜单按 `v` 进入 **Query** 页，含三个平级入口——**Views / 查询视图**（自定义子查询、组合查询、默认行为）、**Output columns / 输出列**（全局指标布局，`d` 恢复默认）、**Provider aliases / 供应商别名**——各自的部分无法解析时先显示自己的恢复列表。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]`、`[query.output]` 段：旧版本会拒绝任何非空 query 段。
 
 示例：
 
@@ -298,7 +325,7 @@ token-usage config init                # 初始化配置文件与数据库
 
 ### config（TUI）
 
-无参数时打开交互式配置 TUI（`bubbletea`）。配置文件不存在时先写默认模板再打开；可编辑客户端、路由、守护进程、日志和 provider aliases，`data_dir` 在 TUI 中只读。保存统一走 `ApplyConfig`（见下文「config set」）。非 router 支持客户端（当前除 Claude 外全部）不展示「绑定路由」字段；此类客户端上存量非空 router 仍会显示（便于清回「无」），保存校验拒绝非空值（见下文「config set」的 router 拦截）。
+无参数时打开交互式配置 TUI（`bubbletea`）。配置文件不存在时先写默认模板再打开；可编辑客户端、路由、守护进程、日志和查询配置（`v` 进入的 Query 页归拢视图定义、输出列布局与 provider aliases），`data_dir` 在 TUI 中只读。保存统一走 `ApplyConfig`（见下文「config set」）。非 router 支持客户端（当前除 Claude 外全部）不展示「绑定路由」字段；此类客户端上存量非空 router 仍会显示（便于清回「无」），保存校验拒绝非空值（见下文「config set」的 router 拦截）。
 
 ### config show
 

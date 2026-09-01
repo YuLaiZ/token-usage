@@ -328,14 +328,14 @@ func TestQuitConfirm_ViewShowsOptions(t *testing.T) {
 	}
 }
 
-// v 进入 Query views 后,主菜单 q 仍走 dirty 退出确认(键位不冲突回归)。
-func TestQuitConfirm_VOpensQueryViews_QStillConfirmsWhenDirty(t *testing.T) {
+// v 进入 Query 父页后,主菜单 q 仍走 dirty 退出确认(键位不冲突回归)。
+func TestQuitConfirm_VOpensQueryParent_QStillConfirmsWhenDirty(t *testing.T) {
 	draft := &config.Config{DataDir: "/x"}
 	a := newAppForTest(draft, draft, nil)
 	m := a.stack[0].(*mainMenu)
 	m.Update(queryTestKeyMsg("v"))
-	if _, ok := a.stack[1].(*queryViewsPage); !ok {
-		t.Fatalf("v 应进入 Query views")
+	if _, ok := a.stack[1].(*queryParentPage); !ok {
+		t.Fatalf("v 应进入 Query 父页")
 	}
 	// 返回主菜单并制造 dirty 后按 q → 确认层。
 	a.pop()
