@@ -82,7 +82,7 @@ graph TB
 **说明**：
 
 - Collectors 读取 6 个客户端源，输出 `[]model.Message` + `[]model.Session`，在单事务内写入 `messages` 和 `sessions`。
-- RouterAdapter 读取 CC Switch SQLite，输出 `[]model.RouterLog`，写入 `raw_router_logs`；随后按 `message_id` 查询归因，把 `router_provider/router_model/router_name` 回填到 `messages`。
+- RouterAdapter 读取 CC Switch SQLite，输出 `[]model.RouterLog`，写入 `raw_router_logs`；随后按 `message_id` 查询归因，把 `router_provider/router_model/router_name` 回填到 `messages`。对已配置 router 且支持归因的 client，其采集轮在 messages 入库后同样按 `message_id` 查询已入库的 `raw_router_logs` 行回填——不限于 CLI 日期模式，daemon 轮因此覆盖「router 日志先入库、message 后入库」的交错。
 - `sync_state` 记录每个 client 各 source 的增量游标，collector 和 router adapter 各自读写自己的 source。
 - 全量采集（`collect all`）传入 `Dates=nil`，不使用 `collection_log` 的日期去重；`messages` 按 `(client, id)` UPSERT，因此可安全重复扫描。
 - collector 部分源失败时，已成功解析的消息、会话和 router 数据仍事务落库，但不写 `collection_log`、不解决历史错误、不推进 `sync_state`；后续普通采集或 retry 会按幂等 UPSERT 重放仍有缺口的区间。
@@ -178,6 +178,8 @@ start spawn 拉起 _run → 父子 lease 授权 → child 获 daemon lock → �
 - **ChangedFile**：JSONLWatcher 触发（fsnotify 监听 `.jsonl` 变化，debounce 合并高频写事件），只扫描变更的单个文件。覆盖 claude / codex sessions / workbuddy projects / autoclaw agents。
 - **Incremental**：SQLitePoller 触发（定时轮询 mtime，WAL 模式取 max(db, -wal)），按 `sync_state` 游标增量读取。覆盖 opencode / zcode / codex state DB。
 - **router source**（`Source=router`）：router DB poller 触发，只补 router 字段，不调用 client collector。按启用且声明 Router 的 client 配置装配（当前只有 `cc_switch` case）。
+
+对已配置 router 且支持归因的 client，每个采集轮（ChangedFile / Incremental / CLI 日期模式）在 messages 入库后同样按 `message_id` 查询已入库的 `raw_router_logs` 行回填归因——router 日志先于 message 到达时（router 轮的 UPDATE 落空且 cursor 已推过），归因仍能补上。未配置 router、或持存量非 Claude router 配置的 client 轮既不查表也不回填；存量配置仍只写原始日志。
 
 WorkBuddy 的 SQLite 仅用于 title 查询，不建 poller。
 

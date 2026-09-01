@@ -12,6 +12,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/collector"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/model"
+	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
@@ -258,8 +259,20 @@ func persistClientBatch(
 		}
 	}
 
-	// router 回填：仅在有 messages 且 router 已成功时执行。
-	if router != nil && routerFetched && len(collected.Messages) > 0 {
+	// router 回填：client 支持 router 归因（仅 Claude 系，registry 单一真相源）且本轮有 messages 即执行。
+	// 查询对象是已入库的 raw_router_logs 表（不依赖本轮是否拉取 router 日志）：
+	// CLI Dates 模式先 Upsert 本轮日志再查表（routerFetched=true，含本轮新日志）；
+	// daemon 增量轮（Dates 恒空、routerFetched=false）借此覆盖「router 日志先入库、
+	// message 后入库」的交错——该交错下 router 增量轮的 UPDATE 因 message 尚未入库而
+	// 落空，且 cursor 已推过不再重读。
+	// ClientSupportsRouter 门控维持「存量非 Claude router 配置只写 raw 日志、不回填
+	// messages」的兼容合同（docs/architecture.md:423）：这类配置 RouterFor 仍返回
+	// adapter，若放行回填，本轮消息 ID 与既有 Claude router 日志碰撞时会经 app_type
+	// 映射误更新 Claude message。
+	// backfilled 推迟到事务提交成功后才用于日志记录：后续写入或 Commit 失败会连同
+	// 归因一起回滚，提前记录会留下回填成功的假轨迹。
+	var backfilled int
+	if router != nil && runtimecfg.ClientSupportsRouter(client) && len(collected.Messages) > 0 {
 		messageIDs := uniqueMessageIDs(collected.Messages)
 		if len(messageIDs) > 0 {
 			infos, err := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
@@ -267,9 +280,11 @@ func persistClientBatch(
 				return fmt.Errorf("%s: %w", ui.Bi("query router attribution", "查询 router 归因"), err)
 			}
 			if len(infos) > 0 {
-				if _, err := db.BackfillRouterFields(ctx, tx, infos); err != nil {
+				n, err := db.BackfillRouterFields(ctx, tx, infos)
+				if err != nil {
 					return fmt.Errorf("%s: %w", ui.Bi("backfill router attribution", "回填 router 归因"), err)
 				}
+				backfilled = n
 			}
 		}
 	}
@@ -292,6 +307,10 @@ func persistClientBatch(
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("%s: %w", ui.Bi("commit write transaction", "提交写事务"), err)
+	}
+	// 回填是预期行为：命中才记 Debug 排查轨迹，与采集完成心跳同级；0 条不打。
+	if backfilled > 0 {
+		log.Debug("router attribution backfilled", "client", client, "count", backfilled)
 	}
 	return nil
 }
@@ -378,18 +397,25 @@ func runRouterOnlyCollect(
 		}
 	}
 
-	// 收集非空 MessageID 做归因回填。
-	messageIDs := uniqueRouterMessageIDs(routerResult.Logs)
-	if len(messageIDs) > 0 {
-		infos, qerr := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
-		if qerr != nil {
-			txErr = fmt.Errorf("%s: %w", ui.Bi("query router attribution", "查询 router 归因"), qerr)
-			return result
-		}
-		if len(infos) > 0 {
-			if _, err := db.BackfillRouterFields(ctx, tx, infos); err != nil {
-				txErr = fmt.Errorf("%s: %w", ui.Bi("backfill router attribution", "回填 router 归因"), err)
+	// 收集非空 MessageID 做归因回填。仅对支持 router 归因的 client（仅 Claude 系）
+	// 执行：cc-switch 日志按 app_type 混存同一 db，存量非 Claude 配置的 router 轮
+	// 也会读到 Claude 类型日志（message_id 非空），照日志自身 ID 回填会经 app_type
+	// 映射直接更新 Claude messages——跨 client 写入违背「legacy 配置只写 raw、
+	// 不回填」合同（docs/architecture.md:423）。日志 Upsert 与 cursor 推进不受
+	// 此门控影响。
+	if runtimecfg.ClientSupportsRouter(client) {
+		messageIDs := uniqueRouterMessageIDs(routerResult.Logs)
+		if len(messageIDs) > 0 {
+			infos, qerr := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
+			if qerr != nil {
+				txErr = fmt.Errorf("%s: %w", ui.Bi("query router attribution", "查询 router 归因"), qerr)
 				return result
+			}
+			if len(infos) > 0 {
+				if _, err := db.BackfillRouterFields(ctx, tx, infos); err != nil {
+					txErr = fmt.Errorf("%s: %w", ui.Bi("backfill router attribution", "回填 router 归因"), err)
+					return result
+				}
 			}
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/collector"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/model"
+	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
@@ -90,23 +91,30 @@ func RunRouterBackfill(ctx context.Context, deps *Deps, usageDB *db.DB, log *slo
 		}
 	}
 
-	// 按显示名查该 client 所有历史 messageIDs
-	messageIDs, err := db.GetMessageIDsByDisplayNames(ctx, tx, displayNames)
-	if err != nil {
-		return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to query message ids", "查询 message ids 失败"), err)
-	}
-
-	// 复用现有 DAO（已内置 500 分块、app_type 过滤、routerAppTypeToClient 映射、首条优先）
+	// 归因回填仅对支持 router 归因的 client（仅 Claude 系）执行：存量非 Claude
+	// router 配置按兼容合同只写 raw 日志、不回填 messages——其消息 ID 与既有
+	// Claude router 日志同 ID 时若照常回填，会经 app_type 映射跨 client 改写
+	// Claude message 的归因。raw 日志读取与 Upsert 不受此门控影响；0 条回填
+	// 由下方输出如实反映。
 	var n int
-	if len(messageIDs) > 0 {
-		infos, err := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
+	if runtimecfg.ClientSupportsRouter(client) {
+		// 按显示名查该 client 所有历史 messageIDs
+		messageIDs, err := db.GetMessageIDsByDisplayNames(ctx, tx, displayNames)
 		if err != nil {
-			return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to query router attribution", "查询 router 归因失败"), err)
+			return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to query message ids", "查询 message ids 失败"), err)
 		}
-		if len(infos) > 0 {
-			n, err = db.BackfillRouterFields(ctx, tx, infos)
+
+		// 复用现有 DAO（已内置 500 分块、app_type 过滤、routerAppTypeToClient 映射、首条优先）
+		if len(messageIDs) > 0 {
+			infos, err := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
 			if err != nil {
-				return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to backfill router attribution", "回填 router 归因失败"), err)
+				return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to query router attribution", "查询 router 归因失败"), err)
+			}
+			if len(infos) > 0 {
+				n, err = db.BackfillRouterFields(ctx, tx, infos)
+				if err != nil {
+					return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to backfill router attribution", "回填 router 归因失败"), err)
+				}
 			}
 		}
 	}

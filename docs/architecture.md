@@ -82,7 +82,7 @@ graph TB
 **Notes**:
 
 - Collectors read the six client sources and produce `[]model.Message` plus `[]model.Session`; both are written to `messages` and `sessions` in one transaction.
-- The RouterAdapter reads CC Switch SQLite and produces `[]model.RouterLog`, which is written to `raw_router_logs`; it then looks up attribution by `message_id` and backfills `router_provider`/`router_model`/`router_name` in `messages`.
+- The RouterAdapter reads CC Switch SQLite and produces `[]model.RouterLog`, which is written to `raw_router_logs`; it then looks up attribution by `message_id` and backfills `router_provider`/`router_model`/`router_name` in `messages`. For a client with a router configured that supports attribution, collection rounds also look up attribution by `message_id` against the already-staged `raw_router_logs` rows and backfill after their messages are persisted — this is not limited to the CLI date mode, so daemon rounds cover the interleaving where router logs land before the message does.
 - `sync_state` records the incremental cursor for every source of each client. Collectors and router adapters read and write their own sources independently.
 - Full collection (`collect all`) passes `Dates=nil`, so it does not consult `collection_log` date deduplication. Repeated scans remain safe because `messages` uses `(client, id)` UPSERT.
 - When part of a collector's sources fail, successfully parsed messages, sessions, and router data are still committed transactionally. However, it does not write `collection_log`, resolve historical errors, or advance `sync_state`; a later normal collection or retry idempotently replays the incomplete range with UPSERT.
@@ -178,6 +178,8 @@ Use cases: real-time usage inspection and continuous background monitoring.
 - **ChangedFile**: triggered by JSONLWatcher (fsnotify watches `.jsonl` changes and debounce merges frequent write events); scans only the changed single file. Covers claude / codex sessions / workbuddy projects / autoclaw agents.
 - **Incremental**: triggered by SQLitePoller (periodically polls mtime; in WAL mode it uses max(db, -wal)); reads incrementally using `sync_state` cursors. Covers opencode / zcode / Codex state DB.
 - **router source** (`Source=router`): triggered by the router DB poller; backfills router fields only and does not call a client collector. It is assembled from enabled clients that declare a Router configuration (currently only the `cc_switch` case).
+
+For a client with a router configured that supports attribution, every round (ChangedFile / Incremental / CLI date mode) also looks up attribution by `message_id` against the already-staged `raw_router_logs` rows once its messages are persisted, so an attribution is still backfilled when the router log arrived before the message (the router round's UPDATE missed it and the cursor already moved past). Rounds of other clients — without a router, or with a legacy non-Claude router configuration — neither query nor backfill; legacy configurations keep writing raw logs only.
 
 WorkBuddy's SQLite database is used only to look up titles and has no poller.
 
