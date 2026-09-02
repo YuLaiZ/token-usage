@@ -707,7 +707,7 @@ func TestAutoClaw_CtxCancel_ParserLayer(t *testing.T) {
 		consumedFirst: consumedFirst,
 		cancel:        cancel,
 	}
-	msgs, err := parseAutoClawJSONLReader(ctx, reader, "test.jsonl", slog.Default())
+	msgs, _, err := parseAutoClawJSONLReader(ctx, reader, "test.jsonl", slog.Default())
 	// 确认首行已被 scanner 消费（栅栏），否则测试无效
 	select {
 	case <-consumedFirst:
@@ -999,8 +999,8 @@ func TestAutoClaw_Collect_ParserCancel_PropagatedNoPartialErr(t *testing.T) {
 	// parseFn 注入：返回 ctx.Canceled 模拟 parser 在文件解析中途被取消。
 	// 这覆盖 Collect 的 parseErr ctx 分支（autoclaw.go Collect 内 parseFile 后的判断），
 	// 而非入口 ctx 检查。
-	c.parseFn = func(ctx context.Context, path string, logger *slog.Logger) ([]autoclawParsedMessage, error) {
-		return nil, context.Canceled
+	c.parseFn = func(ctx context.Context, path string, logger *slog.Logger) ([]autoclawParsedMessage, FileScanStatus, error) {
+		return nil, FileScanStatus{}, context.Canceled
 	}
 
 	result, err := c.Collect(context.Background(), CollectRequest{}, slog.Default())

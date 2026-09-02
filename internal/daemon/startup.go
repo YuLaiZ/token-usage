@@ -61,8 +61,10 @@ func newStartupCoordinator(cfg *config.Config, submit SubmitFunc, writeState sta
 //
 // 请求矩阵：
 //   - opencode、zcode：Incremental=true，从持久化 SQLite cursor 继续。
-//   - claude、workbuddy、autoclaw：无日期扫描现存 JSONL（Incremental=false，Dates 空）。
-//   - codex：两个串行请求——先 Incremental=true 推进 state cursor，再无日期全扫 rollout JSONL。
+//   - claude、workbuddy、autoclaw：无日期扫描现存 JSONL（Incremental=false，Dates 空，
+//     ScanExistingJSONL=true——现存 JSONL 全扫的显式合同，与 codex rollout 全扫同语义）。
+//   - codex：两个串行请求——先 Incremental=true 推进 state cursor，再 ScanExistingJSONL=true
+//     无日期全扫 rollout JSONL。
 //
 // 未知 client 返回 nil（已启用但分类未登记的 client 不会被 coordinator 处理）。
 func catchUpRequestsFor(client string) []collector.CollectRequest {
@@ -71,7 +73,8 @@ func catchUpRequestsFor(client string) []collector.CollectRequest {
 		return []collector.CollectRequest{{Source: collector.CollectSourceClient, Incremental: true}}
 	case "claude", "workbuddy", "autoclaw":
 		// 无日期扫描现存 JSONL：Dates 空、Incremental=false、ChangedFile 空。
-		return []collector.CollectRequest{{Source: collector.CollectSourceClient}}
+		// ScanExistingJSONL 使「catch-up 全扫」成为显式合同而非 Source 字段的巧合差异。
+		return []collector.CollectRequest{{Source: collector.CollectSourceClient, ScanExistingJSONL: true}}
 	case "codex":
 		// 先 state incremental（推进 cursor），再 rollout full scan（无日期全扫）。
 		// 第一个失败也必须继续第二个（由 runCatchUp 保证）。

@@ -115,9 +115,9 @@ func TestEnsureSchema_CreatesTables(t *testing.T) {
 	}
 }
 
-// TestEnsureSchema_MessageLedgerV1 断言消息账本 V1 最终 schema：
-// sessions 精确列集合、daily_stats 不存在、user_version=1。
-func TestEnsureSchema_MessageLedgerV1(t *testing.T) {
+// TestEnsureSchema_MessageLedgerSchemaV2 断言消息账本 schema（V1 列布局 + v2 门表）：
+// sessions 精确列集合、daily_stats 不存在、user_version=2（v2 重建 file_scan_log 跳过门表）。
+func TestEnsureSchema_MessageLedgerSchemaV2(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
@@ -171,10 +171,10 @@ func TestEnsureSchema_MessageLedgerV1(t *testing.T) {
 		t.Errorf("daily_stats 表不应存在（message ledger 已移除会话级聚合）")
 	}
 
-	// user_version 必须为 1
+	// user_version 必须为 2
 	version := getUserVersion(db.db)
-	if version != 1 {
-		t.Errorf("user_version = %d, want 1", version)
+	if version != 2 {
+		t.Errorf("user_version = %d, want 2", version)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/fsident"
 	"github.com/YuLaiZ/token-usage/internal/model"
 )
 
@@ -82,12 +83,22 @@ func (c *ClaudeCollector) Collect(ctx context.Context, req CollectRequest, logge
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		part, err := parseClaudeMessageFile(file, dateSet, logger)
+		before := fsident.SnapshotOfFile(file)
+		if skipGateHit(req.SkipGate, file, before) {
+			result.FileStatuses = append(result.FileStatuses, FileScanStatus{Path: file, Skipped: true, Before: before})
+			continue
+		}
+		part, status, err := parseClaudeMessageFile(file, dateSet, logger)
+		status.Before = before
+		status.After = fsident.SnapshotOfFile(file)
 		if err != nil {
 			logger.Warn("Claude JSONL file parse failed, skipped", "file", file, "error", err)
+			status.Err = err
+			result.FileStatuses = append(result.FileStatuses, status)
 			result.PartialErr = errors.Join(result.PartialErr, fmt.Errorf("%s: %w", file, err))
 			continue
 		}
+		result.FileStatuses = append(result.FileStatuses, status)
 		result.Messages = append(result.Messages, part.Messages...)
 		result.Sessions = append(result.Sessions, part.Sessions...)
 	}
@@ -135,7 +146,7 @@ func findClaudeJSONLFiles(ctx context.Context, projectsDir string) ([]string, er
 	return files, err
 }
 
-// jsonlEntry JSONL 单行结构
+// jsonlEntry JSONL 单行结构。lineNo 记录源行号（非 JSON 字段），供坏行汇总定位。
 type jsonlEntry struct {
 	Type        string `json:"type"`
 	SessionID   string `json:"sessionId"`
@@ -143,6 +154,7 @@ type jsonlEntry struct {
 	Entrypoint  string `json:"entrypoint"`
 	Cwd         string `json:"cwd"`
 	CustomTitle string `json:"custom-title"`
+	lineNo      int
 	Message     *struct {
 		ID      string          `json:"id"`
 		Role    string          `json:"role"`
@@ -187,13 +199,17 @@ type tokenUsage struct {
 // parseClaudeMessageFile 单次全量扫描 JSONL 文件，产出消息级结果。
 // dates 非空时只保留命中日期的 Message；Session 的 first/last 始终来自完整文件，
 // 但仅当存在命中消息时才返回 Session。
-func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *slog.Logger) (CollectResult, error) {
+// 返回的 FileScanStatus 已填 Path/BadLines/FirstBad*/TrailingNewline（Before/After
+// 快照与 Err 由 Collect 层补充）。
+func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *slog.Logger) (CollectResult, FileScanStatus, error) {
+	var status FileScanStatus
+	status.Path = filePath
 	if logger == nil {
 		logger = slog.Default()
 	}
 	file, err := os.Open(filePath)
 	if err != nil {
-		return CollectResult{}, err
+		return CollectResult{}, status, err
 	}
 	defer file.Close()
 
@@ -201,11 +217,7 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 	// 行解析失败按文件聚合为一条汇总（首行号+首个错误保留定位线索）：
 	// 上游合法数据形态变化（如 user 行 content 为字符串）会让失败在全量扫描中
 	// 必然重复出现，逐行打印只产生噪音。
-	var (
-		badLines     int
-		firstBadLine int
-		firstBadErr  error
-	)
+	var outcome parseFileOutcome
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), maxJSONLLineSize)
 	for line := 1; scanner.Scan(); line++ {
@@ -215,11 +227,7 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 		}
 		var entry jsonlEntry
 		if err := json.Unmarshal(raw, &entry); err != nil {
-			if badLines == 0 {
-				firstBadLine = line
-				firstBadErr = err
-			}
-			badLines++
+			outcome.addBad(line, err)
 			continue
 		}
 		// content 双形态归一校验：数字、对象等未知形态与行 Unmarshal 失败同等
@@ -230,25 +238,22 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 		if entry.Message != nil {
 			_, stringForm, cerr := normalizeClaudeContent(entry.Message.Content)
 			if cerr != nil {
-				if badLines == 0 {
-					firstBadLine = line
-					firstBadErr = cerr
-				}
-				badLines++
+				outcome.addBad(line, cerr)
 				continue
 			}
 			if stringForm {
 				continue
 			}
 		}
+		entry.lineNo = line
 		entries = append(entries, entry)
 	}
-	if badLines > 0 {
-		logger.Debug("Claude JSONL line parse failed, skipped",
-			"file", filePath, "count", badLines, "first_line", firstBadLine, "error", firstBadErr)
-	}
 	if err := scanner.Err(); err != nil {
-		return CollectResult{}, fmt.Errorf("读取文件失败: %w", err)
+		return CollectResult{}, status, fmt.Errorf("读取文件失败: %w", err)
+	}
+	// 尾行未以 \n 终结：可能仍在写，即使恰好可解析也不得视为完整采集。
+	if fi, serr := file.Stat(); serr == nil {
+		outcome.trailingNewline = tailHasNewline(file, fi.Size())
 	}
 
 	// 文件级元信息：entrypoint、cwd、最后非空 title、first/last ts。
@@ -305,8 +310,9 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 		}
 		timestamp, perr := time.Parse(time.RFC3339, entry.Timestamp)
 		if perr != nil {
-			logger.Debug("Claude assistant message timestamp invalid, skipped",
-				"file", filePath, "message_id", entry.Message.ID, "timestamp", entry.Timestamp, "error", perr)
+			// assistant 消息已带 usage 却因 timestamp 非法被丢弃：数据异常，
+			// 计入坏行（该文件不得推进跳过门），随文件汇总日志输出。
+			outcome.addBad(entry.lineNo, fmt.Errorf("assistant 消息 timestamp 非法 %q: %w", entry.Timestamp, perr))
 			continue
 		}
 		if seen[entry.Message.ID] {
@@ -355,7 +361,13 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 			LastTS:    lastTS,
 		})
 	}
-	return result, nil
+	// 坏行汇总在两个解析循环之后打（行解析与消息产出都可能计入坏行）。
+	if outcome.badLines > 0 {
+		logger.Debug("Claude JSONL line parse failed, skipped",
+			"file", filePath, "count", outcome.badLines, "first_line", outcome.firstBadLine, "error", outcome.firstBadErr)
+	}
+	outcome.fillStatus(&status)
+	return result, status, nil
 }
 
 // inferProject 从工作目录路径提取项目名

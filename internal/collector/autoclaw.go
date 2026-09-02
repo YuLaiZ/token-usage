@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/fsident"
 	"github.com/YuLaiZ/token-usage/internal/model"
 )
 
@@ -27,7 +28,7 @@ type AutoClawCollector struct {
 	// walkFn 注入目录遍历器（测试可模拟 Walk 错误/取消）；parseFn 注入文件解析器
 	// （测试可模拟 parser 返回 ctx.Canceled 或部分结果 + error）。
 	walkFn  autoClawWalker
-	parseFn func(ctx context.Context, path string, logger *slog.Logger) ([]autoclawParsedMessage, error)
+	parseFn func(ctx context.Context, path string, logger *slog.Logger) ([]autoclawParsedMessage, FileScanStatus, error)
 }
 
 // NewAutoClawCollector 创建 AutoClaw 采集器。
@@ -124,7 +125,14 @@ func (c *AutoClawCollector) Collect(ctx context.Context, req CollectRequest, log
 		}
 
 		// 解析该文件全部有效行（ctx 透传到 scanner 循环）
-		pmsgs, parseErr := c.parseFile(ctx, file, logger)
+		before := fsident.SnapshotOfFile(file)
+		if skipGateHit(req.SkipGate, file, before) {
+			result.FileStatuses = append(result.FileStatuses, FileScanStatus{Path: file, Skipped: true, Before: before})
+			continue
+		}
+		pmsgs, status, parseErr := c.parseFile(ctx, file, logger)
+		status.Before = before
+		status.After = fsident.SnapshotOfFile(file)
 		if parseErr != nil {
 			if errors.Is(parseErr, context.Canceled) || errors.Is(parseErr, context.DeadlineExceeded) {
 				// ctx 取消：直接返回 ctx.Err，不降级为 PartialErr
@@ -133,6 +141,11 @@ func (c *AutoClawCollector) Collect(ctx context.Context, req CollectRequest, log
 			logger.Warn("AutoClaw JSONL file partially parsed, keeping parsed messages and recording error", "file", file, "error", parseErr)
 			result.PartialErr = errors.Join(result.PartialErr, fmt.Errorf("%s: %w", file, parseErr))
 			// parseErr 时 parser 仍返回已解析的 pmsgs（部分结果保留），继续处理这些消息再记 PartialErr（不 continue 丢弃）。
+			// 文件级失败状态也照常登记（该文件不得推进跳过门）。
+			status.Err = parseErr
+			result.FileStatuses = append(result.FileStatuses, status)
+		} else {
+			result.FileStatuses = append(result.FileStatuses, status)
 		}
 		if len(pmsgs) == 0 {
 			continue
@@ -270,7 +283,7 @@ func (c *AutoClawCollector) scanSessions(ctx context.Context, sessionsDir string
 }
 
 // parseFile 解析单文件；parseFn 非 nil 时用注入的 parser（测试 seam），否则走生产路径。
-func (c *AutoClawCollector) parseFile(ctx context.Context, path string, logger *slog.Logger) ([]autoclawParsedMessage, error) {
+func (c *AutoClawCollector) parseFile(ctx context.Context, path string, logger *slog.Logger) ([]autoclawParsedMessage, FileScanStatus, error) {
 	if c.parseFn != nil {
 		return c.parseFn(ctx, path, logger)
 	}
@@ -381,33 +394,53 @@ type autoclawParsedMessage struct {
 
 // parseAutoClawJSONLContext 解析 AutoClaw JSONL，提取「带 usage 的 assistant 消息」。
 // 仿 workbuddy parseWorkBuddyJSONLContext，scanner 循环检查 ctx。
-func parseAutoClawJSONLContext(ctx context.Context, path string, logger *slog.Logger) ([]autoclawParsedMessage, error) {
+// 返回的 FileScanStatus 已填 Path/BadLines/FirstBad*/TrailingNewline（Before/After
+// 快照与 Err 由 Collect 层补充）。
+func parseAutoClawJSONLContext(ctx context.Context, path string, logger *slog.Logger) ([]autoclawParsedMessage, FileScanStatus, error) {
+	var status FileScanStatus
+	status.Path = path
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, status, err
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("打开 AutoClaw JSONL 失败: %w", err)
+		return nil, status, fmt.Errorf("打开 AutoClaw JSONL 失败: %w", err)
 	}
 	defer f.Close()
-	return parseAutoClawJSONLReader(ctx, f, path, logger)
+	msgs, outcome, err := parseAutoClawJSONLReader(ctx, f, path, logger)
+	if err != nil {
+		return msgs, status, err
+	}
+	// 尾行未以 \n 终结：可能仍在写，不得视为完整采集（reader 层拿不到文件
+	// 大小与随机读能力，由本层用文件句柄补齐）。
+	if fi, serr := f.Stat(); serr == nil {
+		outcome.trailingNewline = tailHasNewline(f, fi.Size())
+	}
+	if outcome.badLines > 0 {
+		logger.Debug("AutoClaw JSONL line parse failed, skipped",
+			"file", path, "count", outcome.badLines, "first_line", outcome.firstBadLine, "error", outcome.firstBadErr)
+	}
+	outcome.fillStatus(&status)
+	return msgs, status, nil
 }
 
 // parseAutoClawJSONLReader 从 reader 逐行解析（仅包内可见的 reader seam，供受控 reader 测试取消点）。
 // scanner 循环每行开头检查 ctx.Err()——取消时立即返回 (已解析 messages, ctx.Err)，
 // 由 Collect 层返回外层 ctx.Err（不降级为 PartialErr）。
-func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, logger *slog.Logger) ([]autoclawParsedMessage, error) {
+// 返回的 parseFileOutcome 只含行级计数（尾行终结检测由文件句柄持有方补齐）。
+func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, logger *slog.Logger) ([]autoclawParsedMessage, parseFileOutcome, error) {
+	var outcome parseFileOutcome
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, outcome, err
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -422,7 +455,7 @@ func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, log
 	for scanner.Scan() {
 		// 每行开头检查 ctx（取消时返回已解析 messages + ctx.Err，不丢弃部分结果）
 		if err := ctx.Err(); err != nil {
-			return messages, err
+			return messages, outcome, err
 		}
 		lineNum++
 		line := scanner.Text()
@@ -432,12 +465,11 @@ func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, log
 
 		var msg autoclawMessage
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
-			logger.Debug("AutoClaw JSONL line parse failed, skipped",
-				"file", path, "line", lineNum, "error", err)
+			outcome.addBad(lineNum, err)
 			continue
 		}
 
-		// session 行记录 cwd，供该文件所有 message 行复用
+		// session 行记录 cwd，供该文件所有 message 行复用（结构性过滤，不计坏行）
 		if msg.Type == "session" {
 			if cwd == "" {
 				cwd = msg.Cwd
@@ -445,7 +477,7 @@ func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, log
 			continue
 		}
 
-		// 只处理 type=message + role=assistant + usage 非空
+		// 只处理 type=message + role=assistant + usage 非空（结构性过滤，不计坏行）
 		if msg.Type != "message" {
 			continue
 		}
@@ -453,10 +485,9 @@ func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, log
 			continue
 		}
 
-		// 顶层 id 为空跳过（防空 id 写入 (client,"") 主键互相覆盖）
+		// 顶层 id 为空：数据异常（防空 id 写入 (client,"") 主键互相覆盖），计入坏行
 		if msg.ID == "" {
-			logger.Debug("AutoClaw message top-level id empty, skipped",
-				"file", path, "line", lineNum)
+			outcome.addBad(lineNum, fmt.Errorf("assistant 消息顶层 id 为空"))
 			continue
 		}
 		// 按顶层 id 去重（同一顶层 id 的重复行只保留首条 usage 非空且时间有效的记录）
@@ -474,9 +505,9 @@ func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, log
 			}
 		}
 		if ts <= 0 {
-			// message.timestamp=0 且顶层 RFC3339 失败 → 跳过（不产 TS=0 脏消息）
-			logger.Debug("AutoClaw assistant message timestamp invalid, skipped",
-				"file", path, "line", lineNum, "id", msg.ID)
+			// message.timestamp 无效且顶层 RFC3339 解析失败：数据异常，计入坏行（不产 TS=0 脏消息）
+			outcome.addBad(lineNum, fmt.Errorf("assistant 消息 timestamp 无效（message.timestamp=%d 顶层 %q）",
+				msg.Message.Timestamp, msg.Timestamp))
 			continue
 		}
 
@@ -500,12 +531,12 @@ func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, log
 	// scanner 错误（IO 错误、行超 maxJSONLLineSize）：返回已解析部分 + err，
 	// 让 Collect 层 append + PartialErr（不 continue 丢弃）。
 	if err := scanner.Err(); err != nil {
-		return messages, err
+		return messages, outcome, err
 	}
 	if err := ctx.Err(); err != nil {
-		return messages, err
+		return messages, outcome, err
 	}
-	return messages, nil
+	return messages, outcome, nil
 }
 
 // autoClawMessage 将单条解析消息转换为 model.Message。

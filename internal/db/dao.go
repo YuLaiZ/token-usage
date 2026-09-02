@@ -26,16 +26,17 @@ func MarkCollected(ctx context.Context, q dbtx, date, source string, count int) 
 	return err
 }
 
-func UpsertFileScanLog(ctx context.Context, d *DB, logs []model.FileScanLog) error {
+// UpsertFileScanLog 写入 startup 跳过门的文件级状态记录（dbtx 形态，可在
+// persistClientBatch 事务内与消息同事务提交）。调用方只应对 fullyParsed 且
+// 读前读后快照一致（identity 有效）的文件写记录。
+func UpsertFileScanLog(ctx context.Context, q dbtx, logs []model.FileScanLog) error {
 	stmt := `INSERT OR REPLACE INTO file_scan_log (
-		file_path, session_id, client, source_type, last_modified,
-		file_size, last_line_offset
-	) VALUES (?, ?, ?, ?, ?, ?, ?)`
+		client, file_path, file_identity, mtime_ns, file_size, parser_version
+	) VALUES (?, ?, ?, ?, ?, ?)`
 
 	for _, l := range logs {
-		_, err := d.ExecContext(ctx, stmt,
-			l.FilePath, l.SessionID, l.Client, l.SourceType,
-			l.LastModified, l.FileSize, l.LastLineOffset,
+		_, err := q.ExecContext(ctx, stmt,
+			l.Client, l.FilePath, l.FileIdentity, l.MtimeNS, l.FileSize, l.ParserVersion,
 		)
 		if err != nil {
 			return fmt.Errorf("更新 file_scan_log 失败: %w", err)
@@ -258,9 +259,10 @@ func GetCollectedDatesContext(ctx context.Context, d *DB, source string) ([]stri
 	return dates, rows.Err()
 }
 
-// GetFileScanLogs 查询文件扫描状态
-func GetFileScanLogs(d *DB, client string) (map[string]model.FileScanLog, error) {
-	rows, err := d.Query(`SELECT file_path, session_id, client, source_type, last_modified, file_size, last_line_offset FROM file_scan_log WHERE client = ?`, client)
+// GetFileScanLogs 查询 client 的跳过门状态记录（dbtx 形态），键为 file_path。
+func GetFileScanLogs(ctx context.Context, q dbtx, client string) (map[string]model.FileScanLog, error) {
+	rows, err := q.QueryContext(ctx,
+		`SELECT client, file_path, file_identity, mtime_ns, file_size, parser_version, updated_at FROM file_scan_log WHERE client = ?`, client)
 	if err != nil {
 		return nil, err
 	}
@@ -269,7 +271,7 @@ func GetFileScanLogs(d *DB, client string) (map[string]model.FileScanLog, error)
 	logs := make(map[string]model.FileScanLog)
 	for rows.Next() {
 		var l model.FileScanLog
-		if err := rows.Scan(&l.FilePath, &l.SessionID, &l.Client, &l.SourceType, &l.LastModified, &l.FileSize, &l.LastLineOffset); err != nil {
+		if err := rows.Scan(&l.Client, &l.FilePath, &l.FileIdentity, &l.MtimeNS, &l.FileSize, &l.ParserVersion, &l.UpdatedAt); err != nil {
 			return nil, err
 		}
 		logs[l.FilePath] = l

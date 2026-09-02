@@ -161,10 +161,11 @@ func waitForRuntimeStateCatchUp(t *testing.T, statePath string, wantPhase string
 // 覆盖的 catch-up 请求矩阵（catchUpRequestsFor + routerCatchUpRequest）：
 //   - opencode: client-source Incremental=true（SQLite cursor）
 //   - zcode: client-source Incremental=true（SQLite cursor）
-//   - claude: client-source 无日期全扫（Incremental=false）
-//   - workbuddy: client-source 无日期全扫（Incremental=false）
-//   - autoclaw: client-source 无日期全扫（Incremental=false）
-//   - codex: 两个 client-source 请求——先 Incremental=true（state cursor），再全扫（false）
+//   - claude: client-source 无日期全扫（Incremental=false，ScanExistingJSONL=true）
+//   - workbuddy: client-source 无日期全扫（Incremental=false，ScanExistingJSONL=true）
+//   - autoclaw: client-source 无日期全扫（Incremental=false，ScanExistingJSONL=true）
+//   - codex: 两个 client-source 请求——先 Incremental=true（state cursor），再全扫（false，
+//     ScanExistingJSONL=true）
 //   - router: codex + opencode 各一个 Source=router Incremental=true
 //
 // 单个 analyzer 同时挂 claude/codex/workbuddy/autoclaw watcher + opencode/zcode/codex-state/router poller，

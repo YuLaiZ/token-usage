@@ -35,7 +35,7 @@ func TestParseWorkBuddyJSONL_AssistantWithUsage(t *testing.T) {
 `
 	path := writeJSONL(t, content)
 
-	messages, err := parseWorkBuddyJSONL(path, slog.Default())
+	messages, _, err := parseWorkBuddyJSONL(path, slog.Default())
 	if err != nil {
 		t.Fatalf("parseWorkBuddyJSONL failed: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestParseWorkBuddyJSONL_SkipsAssistantWithoutUsage(t *testing.T) {
 `
 	path := writeJSONL(t, content)
 
-	messages, err := parseWorkBuddyJSONL(path, slog.Default())
+	messages, _, err := parseWorkBuddyJSONL(path, slog.Default())
 	if err != nil {
 		t.Fatalf("parseWorkBuddyJSONL failed: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestParseWorkBuddyJSONL_ModelFallback(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := writeJSONL(t, tt.jsonl)
-			messages, err := parseWorkBuddyJSONL(path, slog.Default())
+			messages, _, err := parseWorkBuddyJSONL(path, slog.Default())
 			if err != nil {
 				t.Fatalf("parseWorkBuddyJSONL failed: %v", err)
 			}
@@ -115,7 +115,7 @@ func TestParseWorkBuddyJSONL_CacheReadFromDetails(t *testing.T) {
 	content := `{"id":"m","timestamp":1749312000000,"role":"assistant","providerData":{"model":"m","usage":{"inputTokens":100,"outputTokens":50}},"sessionId":"s","cwd":"/"}` + "\n"
 	path := writeJSONL(t, content)
 
-	messages, err := parseWorkBuddyJSONL(path, slog.Default())
+	messages, _, err := parseWorkBuddyJSONL(path, slog.Default())
 	if err != nil {
 		t.Fatalf("parseWorkBuddyJSONL failed: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestParseWorkBuddyJSONL_CacheReadFromDetails(t *testing.T) {
 
 func TestParseWorkBuddyJSONL_EmptyFile(t *testing.T) {
 	path := writeJSONL(t, "")
-	messages, err := parseWorkBuddyJSONL(path, slog.Default())
+	messages, _, err := parseWorkBuddyJSONL(path, slog.Default())
 	if err != nil {
 		t.Fatalf("parseWorkBuddyJSONL failed: %v", err)
 	}
@@ -144,7 +144,7 @@ this is not json
 {"id":"m2","timestamp":1749312120000,"role":"assistant","providerData":{"model":"m","usage":{"inputTokens":300,"outputTokens":40,"inputTokensDetails":[{"cached_tokens":0}],"outputTokensDetails":[{"reasoning_tokens":0}]}},"sessionId":"s","cwd":"/"}
 `
 	path := writeJSONL(t, content)
-	messages, err := parseWorkBuddyJSONL(path, slog.Default())
+	messages, _, err := parseWorkBuddyJSONL(path, slog.Default())
 	if err != nil {
 		t.Fatalf("parseWorkBuddyJSONL failed: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestParseWorkBuddyJSONL_RejectsInvalidIdentityAndDeduplicatesByID(t *testin
 {"id":"zero-ts","timestamp":0,"role":"assistant","providerData":{"model":"zero-ts","usage":{"inputTokens":100,"outputTokens":50}},"sessionId":"s","cwd":"/project"}
 {"id":"valid","timestamp":1749312180000,"role":"assistant","providerData":{"model":"valid","usage":{"inputTokens":200,"outputTokens":80}},"sessionId":"s","cwd":"/project"}
 `
-	messages, err := parseWorkBuddyJSONL(writeJSONL(t, content), slog.Default())
+	messages, _, err := parseWorkBuddyJSONL(writeJSONL(t, content), slog.Default())
 	if err != nil {
 		t.Fatalf("parseWorkBuddyJSONL: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestParseWorkBuddyJSONL_RejectsInvalidIdentityAndDeduplicatesByID(t *testin
 }
 
 func TestParseWorkBuddyJSONL_NonexistentFile(t *testing.T) {
-	_, err := parseWorkBuddyJSONL("/nonexistent/file.jsonl", slog.Default())
+	_, _, err := parseWorkBuddyJSONL("/nonexistent/file.jsonl", slog.Default())
 	if err == nil {
 		t.Error("expected error for nonexistent file")
 	}
@@ -692,7 +692,7 @@ func TestWorkBuddy_BadLineLogsDebug(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := &testLogHandler{}
-	messages, err := parseWorkBuddyJSONL(path, slog.New(handler))
+	messages, _, err := parseWorkBuddyJSONL(path, slog.New(handler))
 	if err != nil || len(messages) != 1 {
 		t.Fatalf("messages=%+v err=%v", messages, err)
 	}

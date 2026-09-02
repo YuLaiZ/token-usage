@@ -102,6 +102,16 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 		// 每次采集每 client 必打的开始心跳，属预期行为，降 Debug 保留排查轨迹。
 		log.Debug("collection started", "client", c.Name(), "dates", creq.Dates,
 			"changed_file", creq.ChangedFile, "incremental", creq.Incremental)
+		// catch-up 全扫路径注入跳过门（唯一作用域，且仅对支持的 client）；
+		// 门表预取失败时降级为无门全读（门是优化不是依赖，不得阻断采集）。
+		if req.ScanExistingJSONL && scanGateSupported(c.Name()) {
+			records, gerr := db.GetFileScanLogs(ctx, usageDB, c.Name())
+			if gerr != nil {
+				log.Warn("scan gate prefetch failed, collecting without gate", "client", c.Name(), "error", gerr)
+			} else {
+				creq.SkipGate = newScanGate(records)
+			}
+		}
 		collected, err := c.Collect(ctx, creq, log)
 		if err != nil {
 			// collector 因 ctx 取消返回错误时，取消不是采集故障：不持久化错误，直接返回。
@@ -177,6 +187,13 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 		msgCount := len(collected.Messages)
 		// 成功采集的完成心跳与「开始采集」成对，同降 Debug。
 		log.Debug("collection completed", "client", c.Name(), "messages", msgCount)
+		// 门命中跳过的心跳（预期行为，Debug 级；0 不打）。与注入/写门同白名单，
+		// 保持三处条件形态一致。
+		if req.ScanExistingJSONL && scanGateSupported(c.Name()) {
+			if n := countGateSkipped(collected.FileStatuses); n > 0 {
+				log.Debug("scan gate skipped files", "client", c.Name(), "skipped", n)
+			}
+		}
 		if out != nil {
 			fmt.Fprintf(out, "✓ %s: %s\n", c.Name(),
 				ui.Bi(fmt.Sprintf("collected %d messages/API requests", msgCount),
@@ -302,6 +319,16 @@ func persistClientBatch(
 		if req.Incremental && len(collected.NextCursors) > 0 {
 			if err := db.SetSyncCursors(ctx, tx, client, collected.NextCursors); err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("save incremental cursors", "保存增量游标"), err)
+			}
+		}
+	}
+	// 跳过门记录与消息同事务提交（仅 catch-up 全扫路径且 client 受门支持，
+	// 与注入侧同一白名单）：文件级判定，含坏行/尾行未完成/快照不一致的文件
+	// 不写门，批次 PartialErr 不拖累同批好文件。
+	if req.ScanExistingJSONL && scanGateSupported(client) {
+		if rows := scanGateRowsFor(client, collected.FileStatuses); len(rows) > 0 {
+			if err := db.UpsertFileScanLog(ctx, tx, rows); err != nil {
+				return fmt.Errorf("%s: %w", ui.Bi("save file scan log", "保存文件扫描状态"), err)
 			}
 		}
 	}

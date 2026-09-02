@@ -170,7 +170,7 @@ func TestInferClient(t *testing.T) {
 
 func TestParseRolloutJSONL_SessionMeta(t *testing.T) {
 	path := "../../testdata/codex/rollout-001.jsonl"
-	entries, err := parseRolloutJSONL(path)
+	entries, _, err := parseRolloutJSONL(path)
 	if err != nil {
 		t.Fatalf("parseRolloutJSONL failed: %v", err)
 	}
@@ -179,11 +179,11 @@ func TestParseRolloutJSONL_SessionMeta(t *testing.T) {
 		t.Fatalf("expected 3 entries, got %d", len(entries))
 	}
 
-	if entries[0].Type != "session_meta" {
-		t.Errorf("entry[0].Type = %q, want 'session_meta'", entries[0].Type)
+	if entries[0].entry.Type != "session_meta" {
+		t.Errorf("entry[0].Type = %q, want 'session_meta'", entries[0].entry.Type)
 	}
 
-	meta, err := extractSessionMeta(entries[0])
+	meta, _, err := extractSessionMeta(entries[0].entry)
 	if err != nil {
 		t.Fatalf("extractSessionMeta failed: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestParseRolloutJSONL_SessionMeta(t *testing.T) {
 }
 
 func TestParseRolloutJSONL_NonexistentFile(t *testing.T) {
-	_, err := parseRolloutJSONL("/nonexistent/rollout.jsonl")
+	_, _, err := parseRolloutJSONL("/nonexistent/rollout.jsonl")
 	if err == nil {
 		t.Error("expected error for nonexistent file")
 	}
@@ -210,7 +210,7 @@ func TestParseRolloutJSONL_EmptyFile(t *testing.T) {
 	emptyFile := filepath.Join(tmpDir, "empty.jsonl")
 	os.WriteFile(emptyFile, []byte(""), 0644)
 
-	entries, err := parseRolloutJSONL(emptyFile)
+	entries, _, err := parseRolloutJSONL(emptyFile)
 	if err != nil {
 		t.Fatalf("parseRolloutJSONL failed: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestParseRolloutJSONL_InvalidJSON(t *testing.T) {
 	badFile := filepath.Join(tmpDir, "bad.jsonl")
 	os.WriteFile(badFile, []byte("not json\n{\"type\":\"session_meta\",\"payload\":{\"originator\":\"codex-tui\"}}\n"), 0644)
 
-	entries, err := parseRolloutJSONL(badFile)
+	entries, _, err := parseRolloutJSONL(badFile)
 	if err != nil {
 		t.Fatalf("parseRolloutJSONL failed: %v", err)
 	}
@@ -238,15 +238,15 @@ func TestParseRolloutJSONL_OnlySessionMeta(t *testing.T) {
 	file := filepath.Join(tmpDir, "meta_only.jsonl")
 	os.WriteFile(file, []byte(`{"timestamp":"2026-01-20T10:00:00Z","type":"session_meta","payload":{"originator":"codex-tui","source":"cli"}}`), 0644)
 
-	entries, err := parseRolloutJSONL(file)
+	entries, _, err := parseRolloutJSONL(file)
 	if err != nil {
 		t.Fatalf("parseRolloutJSONL failed: %v", err)
 	}
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
 	}
-	if entries[0].Type != "session_meta" {
-		t.Errorf("type = %q, want 'session_meta'", entries[0].Type)
+	if entries[0].entry.Type != "session_meta" {
+		t.Errorf("type = %q, want 'session_meta'", entries[0].entry.Type)
 	}
 }
 
@@ -257,7 +257,7 @@ func TestExtractSessionMeta_SubagentObjectSource(t *testing.T) {
 		Type:    "session_meta",
 		Payload: json.RawMessage(`{"id":"019f22b4","originator":"Codex Desktop","source":{"subagent":{"thread_spawn":{"parent_thread_id":"019f22b0","depth":1,"agent_role":"explorer"}}},"thread_source":"subagent","cwd":"/tmp/project"}`),
 	}
-	meta, err := extractSessionMeta(entry)
+	meta, _, err := extractSessionMeta(entry)
 	if err != nil {
 		t.Fatalf("extractSessionMeta failed: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestExtractSessionMeta_FieldDriftDegradedToID(t *testing.T) {
 		Type:    "session_meta",
 		Payload: json.RawMessage(`{"id":"thread-drift","originator":{"nested":true},"cwd":"/tmp"}`),
 	}
-	meta, err := extractSessionMeta(entry)
+	meta, _, err := extractSessionMeta(entry)
 	if err != nil {
 		t.Fatalf("expected degraded extraction to succeed, got error: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestExtractSessionMeta_DriftWithoutIDFails(t *testing.T) {
 		Type:    "session_meta",
 		Payload: json.RawMessage(`{"originator":{"nested":true}}`),
 	}
-	if _, err := extractSessionMeta(entry); err == nil {
+	if _, _, err := extractSessionMeta(entry); err == nil {
 		t.Error("expected error when neither full parse nor ID extraction succeeds")
 	}
 }
@@ -333,7 +333,7 @@ func TestParseCodexRollout_SubagentObjectSource(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	result, err := parseCodexRollout(path, codexThread{}, nil)
+	result, _, err := parseCodexRollout(path, codexThread{}, nil)
 	if err != nil {
 		t.Fatalf("parseCodexRollout failed: %v", err)
 	}
@@ -369,7 +369,7 @@ func TestParseCodexRollout_FieldDriftStillBuildsSession(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	result, err := parseCodexRollout(path, codexThread{}, nil)
+	result, _, err := parseCodexRollout(path, codexThread{}, nil)
 	if err != nil {
 		t.Fatalf("parseCodexRollout failed: %v", err)
 	}
@@ -425,7 +425,7 @@ func messageLevelFixture(t *testing.T) CollectResult {
 	t.Helper()
 	fallback := codexThread{}
 	dates := map[string]struct{}{}
-	result, err := parseCodexRollout("../../testdata/codex/message-level.jsonl", fallback, dates)
+	result, _, err := parseCodexRollout("../../testdata/codex/message-level.jsonl", fallback, dates)
 	if err != nil {
 		t.Fatalf("parseCodexRollout failed: %v", err)
 	}
@@ -537,7 +537,7 @@ func TestCodexCollector_KeepsUsageWhenSecondaryTokenFieldsAreNonZero(t *testing.
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := parseCodexRollout(path, codexThread{}, nil)
+	result, _, err := parseCodexRollout(path, codexThread{}, nil)
 	if err != nil {
 		t.Fatalf("parseCodexRollout: %v", err)
 	}
@@ -622,7 +622,7 @@ func TestParseRollout_ReplayedSnapshotUnderDifferentLimitIDDeduped(t *testing.T)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := parseCodexRollout(path, codexThread{}, nil)
+	result, _, err := parseCodexRollout(path, codexThread{}, nil)
 	if err != nil {
 		t.Fatalf("parseCodexRollout: %v", err)
 	}
@@ -650,7 +650,7 @@ func TestParseRollout_InterleavedCountersUseExactLastUsage(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := parseCodexRollout(path, codexThread{}, nil)
+	result, _, err := parseCodexRollout(path, codexThread{}, nil)
 	if err != nil {
 		t.Fatalf("parseCodexRollout: %v", err)
 	}
@@ -683,7 +683,7 @@ func TestParseRollout_AdjacentReplayAcrossNonTokenEventsDeduped(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := parseCodexRollout(path, codexThread{}, nil)
+	result, _, err := parseCodexRollout(path, codexThread{}, nil)
 	if err != nil {
 		t.Fatalf("parseCodexRollout: %v", err)
 	}
@@ -708,7 +708,7 @@ func TestParseRollout_LegitimateResetNotSwallowed(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := parseCodexRollout(path, codexThread{}, nil)
+	result, _, err := parseCodexRollout(path, codexThread{}, nil)
 	if err != nil {
 		t.Fatalf("parseCodexRollout: %v", err)
 	}
@@ -745,7 +745,7 @@ func TestParseRollout_EmptyTotalObjectDoesNotEnableDedup(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := parseCodexRollout(path, codexThread{}, nil)
+	result, _, err := parseCodexRollout(path, codexThread{}, nil)
 	if err != nil {
 		t.Fatalf("parseCodexRollout: %v", err)
 	}
@@ -778,7 +778,7 @@ func TestParseRollout_LastSnapshotAdvancesTotalHighWater(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := parseCodexRollout(path, codexThread{}, nil)
+	result, _, err := parseCodexRollout(path, codexThread{}, nil)
 	if err != nil {
 		t.Fatalf("parseCodexRollout: %v", err)
 	}
@@ -809,7 +809,7 @@ func TestParseRollout_ZeroDeltaSuppressesIndex(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := parseCodexRollout(path, codexThread{}, nil)
+	result, _, err := parseCodexRollout(path, codexThread{}, nil)
 	if err != nil {
 		t.Fatalf("parseCodexRollout: %v", err)
 	}
@@ -848,7 +848,7 @@ func TestParseRollout_SameSourceSameTotalDifferentLastNotDeduped(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := parseCodexRollout(path, codexThread{}, nil)
+	result, _, err := parseCodexRollout(path, codexThread{}, nil)
 	if err != nil {
 		t.Fatalf("parseCodexRollout: %v", err)
 	}
@@ -877,7 +877,7 @@ func TestParseRollout_ExplicitZeroLastDoesNotFallBackToTotal(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := parseCodexRollout(path, codexThread{}, nil)
+	result, _, err := parseCodexRollout(path, codexThread{}, nil)
 	if err != nil {
 		t.Fatalf("parseCodexRollout: %v", err)
 	}
@@ -903,7 +903,7 @@ func TestParseRollout_TotalDeltaCacheClamp(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := parseCodexRollout(path, codexThread{}, nil)
+	result, _, err := parseCodexRollout(path, codexThread{}, nil)
 	if err != nil {
 		t.Fatalf("parseCodexRollout: %v", err)
 	}
@@ -923,11 +923,11 @@ func TestParseRollout_TotalDeltaCacheClamp(t *testing.T) {
 // 父/子共享 msg 的有序非零 usage 与派生 ID 完全一致。
 func TestCodexCollector_ForkSharedMessageStable(t *testing.T) {
 	dates := map[string]struct{}{}
-	parent, err := parseCodexRollout("../../testdata/codex/fork-parent.jsonl", codexThread{}, dates)
+	parent, _, err := parseCodexRollout("../../testdata/codex/fork-parent.jsonl", codexThread{}, dates)
 	if err != nil {
 		t.Fatalf("parse parent failed: %v", err)
 	}
-	child, err := parseCodexRollout("../../testdata/codex/fork-child.jsonl", codexThread{}, dates)
+	child, _, err := parseCodexRollout("../../testdata/codex/fork-child.jsonl", codexThread{}, dates)
 	if err != nil {
 		t.Fatalf("parse child failed: %v", err)
 	}
@@ -971,11 +971,11 @@ func TestCodexCollector_ForkSharedMessageStable(t *testing.T) {
 // 共享派生 ID 行的 ts/date/session/directory 应来自父记录（较早 ts），token 值以最后一次写入覆盖。
 func TestCodexCollector_ForkUpsertRetainsEarlierAttribution(t *testing.T) {
 	dates := map[string]struct{}{}
-	child, err := parseCodexRollout("../../testdata/codex/fork-child.jsonl", codexThread{}, dates)
+	child, _, err := parseCodexRollout("../../testdata/codex/fork-child.jsonl", codexThread{}, dates)
 	if err != nil {
 		t.Fatalf("parse child failed: %v", err)
 	}
-	parent, err := parseCodexRollout("../../testdata/codex/fork-parent.jsonl", codexThread{}, dates)
+	parent, _, err := parseCodexRollout("../../testdata/codex/fork-parent.jsonl", codexThread{}, dates)
 	if err != nil {
 		t.Fatalf("parse parent failed: %v", err)
 	}
@@ -1231,7 +1231,7 @@ func TestCodexCollector_IncrementalCursor(t *testing.T) {
 // session_meta.forked_from_id 写入 ParentID。
 func TestCodexCollector_ForkParentIDFromMeta(t *testing.T) {
 	dates := map[string]struct{}{}
-	child, err := parseCodexRollout("../../testdata/codex/fork-child.jsonl", codexThread{}, dates)
+	child, _, err := parseCodexRollout("../../testdata/codex/fork-child.jsonl", codexThread{}, dates)
 	if err != nil {
 		t.Fatalf("parse child failed: %v", err)
 	}
@@ -1248,7 +1248,7 @@ func TestCodexCollector_ForkParentIDFromMeta(t *testing.T) {
 	}
 
 	// parent 没有 forked_from_id，ParentID 应为空。
-	parent, err := parseCodexRollout("../../testdata/codex/fork-parent.jsonl", codexThread{}, dates)
+	parent, _, err := parseCodexRollout("../../testdata/codex/fork-parent.jsonl", codexThread{}, dates)
 	if err != nil {
 		t.Fatalf("parse parent failed: %v", err)
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/fsident"
 	"github.com/YuLaiZ/token-usage/internal/model"
 	_ "modernc.org/sqlite"
 )
@@ -87,7 +88,7 @@ func (c *CodexCollector) Collect(ctx context.Context, req CollectRequest, logger
 	// startup catch-up 的 rollout 全扫必须显式走 sessions_dir，不能退化成“读取
 	// state threads 再扫其 rollout_path”，否则尚未入 state DB 的现存 JSONL 会永久漏采。
 	if req.ScanExistingJSONL {
-		return c.collectExistingJSONL(ctx, logger)
+		return c.collectExistingJSONL(ctx, req.SkipGate, logger)
 	}
 
 	stateInfo, statErr := os.Stat(c.stateDir)
@@ -161,15 +162,18 @@ func (c *CodexCollector) Collect(ctx context.Context, req CollectRequest, logger
 				logger.Warn("Codex rollout_path not a regular file, skipped", "rollout_path", th.RolloutPath)
 				continue
 			}
-			part, perr := parseCodexRolloutContext(ctx, th.RolloutPath, th, dateSet)
+			part, fstatus, perr := parseRolloutWithStatus(ctx, th.RolloutPath, th, dateSet, logger)
 			if perr != nil {
 				if errors.Is(perr, context.Canceled) || errors.Is(perr, context.DeadlineExceeded) {
 					return result, perr
 				}
+				fstatus.Err = perr
+				result.FileStatuses = append(result.FileStatuses, fstatus)
 				partialErr = errors.Join(partialErr, fmt.Errorf("%s: %w", th.RolloutPath, perr))
 				logger.Warn("Codex rollout parse failed, skipped", "rollout_path", th.RolloutPath, "error", perr)
 				continue
 			}
+			result.FileStatuses = append(result.FileStatuses, fstatus)
 			result.Messages = append(result.Messages, part.Messages...)
 			// 仅在命中消息时携带 Session：parseCodexRollout 即使无命中消息也会构造
 			// Session（FirstTS/LastTS 回退到 state 字段），在 CLI Dates 模式下会用空数据
@@ -210,16 +214,19 @@ func advanceCodexCursor(current model.SyncCursor, hasCurrent bool, th codexThrea
 // 由 rollout 内的 session_meta 提供 ID/client/cwd/ParentID/source/originator。
 func (c *CodexCollector) collectChangedFile(ctx context.Context, path string, logger *slog.Logger) (CollectResult, error) {
 	// fallback 为空 codexThread：所有字段零值，session_meta 将回填。
-	part, err := parseCodexRolloutContext(ctx, path, codexThread{}, map[string]struct{}{})
+	part, status, err := parseRolloutWithStatus(ctx, path, codexThread{}, map[string]struct{}{}, logger)
 	if err != nil {
-		return CollectResult{}, err
+		status.Err = err
+		part.FileStatuses = []FileScanStatus{status}
+		return part, err
 	}
+	part.FileStatuses = []FileScanStatus{status}
 	return part, nil
 }
 
 // collectExistingJSONL 递归扫描 Codex 当前 sessions_dir 与同级 archived_sessions。
 // 单文件损坏时保留其他成功文件，并通过 PartialErr 交给 engine 在落库后记录失败。
-func (c *CodexCollector) collectExistingJSONL(ctx context.Context, logger *slog.Logger) (CollectResult, error) {
+func (c *CodexCollector) collectExistingJSONL(ctx context.Context, gate FileSkipGate, logger *slog.Logger) (CollectResult, error) {
 	files, scanErr := findExistingCodexJSONLContext(ctx, c.sessionsDir)
 	if err := ctx.Err(); err != nil {
 		return CollectResult{}, err
@@ -229,16 +236,24 @@ func (c *CodexCollector) collectExistingJSONL(ctx context.Context, logger *slog.
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		part, err := parseCodexRolloutContext(ctx, path, codexThread{}, map[string]struct{}{})
+		before := fsident.SnapshotOfFile(path)
+		if skipGateHit(gate, path, before) {
+			result.FileStatuses = append(result.FileStatuses, FileScanStatus{Path: path, Skipped: true, Before: before})
+			continue
+		}
+		part, fstatus, err := parseRolloutWithStatus(ctx, path, codexThread{}, map[string]struct{}{}, logger)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return result, err
 			}
+			fstatus.Err = err
+			result.FileStatuses = append(result.FileStatuses, fstatus)
 			wrapped := fmt.Errorf("%s: %w", path, err)
 			result.PartialErr = errors.Join(result.PartialErr, wrapped)
 			logger.Warn("Codex existing rollout parse failed, skipped", "rollout_path", path, "error", err)
 			continue
 		}
+		result.FileStatuses = append(result.FileStatuses, fstatus)
 		result.Messages = append(result.Messages, part.Messages...)
 		result.Sessions = append(result.Sessions, part.Sessions...)
 	}
@@ -565,31 +580,42 @@ func (p sessionMetaPayload) sourceString() string {
 //     同一 msg 多次非零 token_count 用 #序号 派生 ID。
 //
 // dates 非空时按 Message.Date 过滤；sessionID 缺失（fallback 与 session_meta 都无 id）时返回错误。
-func parseCodexRollout(path string, fallback codexThread, dates map[string]struct{}) (CollectResult, error) {
+// 返回的 FileScanStatus 已填 Path/BadLines/FirstBad*/TrailingNewline（Before/After
+// 快照与 Err 由 Collect 层补充）。
+func parseCodexRollout(path string, fallback codexThread, dates map[string]struct{}) (CollectResult, FileScanStatus, error) {
 	return parseCodexRolloutContext(context.Background(), path, fallback, dates)
 }
 
-func parseCodexRolloutContext(ctx context.Context, path string, fallback codexThread, dates map[string]struct{}) (CollectResult, error) {
-	entries, err := parseRolloutJSONLContext(ctx, path)
+func parseCodexRolloutContext(ctx context.Context, path string, fallback codexThread, dates map[string]struct{}) (CollectResult, FileScanStatus, error) {
+	var status FileScanStatus
+	status.Path = path
+	lines, lineOutcome, err := parseRolloutJSONLContext(ctx, path)
 	if err != nil {
-		return CollectResult{}, err
+		return CollectResult{}, status, err
 	}
+	outcome := lineOutcome
 
 	// 合并 session_meta 与 fallback：fallback 优先，session_meta 逐字段补缺。
 	// session_meta 可能多条（resume 追加），后一条的非空字段覆盖前一条；
 	// extractSessionMeta 降级提取时只有 ID，逐字段合并不丢前一条其余字段。
 	var meta sessionMetaPayload
 	metaSource := ""
-	for _, entry := range entries {
+	for _, le := range lines {
 		if err := ctx.Err(); err != nil {
-			return CollectResult{}, err
+			return CollectResult{}, status, err
 		}
-		if entry.Type != "session_meta" {
+		if le.entry.Type != "session_meta" {
 			continue
 		}
-		m, merr := extractSessionMeta(entry)
+		m, degraded, merr := extractSessionMeta(le.entry)
 		if merr != nil {
+			// 连 ID 都提取不到：session 无法归位，计入坏行（数据异常）。
+			outcome.addBad(le.lineNo, merr)
 			continue
+		}
+		if degraded {
+			// payload 完整解析失败降级为仅提取 ID：字段可能缺失，计入坏行保守处理。
+			outcome.addBad(le.lineNo, fmt.Errorf("session_meta payload 字段漂移，降级为仅提取 ID"))
 		}
 		if m.ID != "" {
 			meta.ID = m.ID
@@ -626,7 +652,7 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 	displayClient := model.RawClientToClient[rawClient]
 
 	if sessionID == "" {
-		return CollectResult{}, fmt.Errorf("rollout %s 缺少 session ID（state fallback 与 session_meta.id 均为空）", path)
+		return CollectResult{}, status, fmt.Errorf("rollout %s 缺少 session ID（state fallback 与 session_meta.id 均为空）", path)
 	}
 
 	currentModel := fallback.Model
@@ -649,26 +675,36 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 	)
 	// fallback 可提供 ParentID（理论上 threads 表不存 forked_from_id，但保持扩展性）。
 
-	for _, entry := range entries {
+	for _, le := range lines {
 		if err := ctx.Err(); err != nil {
-			return CollectResult{}, err
+			return CollectResult{}, status, err
 		}
+		entry := le.entry
 		switch entry.Type {
 		case "turn_context":
 			var payload turnContextPayload
-			if json.Unmarshal(entry.Payload, &payload) == nil && payload.Model != "" {
+			if uerr := json.Unmarshal(entry.Payload, &payload); uerr != nil {
+				// payload 结构漂移：模型名可能丢失，计入坏行（数据异常）。
+				outcome.addBad(le.lineNo, fmt.Errorf("turn_context payload: %w", uerr))
+			} else if payload.Model != "" {
 				currentModel = payload.Model
 			}
 		case "response_item":
 			var payload responseItemPayload
-			if json.Unmarshal(entry.Payload, &payload) == nil &&
-				payload.Type == "message" && payload.Role == "assistant" {
+			if uerr := json.Unmarshal(entry.Payload, &payload); uerr != nil {
+				// payload 结构漂移：assistant 关联可能丢失，计入坏行（数据异常）。
+				outcome.addBad(le.lineNo, fmt.Errorf("response_item payload: %w", uerr))
+			} else if payload.Type == "message" && payload.Role == "assistant" {
 				lastAssistantID = payload.ID
 			}
 		case "event_msg":
 			var payload tokenCountPayload
-			if json.Unmarshal(entry.Payload, &payload) != nil ||
-				payload.Type != "token_count" {
+			if uerr := json.Unmarshal(entry.Payload, &payload); uerr != nil {
+				// payload 结构漂移：token 事件可能丢失，计入坏行（数据异常）。
+				outcome.addBad(le.lineNo, fmt.Errorf("event_msg payload: %w", uerr))
+				continue
+			}
+			if payload.Type != "token_count" {
 				continue
 			}
 			last := payload.Info.LastTokenUsage
@@ -731,6 +767,10 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 				continue
 			}
 			if lastAssistantID == "" {
+				// 带非零 usage 的 token_count 缺少前置 assistant 关联：完整 rollout 中
+				// token_count 前必有 response_item，此形态属数据异常（前半缺失或上游
+				// 漂移），计入坏行保守处理。
+				outcome.addBad(le.lineNo, fmt.Errorf("token_count 缺少前置 assistant 消息关联"))
 				continue
 			}
 			index := sequence[lastAssistantID]
@@ -738,7 +778,7 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 
 			ts, err := parseCodexTimestamp(entry.Timestamp)
 			if err != nil {
-				return CollectResult{}, err
+				return CollectResult{}, status, err
 			}
 			message := codexMessageFromUsage(ts, lastAssistantID, index,
 				sessionID, displayClient, currentModel, cwd, usage)
@@ -781,7 +821,24 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 		ParentID:  mergedParent,
 	}}
 
-	return result, nil
+	outcome.fillStatus(&status)
+	return result, status, nil
+}
+
+// parseRolloutWithStatus 解析单个 rollout 并组装逐文件状态（读前/读后快照 +
+// 坏行汇总日志；快照语义与其余 JSONL collector 的 Collect 层组装一致）。
+func parseRolloutWithStatus(ctx context.Context, path string, fallback codexThread,
+	dateSet map[string]struct{}, logger *slog.Logger) (CollectResult, FileScanStatus, error) {
+	before := fsident.SnapshotOfFile(path)
+	part, status, err := parseCodexRolloutContext(ctx, path, fallback, dateSet)
+	status.Before = before
+	status.After = fsident.SnapshotOfFile(path)
+	if status.BadLines > 0 {
+		logger.Debug("Codex rollout line parse failed, skipped",
+			"rollout_path", path, "count", status.BadLines,
+			"first_line", status.FirstBadLine, "error", status.FirstBadErr)
+	}
+	return part, status, err
 }
 
 // codexMessageFromUsage 将单个非零 last_token_usage 转为 Message。
@@ -922,72 +979,86 @@ func queryThreads(ctx context.Context, dbPath, query string, args []interface{})
 
 // ===== rollout JSONL 解析 =====
 
+// rolloutLine 保留源行号的 rollout 条目（坏行汇总定位线索）。
+type rolloutLine struct {
+	entry  rolloutEntry
+	lineNo int
+}
+
 // parseRolloutJSONL 解析 rollout JSONL 文件
-func parseRolloutJSONL(path string) ([]rolloutEntry, error) {
+func parseRolloutJSONL(path string) ([]rolloutLine, parseFileOutcome, error) {
 	return parseRolloutJSONLContext(context.Background(), path)
 }
 
-func parseRolloutJSONLContext(ctx context.Context, path string) ([]rolloutEntry, error) {
+// parseRolloutJSONLContext 逐行解析 rollout JSONL。行 Unmarshal 失败计入
+// outcome 坏行计数（不再静默跳过），尾行是否以 \n 终结一并检测。
+func parseRolloutJSONLContext(ctx context.Context, path string) ([]rolloutLine, parseFileOutcome, error) {
+	var outcome parseFileOutcome
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, outcome, err
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("打开 rollout JSONL 失败: %w", err)
+		return nil, outcome, fmt.Errorf("打开 rollout JSONL 失败: %w", err)
 	}
 	defer file.Close()
 
-	var entries []rolloutEntry
+	var entries []rolloutLine
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), maxJSONLLineSize)
 
-	for scanner.Scan() {
+	for line := 1; scanner.Scan(); line++ {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, outcome, err
 		}
-		line := scanner.Text()
-		if line == "" {
+		raw := scanner.Text()
+		if raw == "" {
 			continue
 		}
 
 		var entry rolloutEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue // 跳过解析失败的行
+		if err := json.Unmarshal([]byte(raw), &entry); err != nil {
+			outcome.addBad(line, err) // 跳过解析失败的行，但计入坏行（阻止跳过门推进）
+			continue
 		}
-		entries = append(entries, entry)
+		entries = append(entries, rolloutLine{entry: entry, lineNo: line})
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, outcome, err
+	}
+	// 尾行未以 \n 终结：可能仍在写，不得视为完整采集。
+	if fi, serr := file.Stat(); serr == nil {
+		outcome.trailingNewline = tailHasNewline(file, fi.Size())
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, outcome, err
 	}
-	return entries, nil
+	return entries, outcome, nil
 }
 
 // extractSessionMeta 从 rolloutEntry 提取 session_meta payload。
 // 完整解析失败（未知字段类型漂移，如 subagent 的 source 对象）时降级为仅提取 ID：
 // 会话可建立，其余字段为零值，由 fallback 或前一条 meta 的逐字段合并补足；
-// 连 ID 都提取不到才返回错误。
-func extractSessionMeta(entry rolloutEntry) (*sessionMetaPayload, error) {
+// 连 ID 都提取不到才返回错误。降级与失败都返回给调用方计入坏行（数据异常）。
+func extractSessionMeta(entry rolloutEntry) (meta *sessionMetaPayload, degraded bool, err error) {
 	if entry.Type != "session_meta" {
-		return nil, fmt.Errorf("entry type is %q, not session_meta", entry.Type)
+		return nil, false, fmt.Errorf("entry type is %q, not session_meta", entry.Type)
 	}
-	var meta sessionMetaPayload
-	if err := json.Unmarshal(entry.Payload, &meta); err != nil {
+	var m sessionMetaPayload
+	if uerr := json.Unmarshal(entry.Payload, &m); uerr != nil {
 		var idOnly struct {
 			ID string `json:"id"`
 		}
 		if ierr := json.Unmarshal(entry.Payload, &idOnly); ierr != nil || idOnly.ID == "" {
-			return nil, fmt.Errorf("解析 session_meta payload 失败: %w", err)
+			return nil, false, fmt.Errorf("解析 session_meta payload 失败: %w", uerr)
 		}
-		meta = sessionMetaPayload{ID: idOnly.ID}
+		return &sessionMetaPayload{ID: idOnly.ID}, true, nil
 	}
-	return &meta, nil
+	return &m, false, nil
 }
 
 // ===== 辅助函数 =====

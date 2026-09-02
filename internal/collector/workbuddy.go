@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/fsident"
 	"github.com/YuLaiZ/token-usage/internal/model"
 	_ "modernc.org/sqlite"
 )
@@ -113,15 +114,25 @@ func (c *WorkBuddyCollector) Collect(ctx context.Context, req CollectRequest, lo
 			return result, err
 		}
 
-		messages, err := parseWorkBuddyJSONLContext(ctx, file, logger)
+		before := fsident.SnapshotOfFile(file)
+		if skipGateHit(req.SkipGate, file, before) {
+			result.FileStatuses = append(result.FileStatuses, FileScanStatus{Path: file, Skipped: true, Before: before})
+			continue
+		}
+		messages, status, err := parseWorkBuddyJSONLContext(ctx, file, logger)
+		status.Before = before
+		status.After = fsident.SnapshotOfFile(file)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return result, err
 			}
 			logger.Warn("WorkBuddy JSONL file parse failed, skipped", "file", file, "error", err)
+			status.Err = err
+			result.FileStatuses = append(result.FileStatuses, status)
 			result.PartialErr = errors.Join(result.PartialErr, fmt.Errorf("%s: %w", file, err))
 			continue
 		}
+		result.FileStatuses = append(result.FileStatuses, status)
 		if len(messages) == 0 {
 			continue
 		}
@@ -132,6 +143,10 @@ func (c *WorkBuddyCollector) Collect(ctx context.Context, req CollectRequest, lo
 			err := fmt.Errorf("%s: 文件名缺少 session ID", file)
 			result.PartialErr = errors.Join(result.PartialErr, err)
 			logger.Warn("WorkBuddy JSONL file name invalid, skipped", "file", file)
+			// 文件级失败：该文件不得推进跳过门（消息已读但未完整产出）。
+			if n := len(result.FileStatuses); n > 0 {
+				result.FileStatuses[n-1].Err = err
+			}
 			continue
 		}
 
@@ -330,26 +345,32 @@ type workbuddyParsedMessage struct {
 }
 
 // parseWorkBuddyJSONL 解析 WorkBuddy JSONL，提取「带 usage 的 assistant 消息」
-func parseWorkBuddyJSONL(path string, logger *slog.Logger) ([]workbuddyParsedMessage, error) {
+func parseWorkBuddyJSONL(path string, logger *slog.Logger) ([]workbuddyParsedMessage, FileScanStatus, error) {
 	return parseWorkBuddyJSONLContext(context.Background(), path, logger)
 }
 
-func parseWorkBuddyJSONLContext(ctx context.Context, path string, logger *slog.Logger) ([]workbuddyParsedMessage, error) {
+// parseWorkBuddyJSONLContext 解析 WorkBuddy JSONL，提取「带 usage 的 assistant 消息」。
+// 返回的 FileScanStatus 已填 Path/BadLines/FirstBad*/TrailingNewline（Before/After
+// 快照与 Err 由 Collect 层补充）。
+func parseWorkBuddyJSONLContext(ctx context.Context, path string, logger *slog.Logger) ([]workbuddyParsedMessage, FileScanStatus, error) {
+	var status FileScanStatus
+	status.Path = path
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, status, err
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("打开 WorkBuddy JSONL 失败: %w", err)
+		return nil, status, fmt.Errorf("打开 WorkBuddy JSONL 失败: %w", err)
 	}
 	defer f.Close()
 
+	var outcome parseFileOutcome
 	var messages []workbuddyParsedMessage
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), maxJSONLLineSize)
@@ -357,7 +378,7 @@ func parseWorkBuddyJSONLContext(ctx context.Context, path string, logger *slog.L
 	seen := make(map[string]struct{})
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, status, err
 		}
 		lineNum++
 		line := scanner.Text()
@@ -367,20 +388,17 @@ func parseWorkBuddyJSONLContext(ctx context.Context, path string, logger *slog.L
 
 		var msg workbuddyMessage
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
-			logger.Debug("WorkBuddy JSONL line parse failed, skipped",
-				"file", path,
-				"line", lineNum,
-				"error", err)
+			outcome.addBad(lineNum, err)
 			continue
 		}
 
-		// 只处理 assistant 且能提取到 usage 的消息
+		// 只处理 assistant 且能提取到 usage 的消息（结构性过滤，不计坏行）
 		if msg.ID == "" || msg.Role != "assistant" || msg.ProviderData == nil || msg.ProviderData.Usage == nil {
 			continue
 		}
 		if msg.Timestamp <= 0 {
-			logger.Debug("WorkBuddy assistant message timestamp invalid, skipped",
-				"file", path, "line", lineNum, "message_id", msg.ID, "timestamp", msg.Timestamp)
+			// assistant 消息已带 usage 却因 timestamp 无效被丢弃：数据异常，计入坏行。
+			outcome.addBad(lineNum, fmt.Errorf("assistant 消息 timestamp 无效: %d", msg.Timestamp))
 			continue
 		}
 		if _, ok := seen[msg.ID]; ok {
@@ -409,12 +427,21 @@ func parseWorkBuddyJSONLContext(ctx context.Context, path string, logger *slog.L
 	}
 
 	if err := scanner.Err(); err != nil {
-		return messages, err
+		return messages, status, err
+	}
+	// 尾行未以 \n 终结：可能仍在写，不得视为完整采集。
+	if fi, serr := f.Stat(); serr == nil {
+		outcome.trailingNewline = tailHasNewline(f, fi.Size())
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, status, err
 	}
-	return messages, nil
+	if outcome.badLines > 0 {
+		logger.Debug("WorkBuddy JSONL line parse failed, skipped",
+			"file", path, "count", outcome.badLines, "first_line", outcome.firstBadLine, "error", outcome.firstBadErr)
+	}
+	outcome.fillStatus(&status)
+	return messages, status, nil
 }
 
 // extractWorkBuddyModel 提取模型名

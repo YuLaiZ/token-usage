@@ -5,7 +5,14 @@ import (
 	"fmt"
 )
 
-const currentSchemaVersion = 1
+// currentSchemaVersion 当前 schema 版本。v2 重建 file_scan_log 为 startup 跳过门
+// 状态表（v1 布局是死表，无生产数据）。
+const currentSchemaVersion = 2
+
+// ParserVersion 是 JSONL 解析/映射逻辑的版本号（file_scan_log.parser_version）。
+// 任何影响 JSONL 采集产出语义的解析/映射修复都必须递增此值：跳过门按版本整表
+// 失效，升级后全部文件重读一次（幂等 upsert 安全）。
+const ParserVersion = 1
 
 func ensureSchema(db *sql.DB) error {
 	version := getUserVersion(db)
@@ -13,6 +20,12 @@ func ensureSchema(db *sql.DB) error {
 	if version < 1 {
 		if err := migrateV1(db); err != nil {
 			return fmt.Errorf("迁移到 v1 失败: %w", err)
+		}
+	}
+	version = getUserVersion(db)
+	if version < 2 {
+		if err := migrateV2(db); err != nil {
+			return fmt.Errorf("迁移到 v2 失败: %w", err)
 		}
 	}
 
@@ -169,5 +182,54 @@ func migrateV1(db *sql.DB) error {
 		}
 	}
 
+	return nil
+}
+
+// migrateV2PostDropHook 仅供测试注入：在 DROP 成功后、CREATE/PRAGMA 之前执行，
+// 返回错误时整个迁移事务回滚（验证「DROP 之后的迁移语句失败必须恢复 v1」的
+// 中段失败原子性——DROP 若不在事务内，注入失败后旧表已被删，测试可检出）。
+// 生产恒为 nil。
+var migrateV2PostDropHook func() error
+
+// migrateV2 重建 file_scan_log 为 startup 跳过门状态表（v1 布局为死表、无生产
+// 数据，直接 DROP）。全部语句在单个事务内提交：任一步失败则库保持 v1，下一次
+// 打开时重试；重试幂等（门表数据可丢弃）。
+func migrateV2(db *sql.DB) error {
+	const dropStmt = `DROP TABLE IF EXISTS file_scan_log`
+	stmts := []string{
+		`CREATE TABLE file_scan_log (
+			client         TEXT NOT NULL,
+			file_path      TEXT NOT NULL,
+			file_identity  TEXT NOT NULL,
+			mtime_ns       INTEGER NOT NULL,
+			file_size      INTEGER NOT NULL,
+			parser_version INTEGER NOT NULL,
+			updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (client, file_path)
+		)`,
+		`PRAGMA user_version = 2`,
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("开启迁移事务失败: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(dropStmt); err != nil {
+		return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, dropStmt)
+	}
+	if migrateV2PostDropHook != nil {
+		if err := migrateV2PostDropHook(); err != nil {
+			return fmt.Errorf("迁移中段注入失败: %w", err)
+		}
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, stmt)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交迁移事务失败: %w", err)
+	}
 	return nil
 }

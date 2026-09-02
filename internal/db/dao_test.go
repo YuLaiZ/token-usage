@@ -270,17 +270,16 @@ func TestGetFileScanLogs(t *testing.T) {
 
 	UpsertFileScanLog(context.Background(), db, []model.FileScanLog{
 		{
-			FilePath:       "/test/session-1.jsonl",
-			SessionID:      "test-001",
-			Client:         "claude",
-			SourceType:     "jsonl",
-			LastModified:   1749380660000,
-			FileSize:       1024,
-			LastLineOffset: 100,
+			Client:        "claude",
+			FilePath:      "/test/session-1.jsonl",
+			FileIdentity:  "100:200",
+			MtimeNS:       1749380660000000000,
+			FileSize:      1024,
+			ParserVersion: ParserVersion,
 		},
 	})
 
-	logs, err := GetFileScanLogs(db, "claude")
+	logs, err := GetFileScanLogs(context.Background(), db, "claude")
 	if err != nil {
 		t.Fatalf("GetFileScanLogs failed: %v", err)
 	}
@@ -293,15 +292,14 @@ func TestGetFileScanLogs(t *testing.T) {
 	if !ok {
 		t.Fatal("expected log for /test/session-1.jsonl")
 	}
-	if log.SessionID != "test-001" {
-		t.Errorf("SessionID = %q, want %q", log.SessionID, "test-001")
+	if log.FileIdentity != "100:200" {
+		t.Errorf("FileIdentity = %q, want %q", log.FileIdentity, "100:200")
 	}
-	if log.LastLineOffset != 100 {
-		t.Errorf("LastLineOffset = %d, want 100", log.LastLineOffset)
+	if log.ParserVersion != ParserVersion {
+		t.Errorf("ParserVersion = %d, want %d", log.ParserVersion, ParserVersion)
 	}
 }
 
-// scanMessage 读取单条 messages 行，便于断言
 func scanMessage(t *testing.T, db *DB, client, id string) model.Message {
 	t.Helper()
 	var m model.Message

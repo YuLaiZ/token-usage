@@ -45,21 +45,24 @@ func loadEffectiveConfigForTest(cfgPath, home string) (*config.Config, error) {
 
 // TestCatchUpRequestsFor_FourSourceMatrix 验证请求矩阵：
 //   - opencode/zcode：单请求 Incremental=true（SQLite cursor 继续）
-//   - claude/workbuddy/autoclaw：单请求无日期扫描现存 JSONL（Incremental=false，Dates 空）
+//   - claude/workbuddy/autoclaw：单请求无日期扫描现存 JSONL（Incremental=false，Dates 空，
+//     ScanExistingJSONL=true——现存 JSONL 全扫的显式合同）
 //   - codex：两个请求——先 Incremental=true（state cursor），再无日期全扫 rollout JSONL
+//     （ScanExistingJSONL=true）
 //   - router：不在本函数产出，由 coordinator 单独处理（Source=router, Incremental=true）
 func TestCatchUpRequestsFor_FourSourceMatrix(t *testing.T) {
 	cases := []struct {
 		client   string
 		wantLen  int
 		wantIncr []bool // 按返回顺序的 Incremental 值
+		wantScan []bool // 按返回顺序的 ScanExistingJSONL 值
 	}{
-		{"opencode", 1, []bool{true}},
-		{"zcode", 1, []bool{true}},
-		{"claude", 1, []bool{false}},
-		{"workbuddy", 1, []bool{false}},
-		{"autoclaw", 1, []bool{false}},
-		{"codex", 2, []bool{true, false}}, // state incremental → rollout full scan
+		{"opencode", 1, []bool{true}, []bool{false}},
+		{"zcode", 1, []bool{true}, []bool{false}},
+		{"claude", 1, []bool{false}, []bool{true}},
+		{"workbuddy", 1, []bool{false}, []bool{true}},
+		{"autoclaw", 1, []bool{false}, []bool{true}},
+		{"codex", 2, []bool{true, false}, []bool{false, true}}, // state incremental → rollout full scan
 	}
 	for _, tc := range cases {
 		t.Run(tc.client, func(t *testing.T) {
@@ -70,6 +73,9 @@ func TestCatchUpRequestsFor_FourSourceMatrix(t *testing.T) {
 			for i, want := range tc.wantIncr {
 				if reqs[i].Incremental != want {
 					t.Errorf("%s req[%d].Incremental = %v, want %v", tc.client, i, reqs[i].Incremental, want)
+				}
+				if reqs[i].ScanExistingJSONL != tc.wantScan[i] {
+					t.Errorf("%s req[%d].ScanExistingJSONL = %v, want %v", tc.client, i, reqs[i].ScanExistingJSONL, tc.wantScan[i])
 				}
 				// client-source 请求 Source 必为空或 client（不能是 router）
 				if reqs[i].Source == collector.CollectSourceRouter {
@@ -97,11 +103,34 @@ func TestCatchUpRequestsFor_CodexTwoSerialIncrementalThenFullScan(t *testing.T) 
 	if !reqs[0].Incremental {
 		t.Errorf("codex req[0]: Incremental=false, want true (state cursor advance)")
 	}
+	if reqs[0].ScanExistingJSONL {
+		t.Errorf("codex req[0]: ScanExistingJSONL=true, want false (state incremental 非 JSONL 全扫)")
+	}
 	if reqs[1].Incremental {
 		t.Errorf("codex req[1]: Incremental=true, want false (rollout full scan)")
 	}
+	if !reqs[1].ScanExistingJSONL {
+		t.Errorf("codex req[1]: ScanExistingJSONL=false, want true (rollout full scan)")
+	}
 	if len(reqs[1].Dates) != 0 {
 		t.Errorf("codex req[1]: Dates should be empty (full scan), got %v", reqs[1].Dates)
+	}
+}
+
+// TestCatchUpRequestsFor_ScanExistingJSONLSingleProducer 入口区分的负向锚点：
+// ScanExistingJSONL 是 daemon startup catch-up 现存 JSONL 全扫的显式合同，
+// 唯一置 true 的生产点是本函数（codex rollout 全扫 + claude/workbuddy/autoclaw 全扫）。
+// 非 catch-up 入口（CLI collect Dates 形态、collect all、collect retry、ChangedFile 事件、
+// SQLite poller Incremental 形态）全部不得携带该标志——它们的 CollectRequest 构造点为
+// 无标志字面量（internal/cli/collect.go、internal/engine/retry.go、internal/analyzer/），
+// 行为级断言见 engine 层 RunCollect 请求透传测试。
+func TestCatchUpRequestsFor_ScanExistingJSONLSingleProducer(t *testing.T) {
+	for _, client := range []string{"opencode", "zcode", "unknown-client"} {
+		for _, req := range catchUpRequestsFor(client) {
+			if req.ScanExistingJSONL {
+				t.Errorf("%s: ScanExistingJSONL=true, want false (SQLite cursor 类 client 无 JSONL 全扫)", client)
+			}
+		}
 	}
 }
 
