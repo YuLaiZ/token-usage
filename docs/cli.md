@@ -125,6 +125,20 @@ For example, load it in the current zsh session:
 source <(token-usage completion zsh)
 ```
 
+Per-shell prerequisites:
+
+- **zsh** needs the completion system (`compinit`) initialized first. If loading the script fails with `compdef: command not found`, `compinit` has not run: add `autoload -U compinit` and `compinit` to your rc file (e.g. `~/.zshrc`) before the load line. Some setups intentionally skip `compinit` to keep startup quiet; check your rc file before editing.
+- **bash** needs the bash-completion package (the generated script relies on its `_init_completion`). macOS ships bash 3.2 without the package: install bash 4+ and `bash-completion@2` via Homebrew, then restart the shell.
+- **fish** and **PowerShell** have no prerequisites: write the script to the shell's completion location and it takes effect on the next session (fish auto-loads `~/.config/fish/completions/`, and an absolute `XDG_CONFIG_HOME` is respected; for PowerShell, append the script output to `$PROFILE`).
+
+On zsh, `compinit` may report insecure directories (group/other-writable directories on the completion search path — most commonly `/opt/homebrew/share/zsh` and its `site-functions` on old Homebrew installs) and ask whether to continue. Three ways to handle it:
+
+1. Answer `y` at the prompt; it reappears in every new shell.
+2. Repair the directories once and rerun: `chmod go-w <dir>` on each reported directory you own (the fix Homebrew itself recommends; a directory owned by another user needs an administrator instead — `chmod` cannot fix foreign ownership).
+3. Skip the security check permanently: run `compinit -u`, or write `compinit -u` in your rc file instead of plain `compinit` (accept the skipped check consciously).
+
+The official installer script performs the whole setup automatically — on zsh it asks interactively whether to repair the directories, skip the check, or skip completion; see the [Installation Guide](install.md).
+
 For persistent installation instructions for each shell, run `token-usage completion <shell> --help`. This command reads no configuration, database, or data source.
 
 ## collect
@@ -530,6 +544,10 @@ Flags:
 ### Stable / Release-Candidate Selection
 
 By default `update` resolves only the latest **stable** Release and never selects a prerelease. A release candidate is consulted or installed only when you pass its tag explicitly with `--version` (for example `--version vX.Y.Z-rc.N`).
+
+### Completion Migration Notice
+
+When a successful `update` crosses the version that introduced automatic shell-completion setup — the current version is below it (an unparseable `Version = dev` counts as below) and the target is that version or any later one — the success output appends a one-time migration notice with the official installer command for your platform. Re-running the installer sets up completion automatically (on zsh it asks interactively). The Windows background-replacement (deferred) outcome asks you to confirm the final version with `token-usage version` before re-running the installer, so the two never race on the binary. The notice is stateless: it is printed on every threshold crossing, so an explicit `--version` downgrade followed by a later upgrade prints it again. `update --check`, every failure and refusal branch, and the interrupted-transaction recovery outcome never print it.
 
 ### Trust and Source Verification
 

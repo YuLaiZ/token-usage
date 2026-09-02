@@ -125,6 +125,20 @@ token-usage completion <bash|zsh|fish|powershell>
 source <(token-usage completion zsh)
 ```
 
+各 Shell 的前置条件：
+
+- **zsh** 需先初始化补全系统（`compinit`）。加载脚本时报 `compdef: command not found` 即说明 `compinit` 尚未运行：请在 rc 文件（如 `~/.zshrc`）中、加载行之前加入 `autoload -U compinit` 与 `compinit`。部分配置为保持启动安静有意不启用 `compinit`，改动前先查看 rc 文件。
+- **bash** 依赖 bash-completion 包（生成的脚本使用其中的 `_init_completion`）。macOS 系统 bash 3.2 未带该包：请经 Homebrew 安装 bash 4+ 与 `bash-completion@2`，然后重启 shell。
+- **fish** 与 **PowerShell** 无前置条件：把脚本写入对应补全位置后，新会话即生效（fish 自动加载 `~/.config/fish/completions/`，并遵循绝对路径的 `XDG_CONFIG_HOME`；PowerShell 把脚本输出追加进 `$PROFILE` 即可）。
+
+zsh 上 `compinit` 可能报告不安全目录（insecure directories，即补全搜索路径上 group/其他用户可写的目录——老 Homebrew 安装上最常见的是 `/opt/homebrew/share/zsh` 及其 `site-functions`）并询问是否继续。三种处理方式：
+
+1. 在提示出现时输入 `y`；每次新开 shell 都会再次提示。
+2. 一次性修复目录后重跑：对每个被报告且归你所有的目录执行 `chmod go-w <目录>`（Homebrew 官方同样建议的做法；异属主目录须由管理员处理——chmod 修不了属主问题）。
+3. 永久跳过安全检查：执行 `compinit -u`，或在 rc 文件中把 `compinit` 写成 `compinit -u`（须自觉接受跳过检查）。
+
+官方安装脚本可自动完成整套配置——zsh 上会交互询问是修复目录、跳过检查还是跳过补全；见[安装指南](install.zh-CN.md)。
+
 各 Shell 的持久化安装说明由 `token-usage completion <shell> --help` 提供。该命令不读取配置、数据库或数据源。
 
 ## collect
@@ -530,6 +544,10 @@ token-usage update --force
 ### 稳定版 / RC 选择
 
 默认 `update` 只解析最新**稳定** Release，绝不选择 prerelease。只有用 `--version` 显式指定 rc tag（如 `--version vX.Y.Z-rc.N`）时才会查询/安装预发布版。
+
+### 补全迁移提示
+
+`update` 成功跨越补全自动配置功能的引入版本——当前版本低于该版本（不可解析的 `Version = dev` 视为低于）且目标为该版本或更高——时，成功输出追加一条一次性迁移提示，按平台给出官方安装命令。重跑一次安装脚本即可自动配置补全（zsh 会交互确认）。Windows 后台替换（Deferred）出口的提示要求先用 `token-usage version` 确认最终版本再重跑安装脚本，避免两者竞争同一二进制。提示无状态：每次跨越门槛都会打印，显式 `--version` 降级后再升级会再次出现。`update --check`、全部失败与拒绝分支、以及中断事务恢复（Recovered）出口均不打印。
 
 ### 信任与来源校验
 

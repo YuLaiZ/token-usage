@@ -1166,3 +1166,196 @@ func TestUpdateCmd_LongHelpDocumentsForce(t *testing.T) {
 		t.Errorf("帮助应说明软链不可被 force，实际 %q", got)
 	}
 }
+
+// ---- 补全一次性迁移提示（决策记录 #5：update 成功输出加版本门槛迁移提示）----
+
+// crossingResult 构造跨越门槛的 ApplyResult（before < 引入版本 ≤ after）。
+func crossingResult(forced, deferred, installed bool) update.ApplyResult {
+	return update.ApplyResult{
+		CheckResult:       update.CheckResult{CurrentTag: "v0.1.4", TargetTag: "v0.2.0", UpdateAvailable: true},
+		ProvenanceChecked: true,
+		ProvenanceTrusted: !forced,
+		ProvenanceForced:  forced,
+		ReadyToInstall:    true,
+		Installed:         installed,
+		Deferred:          deferred,
+	}
+}
+
+// TestUpdateCmd_CompletionMigrationPrintsOnCrossing 跨越门槛时四个成功出口（含
+// --force 两出口）均打印迁移提示；Deferred 出口文案为「先确认版本再重跑」、
+// Installed 出口直接指引重跑（U2）。goos 是渲染纯函数的参数，直接以 darwin /
+// windows 两平台驱动：生产链路注入 runtime.GOOS（单测不可切换），全链路形态的
+// 断言会随运行平台漂移——非 darwin / windows 平台按设计不打印提示，不能作为
+// 断言环境。
+func TestUpdateCmd_CompletionMigrationPrintsOnCrossing(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		result   update.ApplyResult
+		deferred bool
+	}{
+		{"forced installed", crossingResult(true, false, true), false},
+		{"forced deferred", crossingResult(true, true, false), true},
+		{"installed", crossingResult(false, false, true), false},
+		{"deferred", crossingResult(false, true, false), true},
+	} {
+		for _, plat := range []struct {
+			goos      string
+			wantGuide string
+		}{
+			{"darwin", "install.sh"},
+			{"windows", "install.ps1"},
+		} {
+			t.Run(tc.name+" / "+plat.goos, func(t *testing.T) {
+				var out, errOut bytes.Buffer
+				if err := renderApplyResult(&out, &errOut, plat.goos, tc.result); err != nil {
+					t.Fatalf("成功出口渲染应无错误，got %v", err)
+				}
+				got := out.String()
+				if !strings.Contains(got, "自动配置 Shell 补全") {
+					t.Errorf("输出应含补全迁移提示，实际 %q", got)
+				}
+				if !strings.Contains(got, plat.wantGuide) {
+					t.Errorf("%s 提示应含 %s 安装命令，实际 %q", plat.goos, plat.wantGuide, got)
+				}
+				if tc.deferred && !strings.Contains(got, "确认目标版本") {
+					t.Errorf("Deferred 出口文案应为先确认版本再重跑，实际 %q", got)
+				}
+				if !tc.deferred && strings.Contains(got, "确认目标版本") {
+					t.Errorf("Installed 出口应直接指引重跑，实际 %q", got)
+				}
+			})
+		}
+	}
+}
+
+// TestUpdateCmd_CompletionMigrationSuppressed 低于引入版本（U1）与 current ≥ 引入
+// 版本（U3）均不打印。
+func TestUpdateCmd_CompletionMigrationSuppressed(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		current string
+		target  string
+	}{
+		{"both below intro", "v0.1.3", "v0.1.4"},
+		{"current at or above intro", "v0.1.5", "v0.1.6"},
+		{"already at intro", "v0.1.5", "v0.1.5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &stubUpdateService{
+				applyResult: update.ApplyResult{
+					CheckResult:       update.CheckResult{CurrentTag: tc.current, TargetTag: tc.target},
+					ProvenanceChecked: true,
+					ProvenanceTrusted: true,
+					Installed:         true,
+				},
+			}
+			withStubUpdateService(t, stub)
+
+			root := newRootCmd(fixedInfo)
+			var out, errOut bytes.Buffer
+			root.SetOut(&out)
+			root.SetErr(&errOut)
+			root.SetArgs([]string{"update"})
+
+			if err := root.Execute(); err != nil {
+				t.Fatalf("安装成功应退出 0，got %v", err)
+			}
+			if strings.Contains(out.String(), "Shell 补全") {
+				t.Errorf("不应打印补全迁移提示，实际 %q", out.String())
+			}
+		})
+	}
+}
+
+// TestUpdateCmd_CompletionMigrationNotOnCheck --check 只读路径不打印迁移提示（U4）。
+func TestUpdateCmd_CompletionMigrationNotOnCheck(t *testing.T) {
+	stub := &stubUpdateService{
+		checkResult: update.CheckResult{CurrentTag: "v0.1.4", TargetTag: "v0.2.0", UpdateAvailable: true},
+	}
+	withStubUpdateService(t, stub)
+
+	root := newRootCmd(fixedInfo)
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs([]string{"update", "--check"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("--check 应退出 0，got %v", err)
+	}
+	if strings.Contains(out.String(), "Shell 补全") {
+		t.Errorf("--check 不应打印补全迁移提示，实际 %q", out.String())
+	}
+}
+
+// TestCompletionMigrationDueWithIntro 判定函数矩阵：dev 形态目标过门槛即提示
+// （U6）；引入版本为 rc 形态时旧稳定版 → rc.1 打印、rc.1 → 稳定版不再打印
+// （U7 的一次性语义）；introduced 常量非法时防御性不提示。
+func TestCompletionMigrationDueWithIntro(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		current string
+		target  string
+		intro   string
+		want    bool
+	}{
+		{"dev to eligible target", "dev", "v0.2.0", "v0.1.5", true},
+		{"dev to old target", "dev", "v0.1.4", "v0.1.5", false},
+		{"stable below to rc intro", "v0.1.4", "v0.2.0-rc.1", "v0.2.0-rc.1", true},
+		{"rc current to stable", "v0.2.0-rc.1", "v0.2.0", "v0.2.0-rc.1", false},
+		{"invalid intro tag", "v0.1.4", "v0.2.0", "not-a-tag", false},
+		{"invalid target tag", "v0.1.4", "oops", "v0.1.5", false},
+		{"empty tags", "", "", "v0.1.5", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := completionMigrationDueWithIntro(tc.current, tc.target, tc.intro)
+			if got != tc.want {
+				t.Errorf("completionMigrationDueWithIntro(%q, %q, %q) = %v, want %v", tc.current, tc.target, tc.intro, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRenderCompletionMigrationNotice 渲染为注入 goos 的纯函数：同一测试内直接
+// 断言 darwin 与 windows 两套文案（darwin 一句话命令、windows 两步命令）；
+// Installed 与 Deferred 文案分派；非 darwin/windows 平台不打印（纯防御）。
+func TestRenderCompletionMigrationNotice(t *testing.T) {
+	t.Run("darwin installed", func(t *testing.T) {
+		var out bytes.Buffer
+		renderCompletionMigrationNotice(&out, "darwin", false)
+		got := out.String()
+		for _, want := range []string{"Shell completion auto-setup", "自动配置 Shell 补全", "install.sh | bash"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("darwin installed 提示应含 %q，实际 %q", want, got)
+			}
+		}
+		if strings.Contains(got, "确认目标版本") {
+			t.Errorf("installed 应直接指引重跑，实际 %q", got)
+		}
+	})
+	t.Run("windows deferred", func(t *testing.T) {
+		var out bytes.Buffer
+		renderCompletionMigrationNotice(&out, "windows", true)
+		got := out.String()
+		for _, want := range []string{"确认目标版本", "install.ps1", "powershell -ExecutionPolicy Bypass"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("windows deferred 提示应含 %q，实际 %q", want, got)
+			}
+		}
+	})
+	t.Run("darwin deferred", func(t *testing.T) {
+		var out bytes.Buffer
+		renderCompletionMigrationNotice(&out, "darwin", true)
+		if !strings.Contains(out.String(), "确认目标版本") {
+			t.Errorf("deferred 文案应为先确认版本再重跑，实际 %q", out.String())
+		}
+	})
+	t.Run("other goos silent", func(t *testing.T) {
+		var out bytes.Buffer
+		renderCompletionMigrationNotice(&out, "linux", false)
+		if out.Len() != 0 {
+			t.Errorf("非 darwin/windows 平台不应打印，实际 %q", out.String())
+		}
+	})
+}

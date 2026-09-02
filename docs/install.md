@@ -35,6 +35,14 @@ The script detects your architecture, downloads the latest stable official Relea
 
 > Non-login interactive shells (some IDE integrated terminals read `~/.bashrc` instead of login files) do not load the login file; add `export PATH="$HOME/.token-usage/bin:$PATH"` there yourself if needed. Interactive zsh terminals always read `~/.zshrc`.
 
+After installing the binary, the script also sets up shell completion automatically (skipped when `INSTALL_DIR` is overridden):
+
+- **zsh**: before writing anything, the installer verifies the completion-directory chain is safe — it checks ownership, group/other writability, and macOS ACLs on every level from your home directory up to the filesystem root, and refuses to write when any level can be modified by others. Group/other-writable directories owned by you get a precise `chmod go-w` repair command; other findings — foreign ownership, threatening ACL entries, symlink or non-directory components — get case-specific guidance instead (manual inspection, ACL removal commands, or administrator repair). When the zsh completion system (`compinit`) is not enabled yet, it asks interactively: `1` repairs the reported group/other-writable directories with `chmod go-w` (the fix Homebrew itself recommends; no sudo is needed for directories you own, and a directory that cannot be repaired stops the whole step atomically with guidance) and enables standard `compinit`, `2` enables `compinit` with the directory security check skipped (`compinit -u`), `3` skips completion. Without an interactive terminal the step is skipped with manual guidance. An existing completion marker is migrated idempotently — re-running the installer never duplicates it.
+- **fish**: the completion file is written into the fish completion directory automatically, with no prompts (an absolute `XDG_CONFIG_HOME` is respected; the same directory-chain safety checks apply, from the config root up).
+- **bash**: no automatic setup — the missing bash-completion package is the bottleneck, so the script prints a pointer to it instead.
+
+Set `INSTALL_COMPLETION=yes` to run the zsh path non-interactively (useful for AI-agent one-line installs): it takes the recommended default — repair permissions and enable standard `compinit`, both without security trade-offs. Any completion-setup failure only prints a hint and never affects the installation result.
+
 ### Windows
 
 ```powershell
@@ -51,6 +59,8 @@ powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1" -Tag vX.Y.Z
 ```
 
 The script downloads the latest stable official Release, verifies its SHA256 against the official `SHA256SUMS`, installs it to `%USERPROFILE%\.token-usage\bin\token-usage.exe` without administrator privileges, and appends `%USERPROFILE%\.token-usage\bin` to the user PATH with a type-preserving registry write (the existing `REG_EXPAND_SZ` value type and `%VAR%` entries are kept as-is), then broadcasts `WM_SETTINGCHANGE` so the new PATH is picked up without signing out (if the broadcast fails, the script prints a sign-out-and-back-in hint). Open a new terminal window from the Start menu or taskbar and run `token-usage version` to confirm. To install an RC, pass its exact tag with `-Tag vX.Y.Z-rc.N`.
+
+After the PATH step, the installer also offers to set up shell completion by writing a small guarded block into your PowerShell profile (`$PROFILE`, resolved per host — Windows PowerShell 5.1 and PowerShell 7 have separate profiles, so run the installer once in each if you use both). It asks `[Y/n]` with Y as the default. The block is written atomically (same-directory temp file, then rename); existing profile content is preserved byte-for-byte in any ASCII-compatible encoding (UTF-8 with BOM, UTF-8 without BOM, or GBK/ANSI); UTF-16-encoded profiles are left untouched with a manual pointer; and re-running the installer is idempotent — a complete, unmodified marker block is detected and skipped. Set `$env:INSTALL_COMPLETION = 'yes'` before running the script to skip the question and write the block directly. Completion-setup failures only print a hint and never affect the installation result.
 
 > On an old TLS environment the first `irm` step still runs before the script, so the in-script TLS fallback cannot rescue it: run `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12` in the current session first, then run the download step.
 

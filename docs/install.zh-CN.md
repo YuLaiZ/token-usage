@@ -35,6 +35,14 @@ curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/ins
 
 > 非登录交互 shell 环境（部分 IDE 集成终端读取 `~/.bashrc` 而非登录文件）不会加载登录文件，需要时请自行补一行 `export PATH="$HOME/.token-usage/bin:$PATH"`；zsh 交互终端用户全部命中 `~/.zshrc`。
 
+安装二进制后，脚本还会自动配置 Shell 补全（覆盖 `INSTALL_DIR` 时跳过）：
+
+- **zsh**：写入任何内容前，安装脚本会核验补全目录链的安全性——对主目录到文件系统根的每一层检查属主、组/其他用户可写性与 macOS ACL，任一层可被其他用户修改即拒绝写入。归当前用户所有的 group/other 可写目录会给出精确的 `chmod go-w` 修复命令；其余发现——属主异常、威胁 ACL 条目、symlink 或非目录组件——按类别给出对应指引（人工核查、ACL 移除命令或管理员修复）。检测到 zsh 补全系统（`compinit`）尚未启用时交互询问：`1` 用 `chmod go-w` 修复被报告的 group/other 可写目录（Homebrew 官方同样建议的做法；归当前用户所有的目录无需 sudo，出现无法修复的目录时整步原子中止并给出指引）并启用标准 `compinit`，`2` 启用跳过目录安全检查的 `compinit`（`compinit -u`），`3` 跳过补全。无交互终端时按跳过处理并给手动指引。已存在的补全 marker 按幂等迁移——重跑安装脚本不会重复写入。
+- **fish**：补全文件自动写入 fish 补全目录，全程无询问（遵循绝对路径的 `XDG_CONFIG_HOME`；自配置根向上的同款目录链安全检查同样生效）。
+- **bash**：不做自动安装——缺失的 bash-completion 包才是瓶颈，脚本只打印对应指引。
+
+设置 `INSTALL_COMPLETION=yes` 可让 zsh 路径非交互执行（适用于 AI agent 一句话安装）：非交互时采用默认推荐路径——修复权限并启用标准 `compinit`，两者均无安全让步。补全配置环节任何失败只打印提示，不影响安装结果。
+
 ### Windows
 
 ```powershell
@@ -51,6 +59,8 @@ powershell -ExecutionPolicy Bypass -File "$env:TEMP\install.ps1" -Tag vX.Y.Z
 ```
 
 脚本下载最新稳定官方 Release、按官方 `SHA256SUMS` 校验后无需管理员权限安装到 `%USERPROFILE%\.token-usage\bin\token-usage.exe`，并以保类型注册表直写把 `%USERPROFILE%\.token-usage\bin` 追加到用户 PATH（保持既有 `REG_EXPAND_SZ` 值类型与 `%VAR%` 条目原文），随后广播 `WM_SETTINGCHANGE` 使新终端无需注销即可获得新 PATH（广播失败时脚本会提示注销重登）。从开始菜单/任务栏启动新终端窗口，运行 `token-usage version` 确认。需要安装 RC 时，显式以 `-Tag vX.Y.Z-rc.N` 指定准确 tag。
+
+PATH 步骤之后，安装脚本还会询问是否把 Shell 补全写入 PowerShell 配置文件（`$PROFILE` 按运行时解析——Windows PowerShell 5.1 与 PowerShell 7 的配置文件相互独立，双版本用户各运行一次安装脚本）。默认 `[Y/n]` 回车即装。写入走原子提交（同目录临时文件 + rename）；既有内容在任何 ASCII 兼容编码（带或不带 BOM 的 UTF-8、GBK/ANSI）下均按字节原样保留；UTF-16 编码的配置文件保守不改写、给手动指引；重跑安装脚本是幂等的——检测到完整且未被修改的 marker 块即跳过。运行脚本前设置 `$env:INSTALL_COMPLETION = 'yes'` 可跳过询问直接写入。补全配置环节任何失败只打印提示，不影响安装结果。
 
 > 旧 Windows 环境（TLS 1.2 以下）下第一步 `irm` 仍发生在脚本执行之前，脚本内的 TLS 兜底救不了它：请先在当前会话执行 `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12`，再运行第一步下载。
 

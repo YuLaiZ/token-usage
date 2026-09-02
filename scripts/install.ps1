@@ -313,6 +313,207 @@ try {
     if ($envKey) { $envKey.Close() }
 }
 
+# ---- Shell 补全配置：把 Tab 补全写入 PowerShell profile（提示级动作，不 throw）。----
+# 与主流程失败统一 throw 的口径有意不同：补全环节任何失败只 Write-Output 提示并
+# 继续，不改变安装退出码（对齐 install.sh 侧 PATH/补全环节的既有降级口径）。
+# $PROFILE 按运行时解析：Windows PowerShell 5.1 与 PowerShell 7 的配置文件路径不同，
+# 各自运行一次安装脚本即各自写入（OneDrive 重定向时 $PROFILE 已是解析后的实际路径）。
+$TUCompletionHead = '# >>> token-usage completion >>>'
+$TUCompletionTail = '# <<< token-usage completion <<<'
+# marker 块内部换行恒为 LF（与检测侧的 CRLF 归一语义配套）；仅块尾与既有内容的
+# 衔接换行按既有内容主导形态。固定绝对路径 + -LiteralPath/-PathType Leaf 守卫：
+# 裸 Test-Path 对同名目录也返回 true，& 执行目录会产生红字；Get-Command 会被旧
+# 副本/alias/function 骗过，故不用。Windows 安装位置固定，原地 update 同路径替换
+# 后补全天然生效、无需重装。
+$TUCompletionBlock = @(
+    $TUCompletionHead,
+    'if (Test-Path -LiteralPath "$env:USERPROFILE\.token-usage\bin\token-usage.exe" -PathType Leaf) {',
+    '    & "$env:USERPROFILE\.token-usage\bin\token-usage.exe" completion powershell | Out-String | Invoke-Expression',
+    '}',
+    $TUCompletionTail
+) -join "`n"
+
+# Get-TUProfileCompletionState 判定 profile 的补全 marker 状态与编码形态。
+# 返回 'missing'（不存在）/ 'occupied'（路径被目录等占用）/ 'utf16'（UTF-16
+# LE/BE BOM——向宽字符流尾部追加 ASCII 会产生混合编码，PowerShell 按 BOM 以
+# UTF-16 解析全文、marker 段成乱码、profile 启动报错，保守不改写）/ 'canonical'
+#（恰好一块且逐字匹配）/ 'invalid'（残缺/重复/被编辑的块）/ 'none'（无 marker，
+# 可写入）/ 'unreadable'。字节级读取 + Latin-1（28591）1:1 解码：GBK/ANSI 等任何
+# ASCII 兼容编码的内容按原字节参与匹配（marker 本身纯 ASCII），不做字符串解码/
+# 重编码；CRLF 先归一为 LF 再与 LF 模板比对，BOM 原样保留、不计入比对。
+function Get-TUProfileCompletionState {
+    param([string]$ProfilePath)
+    if (Test-Path -LiteralPath $ProfilePath -PathType Container) { return 'occupied' }
+    if (-not (Test-Path -LiteralPath $ProfilePath -PathType Leaf)) {
+        if (Test-Path -LiteralPath $ProfilePath) { return 'occupied' }
+        return 'missing'
+    }
+    $bytes = $null
+    try { $bytes = [System.IO.File]::ReadAllBytes($ProfilePath) } catch { return 'unreadable' }
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { return 'utf16' }
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) { return 'utf16' }
+    $offset = 0
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { $offset = 3 }
+    $text = [System.Text.Encoding]::GetEncoding(28591).GetString($bytes, $offset, $bytes.Length - $offset)
+    $norm = $text -replace "`r`n", "`n"
+    $exactHead = [regex]::Matches($norm, '(?m)^' + [regex]::Escape($TUCompletionHead) + '$').Count
+    $exactTail = [regex]::Matches($norm, '(?m)^' + [regex]::Escape($TUCompletionTail) + '$').Count
+    $loose = [regex]::Matches($norm, 'token-usage completion (>>>|<<<)').Count
+    if ($exactHead -eq 0 -and $exactTail -eq 0 -and $loose -eq 0) { return 'none' }
+    if ($exactHead -eq 1 -and $exactTail -eq 1 -and $loose -eq 2 -and $norm.Contains($TUCompletionBlock)) { return 'canonical' }
+    return 'invalid'
+}
+
+# Write-TUCompletionToProfile 执行写入。顺序与防线：
+#   1. profile 不存在时先 New-Item -ItemType Directory -Force 创建父目录并确认
+#      成功，再创建 profile（New-Item File -Force 不保证创建不存在的父目录，首次
+#      使用 PowerShell 的用户恰是该目录不存在的场景，会静默降级为「安装成功但
+#      补全未写入」）；
+#   2. profile 为符号链接（ReparsePoint，判定不跟随目标）或硬链接（fsutil hardlink
+#      list 多行；输出为空视为无法判定、同样保守拒绝——rename 会分离硬链接两端、
+#      把符号链接替换成普通文件）时不改写，原文件与另一端均不动；
+#   3. ASCII 兼容形态字节级追加（BOM 原样保留；末行换行按尾字节 0x0A 判定，仅块
+#      尾衔接换行按既有内容主导形态——存在 CRLF 序列用 CRLF，否则 LF）；
+#   4. 同目录临时文件 + Move-Item 原子提交（多次追加/直接写 profile 在磁盘满或
+#      进程中断时会留半块，canonical 防线随后会把它判为非规范并拒绝修复——
+#      安装器自身制造的残留）；提交前校验候选头尾行齐全。
+# 无返回值：成功与降级路径都以 Write-Output 提示可察觉（提示级动作不得被调用
+# 点吞掉），profile 失败时字节不变。
+function Write-TUCompletionToProfile {
+    $profileDir = Split-Path -Parent $PROFILE
+    if (-not (Test-Path -LiteralPath $profileDir -PathType Container)) {
+        try {
+            New-Item -ItemType Directory -Path $profileDir -Force -ErrorAction Stop | Out-Null
+        } catch {
+            Write-Output "提示：无法创建 PowerShell 配置文件目录（$profileDir）：$($_.Exception.Message)。补全未写入（安装不受影响）。"
+            return
+        }
+        if (-not (Test-Path -LiteralPath $profileDir -PathType Container)) {
+            Write-Output "提示：无法创建 PowerShell 配置文件目录（$profileDir），补全未写入（安装不受影响）。"
+            return
+        }
+    }
+    if (Test-Path -LiteralPath $PROFILE) {
+        $item = Get-Item -LiteralPath $PROFILE -Force -ErrorAction SilentlyContinue
+        # 链接类判定只覆盖「会被 rename 断开/分离」的形态：符号链接与 junction
+        #（及任何 reparse point）；硬链接不经此处（Windows 上 LinkType 为空且无
+        # reparse point），交给下方 fsutil 链接数检测分流。
+        $linkKind = [string]$item.LinkType
+        $isSymlinkLike = ($null -ne $item) -and (
+            $linkKind -eq 'SymbolicLink' -or $linkKind -eq 'Junction' -or
+            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint))
+        if ($isSymlinkLike) {
+            Write-Output "$PROFILE 为符号链接，安装脚本保守不改写；请手动编辑链接目标文件加入下方 marker 模板，或解除链接后重跑安装脚本："
+            Write-Output $TUCompletionBlock
+            return
+        }
+        # fsutil 输出为空（执行失败等）时按无法判定处理、保守拒绝：硬链接经 rename
+        # 写入会静默分离两端，漏检的代价大于误拒。
+        $hardlinkLines = @()
+        try { $hardlinkLines = @(fsutil hardlink list "$PROFILE" | Where-Object { $_ }) } catch { }
+        if ($hardlinkLines.Count -ne 1) {
+            if ($hardlinkLines.Count -gt 1) {
+                Write-Output "$PROFILE 与其他文件为硬链接，安装脚本保守不改写；请手动编辑其中一个文件加入下方 marker 模板，或解除链接后重跑安装脚本："
+            } else {
+                Write-Output "提示：无法判定 $PROFILE 的硬链接状态，补全未写入（安装不受影响）；可手动配置或解除链接后重跑安装脚本。"
+            }
+            return
+        }
+    }
+    $existing = [byte[]]@()
+    if (Test-Path -LiteralPath $PROFILE -PathType Leaf) {
+        try { $existing = [System.IO.File]::ReadAllBytes($PROFILE) } catch {
+            Write-Output "提示：无法读取 $PROFILE：$($_.Exception.Message)。补全未写入（安装不受影响）。"
+            return
+        }
+    }
+    $latin1 = [System.Text.Encoding]::GetEncoding(28591)
+    $existingText = $latin1.GetString($existing)
+    $dominantEol = "`n"
+    if ($existingText.Contains("`r`n")) { $dominantEol = "`r`n" }
+    $eolBytes = $latin1.GetBytes($dominantEol)
+    $prefixBytes = [byte[]]@()
+    if ($existing.Length -gt 0 -and $existing[$existing.Length - 1] -ne 0x0A) {
+        $prefixBytes = $eolBytes
+    }
+    $suffixBytes = $latin1.GetBytes($TUCompletionBlock + $dominantEol)
+    $candidate = New-Object byte[] ($existing.Length + $prefixBytes.Length + $suffixBytes.Length)
+    [Array]::Copy($existing, 0, $candidate, 0, $existing.Length)
+    if ($prefixBytes.Length -gt 0) { [Array]::Copy($prefixBytes, 0, $candidate, $existing.Length, $prefixBytes.Length) }
+    [Array]::Copy($suffixBytes, 0, $candidate, $existing.Length + $prefixBytes.Length, $suffixBytes.Length)
+    $candidateText = $latin1.GetString($candidate)
+    if (-not $candidateText.Contains($TUCompletionHead) -or -not $candidateText.Contains($TUCompletionTail)) {
+        Write-Output "提示：补全 marker 写入校验未通过，$PROFILE 保持不变（安装不受影响）。"
+        return
+    }
+    $tmpProfile = Join-Path $profileDir ('.profile-token-usage-{0}.tmp' -f [IO.Path]::GetRandomFileName())
+    try {
+        [System.IO.File]::WriteAllBytes($tmpProfile, $candidate)
+        Move-Item -LiteralPath $tmpProfile -Destination $PROFILE -Force -ErrorAction Stop
+    } catch {
+        if (Test-Path -LiteralPath $tmpProfile) { Remove-Item -LiteralPath $tmpProfile -Force -ErrorAction SilentlyContinue }
+        Write-Output "提示：补全配置写入失败：$($_.Exception.Message)。$PROFILE 保持不变（安装不受影响）；可按 token-usage completion powershell --help 手动配置。"
+        return
+    }
+    Write-Output "已把 Tab 补全写入 $PROFILE（新开的 PowerShell 会话生效）。"
+}
+
+# 开关：仅 INSTALL_COMPLETION=yes 触发非交互安装（等价交互默认 Y）；未设置按默认
+# 询问；其他非空值打印警告并按默认处理（防拼写错误静默走错路径）。
+$tuCompletionAuto = $false
+if ($env:INSTALL_COMPLETION) {
+    if ($env:INSTALL_COMPLETION -ne 'yes') {
+        Write-Output "警告：INSTALL_COMPLETION 仅支持 yes（当前值 `"$($env:INSTALL_COMPLETION)`"），已按默认询问流程处理。"
+    } else {
+        $tuCompletionAuto = $true
+    }
+}
+
+switch (Get-TUProfileCompletionState $PROFILE) {
+    'canonical' {
+        Write-Output "检测到 PowerShell 配置文件已包含 token-usage 补全（$PROFILE），无需重复写入。"
+    }
+    'invalid' {
+        Write-Output "检测到非规范 completion marker，请手动处理（删除旧块后重跑安装脚本）；$PROFILE 未被修改。"
+    }
+    'utf16' {
+        Write-Output "$PROFILE 为 UTF-16 编码（带 BOM），安装脚本保守不改写；请先把它转为 UTF-8 后重跑安装脚本，或按 token-usage completion powershell --help 手动配置补全。"
+    }
+    'occupied' {
+        Write-Output "提示：$PROFILE 被目录或其他非普通文件对象占用，补全未写入（安装不受影响）。"
+    }
+    'unreadable' {
+        Write-Output "提示：无法读取 $PROFILE 判定补全状态，补全未写入（安装不受影响）。"
+    }
+    default {
+        # missing / none：进入写入决策。非交互判定不依赖 Read-Host 超时行为：
+        # UserInteractive 为假（CI、服务上下文）或宿主不是 ConsoleHost 时直接跳过。
+        if (-not $tuCompletionAuto) {
+            $interactiveHost = ([Environment]::UserInteractive -eq $true) -and ($Host.Name -eq 'ConsoleHost')
+            if (-not $interactiveHost) {
+                Write-Output "提示：当前会话非交互终端，未写入 PowerShell 补全（安装不受影响）；可稍后重跑安装脚本，或按 token-usage completion powershell --help 手动配置。"
+                break
+            }
+            Write-Output 'Windows PowerShell 5.1 与 PowerShell 7 配置文件相互独立，双版本用户各运行一次安装脚本。'
+            # 交互询问：默认 Y（回车即装，主路径默认增强且无任何权限/安全权衡）；
+            # 非法输入重问一次，再非法按 Y。非交互 EOF 下 Read-Host 可能返回
+            # $null（-eq '' 不匹配会误报无效输入），用 IsNullOrEmpty 归一。
+            $tuAnswer = ''
+            foreach ($tuAttempt in 1..2) {
+                $tuAnswer = Read-Host ("是否把 Tab 补全写入 PowerShell 配置文件（{0}）？[Y/n]（直接回车 = Y）" -f $PROFILE)
+                if ([string]::IsNullOrEmpty($tuAnswer) -or $tuAnswer -match '^[Yy]') { break }
+                if ($tuAnswer -match '^[Nn]$') { break }
+                if ($tuAttempt -eq 1) { Write-Output '无效输入，请输入 Y 或 n（直接回车 = Y）。' }
+            }
+            if ($tuAnswer -match '^[Nn]$') {
+                Write-Output '已跳过 PowerShell 补全（安装正常完成）；稍后可重跑安装脚本，或按 token-usage completion powershell --help 手动配置。'
+                break
+            }
+        }
+        Write-TUCompletionToProfile
+    }
+}
+
 # ---- 结尾提示。----
 # 单次脚本执行无法感知跨进程的 stop 历史，恢复提示无条件打印（本次安装前 stop 的 daemon 不会自动恢复）。
 # 按与自启迁移提示相同的 PATH 生效维度分派：PATH 未写入时任何终端都解析不到裸 token-usage，

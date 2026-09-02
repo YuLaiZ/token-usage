@@ -61,6 +61,8 @@ token-usage update --version vX.Y.Z # 更新指定 Release
 
 已重签的官方资产、源码构建产物（`Version = dev`）或通过 `go install` 安装的 Release tag 产物，需要先执行一次 `token-usage update --force`，将其替换为官方 Release 资产；之后即可正常更新。软链接副本和非官方 tag 不能通过这种方式转换。
 
+`update` 成功升级首次跨过携带安装脚本补全自动配置功能的版本时，成功输出会追加一条一次性迁移提示并给出官方安装命令——重跑一次即可自动配置 Tab 补全（zsh 会交互确认）。确切触发条件见 [CLI 参考](docs/cli.zh-CN.md)。
+
 手动安装、指定版本、源码构建、更新信任规则、卸载、迁移与平台差异见[安装指南](docs/install.zh-CN.md)。
 
 ### 2. 用 TUI 配置并采集
@@ -148,7 +150,11 @@ token-usage query list
 source <(token-usage completion zsh)
 ```
 
-持久化安装请运行 `token-usage completion <bash|zsh|fish|powershell> --help`。
+各 Shell 的前置条件：**zsh** 需先初始化补全系统（`compinit`）——未初始化时加载脚本会报 `compdef: command not found`，请先在 rc 文件中加入 `autoload -U compinit; compinit` 再加载（部分配置有意不启用 `compinit`，改动前先查看 rc 文件）。**bash** 依赖 bash-completion 包（macOS 系统 bash 3.2 不满足，需经 Homebrew 安装 bash 4+ 与 `bash-completion@2`）。**fish** 与 **PowerShell** 无前置条件。
+
+zsh 上 `compinit` 可能报告不安全目录（insecure directories，即 group/其他用户可写的补全目录——老 Homebrew 安装最常见）并询问是否继续。三种处理方式：在提示出现时输入 `y`（每次新开 shell 会再次提示）、用 `chmod go-w <目录>` 一次性修复各目录（Homebrew 官方同样建议的做法）、或改用 `compinit -u` 永久跳过安全检查。
+
+官方安装脚本可自动完成以上配置（zsh 会交互确认），见[安装指南](docs/install.zh-CN.md)。持久化安装请运行 `token-usage completion <bash|zsh|fish|powershell> --help`。
 
 ## 文档导航
 

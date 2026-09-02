@@ -289,14 +289,16 @@ func runUpdateApply(ctx context.Context, cmd *cobra.Command, svc UpdateService, 
 		}
 		return fmt.Errorf("%s: %w", ui.Bi("update failed", "更新失败"), err)
 	}
-	renderErr := renderApplyResult(out, errOut, res)
+	renderErr := renderApplyResult(out, errOut, goruntime.GOOS, res)
 	if res.LogPath != "" {
 		fmt.Fprintf(out, "%s: %s\n", ui.Bi("Update log", "升级日志"), res.LogPath)
 	}
 	return renderErr
 }
 
-// renderApplyResult 把 ApplyResult 翻译为面向用户的中文提示。
+// renderApplyResult 把 ApplyResult 翻译为面向用户的中文提示。goos 由生产调用方
+// 注入 runtime.GOOS（单测中不可切换，测试直接以参数覆盖平台分支），用于补全
+// 迁移提示的安装入口分派。
 //
 // 结果分支：
 //   - NoStableRelease：给出明确提示，退出 0；VersionNotFound 返回非 0；
@@ -313,7 +315,11 @@ func runUpdateApply(ctx context.Context, cmd *cobra.Command, svc UpdateService, 
 //   - ReadyToInstall=true 但未 Installed/Deferred：更新未完成，返回非 0。
 //   - forced 后安装未完成：落入既有 ReadyToInstall / UpdateAvailable 失败分支（非 0），
 //     不再重复「来源不可信」的指责。
-func renderApplyResult(out, errOut io.Writer, res update.ApplyResult) error {
+//
+// 四个成功出口（含 --force 两出口）在跨越补全功能引入版本门槛时追加一次性迁移
+// 提示；Recovered 出口明确不纳入（决策记录 #6：恢复结果不携带版本、覆盖不完整，
+// release notes 与重跑安装脚本为主要触达）。
+func renderApplyResult(out, errOut io.Writer, goos string, res update.ApplyResult) error {
 	switch {
 	case res.Recovered:
 		return renderRecoveredApplyResult(out, res)
@@ -327,11 +333,13 @@ func renderApplyResult(out, errOut io.Writer, res update.ApplyResult) error {
 		// --force 强制覆盖安装成功：先于「来源不可信」分支返回成功，退出 0。
 		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Updated and daemon restored (--force overwrite)", "已更新并恢复 daemon（--force 强制覆盖）"), res.CurrentTag, res.TargetTag)
 		fmt.Fprintln(out, ui.Bi("Run `token-usage version` to confirm the current version.", "可用 `token-usage version` 确认当前版本。"))
+		maybeCompletionMigrationNotice(out, goos, res, false)
 		return nil
 	case res.ProvenanceForced && res.Deferred:
 		// --force 下 Windows 后台替换已排队：非错误的排队状态，退出 0。
 		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Background replacement queued (--force overwrite)", "后台替换已排队（--force 强制覆盖）"), res.CurrentTag, res.TargetTag)
 		fmt.Fprintln(out, ui.Bi("Later run `token-usage version` or `token-usage update --check` to confirm the final version.", "请稍后运行 `token-usage version` 或 `token-usage update --check` 确认最终版本。"))
+		maybeCompletionMigrationNotice(out, goos, res, true)
 		return nil
 	case res.ProvenanceChecked && !res.ProvenanceTrusted && !res.ProvenanceForced:
 		// 来源不可信：绝不自动覆盖。按豁免资格分流标题与 sentinel（均为非 0 退出）：
@@ -353,10 +361,12 @@ func renderApplyResult(out, errOut io.Writer, res update.ApplyResult) error {
 	case res.Installed:
 		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Updated and daemon restored", "已更新并恢复 daemon"), res.CurrentTag, res.TargetTag)
 		fmt.Fprintln(out, ui.Bi("Run `token-usage version` to confirm the current version.", "可用 `token-usage version` 确认当前版本。"))
+		maybeCompletionMigrationNotice(out, goos, res, false)
 		return nil
 	case res.Deferred:
 		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Background replacement queued", "后台替换已排队"), res.CurrentTag, res.TargetTag)
 		fmt.Fprintln(out, ui.Bi("Later run `token-usage version` or `token-usage update --check` to confirm the final version.", "请稍后运行 `token-usage version` 或 `token-usage update --check` 确认最终版本。"))
+		maybeCompletionMigrationNotice(out, goos, res, true)
 		return nil
 	case res.ReadyToInstall:
 		// 已通过来源校验但没有完成安装，也没有确认 helper 已接管；不能把它归类为成功。
@@ -412,4 +422,66 @@ func printManualInstallGuide(out io.Writer, targetTag string) {
 	fmt.Fprintf(out, ui.Bi("  1. Visit", "  1. 访问")+" https://github.com/YuLaiZ/token-usage/releases/tag/%s\n", targetTag)
 	fmt.Fprintln(out, ui.Bi("  2. Download the binary asset for your platform and replace the current token-usage executable", "  2. 下载对应平台的二进制资产，替换当前 token-usage 可执行文件"))
 	fmt.Fprintln(out, ui.Bi("  3. Run `token-usage version` to confirm the new version", "  3. 运行 `token-usage version` 确认新版本"))
+}
+
+// completionMigrationIntroTag 是首个携带 Shell 补全自动配置功能的 Release tag
+// （含 rc 形态——按 Version.Compare 语义 vX.Y.Z-rc.1 < vX.Y.Z，定义为稳定版会让
+// 先随 RC 升级的用户错过提示）。发布承载版本与预期不符时随发布同步调整。
+const completionMigrationIntroTag = "v0.1.5"
+
+// completionMigrationDueWithIntro 判定补全迁移门槛是否被跨越：TargetTag ≥ intro
+// 且（CurrentTag 可解析并 < intro，或 CurrentTag 不可解析——dev 形态，源码构建 /
+// 重签场景：目标过门槛即提示，来源版本不可比不阻断）。intro 自身非法时按不提示
+// （常量写错的防御路径，无可提示的门槛）。
+func completionMigrationDueWithIntro(currentTag, targetTag, introTag string) bool {
+	intro, err := update.ParseVersion(introTag)
+	if err != nil {
+		return false
+	}
+	target, err := update.ParseVersion(targetTag)
+	if err != nil || target.Compare(intro) < 0 {
+		return false
+	}
+	current, err := update.ParseVersion(currentTag)
+	if err != nil {
+		return true
+	}
+	return current.Compare(intro) < 0
+}
+
+// maybeCompletionMigrationNotice 在 update 成功输出后按门槛判定追加一次性补全
+// 迁移提示（老用户自更新不跑安装脚本，成功输出是唯一触达点；重跑一次安装脚本
+// 即可自动配置补全，幂等安全）。门槛跨越对单调升级只发生一次、无持久化标记；
+// 显式 --version 降级后再升会再次跨越并再次打印（「每次跨越都告知」语义自洽）。
+func maybeCompletionMigrationNotice(out io.Writer, goos string, res update.ApplyResult, deferred bool) {
+	if !completionMigrationDueWithIntro(res.CurrentTag, res.TargetTag, completionMigrationIntroTag) {
+		return
+	}
+	renderCompletionMigrationNotice(out, goos, deferred)
+}
+
+// renderCompletionMigrationNotice 渲染补全迁移提示。抽成接收 goos 的纯函数：
+// runtime.GOOS 不可在单测中切换，测试以参数直接覆盖平台分支。deferred=true
+// 用于 Windows 后台替换出口：替换尚未完成，立即重跑安装脚本会与后台替换竞争
+// 目标二进制，文案改为先确认版本。非 darwin / windows 平台无补全自动安装
+// 入口，不打印（update 成功出口在该类平台理论不可达，纯防御）。
+func renderCompletionMigrationNotice(out io.Writer, goos string, deferred bool) {
+	var guide string
+	switch goos {
+	case "darwin":
+		guide = "  curl -fsSL https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.sh | bash"
+	case "windows":
+		guide = "  irm https://raw.githubusercontent.com/YuLaiZ/token-usage/main/scripts/install.ps1 -OutFile \"$env:TEMP\\install.ps1\"\n" +
+			"  powershell -ExecutionPolicy Bypass -File \"$env:TEMP\\install.ps1\""
+	default:
+		return
+	}
+	if deferred {
+		fmt.Fprintln(out, ui.Bi("Shell completion auto-setup is available since this version; after confirming the target version with `token-usage version`, re-run the official install script to configure it (zsh asks interactively):",
+			"本版本起支持自动配置 Shell 补全，待用 `token-usage version` 确认目标版本后，再重跑官方安装脚本配置（zsh 会交互确认）："))
+	} else {
+		fmt.Fprintln(out, ui.Bi("Shell completion auto-setup is available since this version; re-run the official install script once to configure it (zsh asks interactively):",
+			"本版本起支持自动配置 Shell 补全，重跑一次官方安装脚本即可自动配置（zsh 会交互确认）："))
+	}
+	fmt.Fprintln(out, guide)
 }

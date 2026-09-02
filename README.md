@@ -61,6 +61,8 @@ token-usage update --version vX.Y.Z # a specific Release
 
 For a re-signed official asset, a source build (`Version = dev`), or `go install` of a tagged release, run `token-usage update --force` once to replace it with an official Release asset; later updates work normally. Symlinked copies and non-official tags cannot be converted this way.
 
+When a successful `update` first crosses a version that ships installer-managed shell completion, the success output appends a one-time migration notice with the official installer command — re-running it sets up Tab completion automatically (on zsh it asks interactively). See the [CLI Reference](docs/cli.md) for the exact trigger conditions.
+
 For manual installation, a pinned version, source builds, update trust rules, uninstall, migration, and platform-specific notes, see the [Installation Guide](docs/install.md).
 
 ### 2. Configure in the TUI and Collect
@@ -148,7 +150,11 @@ Run `token-usage --help` for a command overview, or read the [CLI Reference](doc
 source <(token-usage completion zsh)
 ```
 
-For persistent setup, run `token-usage completion <bash|zsh|fish|powershell> --help`.
+Per-shell prerequisites: **zsh** requires the completion system (`compinit`) to be initialized first — loading the script without it fails with `compdef: command not found`, so add `autoload -U compinit; compinit` to your rc file before the load line (some setups intentionally skip `compinit`; check your rc file first). **bash** requires the bash-completion package (macOS ships bash 3.2 without it — install bash 4+ and `bash-completion@2` via Homebrew). **fish** and **PowerShell** have no prerequisites.
+
+On zsh, `compinit` may report insecure directories (group/other-writable completion directories — most common on old Homebrew installs) and ask whether to continue. Three ways to handle it: answer `y` at the prompt (it reappears in each new shell), repair the directories once with `chmod go-w <dir>` (the fix Homebrew itself recommends), or switch to `compinit -u` to skip the security check permanently.
+
+The official installer script sets all of this up automatically (on zsh it asks interactively); see the [Installation Guide](docs/install.md). For persistent setup, run `token-usage completion <bash|zsh|fish|powershell> --help`.
 
 ## Documentation
 
