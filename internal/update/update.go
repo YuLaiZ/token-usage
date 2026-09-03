@@ -35,8 +35,8 @@ var ErrDeferredToHelper = errors.New(ui.Bi(
 //    （update --force 时 dev 例外：结构前置与目标资产校验照常执行后覆盖）；
 //  2. 查询目标 Release；目标不严格更高 → 「无需更新」，Check 不写文件，Apply 不做来源校验；
 //  3. （仅 Apply，且确有更新时）来源校验：当前二进制是否为官方 Release 资产；
-//  4. （仅 Apply，来源可信时）准备下载安装——本任务定义结果类型与集成点，
-//     实际下载/原子替换/daemon 切换由后续任务填充。
+//  4. （仅 Apply，来源校验通过时）下载安装：下载 stage 资产并校验，control lock 内
+//     Inspect → Stop → Installer 替换 → 按原先运行状态重启 daemon。
 //
 // Check 永不创建本地文件；Apply 仅在「确有更新」分支才做来源校验，
 // 来源不可信时只返回目标版本与人工安装指引，绝不下载/覆盖。
@@ -59,7 +59,8 @@ type Service struct {
 	Goos   string
 	Goarch string
 
-	// DownloadBase 官方下载前缀。生产用 githubDownloadBase；后续下载任务使用。
+	// DownloadBase 官方下载前缀。当前下载实际使用 download.go 冻结的 githubDownloadBase，
+	// 本字段暂无读取方（仅测试装配赋值），保留为下载前缀注入位。
 	DownloadBase string
 
 	// ControlManager 进程控制锁管理器。Apply 在来源校验通过后用它编排
@@ -73,7 +74,7 @@ type Service struct {
 	// 未注入时即使 ControlManager 已注入也不做锁内编排（缺配置无法与 control.Session 交互）。
 	ConfigLoader control.ConfigLoader
 
-	// Installer 平台专属安装器（集成点：实际文件替换由后续任务填充）。
+	// Installer 平台专属安装器（集成点：锁内实际文件替换）。
 	// Apply 在锁内 Stop 之后、StartWithExecutable 之前调用 Installer.Install。
 	// 未注入时锁内编排执行「占位安装」（不替换文件），仍会按原先运行状态决定是否
 	// 用 binPath 重新启动 daemon——便于先打通锁内编排与回滚骨架。
@@ -127,7 +128,8 @@ type VersionProbe interface {
 // Installer 抽象「平台专属的二进制落地替换」步骤。
 //
 // 生产实现按 GOOS 分派：POSIX 做事务性备份+原子 rename（见 install_unix.go）；
-// Windows 经 helper 等待父进程退出后 MoveFileEx（后续任务填充）。
+// Windows 经后台 helper 在父进程退出后完成 MoveFileEx 替换与 daemon 重启
+// （见 install_windows.go）。
 // 本接口是 Apply 锁内编排与实际文件替换之间的集成点：Apply 在 control lock 内、
 // Stop 之后、StartWithExecutable 之前调用 Install。
 //

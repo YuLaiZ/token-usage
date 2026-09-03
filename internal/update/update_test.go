@@ -298,8 +298,8 @@ func TestApply_DevCurrentRejected(t *testing.T) {
 	}
 }
 
-// TestApply_TrustedReadyToInstall：来源可信 → 到达「准备安装」集成点，不再本任务下载。
-// 本任务只到判定与 provenance；下载/安装留给后续任务。
+// TestApply_TrustedReadyToInstall：来源可信 → 到达「准备安装」集成点。
+// 本测试只断言判定与 provenance 链路到 ReadyToInstall 集成点，不执行下载与锁内编排。
 func TestApply_TrustedReadyToInstall(t *testing.T) {
 	svc := makeService(t)
 
