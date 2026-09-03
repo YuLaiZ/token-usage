@@ -281,21 +281,23 @@ func GetFileScanLogs(ctx context.Context, q dbtx, client string) (map[string]mod
 }
 
 // UpsertRawRouterLogs 批量写入路由中间件日志（staging 层）
-// message_id = request_id 去 "session:" / "opencode_session:" 前缀
-// 主键 (request_id, router_name)，INSERT OR REPLACE 幂等
+// message_id = request_id 前缀提取（claude "session:" / codex "session:codex:{pid}:"）
+// 主键 (request_id, router_name)，INSERT OR REPLACE 幂等（REPLACE 重置 collected_at
+// 为当前时刻属既有副作用；data_source 语义由采集侧保证与 v3 迁移口径一致，
+// REPLACE 不得把既有 'codex_session' 标记降级为 'proxy'）
 func UpsertRawRouterLogs(ctx context.Context, q dbtx, logs []model.RouterLog) (int, error) {
 	stmt := `INSERT OR REPLACE INTO raw_router_logs (
 		request_id, message_id, router_name, session_id, app_type, model,
 		provider_id, provider_name, input_tokens, output_tokens,
-		cache_read_tokens, cache_create_tokens, created_at, raw_data
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		cache_read_tokens, cache_create_tokens, created_at, data_source, raw_data
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	count := 0
 	for _, l := range logs {
 		_, err := q.ExecContext(ctx, stmt,
 			l.RequestID, l.MessageID, l.RouterName, l.SessionID, l.AppType, l.Model,
 			l.ProviderID, l.ProviderName, l.InputTokens, l.OutputTokens,
-			l.CacheReadTokens, l.CacheCreateTokens, l.CreatedAt, l.RawData,
+			l.CacheReadTokens, l.CacheCreateTokens, l.CreatedAt, l.DataSource, l.RawData,
 		)
 		if err != nil {
 			return count, fmt.Errorf("插入 raw_router_log %q 失败: %w", l.RequestID, err)

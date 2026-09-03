@@ -59,7 +59,7 @@
 
 **Router middleware**:
 
-- **CC Switch** (`RouterAdapter`): queries CC Switch's `proxy_request_logs` and `providers` tables to backfill the actual provider/model into messages. Its `app_type` currently recognizes only `claude` and `claude-desktop`; raw logs for other clients are still written to `raw_router_logs`, but they do not participate in message-level attribution.
+- **CC Switch** (`RouterAdapter`): queries CC Switch's `proxy_request_logs` and `providers` tables to backfill the actual provider/model into messages. Attribution uses two paths: Claude-family logs (`app_type` `claude`/`claude-desktop`) match by `message_id`, while Codex proxy logs (`app_type` `codex`, `data_source='proxy'`) match by session ID plus a 300s time window (CC Switch prefixes Codex session IDs with `codex_`; stripping it yields the rollout filename UUID; `codex_session` sync rows carry no routing value and are excluded). Raw logs for other clients are still written to `raw_router_logs`, but they do not participate in message-level attribution.
 
 ## Data Flow
 
@@ -82,7 +82,7 @@ graph TB
 **Notes**:
 
 - Collectors read the six client sources and produce `[]model.Message` plus `[]model.Session`; both are written to `messages` and `sessions` in one transaction.
-- The RouterAdapter reads CC Switch SQLite and produces `[]model.RouterLog`, which is written to `raw_router_logs`; it then looks up attribution by `message_id` and backfills `router_provider`/`router_model`/`router_name` in `messages`. For a client with a router configured that supports attribution, collection rounds also look up attribution by `message_id` against the already-staged `raw_router_logs` rows and backfill after their messages are persisted — this is not limited to the CLI date mode, so daemon rounds cover the interleaving where router logs land before the message does.
+- The RouterAdapter reads CC Switch SQLite and produces `[]model.RouterLog`, which is written to `raw_router_logs`; it then queries attribution — by `message_id` for the Claude family, or by session ID plus a 300s time window for Codex — and backfills `router_provider`/`router_model`/`router_name` in `messages`. For a client with a router configured that supports attribution, collection rounds also recompute attribution against the already-staged `raw_router_logs` rows after their messages are persisted (Claude by `message_id`; Codex queries both sides in full for the touched sessions — every proxy row and every Codex message — so any later round touching a session repairs cross-day interleavings); this is not limited to the CLI date mode, so daemon rounds cover the interleaving where router logs land before the message does.
 - `sync_state` records the incremental cursor for every source of each client. Collectors and router adapters read and write their own sources independently.
 - Full collection (`collect all`) passes `Dates=nil`, so it does not consult `collection_log` date deduplication. Repeated scans remain safe because `messages` uses `(client, id)` UPSERT.
 - When part of a collector's sources fail, successfully parsed messages, sessions, and router data are still committed transactionally. However, it does not write `collection_log`, resolve historical errors, or advance `sync_state`; a later normal collection or retry idempotently replays the incomplete range with UPSERT.
@@ -179,7 +179,7 @@ Use cases: real-time usage inspection and continuous background monitoring.
 - **Incremental**: triggered by SQLitePoller (periodically polls mtime; in WAL mode it uses max(db, -wal)); reads incrementally using `sync_state` cursors. Covers opencode / zcode / Codex state DB.
 - **router source** (`Source=router`): triggered by the router DB poller; backfills router fields only and does not call a client collector. It is assembled from enabled clients that declare a Router configuration (currently only the `cc_switch` case).
 
-For a client with a router configured that supports attribution, every round (ChangedFile / Incremental / CLI date mode) also looks up attribution by `message_id` against the already-staged `raw_router_logs` rows once its messages are persisted, so an attribution is still backfilled when the router log arrived before the message (the router round's UPDATE missed it and the cursor already moved past). Rounds of other clients — without a router, or with a legacy non-Claude router configuration — neither query nor backfill; legacy configurations keep writing raw logs only.
+For a client with a router configured that supports attribution, every round (ChangedFile / Incremental / CLI date mode) also recomputes attribution against the already-staged `raw_router_logs` rows once its messages are persisted — the Claude family by `message_id`, Codex by session ID plus a 300s time window over both sides in full for the touched sessions — so an attribution is still backfilled when the router log arrived before the message (the router round's UPDATE missed it and the cursor already moved past) or across midnight boundaries. Rounds of other clients — without a router, or with a legacy router configuration on a non-router-capable client — neither query nor backfill; legacy configurations keep writing raw logs only.
 
 WorkBuddy's SQLite database is used only to look up titles and has no poller.
 
@@ -386,7 +386,7 @@ data_dir = "~/.token-usage"
 
 [clients.claude]
 enabled = true
-router = "cc_switch"          # Router attribution (currently effective only for the Claude family)
+router = "cc_switch"          # Router attribution (Claude family and Codex)
 
 [clients.opencode]
 enabled = true
@@ -422,7 +422,7 @@ dir = "~/.token-usage/logs"
 max_days = 7
 ```
 
-> **Current router-attribution support**: only Claude (Code/Desktop) configured with `router = "cc_switch"` receives message-level attribution backfill (`app_type` recognizes only `claude` / `claude-desktop`). Configuration entry points reject a non-empty `router` on other clients (`config set` fails up front; the TUI neither offers nor saves one); existing configurations that already contain such a value are still read without errors — their raw logs are written to `raw_router_logs` but their `MessageID` is empty and `messages` are not backfilled. Adding router attribution for another client requires log-protocol parsing, a poller/cursor, an `app_type→client` mapping, backfill logic, and tests; configuration alone cannot add it.
+> **Current router-attribution support**: Claude (Code/Desktop) and Codex configured with `router = "cc_switch"` receive message-level attribution backfill. Claude-family logs match by `message_id`; Codex matches proxy rows (`data_source='proxy'`) by session ID (CC Switch's `codex_` prefix stripped, matching the rollout filename UUID) with a nearest-neighbor 300s time window between the proxy row's `created_at` (seconds) and the message timestamp (milliseconds), normalized to milliseconds before comparison. Codex attribution was verified with synthetic fixtures only — no live third-party Codex routing was exercised locally; the 300s window is an engineering estimate and the first tuning point if mismatch reports arrive. Later rounds recompute the touched sessions in full and correct earlier partial-round attributions by overwriting with non-empty values, but backfill never clears an existing attribution — a message left unmatched after a correction keeps its previous value until it is matched again. Configuration entry points reject a non-empty `router` on other clients (`config set` fails up front; the TUI neither offers nor saves one); existing configurations that already contain such a value are still read without errors — their raw logs are still written to `raw_router_logs` with `MessageID` extracted per source-row `app_type` (Claude-family rows keep a usable `MessageID`), and `messages` are not backfilled because backfill runs only for router-capable clients, not because the logs lack a `MessageID`. Adding router attribution for another client requires log-protocol parsing, a poller/cursor, an `app_type→client` mapping, backfill logic, and tests; configuration alone cannot add it.
 
 `query provider` chooses router attribution first, then the collector value. Historical empty values remain unattributed: the query never infers a provider from the client. `provider_aliases` maps any resulting provider value to a display label. The query applies aliases after choosing the effective provider and merges equal labels; the mapping never writes to `messages` or triggers re-attribution. Maintain it through the aliases page in the TUI or `config set 'provider_aliases."raw name"' 'display name'`.
 

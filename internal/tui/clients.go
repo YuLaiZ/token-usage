@@ -290,8 +290,8 @@ func (p *clientDetailPage) delegateInput(msg tea.Msg) *clientDetailPage {
 func (p *clientDetailPage) commit() error {
 	c := p.app.draft.Clients[p.name]
 	c.Enabled = p.toggle.Value()
-	// router 字段:按 isRouter 标志定位(非 Claude 客户端无该字段、存量清除时
-	// 可能不在 index 0),值必须落在 registry 枚举内,否则归一化为空
+	// router 字段:按 isRouter 标志定位(非 router-capable 客户端默认无该字段、
+	// 存量清除时可能不在 index 0),值必须落在 registry 枚举内,否则归一化为空
 	//(防未注册进入草稿)。
 	routerVal := ""
 	for _, f := range p.fields {

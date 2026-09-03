@@ -385,7 +385,7 @@ token-usage config set <key> <value> --confirm-migrate   # only when migrating d
 
 **Full rewrite:** when configuration actually changes, both `config set` and the TUI serialize the entire user configuration file; existing comments and map-key ordering are not preserved. Back up handwritten notes first.
 
-**Router guard:** `config set clients.<name>.router <value>` fails before writing when `<value>` is non-empty and `<name>` is not a router-capable client (currently Claude only); the command exits nonzero. Setting an empty value clears the router and is always allowed. Read paths (`config show`, collection, the daemon) keep tolerating a non-empty router on other clients in existing configurations.
+**Router guard:** `config set clients.<name>.router <value>` fails before writing when `<value>` is non-empty and `<name>` is not a router-capable client (currently Claude and Codex); the command exits nonzero. Setting an empty value clears the router and is always allowed. Read paths (`config show`, collection, the daemon) keep tolerating a non-empty router on other clients in existing configurations.
 
 **`data_dir` migration:** changing `data_dir` requires `--confirm-migrate`, and the old daemon **must be stopped** (the command rejects a running daemon before writing). Move `usage.db` and `logs` manually; PID/lock/runtime-state are not migrated and are cleaned by the stale protocol.
 

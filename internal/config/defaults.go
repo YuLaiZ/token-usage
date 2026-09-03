@@ -14,7 +14,7 @@ const defaultConfigTemplate = `# token-usage 配置文件
 # 所有客户端默认关闭（enabled = false）：按需开启后再采集。
 # 开启方式：改为 enabled = true，或执行
 #   token-usage config set clients.<name>.enabled true
-# （可用客户端见下方各 [clients.*] 段；router 归因当前仅支持 claude）。
+# （可用客户端见下方各 [clients.*] 段；router 归因当前支持 claude 与 codex）。
 
 # 数据目录（数据库、日志存放位置）
 data_dir = "~/.token-usage"
@@ -22,7 +22,7 @@ data_dir = "~/.token-usage"
 # 各客户端配置
 [clients.claude]
 enabled = false
-# router = "cc_switch"  # 可选：路由归因（当前仅 Claude 家族支持），不设置即不使用
+# router = "cc_switch"  # 可选：路由归因（Claude 家族与 Codex 支持），不设置即不使用
 
 [clients.claude.paths]
 projects_dir = "~/.claude/projects"
@@ -35,6 +35,7 @@ db = "~/.local/share/opencode/opencode.db"
 
 [clients.codex]
 enabled = false
+# router = "cc_switch"  # 可选：路由归因（Claude 家族与 Codex 支持），不设置即不使用
 
 [clients.codex.paths]
 state_dir = "~/.codex"                  # state_*.sqlite 所在目录

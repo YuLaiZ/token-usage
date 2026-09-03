@@ -6,8 +6,9 @@ import (
 )
 
 // currentSchemaVersion 当前 schema 版本。v2 重建 file_scan_log 为 startup 跳过门
-// 状态表（v1 布局是死表，无生产数据）。
-const currentSchemaVersion = 2
+// 状态表（v1 布局是死表，无生产数据）；v3 为 raw_router_logs 加 data_source 列
+// （区分 proxy 直录与 codex_session 同步行，codex 归因只消费前者）。
+const currentSchemaVersion = 3
 
 // ParserVersion 是 JSONL 解析/映射逻辑的版本号（file_scan_log.parser_version）。
 // 任何影响 JSONL 采集产出语义的解析/映射修复都必须递增此值：跳过门按版本整表
@@ -26,6 +27,12 @@ func ensureSchema(db *sql.DB) error {
 	if version < 2 {
 		if err := migrateV2(db); err != nil {
 			return fmt.Errorf("迁移到 v2 失败: %w", err)
+		}
+	}
+	version = getUserVersion(db)
+	if version < 3 {
+		if err := migrateV3(db); err != nil {
+			return fmt.Errorf("迁移到 v3 失败: %w", err)
 		}
 	}
 
@@ -227,6 +234,46 @@ func migrateV2(db *sql.DB) error {
 		if _, err := tx.Exec(stmt); err != nil {
 			return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, stmt)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交迁移事务失败: %w", err)
+	}
+	return nil
+}
+
+// migrateV3PostAlterHook 仅供测试注入：在 ALTER 成功后、UPDATE 回填/PRAGMA
+// 之前执行，返回错误时整个迁移事务回滚（验证中段失败原子性——ALTER 若不在
+// 事务内，注入失败后列已存在，重试会报 duplicate column）。生产恒为 nil。
+var migrateV3PostAlterHook func() error
+
+// migrateV3 为 raw_router_logs 加 data_source 列并按 request_id 前缀一次性回填
+// 存量 codex_session 行。全部语句在单个事务内提交：任一步失败则库保持 v2，
+// 下一次打开时重试；重试幂等（user_version 门控保证 ALTER 不会重复到达）。
+// 存量回填用 GLOB 而非 LIKE：LIKE 模式中的 `_` 是单字符通配符，
+// codexXsession: 之类近似前缀会被误分类；GLOB 为字面前缀匹配
+// （通配符仅 *?[]，模式前段不含）。
+func migrateV3(db *sql.DB) error {
+	const alterStmt = `ALTER TABLE raw_router_logs ADD COLUMN data_source TEXT NOT NULL DEFAULT 'proxy'`
+	const backfillStmt = `UPDATE raw_router_logs SET data_source='codex_session' WHERE request_id GLOB 'codex_session:*'`
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("开启迁移事务失败: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(alterStmt); err != nil {
+		return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, alterStmt)
+	}
+	if migrateV3PostAlterHook != nil {
+		if err := migrateV3PostAlterHook(); err != nil {
+			return fmt.Errorf("迁移中段注入失败: %w", err)
+		}
+	}
+	if _, err := tx.Exec(backfillStmt); err != nil {
+		return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, backfillStmt)
+	}
+	if _, err := tx.Exec(`PRAGMA user_version = 3`); err != nil {
+		return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, `PRAGMA user_version = 3`)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("提交迁移事务失败: %w", err)

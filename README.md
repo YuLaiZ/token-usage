@@ -9,7 +9,7 @@ A local LLM usage analytics CLI. It collects token usage from the AI clients you
 - **Build the report you actually want — no SQL required.** Define a named multi-dimensional view from `client`, `model`, `provider`, and `project`; then compose built-in and custom views into a reusable, ordered report group. Set it as the default, discover it with `query list`, run it by name, and choose the metric columns in table-based reports and their order.
 - Message/API-request-level accounting, including accurate attribution across dates, models, branches, and rewinds.
 - Collectors for Claude Code/Desktop, OpenCode, Codex, WorkBuddy, ZCode, and Zhipu-AutoClaw.
-- CC-Switch router attribution for the Claude family, backfilling the actual provider and model from proxy logs.
+- CC-Switch router attribution for the Claude family and Codex, backfilling the actual provider and model from proxy logs.
 - One-off commands or a real-time background monitoring daemon, with macOS launchd and Windows Registry autostart.
 - A pure-Go, single-binary CLI for macOS and Windows.
 

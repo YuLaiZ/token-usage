@@ -59,7 +59,7 @@
 
 **路由中间件**：
 
-- **CC Switch**（`RouterAdapter`）：查询 CC-Switch 的 `proxy_request_logs` + `providers` 表，为 messages 回填真实 provider/model。当前 `app_type` 仅识别 `claude` / `claude-desktop`，其他客户端的原始日志仍写入 `raw_router_logs` 但不参与消息级归因。
+- **CC Switch**（`RouterAdapter`）：查询 CC-Switch 的 `proxy_request_logs` + `providers` 表，为 messages 回填真实 provider/model。归因分两条路径：Claude 系日志（`app_type` 为 `claude`/`claude-desktop`）按 `message_id` 匹配；Codex proxy 日志（`app_type` 为 `codex`、`data_source='proxy'`）按 session ID 加 300s 时间窗匹配（CC Switch 给 Codex session ID 加 `codex_` 前缀，剥掉即 rollout 文件名 UUID；`codex_session` 同步行无路由价值、被排除）。其他客户端的原始日志仍写入 `raw_router_logs` 但不参与消息级归因。
 
 ## 数据流
 
@@ -82,7 +82,7 @@ graph TB
 **说明**：
 
 - Collectors 读取 6 个客户端源，输出 `[]model.Message` + `[]model.Session`，在单事务内写入 `messages` 和 `sessions`。
-- RouterAdapter 读取 CC Switch SQLite，输出 `[]model.RouterLog`，写入 `raw_router_logs`；随后按 `message_id` 查询归因，把 `router_provider/router_model/router_name` 回填到 `messages`。对已配置 router 且支持归因的 client，其采集轮在 messages 入库后同样按 `message_id` 查询已入库的 `raw_router_logs` 行回填——不限于 CLI 日期模式，daemon 轮因此覆盖「router 日志先入库、message 后入库」的交错。
+- RouterAdapter 读取 CC Switch SQLite，输出 `[]model.RouterLog`，写入 `raw_router_logs`；随后查询归因——Claude 系按 `message_id`、Codex 按 session ID 加 300s 时间窗——把 `router_provider/router_model/router_name` 回填到 `messages`。对已配置 router 且支持归因的 client，其采集轮在 messages 入库后同样基于已入库的 `raw_router_logs` 行重算归因（Claude 按 `message_id`；Codex 对触达的 session 查两侧全量——该 session 的全部 proxy 行与全部 Codex messages——任何后续触达该 session 的采集轮都能修复跨日交错）——不限于 CLI 日期模式，daemon 轮因此覆盖「router 日志先入库、message 后入库」的交错。
 - `sync_state` 记录每个 client 各 source 的增量游标，collector 和 router adapter 各自读写自己的 source。
 - 全量采集（`collect all`）传入 `Dates=nil`，不使用 `collection_log` 的日期去重；`messages` 按 `(client, id)` UPSERT，因此可安全重复扫描。
 - collector 部分源失败时，已成功解析的消息、会话和 router 数据仍事务落库，但不写 `collection_log`、不解决历史错误、不推进 `sync_state`；后续普通采集或 retry 会按幂等 UPSERT 重放仍有缺口的区间。
@@ -179,7 +179,7 @@ start spawn 拉起 _run → 父子 lease 授权 → child 获 daemon lock → �
 - **Incremental**：SQLitePoller 触发（定时轮询 mtime，WAL 模式取 max(db, -wal)），按 `sync_state` 游标增量读取。覆盖 opencode / zcode / codex state DB。
 - **router source**（`Source=router`）：router DB poller 触发，只补 router 字段，不调用 client collector。按启用且声明 Router 的 client 配置装配（当前只有 `cc_switch` case）。
 
-对已配置 router 且支持归因的 client，每个采集轮（ChangedFile / Incremental / CLI 日期模式）在 messages 入库后同样按 `message_id` 查询已入库的 `raw_router_logs` 行回填归因——router 日志先于 message 到达时（router 轮的 UPDATE 落空且 cursor 已推过），归因仍能补上。未配置 router、或持存量非 Claude router 配置的 client 轮既不查表也不回填；存量配置仍只写原始日志。
+对已配置 router 且支持归因的 client，每个采集轮（ChangedFile / Incremental / CLI 日期模式）在 messages 入库后同样基于已入库的 `raw_router_logs` 行重算归因——Claude 系按 `message_id`，Codex 按 session ID 加 300s 时间窗对触达的 session 查两侧全量——router 日志先于 message 到达（router 轮的 UPDATE 落空且 cursor 已推过）或跨午夜交错时，归因仍能补上。未配置 router、或在不支持 router 的 client 上持存量 router 配置的轮既不查表也不回填；存量配置仍只写原始日志。
 
 WorkBuddy 的 SQLite 仅用于 title 查询，不建 poller。
 
@@ -386,7 +386,7 @@ data_dir = "~/.token-usage"
 
 [clients.claude]
 enabled = true
-router = "cc_switch"          # 路由归因（当前仅 Claude 系列生效）
+router = "cc_switch"          # 路由归因（Claude 系列与 Codex 生效）
 
 [clients.opencode]
 enabled = true
@@ -421,7 +421,7 @@ dir = "~/.token-usage/logs"
 max_days = 7
 ```
 
-> **路由归因现状**：当前只有 Claude（Code/Desktop）配置 `router = "cc_switch"` 会做消息级归因回填（`app_type` 仅识别 `claude` / `claude-desktop`）。配置入口会拒绝其他客户端设置非空 `router`（`config set` 直接报错，TUI 不提供该字段且保存校验拒绝）；存量配置中已存在的值读取不受影响——原始日志仍会写入 `raw_router_logs`，但 `MessageID` 为空、不回填 `messages`。新增其他客户端的路由归因需要日志协议解析、poller/cursor、`app_type→client` 映射和对应测试，不能仅靠配置自动接入。
+> **路由归因现状**：Claude（Code/Desktop）与 Codex 配置 `router = "cc_switch"` 会做消息级归因回填。Claude 系日志按 `message_id` 匹配；Codex 按 session ID（剥 CC Switch 的 `codex_` 前缀后即 rollout 文件名 UUID）对 proxy 行（`data_source='proxy'`）做最近邻时间窗匹配，窗口 300s，proxy 行 `created_at` 为秒、message 时间戳为毫秒，比较前统一归一为毫秒。Codex 归因仅经合成 fixture 验证——本机未接入真实第三方 Codex 路由；300s 窗口是工程估值，收到错配/漏配反馈时为第一调参点。后续轮次对触达的 session 全量重算，经非空新值覆盖纠正早期子集轮次的归因；但回填从不清除既有归因——被纠偏挤出的 message 保留旧值，直到再次被匹配。配置入口会拒绝其他客户端设置非空 `router`（`config set` 直接报错，TUI 不提供该字段且保存校验拒绝）；存量配置中已存在的值读取不受影响——原始日志仍会写入 `raw_router_logs`，`MessageID` 按源行 `app_type` 照常提取（Claude 系行仍带可用的 `MessageID`）；`messages` 不回填是因为回填仅对支持 router 的 client 执行，而非日志缺少 `MessageID`。新增其他客户端的路由归因需要日志协议解析、poller/cursor、`app_type→client` 映射和对应测试，不能仅靠配置自动接入。
 
 `query provider` 先选用路由归因，再选用采集器值。历史空值保持未归因，查询不会依据客户端推断供应商。`provider_aliases` 将取得的供应商值映射为显示名。查询在选定有效供应商后应用别名并合并同名行；映射不会写入 `messages`，也不会触发重新归因。可通过 TUI 的 aliases 页面或 `config set 'provider_aliases."原始名"' '显示名'` 维护。
 

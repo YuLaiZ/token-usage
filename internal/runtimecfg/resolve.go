@@ -117,7 +117,7 @@ func ValidateUserConfig(user *config.Config) error {
 }
 
 // ValidateUserConfigForWrite 在 ValidateUserConfig 基础上追加写入口径校验：
-// 非空 router 只允许配在支持归因回填的客户端上（CC Switch 仅识别 Claude 家族）。
+// 非空 router 只允许配在支持归因回填的客户端上（claude 走 MessageID 路径、codex 走 session+时间窗路径）。
 // 读取链（show/collect/daemon 等 LoadEffectiveConfig 路径）仍用 ValidateUserConfig
 // 容忍存量配置中的非法 router（行为同旧版：只写原始日志、不回填归因），
 // 避免历史配置让整个程序不可用；写入链（config set / TUI 保存）用本函数拒绝新值。

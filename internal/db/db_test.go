@@ -171,10 +171,10 @@ func TestEnsureSchema_MessageLedgerSchemaV2(t *testing.T) {
 		t.Errorf("daily_stats 表不应存在（message ledger 已移除会话级聚合）")
 	}
 
-	// user_version 必须为 2
+	// user_version 必须为当前 schema 版本
 	version := getUserVersion(db.db)
-	if version != 2 {
-		t.Errorf("user_version = %d, want 2", version)
+	if version != currentSchemaVersion {
+		t.Errorf("user_version = %d, want %d", version, currentSchemaVersion)
 	}
 }
 

@@ -424,7 +424,7 @@ func TestLoadEffectiveConfig_NilDefaultPathsReturnsError(t *testing.T) {
 	}
 }
 
-// ValidateUserConfig（读取链）容忍非 Claude 家族的非空 router：存量配置
+// ValidateUserConfig（读取链）容忍非 router client 的非空 router：存量配置
 // 不应让 show/collect/daemon 等读路径失败（行为同旧版：只写原始日志不回填）。
 func TestValidateUserConfig_ReadToleratesNonCapableRouter(t *testing.T) {
 	user := &config.Config{Clients: map[string]config.Client{
@@ -435,8 +435,8 @@ func TestValidateUserConfig_ReadToleratesNonCapableRouter(t *testing.T) {
 	}
 }
 
-// ValidateUserConfigForWrite（写入链）拒绝非 Claude 家族的非空 router；
-// 空值（清除）与 Claude 家族的非空值放行。
+// ValidateUserConfigForWrite（写入链）拒绝非 router client 的非空 router；
+// 空值（清除）与 claude/codex 的非空值放行。
 func TestValidateUserConfigForWrite_RejectsNonCapableRouter(t *testing.T) {
 	bad := &config.Config{Clients: map[string]config.Client{
 		"opencode": {Enabled: true, Router: "cc_switch"},
@@ -454,18 +454,22 @@ func TestValidateUserConfigForWrite_RejectsNonCapableRouter(t *testing.T) {
 
 	ok := &config.Config{Clients: map[string]config.Client{
 		"claude": {Enabled: true, Router: "cc_switch"},
+		"codex":  {Enabled: true, Router: "cc_switch"},
 	}}
 	if err := ValidateUserConfigForWrite(ok); err != nil {
-		t.Errorf("写入链应放行 claude 的 router, got %v", err)
+		t.Errorf("写入链应放行 claude/codex 的 router, got %v", err)
 	}
 }
 
-// ClientSupportsRouter 仅 Claude 家族为真（CC Switch 的 app_type 只识别 Claude）。
-func TestClientSupportsRouter_OnlyClaude(t *testing.T) {
-	if !ClientSupportsRouter("claude") {
-		t.Error("claude 应支持 router")
+// ClientSupportsRouter：claude（MessageID 路径）与 codex（session+时间窗路径）为真；
+// 其余客户端不支持（CC Switch 归因仅覆盖这两类客户端的关联语义）。
+func TestClientSupportsRouter_ClaudeAndCodex(t *testing.T) {
+	for _, name := range []string{"claude", "codex"} {
+		if !ClientSupportsRouter(name) {
+			t.Errorf("client %q 应支持 router", name)
+		}
 	}
-	for _, name := range []string{"opencode", "codex", "workbuddy", "zcode", "autoclaw"} {
+	for _, name := range []string{"opencode", "workbuddy", "zcode", "autoclaw"} {
 		if ClientSupportsRouter(name) {
 			t.Errorf("client %q 不应支持 router", name)
 		}

@@ -37,10 +37,11 @@ var registry = struct {
 }
 
 // routerCapableClients 是支持 router 归因回填的客户端集合。
-// CC Switch 的 app_type 仅识别 Claude 家族，其余客户端即使配置了 router
-// 也只写原始日志、不回填归因；因此配置入口（config set / TUI / 保存校验）
-// 统一拒绝，避免产生「已配置即生效」的误导。支持面扩大时更新此表。
-var routerCapableClients = []string{"claude"}
+// claude 走 MessageID 路径（app_type IN claude 系）；codex 走 session+时间窗
+// 路径（CC Switch 的 codex proxy 行经 session_id 前缀关联）。其余客户端即使
+// 配置了 router 也只写原始日志、不回填归因；因此配置入口（config set / TUI /
+// 保存校验）统一拒绝，避免产生「已配置即生效」的误导。支持面扩大时更新此表。
+var routerCapableClients = []string{"claude", "codex"}
 
 func copySlice(in []string) []string {
 	if in == nil {

@@ -179,9 +179,9 @@ func TestRunCollect_NoRouterConfiguredDaemonRoundPersists(t *testing.T) {
 }
 
 // TestRunCollect_LegacyRouterClientRoundSkipsAttributionBackfill：
-// 存量非 Claude router 配置（读取链容忍、装配正常）的 client 入库批不得回填
-// 归因——codex 自己的 m1 与既有 Claude router 日志 message_id 碰撞时，若放行
-// 回填会经 app_type 映射把 Claude Code 的 m1 归因改写。表驱动覆盖 CLI Dates
+// 存量非 router client 的 router 配置（读取链容忍、装配正常）的 client 入库批
+// 不得回填归因——workbuddy 自己的 m1 与既有 Claude router 日志 message_id 碰撞时，
+// 若放行回填会经 app_type 映射把 Claude Code 的 m1 归因改写。表驱动覆盖 CLI Dates
 // 形态（本轮还拉取 router 日志、routerFetched=true）与 daemon watcher 形态。
 func TestRunCollect_LegacyRouterClientRoundSkipsAttributionBackfill(t *testing.T) {
 	cases := []struct {
@@ -205,23 +205,23 @@ func TestRunCollect_LegacyRouterClientRoundSkipsAttributionBackfill(t *testing.T
 			}); err != nil {
 				t.Fatal(err)
 			}
-			c := fixedResultCollector("codex", collector.CollectResult{
-				Messages: []model.Message{msg("m1", model.ClientCodexCLI, "2026-09-01")},
+			c := fixedResultCollector("workbuddy", collector.CollectResult{
+				Messages: []model.Message{msg("m1", model.ClientWorkBuddy, "2026-09-01")},
 			})
 			router := newFakeRouter() // CLI Dates 形态拉取成功（返回空日志），routerFetched=true
 			deps := &Deps{
 				cfg: &config.Config{
-					Clients: map[string]config.Client{"codex": {Enabled: true, Router: "cc_switch"}},
+					Clients: map[string]config.Client{"workbuddy": {Enabled: true, Router: "cc_switch"}},
 				},
 				collectors: []collector.Collector{c},
 				routers:    map[string]collector.RouterAdapter{"cc_switch": router},
 			}
 			result := RunCollect(context.Background(), deps, usageDB,
-				collectTestLogger(), io.Discard, "codex", tc.req, false, false)
+				collectTestLogger(), io.Discard, "workbuddy", tc.req, false, false)
 			if !result.Complete() {
 				t.Fatalf("result = %+v", result)
 			}
-			var claudeProvider, codexProvider string
+			var claudeProvider, wbProvider string
 			if err := usageDB.QueryRow(
 				`SELECT router_provider FROM messages WHERE id='m1' AND client=?`,
 				model.ClientClaudeCode).Scan(&claudeProvider); err != nil {
@@ -232,19 +232,19 @@ func TestRunCollect_LegacyRouterClientRoundSkipsAttributionBackfill(t *testing.T
 			}
 			if err := usageDB.QueryRow(
 				`SELECT router_provider FROM messages WHERE id='m1' AND client=?`,
-				model.ClientCodexCLI).Scan(&codexProvider); err != nil {
+				model.ClientWorkBuddy).Scan(&wbProvider); err != nil {
 				t.Fatal(err)
 			}
-			if codexProvider != "" {
-				t.Fatalf("codex message must persist without attribution: %q", codexProvider)
+			if wbProvider != "" {
+				t.Fatalf("workbuddy message must persist without attribution: %q", wbProvider)
 			}
 		})
 	}
 }
 
 // TestRunCollect_LegacyRouterOnlyRoundWritesRawButNotAttribution：
-// 存量非 Claude 配置触发的 daemon router 增量轮（Source=router）：raw 日志照写、
-// cursor 照推，但不得回填归因——cc-switch 日志按 app_type 混存同一 db，
+// 存量非 router client 配置触发的 daemon router 增量轮（Source=router）：raw 日志
+// 照写、cursor 照推，但不得回填归因——cc-switch 日志按 app_type 混存同一 db，
 // 该轮读到的 Claude 类型日志自带非空 message_id，若照日志自身 ID 回填会直接
 // 更新 Claude messages（跨 client 写入，无需 ID 碰撞前提）。
 func TestRunCollect_LegacyRouterOnlyRoundWritesRawButNotAttribution(t *testing.T) {
@@ -262,12 +262,12 @@ func TestRunCollect_LegacyRouterOnlyRoundWritesRawButNotAttribution(t *testing.T
 	}
 	deps := &Deps{
 		cfg: &config.Config{
-			Clients: map[string]config.Client{"codex": {Enabled: true, Router: "cc_switch"}},
+			Clients: map[string]config.Client{"workbuddy": {Enabled: true, Router: "cc_switch"}},
 		},
 		routers: map[string]collector.RouterAdapter{"cc_switch": router},
 	}
 	result := RunCollect(context.Background(), deps, usageDB,
-		collectTestLogger(), io.Discard, "codex",
+		collectTestLogger(), io.Discard, "workbuddy",
 		collector.CollectRequest{Source: collector.CollectSourceRouter}, false, false)
 	if !result.Complete() {
 		t.Fatalf("result = %+v", result)
@@ -277,7 +277,7 @@ func TestRunCollect_LegacyRouterOnlyRoundWritesRawButNotAttribution(t *testing.T
 		`SELECT COUNT(*) FROM raw_router_logs WHERE request_id='r-m1'`).Scan(&logCount); err != nil || logCount != 1 {
 		t.Fatalf("raw router logs must persist: count=%d err=%v", logCount, err)
 	}
-	cursors, err := db.GetSyncCursors(context.Background(), usageDB, "codex",
+	cursors, err := db.GetSyncCursors(context.Background(), usageDB, "workbuddy",
 		[]string{router.SyncSource()})
 	if err != nil {
 		t.Fatal(err)
@@ -297,12 +297,12 @@ func TestRunCollect_LegacyRouterOnlyRoundWritesRawButNotAttribution(t *testing.T
 }
 
 // TestRunRouterBackfill_LegacyClientWritesRawSkipsAttribution：
-// 全量回填对存量非 Claude 配置只保留 raw 日志入库，跳过归因回填；
+// 全量回填对存量非 router client 配置只保留 raw 日志入库，跳过归因回填；
 // 控制台 0 条回填的输出如实反映。raw 入库与回填门控必须分别生效：
 // 门控连带跳过读取/Upsert、或完全不门控，本测试都能捕捉。
 func TestRunRouterBackfill_LegacyClientWritesRawSkipsAttribution(t *testing.T) {
 	cfg := &config.Config{
-		Clients: map[string]config.Client{"codex": {Enabled: true, Router: "cc_switch"}},
+		Clients: map[string]config.Client{"workbuddy": {Enabled: true, Router: "cc_switch"}},
 	}
 	router := &fakeBackfillRouter{
 		name: "cc_switch",
@@ -315,12 +315,12 @@ func TestRunRouterBackfill_LegacyClientWritesRawSkipsAttribution(t *testing.T) {
 	ctx := context.Background()
 	if _, err := db.UpsertMessages(ctx, usageDB, []model.Message{
 		{ID: "m1", Client: model.ClientClaudeCode, Date: "2026-09-01", RouterProvider: "X"},
-		{ID: "m1", Client: model.ClientCodexCLI, Date: "2026-09-01"},
+		{ID: "m1", Client: model.ClientWorkBuddy, Date: "2026-09-01"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := RunRouterBackfill(ctx, deps, usageDB, slog.Default(), &out, "codex"); err != nil {
+	if err := RunRouterBackfill(ctx, deps, usageDB, slog.Default(), &out, "workbuddy"); err != nil {
 		t.Fatalf("RunRouterBackfill failed: %v", err)
 	}
 	var logCount int
@@ -328,7 +328,7 @@ func TestRunRouterBackfill_LegacyClientWritesRawSkipsAttribution(t *testing.T) {
 		`SELECT COUNT(*) FROM raw_router_logs WHERE request_id='r9'`).Scan(&logCount); err != nil || logCount != 1 {
 		t.Fatalf("raw router logs must persist: count=%d err=%v", logCount, err)
 	}
-	var claudeProvider, codexProvider string
+	var claudeProvider, wbProvider string
 	if err := usageDB.QueryRow(
 		`SELECT router_provider FROM messages WHERE id='m1' AND client=?`,
 		model.ClientClaudeCode).Scan(&claudeProvider); err != nil {
@@ -336,14 +336,14 @@ func TestRunRouterBackfill_LegacyClientWritesRawSkipsAttribution(t *testing.T) {
 	}
 	if err := usageDB.QueryRow(
 		`SELECT router_provider FROM messages WHERE id='m1' AND client=?`,
-		model.ClientCodexCLI).Scan(&codexProvider); err != nil {
+		model.ClientWorkBuddy).Scan(&wbProvider); err != nil {
 		t.Fatal(err)
 	}
 	if claudeProvider != "X" {
 		t.Fatalf("legacy backfill must not rewrite Claude attribution: %q", claudeProvider)
 	}
-	if codexProvider != "" {
-		t.Fatalf("codex message must keep empty attribution: %q", codexProvider)
+	if wbProvider != "" {
+		t.Fatalf("workbuddy message must keep empty attribution: %q", wbProvider)
 	}
 	if !strings.Contains(out.String(), "router backfilled 0 attributions") {
 		t.Fatalf("output must report zero attributions: %q", out.String())

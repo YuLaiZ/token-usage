@@ -579,7 +579,7 @@ func TestRunConfigSet_RouterGuard_RejectsNonRouterClient(t *testing.T) {
 	applyFn, calls, _ := fakeApplyFunc(configapp.ApplyConfigResult{}, nil)
 
 	var out, errOut bytes.Buffer
-	err := runConfigSet(context.Background(), &out, &errOut, "clients.codex.router", "cc_switch", false, applyFn)
+	err := runConfigSet(context.Background(), &out, &errOut, "clients.workbuddy.router", "cc_switch", false, applyFn)
 	if err == nil {
 		t.Fatal("非 router 客户端设置非空 router 应报错")
 	}
@@ -591,21 +591,21 @@ func TestRunConfigSet_RouterGuard_RejectsNonRouterClient(t *testing.T) {
 	}
 }
 
-// 引号段写法与裸写法判定一致：clients."codex".router 的 codex 段经同一
-// key 解析规则提取，同样被拒（回归：strings.Split 预解析会把 "codex" 连同引号当客户端名）。
+// 引号段写法与裸写法判定一致：clients."workbuddy".router 的 workbuddy 段经同一
+// key 解析规则提取，同样被拒（回归：strings.Split 预解析会把 "workbuddy" 连同引号当客户端名）。
 func TestRunConfigSet_RouterGuard_RejectsQuotedNonRouterClient(t *testing.T) {
 	setupHomeConfig(t, `data_dir = "/x"`)
 	applyFn, calls, _ := fakeApplyFunc(configapp.ApplyConfigResult{}, nil)
 
 	var out, errOut bytes.Buffer
-	err := runConfigSet(context.Background(), &out, &errOut, `clients."codex".router`, "cc_switch", false, applyFn)
+	err := runConfigSet(context.Background(), &out, &errOut, `clients."workbuddy".router`, "cc_switch", false, applyFn)
 	if err == nil {
 		t.Fatal("引号段写法的非 router 客户端设置非空 router 应报错")
 	}
-	// 客户端名必须是解析去引号后的 codex；预解析漂移（把 "codex" 连引号当名字）
-	// 会得到转义引号形式 client "\"codex\""，不含本子串。
-	if !strings.Contains(err.Error(), `client "codex"`) {
-		t.Errorf("错误应指名解析后的客户端名 codex, got: %v", err)
+	// 客户端名必须是解析去引号后的 workbuddy；预解析漂移（把 "workbuddy" 连引号当名字）
+	// 会得到转义引号形式 client "\"workbuddy\""，不含本子串。
+	if !strings.Contains(err.Error(), `client "workbuddy"`) {
+		t.Errorf("错误应指名解析后的客户端名 workbuddy, got: %v", err)
 	}
 	if *calls != 0 {
 		t.Errorf("拦截应发生在 ApplyConfig 前, applyFn 被调用 %d 次, want 0", *calls)
@@ -639,7 +639,7 @@ enabled = true
 // 空值=清除，始终放行；存量非法值也允许被清空（读链容忍、清除不受限）。
 func TestRunConfigSet_RouterGuard_EmptyValueClearsExistingAllowed(t *testing.T) {
 	setupHomeConfig(t, `data_dir = "/x"
-[clients.codex]
+[clients.workbuddy]
 enabled = true
 router = "legacy_non_router"
 `)
@@ -650,14 +650,14 @@ router = "legacy_non_router"
 	}, nil)
 
 	var out, errOut bytes.Buffer
-	if err := runConfigSet(context.Background(), &out, &errOut, "clients.codex.router", "", false, applyFn); err != nil {
+	if err := runConfigSet(context.Background(), &out, &errOut, "clients.workbuddy.router", "", false, applyFn); err != nil {
 		t.Fatalf("空值清除存量 router 应放行, got: %v", err)
 	}
 	if *calls != 1 {
 		t.Fatalf("放行路径 applyFn 应被调用 1 次, 实际 %d", *calls)
 	}
-	if got := last.currentUserRouters["codex"]; got != "" {
-		t.Errorf("ApplyConfig 收到的 codex router 应已清空, got %q", got)
+	if got := last.currentUserRouters["workbuddy"]; got != "" {
+		t.Errorf("ApplyConfig 收到的 workbuddy router 应已清空, got %q", got)
 	}
 }
 

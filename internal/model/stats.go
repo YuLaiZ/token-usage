@@ -47,7 +47,7 @@ type CollectionError struct {
 // RouterLog 路由中间件请求日志（staging 层）
 type RouterLog struct {
 	RequestID         string
-	MessageID         string // 关联键：去 RequestID 的 session: 前缀，等于 Claude JSONL message.id
+	MessageID         string // 关联键：claude 去 session: 前缀 / codex 去 session:codex:{pid}: 前缀取末段
 	RouterName        string
 	SessionID         string
 	AppType           string
@@ -59,7 +59,10 @@ type RouterLog struct {
 	CacheReadTokens   int64
 	CacheCreateTokens int64
 	CreatedAt         int64
-	RawData           string
+	// DataSource 区分 cc-switch 写入路径：'proxy'（代理实时落库，含路由信息，
+	// 参与归因）与 'codex_session'（会话同步落库，无路由价值，排除在归因外）。
+	DataSource string
+	RawData    string
 }
 
 // SyncCursor 增量同步游标，记录上次同步位置

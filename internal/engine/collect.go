@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -276,32 +277,47 @@ func persistClientBatch(
 		}
 	}
 
-	// router 回填：client 支持 router 归因（仅 Claude 系，registry 单一真相源）且本轮有 messages 即执行。
+	// router 回填：client 支持 router 归因（Claude 系与 Codex，registry 单一真相源）
+	// 且本轮有 messages 即执行。claude 系走 MessageID 路径，codex 走 session+时间窗
+	// 路径（双侧全量：不区分入口来源，一律查 session 集合的全量 proxy 行与全量
+	// messages——跨日交错下任一后续触达该 session 的采集轮都会以完整集合重算，
+	// 经非空覆盖语义补上，不依赖全量 backfill）。
 	// 查询对象是已入库的 raw_router_logs 表（不依赖本轮是否拉取 router 日志）：
 	// CLI Dates 模式先 Upsert 本轮日志再查表（routerFetched=true，含本轮新日志）；
 	// daemon 增量轮（Dates 恒空、routerFetched=false）借此覆盖「router 日志先入库、
 	// message 后入库」的交错——该交错下 router 增量轮的 UPDATE 因 message 尚未入库而
 	// 落空，且 cursor 已推过不再重读。
-	// ClientSupportsRouter 门控维持「存量非 Claude router 配置只写 raw 日志、不回填
-	// messages」的兼容合同（docs/architecture.md:423）：这类配置 RouterFor 仍返回
+	// ClientSupportsRouter 门控维持「存量非 router client 配置只写 raw 日志、不回填
+	// messages」的兼容合同（docs/architecture.md）：这类配置 RouterFor 仍返回
 	// adapter，若放行回填，本轮消息 ID 与既有 Claude router 日志碰撞时会经 app_type
 	// 映射误更新 Claude message。
 	// backfilled 推迟到事务提交成功后才用于日志记录：后续写入或 Commit 失败会连同
 	// 归因一起回滚，提前记录会留下回填成功的假轨迹。
 	var backfilled int
 	if router != nil && runtimecfg.ClientSupportsRouter(client) && len(collected.Messages) > 0 {
-		messageIDs := uniqueMessageIDs(collected.Messages)
-		if len(messageIDs) > 0 {
-			infos, err := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
-			if err != nil {
-				return fmt.Errorf("%s: %w", ui.Bi("query router attribution", "查询 router 归因"), err)
-			}
-			if len(infos) > 0 {
-				n, err := db.BackfillRouterFields(ctx, tx, infos)
+		if routerAttributionBySession(client) {
+			sessionIDs := uniqueCodexSessionIDs(collected.Messages)
+			if len(sessionIDs) > 0 {
+				n, err := backfillCodexSessionAttributions(ctx, tx, router.Name(), sessionIDs)
 				if err != nil {
 					return fmt.Errorf("%s: %w", ui.Bi("backfill router attribution", "回填 router 归因"), err)
 				}
 				backfilled = n
+			}
+		} else {
+			messageIDs := uniqueMessageIDs(collected.Messages)
+			if len(messageIDs) > 0 {
+				infos, err := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
+				if err != nil {
+					return fmt.Errorf("%s: %w", ui.Bi("query router attribution", "查询 router 归因"), err)
+				}
+				if len(infos) > 0 {
+					n, err := db.BackfillRouterFields(ctx, tx, infos)
+					if err != nil {
+						return fmt.Errorf("%s: %w", ui.Bi("backfill router attribution", "回填 router 归因"), err)
+					}
+					backfilled = n
+				}
 			}
 		}
 	}
@@ -344,8 +360,8 @@ func persistClientBatch(
 
 // runRouterOnlyCollect 处理 Source=router 专用路径：
 // 不调用任何 client collector，只补 router 字段。同事务内 UpsertRawRouterLogs →
-// 按非空 MessageID 查 attribution → 应用 alias → BackfillRouterFields → SetSyncCursors。
-// 不写 collection_log，不改 messages token 字段。
+// 归因回填（claude 系按非空 MessageID 查 attribution；codex 走 session+时间窗
+// 双侧全量路径）→ SetSyncCursors。不写 collection_log，不改 messages token 字段。
 func runRouterOnlyCollect(
 	ctx context.Context,
 	deps *Deps,
@@ -424,24 +440,37 @@ func runRouterOnlyCollect(
 		}
 	}
 
-	// 收集非空 MessageID 做归因回填。仅对支持 router 归因的 client（仅 Claude 系）
-	// 执行：cc-switch 日志按 app_type 混存同一 db，存量非 Claude 配置的 router 轮
+	// 归因回填。仅对支持 router 归因的 client（Claude 系与 Codex）执行：
+	// cc-switch 日志按 app_type 混存同一 db，存量非 router client 配置的 router 轮
 	// 也会读到 Claude 类型日志（message_id 非空），照日志自身 ID 回填会经 app_type
 	// 映射直接更新 Claude messages——跨 client 写入违背「legacy 配置只写 raw、
-	// 不回填」合同（docs/architecture.md:423）。日志 Upsert 与 cursor 推进不受
-	// 此门控影响。
+	// 不回填」合同（docs/architecture.md）。
+	// claude 系走 MessageID 路径；codex 走 session+时间窗路径且**不做** claude 日志的
+	// message_id 提取回填（跨 client 防御），session 集合只取本轮 codex proxy 行
+	//（DataSource=='proxy'，codex_session 同步行不进集合），双侧全量匹配。
+	// 日志 Upsert 与 cursor 推进不受此门控影响。
 	if runtimecfg.ClientSupportsRouter(client) {
-		messageIDs := uniqueRouterMessageIDs(routerResult.Logs)
-		if len(messageIDs) > 0 {
-			infos, qerr := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
-			if qerr != nil {
-				txErr = fmt.Errorf("%s: %w", ui.Bi("query router attribution", "查询 router 归因"), qerr)
-				return result
-			}
-			if len(infos) > 0 {
-				if _, err := db.BackfillRouterFields(ctx, tx, infos); err != nil {
+		if routerAttributionBySession(client) {
+			sessionIDs := uniqueCodexProxySessionIDs(routerResult.Logs)
+			if len(sessionIDs) > 0 {
+				if _, err := backfillCodexSessionAttributions(ctx, tx, router.Name(), sessionIDs); err != nil {
 					txErr = fmt.Errorf("%s: %w", ui.Bi("backfill router attribution", "回填 router 归因"), err)
 					return result
+				}
+			}
+		} else {
+			messageIDs := uniqueRouterMessageIDs(routerResult.Logs)
+			if len(messageIDs) > 0 {
+				infos, qerr := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
+				if qerr != nil {
+					txErr = fmt.Errorf("%s: %w", ui.Bi("query router attribution", "查询 router 归因"), qerr)
+					return result
+				}
+				if len(infos) > 0 {
+					if _, err := db.BackfillRouterFields(ctx, tx, infos); err != nil {
+						txErr = fmt.Errorf("%s: %w", ui.Bi("backfill router attribution", "回填 router 归因"), err)
+						return result
+					}
 				}
 			}
 		}
@@ -487,6 +516,76 @@ func uniqueMessageIDs(messages []model.Message) []string {
 		out = append(out, m.ID)
 	}
 	return out
+}
+
+// routerAttributionBySession 报告该 client 的 router 归因是否走 codex 的
+// session+时间窗路径（与 claude 系 MessageID 路径分派）。
+func routerAttributionBySession(client string) bool {
+	return client == "codex"
+}
+
+// uniqueCodexSessionIDs 从 codex messages 提取去重非空 session 集合并归一
+// （剥 codex_ 前缀，幂等——rollout UUID 本为裸形态，双形态源亦安全）。
+func uniqueCodexSessionIDs(messages []model.Message) []string {
+	seen := make(map[string]struct{}, len(messages))
+	out := make([]string, 0, len(messages))
+	for _, m := range messages {
+		if m.SessionID == "" {
+			continue
+		}
+		sid := db.NormalizeCodexRouterSessionID(m.SessionID)
+		if sid == "" {
+			continue
+		}
+		if _, ok := seen[sid]; ok {
+			continue
+		}
+		seen[sid] = struct{}{}
+		out = append(out, sid)
+	}
+	return out
+}
+
+// uniqueCodexProxySessionIDs 从 router logs 提取 app_type='codex' 且
+// DataSource=='proxy' 的行，session 剥 codex_ 前缀归一去重。
+// codex_session 同步行（无路由价值）不进集合。
+func uniqueCodexProxySessionIDs(logs []model.RouterLog) []string {
+	seen := make(map[string]struct{}, len(logs))
+	out := make([]string, 0, len(logs))
+	for _, l := range logs {
+		if l.AppType != "codex" || l.DataSource != "proxy" {
+			continue
+		}
+		sid := db.NormalizeCodexRouterSessionID(l.SessionID)
+		if sid == "" {
+			continue
+		}
+		if _, ok := seen[sid]; ok {
+			continue
+		}
+		seen[sid] = struct{}{}
+		out = append(out, sid)
+	}
+	return out
+}
+
+// backfillCodexSessionAttributions 执行 codex session 路径归因（三入口统一模式，
+// 调用方事务内）：session 集合 → 双侧全量查询（proxy 行 + codex messages）→
+// 时间窗最近邻匹配 → 回填。返回回填行数。
+func backfillCodexSessionAttributions(ctx context.Context, tx *sql.Tx, routerName string, sessionIDs []string) (int, error) {
+	logs, err := db.QueryCodexRouterLogsBySessions(ctx, tx, routerName, sessionIDs)
+	if err != nil {
+		return 0, err
+	}
+	messages, err := db.QueryCodexMessagesBySessions(ctx, tx, sessionIDs)
+	if err != nil {
+		return 0, err
+	}
+	infos := db.MatchCodexRouterAttributions(logs, messages, db.CodexRouterMatchWindowSec)
+	if len(infos) == 0 {
+		return 0, nil
+	}
+	return db.BackfillRouterFields(ctx, tx, infos)
 }
 
 // uniqueRouterMessageIDs 从 router logs 提取去重的非空 message_id。

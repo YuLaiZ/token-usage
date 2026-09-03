@@ -385,7 +385,7 @@ token-usage config set <key> <value> --confirm-migrate   # 仅迁移 data_dir �
 
 **完整重写：** 实际发生配置变更时，`config set` 与 TUI 都会序列化完整用户配置文件；原有注释和 map 键书写顺序不会保留。需要保留手写说明时请先备份。
 
-**router 拦截：** `config set clients.<name>.router <value>` 在 `<value>` 非空且 `<name>` 不是 router 支持客户端（当前仅 Claude）时直接报错拒绝写入，退出非零；设为空字符串表示清除，始终放行。读取链路（`config show`、采集、daemon）对存量配置中其他客户端的非空 router 仍容忍。
+**router 拦截：** `config set clients.<name>.router <value>` 在 `<value>` 非空且 `<name>` 不是 router 支持客户端（当前为 Claude 与 Codex）时直接报错拒绝写入，退出非零；设为空字符串表示清除，始终放行。读取链路（`config show`、采集、daemon）对存量配置中其他客户端的非空 router 仍容忍。
 
 **data_dir 迁移：** 修改 `data_dir` 需 `--confirm-migrate` 确认；且要求旧 daemon **已停止**（运行中拒绝，写入前校验），迁移需手动搬运 `usage.db`/`logs`，PID/lock/runtime-state 不迁移（按 stale 协议清理）。
 

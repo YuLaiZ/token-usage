@@ -55,20 +55,22 @@ func userVersion(t *testing.T, d *DB) int {
 	return v
 }
 
-// TestSchemaCurrentVersionIsTwo：当前 schema 版本常量为 2（file_scan_log 门表合同）。
-func TestSchemaCurrentVersionIsTwo(t *testing.T) {
-	if currentSchemaVersion != 2 {
-		t.Fatalf("currentSchemaVersion = %d, want 2", currentSchemaVersion)
+// TestSchemaCurrentVersionIsThree：当前 schema 版本常量守护（v3 起 data_source
+// 列合同由 schema_v3_test.go 断言；升级 schema 时同步本断言）。
+func TestSchemaCurrentVersionIsThree(t *testing.T) {
+	if currentSchemaVersion != 3 {
+		t.Fatalf("currentSchemaVersion = %d, want 3", currentSchemaVersion)
 	}
 }
 
-// TestFreshDBReachesV2：全新库 Open 后 user_version=2 且 file_scan_log 为新结构
+// TestFreshDBReachesV2：全新库 Open 后 file_scan_log 为新结构
 // （主键 (client, file_path) + file_identity/mtime_ns/file_size/parser_version 列）。
+// 最终 schema 版本由 schema_v3_test.go 的 TestFreshDBReachesV3 断言。
 func TestFreshDBReachesV2(t *testing.T) {
 	d := openFreshDB(t)
 	defer d.Close()
-	if got := userVersion(t, d); got != 2 {
-		t.Fatalf("fresh DB user_version = %d, want 2", got)
+	if got := userVersion(t, d); got < 2 {
+		t.Fatalf("fresh DB user_version = %d, want >= 2", got)
 	}
 	cols := fileScanLogColumns(t, d)
 	want := []string{"client", "file_path", "file_identity", "mtime_ns", "file_size", "parser_version", "updated_at"}
@@ -120,8 +122,9 @@ func TestV1UpgradeRebuildsFileScanLog(t *testing.T) {
 		t.Fatalf("open v1 db: %v", err)
 	}
 	defer upgraded.Close()
-	if got := userVersion(t, upgraded); got != 2 {
-		t.Fatalf("upgraded user_version = %d, want 2", got)
+	// v1 库经 Open 升级链直达当前版本（v3 起 data_source 列合同见 schema_v3_test.go）。
+	if got := userVersion(t, upgraded); got != currentSchemaVersion {
+		t.Fatalf("upgraded user_version = %d, want %d", got, currentSchemaVersion)
 	}
 	cols := fileScanLogColumns(t, upgraded)
 	want := []string{"client", "file_path", "file_identity", "mtime_ns", "file_size", "parser_version", "updated_at"}
@@ -211,6 +214,24 @@ func sqlDumpV1(t *testing.T, path string) error {
 	defer raw.Close()
 	stmts := []string{
 		`CREATE TABLE messages (id TEXT NOT NULL, client TEXT NOT NULL, date TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (client, id))`,
+		`CREATE TABLE raw_router_logs (
+			request_id              TEXT NOT NULL,
+			message_id              TEXT NOT NULL DEFAULT '',
+			router_name             TEXT NOT NULL,
+			session_id              TEXT NOT NULL DEFAULT '',
+			app_type                TEXT NOT NULL DEFAULT '',
+			model                   TEXT NOT NULL DEFAULT '',
+			provider_id             TEXT NOT NULL DEFAULT '',
+			provider_name           TEXT NOT NULL DEFAULT '',
+			input_tokens            INTEGER NOT NULL DEFAULT 0,
+			output_tokens           INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens       INTEGER NOT NULL DEFAULT 0,
+			cache_create_tokens     INTEGER NOT NULL DEFAULT 0,
+			created_at              INTEGER NOT NULL DEFAULT 0,
+			raw_data                TEXT NOT NULL DEFAULT '{}',
+			collected_at            TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (request_id, router_name)
+		)`,
 		`CREATE TABLE file_scan_log (
 			file_path       TEXT PRIMARY KEY,
 			session_id      TEXT NOT NULL DEFAULT '',

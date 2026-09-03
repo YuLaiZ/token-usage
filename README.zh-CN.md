@@ -9,7 +9,7 @@
 - **把你真正想要的报表做出来，无需 SQL。** 从 `client`、`model`、`provider`、`project` 组合出具名多维视图，再把内置与自定义视图编排成可复用、按顺序输出的报表组合；设为默认、用 `query list` 查找、按名称运行，并统一选择表格型报表展示的指标列及其顺序。
 - 按消息/API 请求统计，准确处理跨日、多模型、分支与 rewind 的归因。
 - 支持 Claude Code/Desktop、OpenCode、Codex、WorkBuddy、ZCode 与 Zhipu-AutoClaw。
-- 支持 Claude 系列的 CC-Switch router 归因：通过代理日志回填实际 provider/model。
+- 支持 Claude 系列与 Codex 的 CC-Switch router 归因：通过代理日志回填实际 provider/model。
 - 可单次执行，也可使用实时后台监控守护进程；支持 macOS launchd 与 Windows 注册表自启。
 - 纯 Go 单二进制 CLI，支持 macOS 和 Windows。
 

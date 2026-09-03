@@ -17,8 +17,8 @@ import (
 // RunRouterBackfill 全量回填指定 client 的 router 归因到所有历史 messages。
 //
 // 流程：router.CollectLogs(Dates=nil) 全表读 router 日志 →
-// 单事务（UpsertRawRouterLogs → GetMessageIDsByDisplayNames →
-// QueryRouterLogsByMessageIDs → BackfillRouterFields）→ Commit。
+// 单事务（UpsertRawRouterLogs → 归因回填：claude 系按显示名查全部 messageIDs
+// 再按 MessageID 匹配；codex 走 session+时间窗双侧全量路径 → BackfillRouterFields）→ Commit。
 //
 // 关键决策：
 //   - 不写 collection_log（router backfill 无日期概念）
@@ -91,29 +91,41 @@ func RunRouterBackfill(ctx context.Context, deps *Deps, usageDB *db.DB, log *slo
 		}
 	}
 
-	// 归因回填仅对支持 router 归因的 client（仅 Claude 系）执行：存量非 Claude
-	// router 配置按兼容合同只写 raw 日志、不回填 messages——其消息 ID 与既有
-	// Claude router 日志同 ID 时若照常回填，会经 app_type 映射跨 client 改写
-	// Claude message 的归因。raw 日志读取与 Upsert 不受此门控影响；0 条回填
-	// 由下方输出如实反映。
+	// 归因回填仅对支持 router 归因的 client（Claude 系与 Codex）执行：存量非
+	// router client 的 router 配置按兼容合同只写 raw 日志、不回填 messages——其
+	// 消息 ID 与既有 Claude router 日志同 ID 时若照常回填，会经 app_type 映射
+	// 跨 client 改写 Claude message 的归因。raw 日志读取与 Upsert 不受此门控
+	// 影响；0 条回填由下方输出如实反映。
+	// claude 系走 MessageID 路径；codex 走 session+时间窗路径（session 集合 =
+	// 全量日志中的 codex proxy 行，codex_session 行不进集合）。
 	var n int
 	if runtimecfg.ClientSupportsRouter(client) {
-		// 按显示名查该 client 所有历史 messageIDs
-		messageIDs, err := db.GetMessageIDsByDisplayNames(ctx, tx, displayNames)
-		if err != nil {
-			return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to query message ids", "查询 message ids 失败"), err)
-		}
-
-		// 复用现有 DAO（已内置 500 分块、app_type 过滤、routerAppTypeToClient 映射、首条优先）
-		if len(messageIDs) > 0 {
-			infos, err := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
-			if err != nil {
-				return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to query router attribution", "查询 router 归因失败"), err)
-			}
-			if len(infos) > 0 {
-				n, err = db.BackfillRouterFields(ctx, tx, infos)
+		if routerAttributionBySession(client) {
+			sessionIDs := uniqueCodexProxySessionIDs(routerResult.Logs)
+			if len(sessionIDs) > 0 {
+				n, err = backfillCodexSessionAttributions(ctx, tx, router.Name(), sessionIDs)
 				if err != nil {
 					return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to backfill router attribution", "回填 router 归因失败"), err)
+				}
+			}
+		} else {
+			// 按显示名查该 client 所有历史 messageIDs
+			messageIDs, err := db.GetMessageIDsByDisplayNames(ctx, tx, displayNames)
+			if err != nil {
+				return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to query message ids", "查询 message ids 失败"), err)
+			}
+
+			// 复用现有 DAO（已内置 500 分块、app_type 过滤、routerAppTypeToClient 映射、首条优先）
+			if len(messageIDs) > 0 {
+				infos, err := db.QueryRouterLogsByMessageIDs(ctx, tx, router.Name(), messageIDs)
+				if err != nil {
+					return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to query router attribution", "查询 router 归因失败"), err)
+				}
+				if len(infos) > 0 {
+					n, err = db.BackfillRouterFields(ctx, tx, infos)
+					if err != nil {
+						return fmt.Errorf("%s %s: %w", client, ui.Bi("failed to backfill router attribution", "回填 router 归因失败"), err)
+					}
 				}
 			}
 		}

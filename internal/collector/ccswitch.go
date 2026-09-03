@@ -46,8 +46,8 @@ func (a *CCSwitchAdapter) Capabilities() RouterCapabilities {
 func (a *CCSwitchAdapter) SyncSource() string { return SyncSourceCCSwitchRouter }
 
 // CollectLogs 查询 proxy_request_logs，返回 raw RouterLog 列表与增量 NextCursor。
-// 只有 claude/claude-desktop app_type 的 session:<id> 生成 MessageID；
-// 其他 app_type 的 raw log 仍保存但不参与消息关联（Debug 日志记录）。
+// MessageID 提取：claude/claude-desktop 取 session: 前缀后整段，codex 取
+// session:codex:{pid}: 前缀后末段；其余形态的 raw log 仍保存但不参与消息关联。
 func (a *CCSwitchAdapter) CollectLogs(ctx context.Context, req RouterCollectRequest, logger *slog.Logger) (RouterCollectResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -93,7 +93,18 @@ func (a *CCSwitchAdapter) CollectLogs(ctx context.Context, req RouterCollectRequ
 		return RouterCollectResult{}, fmt.Errorf("加载 providers 失败: %w", err)
 	}
 
-	query, args := buildCCSwitchProxyQuery(req)
+	// data_source / request_model / input_token_semantics 三列在 cc-switch 上游
+	// 并非同版本引入，按列粒度探测存在性、独立决定采集或降级（无整体豁免）。
+	columns, err := probeCCSwitchColumns(ctx, db)
+	if err != nil {
+		return RouterCollectResult{}, err
+	}
+	if missing := columns.missingNames(); len(missing) > 0 {
+		logger.Warn("CC Switch proxy_request_logs missing optional columns, using defaults",
+			"columns", strings.Join(missing, ", "))
+	}
+
+	query, args := buildCCSwitchProxyQuery(req, columns)
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return RouterCollectResult{}, fmt.Errorf("查询 proxy_request_logs 失败: %w", err)
@@ -107,7 +118,8 @@ func (a *CCSwitchAdapter) CollectLogs(ctx context.Context, req RouterCollectRequ
 	for rows.Next() {
 		var (
 			requestID, sessionID, modelName, providerID, appType, errMsg string
-			isStreaming                                                  int
+			dataSource, requestModel                                     string
+			isStreaming, inputTokenSemantics                             int
 			inputTokens, outputTokens, cacheRead, cacheCreate            int64
 			totalCostUSD                                                 float64
 			latencyMs, statusCode                                        int
@@ -117,6 +129,7 @@ func (a *CCSwitchAdapter) CollectLogs(ctx context.Context, req RouterCollectRequ
 			&requestID, &sessionID, &modelName, &providerID, &appType, &isStreaming,
 			&inputTokens, &outputTokens, &cacheRead, &cacheCreate,
 			&totalCostUSD, &latencyMs, &statusCode, &errMsg, &createdAt,
+			&dataSource, &requestModel, &inputTokenSemantics,
 		); err != nil {
 			return RouterCollectResult{}, fmt.Errorf("扫描 proxy_request_logs 行失败: %w", err)
 		}
@@ -131,17 +144,26 @@ func (a *CCSwitchAdapter) CollectLogs(ctx context.Context, req RouterCollectRequ
 			continue
 		}
 
-		// app_type 非 claude/claude-desktop 时不参与消息关联是结构性预期行为
-		// （未关联量可经 raw_router_logs 查询），不留日志；raw 照常落库。
+		// 无可提取前缀的形态不参与消息关联是结构性预期行为（未关联量可经
+		// raw_router_logs 查询），不留日志；raw 照常落库。
 		messageID := extractMessageIDFromRequestID(appType, requestID)
+
+		// 旧版 cc-switch 无 data_source 列时按严格 codex_session: 前缀本地分类
+		// （与 schema v3 迁移的 GLOB 判定同一口径）：不能一律视为 'proxy'，否则
+		// 会话同步行会被误标并经 INSERT OR REPLACE 覆盖既有 'codex_session' 标记。
+		if !columns.dataSource {
+			dataSource = classifyDataSource(requestID)
+		}
 
 		// json.Marshal 仅含基础类型（string/int/bool/float64/[]string），不会失败；忽略 error。
 		rawData, _ := json.Marshal(map[string]any{
-			"is_streaming":   isStreaming,
-			"total_cost_usd": totalCostUSD,
-			"latency_ms":     latencyMs,
-			"status_code":    statusCode,
-			"error_message":  errMsg,
+			"is_streaming":          isStreaming,
+			"total_cost_usd":        totalCostUSD,
+			"latency_ms":            latencyMs,
+			"status_code":           statusCode,
+			"error_message":         errMsg,
+			"request_model":         requestModel,
+			"input_token_semantics": inputTokenSemantics,
 		})
 
 		logs = append(logs, model.RouterLog{
@@ -158,6 +180,7 @@ func (a *CCSwitchAdapter) CollectLogs(ctx context.Context, req RouterCollectRequ
 			CacheReadTokens:   cacheRead,
 			CacheCreateTokens: cacheCreate,
 			CreatedAt:         createdAt,
+			DataSource:        dataSource,
 			RawData:           string(rawData),
 		})
 
@@ -174,16 +197,93 @@ func (a *CCSwitchAdapter) CollectLogs(ctx context.Context, req RouterCollectRequ
 }
 
 // extractMessageIDFromRequestID 绑定 app_type 提取 message_id 关联键。
-// 只有 claude/claude-desktop 的 session:<id> 前缀生成 MessageID；
-// opencode/codex/未知 app_type 返回空串（raw log 仍保留，但不参与消息关联）。
+// claude/claude-desktop 的 session:<id> 前缀取剩余整段；
+// codex 的 session:codex:{provider_id}:{message_id} 前缀取末段 message_id
+// （provider_id 可含冒号，取最后一个冒号后的段）；其余形态（codex_session:
+// 同步行前缀、opencode、随机 UUID、未知 app_type）返回空串——raw log 仍保留，
+// 但不参与消息关联。
 func extractMessageIDFromRequestID(appType, requestID string) string {
-	if appType != "claude" && appType != "claude-desktop" {
+	switch appType {
+	case "claude", "claude-desktop":
+		if !strings.HasPrefix(requestID, "session:") {
+			return ""
+		}
+		return strings.TrimPrefix(requestID, "session:")
+	case "codex":
+		const prefix = "session:codex:"
+		if !strings.HasPrefix(requestID, prefix) {
+			return ""
+		}
+		rest := requestID[len(prefix):]
+		if i := strings.LastIndex(rest, ":"); i >= 0 {
+			return rest[i+1:]
+		}
+		return ""
+	default:
 		return ""
 	}
-	if !strings.HasPrefix(requestID, "session:") {
-		return ""
+}
+
+// ccSwitchOptionalColumns 记录 proxy_request_logs 可选列的存在性（PRAGMA table_info
+// 探测，每连接一次）。三列在 cc-switch 上游非同版本引入，因此按列粒度独立分支。
+type ccSwitchOptionalColumns struct {
+	dataSource          bool
+	requestModel        bool
+	inputTokenSemantics bool
+}
+
+// missingNames 按稳定顺序列出缺失列名（供 Warn 汇总；全存在时为 nil）。
+func (c ccSwitchOptionalColumns) missingNames() []string {
+	var missing []string
+	if !c.dataSource {
+		missing = append(missing, "data_source")
 	}
-	return strings.TrimPrefix(requestID, "session:")
+	if !c.requestModel {
+		missing = append(missing, "request_model")
+	}
+	if !c.inputTokenSemantics {
+		missing = append(missing, "input_token_semantics")
+	}
+	return missing
+}
+
+// probeCCSwitchColumns 用 PRAGMA table_info 探测可选列存在性。
+// PRAGMA 不支持参数绑定，语句为固定字面量。
+func probeCCSwitchColumns(ctx context.Context, db *sql.DB) (ccSwitchOptionalColumns, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(proxy_request_logs)")
+	if err != nil {
+		return ccSwitchOptionalColumns{}, fmt.Errorf("探测 proxy_request_logs 列失败: %w", err)
+	}
+	defer rows.Close()
+	var cols ccSwitchOptionalColumns
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var dfltValue any
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return ccSwitchOptionalColumns{}, fmt.Errorf("扫描 table_info 行失败: %w", err)
+		}
+		switch name {
+		case "data_source":
+			cols.dataSource = true
+		case "request_model":
+			cols.requestModel = true
+		case "input_token_semantics":
+			cols.inputTokenSemantics = true
+		}
+	}
+	return cols, rows.Err()
+}
+
+// classifyDataSource 在源库缺 data_source 列时按 request_id 严格前缀本地分类：
+// codex_session: 前缀 → 'codex_session'，其余（含近似前缀 codexXsession:）→ 'proxy'。
+// 与 schema v3 迁移的 GLOB 'codex_session:*' 判定保持同一口径。
+func classifyDataSource(requestID string) string {
+	if strings.HasPrefix(requestID, "codex_session:") {
+		return "codex_session"
+	}
+	return "proxy"
 }
 
 // loadCCSwitchProviderNames 一次性加载 providers 表，返回 "providerID|appType" -> name
@@ -232,14 +332,29 @@ func ccSwitchProviderKey(providerID, appType string) string {
 // 否则按 Dates 本地日秒级左闭右开 OR 过滤；两者都没有时全量（用于显式全量测试）。
 // 三种模式都追加 ORDER BY created_at,request_id 保证稳定顺序与游标推进。
 // 注意：error_message 列可空（fixture 与真实库都有 NULL 行），Scan 到 *string 遇 NULL 会报错，
-// 用 COALESCE(error_message, ”) 在 SQL 层兜空串
-func buildCCSwitchProxyQuery(req RouterCollectRequest) (string, []interface{}) {
-	const base = `SELECT COALESCE(request_id,''), COALESCE(session_id,''),
+// 用 COALESCE(error_message, ”) 在 SQL 层兜空串。
+// 可选列（data_source/request_model/input_token_semantics）按探测结果进 SELECT，
+// 缺失列用等值字面量占位（扫描侧无感，缺 data_source 时行组装层另行本地分类）。
+func buildCCSwitchProxyQuery(req RouterCollectRequest, columns ccSwitchOptionalColumns) (string, []interface{}) {
+	dataSourceSel := `'proxy'`
+	if columns.dataSource {
+		dataSourceSel = `COALESCE(data_source,'proxy')`
+	}
+	requestModelSel := `''`
+	if columns.requestModel {
+		requestModelSel = `COALESCE(request_model,'')`
+	}
+	semanticsSel := `0`
+	if columns.inputTokenSemantics {
+		semanticsSel = `COALESCE(input_token_semantics,0)`
+	}
+	base := `SELECT COALESCE(request_id,''), COALESCE(session_id,''),
 		COALESCE(model,''), COALESCE(provider_id,''), COALESCE(app_type,''), COALESCE(is_streaming,0),
 		COALESCE(input_tokens,0), COALESCE(output_tokens,0),
 		COALESCE(cache_read_tokens,0), COALESCE(cache_creation_tokens,0),
 		COALESCE(total_cost_usd,0), COALESCE(latency_ms,0), COALESCE(status_code,0),
-		COALESCE(error_message, ''), COALESCE(created_at,0)
+		COALESCE(error_message, ''), COALESCE(created_at,0),
+		` + dataSourceSel + `, ` + requestModelSel + `, ` + semanticsSel + `
 		FROM proxy_request_logs`
 	if req.Incremental {
 		return base + ` WHERE created_at>? OR (created_at=? AND request_id>?) ORDER BY created_at,request_id`,
