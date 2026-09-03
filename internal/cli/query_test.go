@@ -125,7 +125,7 @@ func TestNewQueryCmd_RootArgsContract(t *testing.T) {
 // 构造命令树不加载配置(无配置环境下同样可断言)。
 func TestNewQueryCmd_RootHelpPresentsBothForms(t *testing.T) {
 	cmd := newQueryCmd()
-	if !strings.Contains(cmd.Use, "<name>") || !strings.Contains(cmd.Use, "YYYYMMDD") {
+	if !strings.Contains(cmd.Use, "<name>") || !strings.Contains(cmd.Use, "DATE-DATE") {
 		t.Errorf("Use 应静态展示视图名与日期两种形态: %q", cmd.Use)
 	}
 	for _, want := range []string{"token-usage query <name>", "query custom <name>"} {
@@ -847,6 +847,15 @@ func TestRunQuery_SummarySingleRangeLine(t *testing.T) {
 //     绝不出现“仅接受 0 或 1 个位置参数”的参数个数错误。
 func TestParseQueryInvocation(t *testing.T) {
 	today := time.Now().Format("2006-01-02")
+	// 2026-08 全月 31 天与 2026 全年 365 天的逐日期望列表。
+	var augustDays []string
+	for d := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC); d.Month() == time.August; d = d.AddDate(0, 0, 1) {
+		augustDays = append(augustDays, d.Format("2006-01-02"))
+	}
+	var yearDays []string
+	for d := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC); d.Year() == 2026; d = d.AddDate(0, 0, 1) {
+		yearDays = append(yearDays, d.Format("2006-01-02"))
+	}
 	cases := []struct {
 		name      string
 		args      []string
@@ -872,6 +881,16 @@ func TestParseQueryInvocation(t *testing.T) {
 			wantDates: []string{"2026-07-09", "2026-07-10", "2026-07-11"},
 		},
 		{
+			name:      "single month expands to daily dates for default",
+			args:      []string{"202608"},
+			wantDates: augustDays,
+		},
+		{
+			name:      "single year expands to daily dates for default",
+			args:      []string{"2026"},
+			wantDates: yearDays,
+		},
+		{
 			name:      "non-digit single arg is a view name with today",
 			args:      []string{"mpc"},
 			wantNamed: true,
@@ -891,6 +910,13 @@ func TestParseQueryInvocation(t *testing.T) {
 			wantNamed: true,
 			wantName:  "mpc",
 			wantDates: []string{"2026-07-09", "2026-07-10"},
+		},
+		{
+			name:      "name plus month selects named target with daily dates",
+			args:      []string{"mpc", "202608"},
+			wantNamed: true,
+			wantName:  "mpc",
+			wantDates: augustDays,
 		},
 		{
 			name:      "digit-leading invalid single date reuses existing date error",
@@ -954,6 +980,60 @@ func TestParseQueryInvocation(t *testing.T) {
 	_, err := parseQueryInvocation([]string{"a", "b", "c"})
 	if err == nil || !strings.Contains(err.Error(), "3") || !strings.Contains(err.Error(), "/") {
 		t.Errorf("三个参数应报双语超参用法错误: %v", err)
+	}
+}
+
+// TestRunQueryWithDeps_ParseBeforeConfigGuard 非法月参数 202613 在配置加载与
+// DB 打开之前报错(参数解析先于配置/日志/DB)。现状下 202613 已因长度不符被拒
+// 且不加载配置,本条为守护该顺序对新形态不变的回归用例。
+func TestRunQueryWithDeps_ParseBeforeConfigGuard(t *testing.T) {
+	loadCalls := 0
+	load := func() (*config.Config, error) {
+		loadCalls++
+		return nil, fmt.Errorf("must not load config")
+	}
+	open := func(string) (*db.DB, error) {
+		t.Fatal("参数错误不得打开数据库")
+		return nil, nil
+	}
+	cmd, _ := newQueryOutputCmd()
+	err := runQueryWithDeps(cmd, []string{"202613"}, viewDefault, load, open)
+	if err == nil {
+		t.Fatal("非法月参数应返回 error")
+	}
+	if !strings.Contains(err.Error(), "invalid date args") {
+		t.Errorf("应为日期参数错误: %v", err)
+	}
+	if loadCalls != 0 {
+		t.Errorf("参数错误不得加载配置,loader 被调用 %d 次", loadCalls)
+	}
+}
+
+// TestRunQueryWithDeps_MonthArgReachesViewExecution 视图命令路径月参数经归一化
+// 展开到达执行层:统计范围行显示展开后的首末日(2026-08-01 ~ 2026-08-31)。
+func TestRunQueryWithDeps_MonthArgReachesViewExecution(t *testing.T) {
+	cmd, buf := newQueryOutputCmd()
+	if err := runQueryWithDeps(cmd, []string{"202608"}, viewProvider, loadWithRaw(nil, nil), memOpen(t)); err != nil {
+		t.Fatalf("视图命令月参数执行失败: %v", err)
+	}
+	if !strings.Contains(buf.String(), "2026-08-01 ~ 2026-08-31") {
+		t.Errorf("统计范围应显示归一化展开范围 2026-08-01 ~ 2026-08-31:\n%s", buf.String())
+	}
+}
+
+// TestRunQueryCustomWithDeps_MonthArg custom <name> 202608 经具名执行链收到
+// 归一化展开的 31 天日期(统计范围行锚定)。
+func TestRunQueryCustomWithDeps_MonthArg(t *testing.T) {
+	rawGroup := map[string]any{
+		"subqueries": map[string]any{"mpc": "model,provider,client"},
+		"groups":     map[string]any{"group_q": "client,model,provider,mpc"},
+	}
+	cmd, buf := newQueryOutputCmd()
+	if err := runQueryCustomWithDeps(cmd, "group_q", []string{"202608"}, loadWithRaw(rawGroup, nil), memOpen(t)); err != nil {
+		t.Fatalf("custom group_q 月参数执行失败: %v", err)
+	}
+	if !strings.Contains(buf.String(), "2026-08-01 ~ 2026-08-31") {
+		t.Errorf("统计范围应显示归一化展开范围 2026-08-01 ~ 2026-08-31:\n%s", buf.String())
 	}
 }
 

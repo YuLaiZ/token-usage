@@ -135,3 +135,53 @@ max_days = 7
 		}
 	}
 }
+
+// TestCollectDefault_MonthArgExpandsToDailyDates collect 202608 经完整执行链
+// 展开为 31 天逐日列表并完整传入 collector（月粒度对 collect 语义为多日批量补采）。
+func TestCollectDefault_MonthArgExpandsToDailyDates(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	cfgDir := filepath.Join(home, ".token-usage")
+	if err := os.MkdirAll(cfgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(cfgDir, "data")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfgContent := fmt.Sprintf(`data_dir = "%s"
+
+[clients.claude]
+enabled = true
+
+[log]
+level = "info"
+dir = "%s/logs"
+max_days = 7
+`, dataDir, dataDir)
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	probe := &dateProbeCollector{name: "claude"}
+	origNewDeps := newDepsFactory
+	newDepsFactory = func(cfg *config.Config) *engine.Deps {
+		return engine.NewDepsWithCollectors(cfg, []collector.Collector{probe}, nil)
+	}
+	t.Cleanup(func() { newDepsFactory = origNewDeps })
+
+	root := NewRootCmd()
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"collect", "--client", "claude", "202608"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("collect --client claude 202608 失败: %v", err)
+	}
+	if len(probe.lastDates) != 31 {
+		t.Fatalf("期望 Dates 长度 31（2026 年 8 月逐日），实际 %d: %v", len(probe.lastDates), probe.lastDates)
+	}
+	if probe.lastDates[0] != "2026-08-01" || probe.lastDates[30] != "2026-08-31" {
+		t.Errorf("期望首末日 2026-08-01/2026-08-31，实际 %q/%q", probe.lastDates[0], probe.lastDates[30])
+	}
+}

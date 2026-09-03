@@ -63,11 +63,11 @@ func newQueryCmd() *cobra.Command {
 // custom 保持既有执行路径;用户配置中的名称绝不动态 AddCommand。
 func newQueryCmdWithDeps(load func() (*config.Config, error), open func(string) (*db.DB, error)) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "query [<name> [YYYYMMDD|YYYYMMDD-YYYYMMDD] | YYYYMMDD|YYYYMMDD-YYYYMMDD]",
+		Use:   "query [<name> [DATE|DATE-DATE] | DATE|DATE-DATE]",
 		Short: "Query token usage statistics / 查询 token 使用统计",
 		Long: ui.Bi(
-			"Query token usage statistics. With no args, runs the default view (query.default, built-in fallback client). Accepts either a date for the default view or a configured view name plus an optional date: a single date YYYYMMDD or a range YYYYMMDD-YYYYMMDD. Examples: token-usage query <name> [date]; equivalent explicit form: token-usage query custom <name> [date].",
-			"查询 token 使用统计。无参数时执行默认视图（query.default，内置回退 client）。可附加一个日期作用于默认视图，或指定已配置视图名加可选日期：单个日期 YYYYMMDD 或区间 YYYYMMDD-YYYYMMDD。示例：token-usage query <name> [date]；等价显式写法：token-usage query custom <name> [date]。",
+			"Query token usage statistics. With no args, runs the default view (query.default, built-in fallback client). Accepts either a date for the default view or a configured view name plus an optional date: DATE is a day (YYYYMMDD), month (YYYYMM), or year (YYYY; single arg only); DATE-DATE is an inclusive range whose endpoints are days or months. Examples: token-usage query <name> [date]; equivalent explicit form: token-usage query custom <name> [date].",
+			"查询 token 使用统计。无参数时执行默认视图（query.default，内置回退 client）。可附加一个日期作用于默认视图，或指定已配置视图名加可选日期：DATE 为日 YYYYMMDD、月 YYYYMM 或年 YYYY（年仅单独使用）；DATE-DATE 为闭区间，端点为日或月。示例：token-usage query <name> [date]；等价显式写法：token-usage query custom <name> [date]。",
 		),
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 2 {
@@ -100,8 +100,8 @@ func newQueryCmdWithDeps(load func() (*config.Config, error), open func(string) 
 // 说明允许「无参数、一个日期、一个名称、名称加一个日期」四种形态。
 func queryUsageError(got int) error {
 	return fmt.Errorf("%s", ui.Bi(
-		fmt.Sprintf("query accepts at most 2 positional args (no args, one date YYYYMMDD or range, one view name, or a view name plus one date), got %d. Examples: token-usage query 20260701 | token-usage query <name> <date>", got),
-		fmt.Sprintf("query 至多接受 2 个位置参数（无参数、一个日期 YYYYMMDD 或区间、一个视图名、视图名加一个日期），当前 %d 个。示例：token-usage query 20260701 | token-usage query <name> <date>", got),
+		fmt.Sprintf("query accepts at most 2 positional args (no args, one date or date range, one view name, or a view name plus one date), got %d. Examples: token-usage query 20260701 | token-usage query <name> <date>", got),
+		fmt.Sprintf("query 至多接受 2 个位置参数（无参数、一个日期或日期区间、一个视图名、视图名加一个日期），当前 %d 个。示例：token-usage query 20260701 | token-usage query <name> <date>", got),
 	))
 }
 
@@ -118,11 +118,11 @@ func queryFirstNameMustBeViewNameError(arg string) error {
 // 配置加载/DB 打开/日期解析/输出/异常提示逻辑全部复用 runQuery。
 func newQuerySubCmd(name, short string, view queryView) *cobra.Command {
 	return &cobra.Command{
-		Use:   name + " [YYYYMMDD|YYYYMMDD-YYYYMMDD]",
+		Use:   name + " [DATE|DATE-DATE]",
 		Short: short,
 		Long: short + " " + ui.Bi(
-			"Accepts one optional positional arg: a single date YYYYMMDD or a range YYYYMMDD-YYYYMMDD; defaults to today.",
-			"。可附加一个位置参数：单个日期 YYYYMMDD 或日期范围 YYYYMMDD-YYYYMMDD；缺省时默认今天。",
+			"Accepts one optional positional arg: DATE is a day (YYYYMMDD), month (YYYYMM), or year (YYYY; single arg only); DATE-DATE is an inclusive range whose endpoints are days or months; defaults to today.",
+			"。可附加一个位置参数：DATE 为日 YYYYMMDD、月 YYYYMM 或年 YYYY（年仅单独使用）；DATE-DATE 为闭区间，端点为日或月；缺省时默认今天。",
 		),
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -136,11 +136,11 @@ func newQuerySubCmd(name, short string, view queryView) *cobra.Command {
 // RangeArgs(1,2) 且缺参/超参错误为双语;日期解析先于配置与数据库打开。
 func newQueryCustomCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "custom <name> [YYYYMMDD|YYYYMMDD-YYYYMMDD]",
+		Use:   "custom <name> [DATE|DATE-DATE]",
 		Short: "Run a configured custom or group query / 执行已配置的自定义或组合查询",
 		Long: ui.Bi(
-			"Run a custom or group query defined in config.toml ([query.subqueries] or [query.groups]). Accepts the view name plus one optional date arg: a single date YYYYMMDD or a range YYYYMMDD-YYYYMMDD; defaults to today.",
-			"执行 config.toml 中定义的自定义或组合查询（[query.subqueries] 或 [query.groups]）。参数为视图名加一个可选日期：单个日期 YYYYMMDD 或日期范围 YYYYMMDD-YYYYMMDD；缺省时默认今天。",
+			"Run a custom or group query defined in config.toml ([query.subqueries] or [query.groups]). Accepts the view name plus one optional date arg: DATE is a day (YYYYMMDD), month (YYYYMM), or year (YYYY; single arg only); DATE-DATE is an inclusive range whose endpoints are days or months; defaults to today.",
+			"执行 config.toml 中定义的自定义或组合查询（[query.subqueries] 或 [query.groups]）。参数为视图名加一个可选日期：DATE 为日 YYYYMMDD、月 YYYYMM 或年 YYYY（年仅单独使用）；DATE-DATE 为闭区间，端点为日或月；缺省时默认今天。",
 		),
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) < 1 {

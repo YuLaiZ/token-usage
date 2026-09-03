@@ -22,21 +22,21 @@ import (
 //
 // 命令树：
 //
-//	collect [YYYYMMDD|YYYYMMDD-YYYYMMDD]   # 今天或指定日期，所有 enabled client（含 router）
-//	├── all                                # 两阶段全采：messages 全历史 + router 全量回填
-//	├── router --client X                  # 仅 router 全量回填（不动 messages）
-//	└── retry                              # 重试未解决失败组
+//	collect [DATE|DATE-DATE]              # 今天或指定日期（日/月/年粒度），所有 enabled client（含 router）
+//	├── all                               # 两阶段全采：messages 全历史 + router 全量回填
+//	├── router --client X                 # 仅 router 全量回填（不动 messages）
+//	└── retry                             # 重试未解决失败组
 //
 // flag 边界：
 //   - --client：collect 的 PersistentFlag，被三个子命令继承。
 //   - --force：collect 的 LocalFlag，子命令不继承、不接受（unknown flag）。
 func newCollectCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "collect [YYYYMMDD|YYYYMMDD-YYYYMMDD]",
+		Use:   "collect [DATE|DATE-DATE]",
 		Short: "Collect token usage data (router included by default) / 采集 token 使用数据（默认含 router）",
 		Long: ui.Bi(`Collect token usage data.
 
-Without a subcommand it runs one incremental collection for the given date (today or the positional date arg) across all enabled clients, reading router logs and backfilling attribution along the way; --client X limits to one client, --force recollects.
+Without a subcommand it runs one incremental collection for the given date (today or the positional date arg) across all enabled clients, reading router logs and backfilling attribution along the way; --client X limits to one client, --force recollects. DATE is a day (YYYYMMDD), month (YYYYMM), or year (YYYY; single arg only); DATE-DATE is an inclusive range whose endpoints are days or months.
 
 Subcommands:
   all    Scan full history and backfill router attribution (two phases: messages → router)
@@ -48,6 +48,7 @@ collect all already includes the router backfill; no need to run collect router 
 
 不带子命令时按日期（今天或位置参数指定日期）对所有已启用客户端做一次增量采集，
 采集过程中会同步读取 router 日志并回填归因；--client X 限定单客户端，--force 强制覆盖。
+DATE 为日 YYYYMMDD、月 YYYYMM 或年 YYYY（年仅单独使用）；DATE-DATE 为闭区间，端点为日或月。
 
 子命令：
   all    全量扫描历史消息并回填 router 归因（两阶段：messages → router）

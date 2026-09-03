@@ -10,17 +10,17 @@
 token-usage
 ├── version                               # 查看版本与构建信息（详细五行输出）
 ├── completion [bash|zsh|fish|powershell] # 生成 Shell 补全脚本
-├── collect [YYYYMMDD|YYYYMMDD-YYYYMMDD]  # 今天或指定日期增量采集（含 router）
+├── collect [DATE|DATE-DATE]              # 今天或指定日期（日/月/年粒度）增量采集（含 router）
 │   ├── all                               # 两阶段全采：messages 全历史 + router 全量回填
 │   ├── router --client X                 # 仅 router 全量回填（不动 messages）
 │   └── retry                             # 重试 collection_errors 中未解决失败组
-├── query [YYYYMMDD|YYYYMMDD-YYYYMMDD]
-│   ├── client [YYYYMMDD|YYYYMMDD-YYYYMMDD]  # 按客户端分组（默认视图）
-│   ├── model [YYYYMMDD|YYYYMMDD-YYYYMMDD]   # 按模型分组
-│   ├── provider [YYYYMMDD|YYYYMMDD-YYYYMMDD]# 按供应商分组
-│   ├── project [YYYYMMDD|YYYYMMDD-YYYYMMDD] # 按项目分组
-│   ├── session [YYYYMMDD|YYYYMMDD-YYYYMMDD]# 会话明细
-│   └── summary [YYYYMMDD|YYYYMMDD-YYYYMMDD] # 总览摘要
+├── query [DATE|DATE-DATE]
+│   ├── client [DATE|DATE-DATE]    # 按客户端分组（默认视图）
+│   ├── model [DATE|DATE-DATE]     # 按模型分组
+│   ├── provider [DATE|DATE-DATE]  # 按供应商分组
+│   ├── project [DATE|DATE-DATE]   # 按项目分组
+│   ├── session [DATE|DATE-DATE]   # 会话明细
+│   └── summary [DATE|DATE-DATE]   # 总览摘要
 ├── errors [YYYYMMDD]
 ├── config                                # 无参数：打开交互式配置 TUI
 │   ├── show                              # 输出完整 effective TOML（只读、纯 TOML）
@@ -38,7 +38,7 @@ token-usage
 设计要点：
 
 - 无顶层 `router` 子命令；路由归因通过 `collect all`（隐含）或 `collect router`（仅归因层）触达。
-- 日期是**位置参数**（`YYYYMMDD` 单日或 `YYYYMMDD-YYYYMMDD` 闭区间），无 `--date` 标志；`errors` 只接受单个 `YYYYMMDD`。
+- 日期是**位置参数**：`DATE` 为日（`YYYYMMDD`）、月（`YYYYMM`）或年（`YYYY`，仅单独使用）；`DATE-DATE` 为闭区间，端点为日或月。任何形态展开上限 366 天。无 `--date` 标志；`errors` 只接受单个 `YYYYMMDD`。
 - `query` 没有 `--format`/`--by-*` 标志；视图由子命令选择，输出固定为表格。
 - 直接执行 `token-usage`（不带任何参数）只打印帮助，既不启动 TUI 也不启动守护进程。
 - 根命令带 `-v, --version` flag（单行短输出），同时提供 `version` 子命令（多行详细输出）；二者详见下文「version」。
@@ -51,10 +51,10 @@ token-usage
 
 | 命令 | 接受形式 | 缺省 |
 |------|----------|------|
-| `collect` / `query` 及其子命令 | `YYYYMMDD` 或 `YYYYMMDD-YYYYMMDD`（闭区间，含两端） | 今天 |
+| `collect` / `query` 及其子命令 | `DATE`（日 `YYYYMMDD`、月 `YYYYMM` 或年 `YYYY`，年仅单独使用）或 `DATE-DATE`（日/月端点，闭区间） | 今天 |
 | `errors` | `YYYYMMDD` 单日（不接受区间） | 无日期且无 `--source` 时只看未解决 |
 
-`YYYYMMDD` 为 8 位紧凑格式（如 `20260701`）。`YYYY-MM-DD`、多余位置参数、区间端点不足 8 位、结束早于开始均报错并给出命令示例。区间展开为逐日列表（含两端）。
+`YYYYMMDD` 为 8 位紧凑格式（如 `20260701`）；`YYYYMM` 表示一个自然月，`YYYY` 表示一个自然年（年形态仅单独使用）。`YYYY-MM-DD`、多余位置参数、年做区间端点、结束早于开始均报错并给出命令示例。单参数或区间统一归一化为逐日列表（含两端），上限 366 天（一个闰年），更长范围请拆分多次执行。
 
 ### 退出码
 
@@ -146,7 +146,7 @@ zsh 上 `compinit` 可能报告不安全目录（insecure directories，即补�
 采集 token 使用数据。`collect` 及其子命令在打开数据库前都会做**守护进程冲突预检**：若守护进程正在运行（持有 daemon lock），直接拒绝采集，避免并发写库。
 
 ```text
-token-usage collect [YYYYMMDD|YYYYMMDD-YYYYMMDD]
+token-usage collect [DATE|DATE-DATE]
 token-usage collect all
 token-usage collect router --client <name>
 token-usage collect retry
@@ -225,7 +225,7 @@ Last successful collection / 最近成功采集: 2026-07-22 08:15:03
 ```
 
 - `Units / 单位` 说明所有表格与总览摘要中 token 数量的缩写口径：数值达到 1,000 / 1,000,000 / 1,000,000,000 后分别以 K / M / B 显示，统一保留两位小数。
-- `Query range / 统计范围` 回显本次实际日期参数：单日只显示该日，闭区间显示为 `YYYY-MM-DD ~ YYYY-MM-DD`。
+- `Query range / 统计范围` 回显解析后的日期范围：单日只显示该日，闭区间显示为 `YYYY-MM-DD ~ YYYY-MM-DD`（月/年参数显示其归一化展开范围）。
 - `Data through / 数据截至` 是统计日期范围内最新的消息事件时间（`messages.ts`），按本机时区显示到秒。消息事件时间才是统计数据的时间边界；范围内没有消息时显示 `—`。
 - `Last successful collection / 最近成功采集` 是全库最近一次成功采集完成的时间（`collection_log.collected_at`，库内以 UTC 存储，展示时转换为本机时区）。它不代表每个客户端都已完整采集到该时刻；还没有任何成功采集记录时显示 `—`。
 
@@ -291,6 +291,7 @@ query 配置是纯展示配置。语义错误（断开引用、CSV 写错、未�
 ```bash
 token-usage query                    # 今日，执行配置的默认视图（未配置时按客户端分组）
 token-usage query 20260701-20260721  # 区间，默认视图
+token-usage query 202608             # 单月，默认视图
 token-usage query mpc                # 今日，mpc 多维表（直接简写）
 token-usage query custom group_q 20260701  # 显式写法：按声明顺序输出四张表
 token-usage query summary 20260701   # 单日总览

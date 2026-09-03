@@ -93,7 +93,7 @@ token-usage query model       # group by model
 token-usage query 20260701-20260721
 ```
 
-Dates are positional: `YYYYMMDD` for one day or `YYYYMMDD-YYYYMMDD` for an inclusive range.
+Dates are positional: `YYYYMMDD` for one day, `YYYYMM` for one month, `YYYY` for one year (single arg only), or a day/month range like `202607-202608`. Any form expands to at most 366 days (one leap year); split longer ranges into multiple runs.
 
 The real payoff is making a report fit the question you return to. In the TUI, open **Query** (press `v` in the main menu) to create a named multi-dimensional view, combine views into an ordered report group, select its default, and choose which metric columns every table shows. You can also define portable views in `~/.token-usage/config.toml`:
 

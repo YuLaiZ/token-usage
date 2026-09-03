@@ -10,17 +10,17 @@ This document is the authoritative reference for the `token-usage` command-line 
 token-usage
 ├── version                               # show version and build metadata (five-line detailed output)
 ├── completion [bash|zsh|fish|powershell] # generate a shell completion script
-├── collect [YYYYMMDD|YYYYMMDD-YYYYMMDD]  # incremental collection for today or a specified date (includes router)
+├── collect [DATE|DATE-DATE]              # incremental collection for today or a specified date (day/month/year; includes router)
 │   ├── all                               # two-phase full collection: all historical messages + full router backfill
 │   ├── router --client X                 # full router backfill only (does not touch messages)
 │   └── retry                             # retry unresolved groups in collection_errors
-├── query [YYYYMMDD|YYYYMMDD-YYYYMMDD]
-│   ├── client [YYYYMMDD|YYYYMMDD-YYYYMMDD]  # group by client (default view)
-│   ├── model [YYYYMMDD|YYYYMMDD-YYYYMMDD]   # group by model
-│   ├── provider [YYYYMMDD|YYYYMMDD-YYYYMMDD]# group by provider
-│   ├── project [YYYYMMDD|YYYYMMDD-YYYYMMDD] # group by project
-│   ├── session [YYYYMMDD|YYYYMMDD-YYYYMMDD]# session details
-│   └── summary [YYYYMMDD|YYYYMMDD-YYYYMMDD] # overview summary
+├── query [DATE|DATE-DATE]
+│   ├── client [DATE|DATE-DATE]    # group by client (default view)
+│   ├── model [DATE|DATE-DATE]     # group by model
+│   ├── provider [DATE|DATE-DATE]  # group by provider
+│   ├── project [DATE|DATE-DATE]   # group by project
+│   ├── session [DATE|DATE-DATE]   # session details
+│   └── summary [DATE|DATE-DATE]   # overview summary
 ├── errors [YYYYMMDD]
 ├── config                                # no arguments: open the interactive configuration TUI
 │   ├── show                              # output complete effective TOML (read-only, pure TOML)
@@ -38,7 +38,7 @@ token-usage
 Design points:
 
 - There is no top-level `router` subcommand. Router attribution is reached through `collect all` (included) or `collect router` (attribution layer only).
-- Dates are **positional arguments**: a single day is `YYYYMMDD`; an inclusive range is `YYYYMMDD-YYYYMMDD`. There is no `--date` flag. `errors` accepts only a single `YYYYMMDD`.
+- Dates are **positional arguments**: `DATE` is a day (`YYYYMMDD`), month (`YYYYMM`), or year (`YYYY`; single arg only); `DATE-DATE` is an inclusive range whose endpoints are days or months. Any form expands to at most 366 days. There is no `--date` flag. `errors` accepts only a single `YYYYMMDD`.
 - `query` has no `--format` or `--by-*` flag. A subcommand selects the view and output is always a table.
 - Running `token-usage` with no arguments only prints help; it starts neither the TUI nor the daemon.
 - The root command has a `-v, --version` flag for one-line short output and a `version` subcommand for multi-line detailed output; see [version](#version).
@@ -51,10 +51,10 @@ Design points:
 
 | Command | Accepted form | Default |
 |------|----------|------|
-| `collect` / `query` and their subcommands | `YYYYMMDD` or `YYYYMMDD-YYYYMMDD` (inclusive) | Today |
+| `collect` / `query` and their subcommands | `DATE` (day `YYYYMMDD`, month `YYYYMM`, or year `YYYY`; year as a single arg only) or `DATE-DATE` (inclusive day/month endpoints) | Today |
 | `errors` | A single `YYYYMMDD` (ranges are not accepted) | With neither a date nor `--source`, only unresolved errors are shown. |
 
-`YYYYMMDD` is an eight-digit compact format (for example, `20260701`). `YYYY-MM-DD`, extra positional arguments, range endpoints shorter than eight digits, and an end date before the start date all fail with an error and command examples. A range expands into an inclusive per-day list.
+`YYYYMMDD` is an eight-digit compact format (for example, `20260701`); `YYYYMM` selects a calendar month and `YYYY` a calendar year (the year form is accepted only as a single arg). `YYYY-MM-DD`, extra positional arguments, a year used as a range endpoint, and an end date before the start date all fail with an error and command examples. A single arg or a range normalizes to an inclusive per-day list capped at 366 days (one leap year); split longer ranges into multiple runs.
 
 ### Exit Codes
 
@@ -146,7 +146,7 @@ For persistent installation instructions for each shell, run `token-usage comple
 Collects token-usage data. Before opening the database, `collect` and all of its subcommands run a **daemon-conflict precheck**: if the daemon is running and holds the daemon lock, collection is rejected to avoid concurrent database writes.
 
 ```text
-token-usage collect [YYYYMMDD|YYYYMMDD-YYYYMMDD]
+token-usage collect [DATE|DATE-DATE]
 token-usage collect all
 token-usage collect router --client <name>
 token-usage collect retry
@@ -225,7 +225,7 @@ Last successful collection / 最近成功采集: 2026-07-22 08:15:03
 ```
 
 - `Units / 单位` states the abbreviations used for token counts in every table and the summary: values are shown in K, M, or B once they reach 1,000, 1,000,000, or 1,000,000,000, always with two decimal places.
-- `Query range / 统计范围` echoes the actual date argument: a single day alone, or an inclusive range as `YYYY-MM-DD ~ YYYY-MM-DD`.
+- `Query range / 统计范围` echoes the resolved date range: a single day alone, or the normalized first-to-last span as `YYYY-MM-DD ~ YYYY-MM-DD` (a month or year arg shows its expanded range).
 - `Data through / 数据截至` is the latest message-event timestamp (`messages.ts`) inside the queried range, displayed in local time to the second. Message event times are the temporal boundary of the statistics; the field shows `—` when the range contains no messages.
 - `Last successful collection / 最近成功采集` is the most recent successful collection completion time in the whole database (`collection_log.collected_at`, stored in UTC and displayed in local time). It does not imply that every client was collected up to that moment, and it shows `—` before any successful collection exists.
 
@@ -291,6 +291,7 @@ Examples:
 ```bash
 token-usage query                    # today, runs the configured default (client when unconfigured)
 token-usage query 20260701-20260721  # date range, default view
+token-usage query 202608             # single month, default view
 token-usage query mpc                # today, the mpc multi-dimensional table (direct shorthand)
 token-usage query custom group_q 20260701  # explicit spelling: four tables in declared order
 token-usage query summary 20260701   # single-day overview
