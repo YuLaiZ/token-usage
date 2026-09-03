@@ -413,6 +413,8 @@ func GetSyncCursors(ctx context.Context, q dbtx, client string, sources []string
 	return out, nil
 }
 
+// routerLogChunkSize 是 IN 查询按集合分块的单块上限：messageID 集合与 session
+// 集合均按此分块，控制单条语句的占位符规模。
 const routerLogChunkSize = 500
 
 // routerAppTypeToClient 将 raw_router_logs.app_type 映射到 model.Client 常量。

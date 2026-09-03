@@ -16,21 +16,17 @@ import (
 // 单点可调。
 const CodexRouterMatchWindowSec = 300
 
-// codexRouterChunkSize 是按 session 集合分块查询的单块上限（对齐 routerLogChunkSize
-// 先例，控制 IN 占位符规模）。
-const codexRouterChunkSize = 500
-
 // QueryCodexRouterLogsBySessions 查询 session 集合关联的全部 codex proxy 路由行
 // （不限本轮、不限日期，供三入口「双侧全量」匹配）。session_id 为 cc-switch 的
 // codex_{uuid} 前缀形态或裸 uuid，Go 侧双形态展开后 IN 匹配；行限定
 // router_name + app_type='codex' + data_source='proxy'（codex_session 同步行与
-// claude 行天然排除）。session 集合按 codexRouterChunkSize 分块，块间结果拼接
+// claude 行天然排除）。session 集合按 routerLogChunkSize 分块，块间结果拼接
 // （仅块内有序，跨块无全局时间序；MatchCodexRouterAttributions 自行排序，
 // 不依赖本函数返回序）。
 func QueryCodexRouterLogsBySessions(ctx context.Context, q dbtx, routerName string, sessionIDs []string) ([]model.RouterLog, error) {
 	var all []model.RouterLog
-	for start := 0; start < len(sessionIDs); start += codexRouterChunkSize {
-		end := start + codexRouterChunkSize
+	for start := 0; start < len(sessionIDs); start += routerLogChunkSize {
+		end := start + routerLogChunkSize
 		if end > len(sessionIDs) {
 			end = len(sessionIDs)
 		}
@@ -93,11 +89,11 @@ func scanCodexRouterLogs(ctx context.Context, q dbtx, query string, args []inter
 
 // QueryCodexMessagesBySessions 查询 session 集合关联的全部 codex messages
 // （Codex App / Codex CLI 两显示名；不限本轮、不限日期）。
-// session 集合按 codexRouterChunkSize 分块（仅块内有序，跨块无全局序）。
+// session 集合按 routerLogChunkSize 分块（仅块内有序，跨块无全局序）。
 func QueryCodexMessagesBySessions(ctx context.Context, q dbtx, sessionIDs []string) ([]model.Message, error) {
 	var all []model.Message
-	for start := 0; start < len(sessionIDs); start += codexRouterChunkSize {
-		end := start + codexRouterChunkSize
+	for start := 0; start < len(sessionIDs); start += routerLogChunkSize {
+		end := start + routerLogChunkSize
 		if end > len(sessionIDs) {
 			end = len(sessionIDs)
 		}
