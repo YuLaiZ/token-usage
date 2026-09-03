@@ -184,6 +184,7 @@ func GetLogger() *slog.Logger {
 	return globalLogger
 }
 
+// cleanup 按 max_days 清理过期日志。best-effort：删除失败不影响主流程。
 func cleanup(dir string, maxDays int) {
 	if maxDays <= 0 {
 		return
@@ -208,7 +209,7 @@ func cleanup(dir string, maxDays int) {
 		}
 
 		if fileDate.Before(cutoff) {
-			os.Remove(path)
+			_ = os.Remove(path)
 		}
 	}
 
@@ -224,7 +225,7 @@ func cleanup(dir string, maxDays int) {
 	// fd，可接受。
 	fallback := filepath.Join(dir, FallbackLogFileName)
 	if info, err := os.Stat(fallback); err == nil && info.ModTime().Before(cutoff) {
-		os.Remove(fallback)
+		_ = os.Remove(fallback)
 	}
 }
 
