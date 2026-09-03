@@ -74,6 +74,9 @@ func TestSubtractCache(t *testing.T) {
 		{"normal", 1000, 300, 100, 600},
 		{"equal", 400, 300, 100, 0},
 		{"clamp", 100, 90, 20, 0},
+		{"no cache", 1000, 0, 0, 1000},
+		{"cache only", 1000, 600, 0, 400},
+		{"zero input with cache", 0, 50, 50, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
