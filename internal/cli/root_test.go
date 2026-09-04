@@ -11,7 +11,8 @@ import (
 )
 
 // TestRootCommand_HasSubcommands 收口：root 必须列出且仅列出
-// collect/config/errors/query/restart/start/status/stop/update/version/help/completion 十个用户可见子命令。
+// collect/config/errors/export/query/restart/start/status/stop/update/version/help/completion
+// 十一个用户可见子命令。
 //
 // 这是 strict 集合断言：多余或缺失任一项均失败。newRootCmd 现在显式
 // InitDefaultHelpCmd/InitDefaultCompletionCmd（为改写双语 Short），因此
@@ -24,6 +25,7 @@ func TestRootCommand_HasSubcommands(t *testing.T) {
 		"config":     true,
 		"collect":    true,
 		"query":      true,
+		"export":     true,
 		"errors":     true,
 		"start":      true,
 		"status":     true,
@@ -51,7 +53,7 @@ func TestRootCommand_HasSubcommands(t *testing.T) {
 	}
 	for name := range got {
 		if !want[name] {
-			t.Errorf("unexpected user-visible subcommand %q at root (收口集合为 collect/config/errors/query/restart/start/status/stop/update/version/help/completion)", name)
+			t.Errorf("unexpected user-visible subcommand %q at root (收口集合为 collect/config/errors/export/query/restart/start/status/stop/update/version/help/completion)", name)
 		}
 	}
 }

@@ -35,6 +35,7 @@ func newRootCmd(info buildinfo.Info) *cobra.Command {
 		newConfigCmd(),
 		newCollectCmd(),
 		newQueryCmd(),
+		newExportCmd(),
 		newErrorsCmd(),
 		newStartCmd(),
 		newStatusCmd(),

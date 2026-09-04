@@ -96,24 +96,24 @@ type tableCol struct {
 // metricColumn 是一个输出指标列的渲染描述符:双语表头 + 从聚合值生成单元格。
 type metricColumn struct {
 	header string
-	cell   func(agg groupAggregate) string
+	cell   func(agg GroupAggregate) string
 }
 
 // metricColumnByID 是指标 ID → 描述符的唯一来源,与 ui 层 ID 集合同步。
 var metricColumnByID = map[string]metricColumn{
-	ui.MetricRequests: {ui.HRequests, func(a groupAggregate) string { return fmt.Sprintf("%d", a.requests) }},
-	ui.MetricInput:    {ui.HInput, func(a groupAggregate) string { return formatTokens(a.freshInput) }},
-	ui.MetricOutput:   {ui.HOutput, func(a groupAggregate) string { return formatTokens(a.outputTokens) }},
-	ui.MetricCacheRead: {ui.HCacheRead, func(a groupAggregate) string {
-		return formatTokens(a.cacheRead)
+	ui.MetricRequests: {ui.HRequests, func(a GroupAggregate) string { return fmt.Sprintf("%d", a.Requests) }},
+	ui.MetricInput:    {ui.HInput, func(a GroupAggregate) string { return formatTokens(a.FreshInput) }},
+	ui.MetricOutput:   {ui.HOutput, func(a GroupAggregate) string { return formatTokens(a.OutputTokens) }},
+	ui.MetricCacheRead: {ui.HCacheRead, func(a GroupAggregate) string {
+		return formatTokens(a.CacheRead)
 	}},
-	ui.MetricCacheCreate: {ui.HCacheCreate, func(a groupAggregate) string {
-		return formatTokens(a.cacheCreate)
+	ui.MetricCacheCreate: {ui.HCacheCreate, func(a GroupAggregate) string {
+		return formatTokens(a.CacheCreate)
 	}},
-	ui.MetricReasoning: {ui.HReasoning, func(a groupAggregate) string { return formatTokens(a.reasoning) }},
-	ui.MetricTotal:     {ui.HTotal, func(a groupAggregate) string { return formatTokens(a.totalTokens) }},
-	ui.MetricCacheHit: {ui.HCacheHit, func(a groupAggregate) string {
-		return formatCacheHit(a.freshInput, a.cacheRead, a.cacheCreate)
+	ui.MetricReasoning: {ui.HReasoning, func(a GroupAggregate) string { return formatTokens(a.Reasoning) }},
+	ui.MetricTotal:     {ui.HTotal, func(a GroupAggregate) string { return formatTokens(a.TotalTokens) }},
+	ui.MetricCacheHit: {ui.HCacheHit, func(a GroupAggregate) string {
+		return formatCacheHit(a.FreshInput, a.CacheRead, a.CacheCreate)
 	}},
 }
 
@@ -145,7 +145,7 @@ func metricTailCols(metrics []metricColumn) []tableCol {
 }
 
 // appendMetricCells 按描述符顺序把聚合值的单元格追加到 cells。
-func appendMetricCells(cells []string, metrics []metricColumn, agg groupAggregate) []string {
+func appendMetricCells(cells []string, metrics []metricColumn, agg GroupAggregate) []string {
 	for _, m := range metrics {
 		cells = append(cells, m.cell(agg))
 	}
@@ -251,19 +251,20 @@ type DimensionView struct {
 	TitleZh string
 }
 
-// groupAggregate 是一个复合分组键下的 token 聚合。
-type groupAggregate struct {
-	requests, freshInput, outputTokens, cacheRead, cacheCreate, reasoning, totalTokens int64
+// GroupAggregate 是一个复合分组键下的 token 聚合。字段导出供导出命令等
+// 机器消费方按原始整数读取;渲染侧仅经描述符消费,不直接拼数字文本。
+type GroupAggregate struct {
+	Requests, FreshInput, OutputTokens, CacheRead, CacheCreate, Reasoning, TotalTokens int64
 }
 
-func (a *groupAggregate) add(o groupAggregate) {
-	a.requests += o.requests
-	a.freshInput += o.freshInput
-	a.outputTokens += o.outputTokens
-	a.cacheRead += o.cacheRead
-	a.cacheCreate += o.cacheCreate
-	a.reasoning += o.reasoning
-	a.totalTokens += o.totalTokens
+func (a *GroupAggregate) add(o GroupAggregate) {
+	a.Requests += o.Requests
+	a.FreshInput += o.FreshInput
+	a.OutputTokens += o.OutputTokens
+	a.CacheRead += o.CacheRead
+	a.CacheCreate += o.CacheCreate
+	a.Reasoning += o.Reasoning
+	a.TotalTokens += o.TotalTokens
 }
 
 // displayKey 把 SQL 返回的原始键值映射为显示键:provider 应用 alias 与未归因,
@@ -302,31 +303,37 @@ func trendBar(total, maxTotal int64) string {
 	return strings.Repeat("█", n)
 }
 
-// RunDimensionView 按维度列表输出一张分组聚合表:
-// raw 聚合 → alias 后复合键聚合 → 稳定排序(含 day 时按该维度显示值升序优先,
-// 再 total 降序、完整显示键元组升序)→ 表格 + 总计行。
-// 总计来自同一日期范围的独立全量聚合,不由渲染后的行文本反推;无数据日期渲染表头 + 零值总计
-// (纯 day 单维视图改为对缺口日期插入零值行,保证逐日时间轴连续)。
-func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view DimensionView) (string, error) {
+// DimensionRow 是一张维度视图聚合结果中的一行:显示键序列与该键下的聚合值。
+type DimensionRow struct {
+	Keys []string
+	Agg  GroupAggregate
+}
+
+// AggregateDimensionView 执行维度视图的数据聚合与排序(不含渲染):
+// 维度白名单校验 → raw 聚合 → alias 后复合键聚合 → 缺口填充(纯 day 单维) →
+// 稳定排序(含 day 时日期升序优先,再 total 降序、显示键元组升序)。
+// 返回数据行(不含总计)与同一日期范围的总计聚合;dates 为空时返回空行与零值总计。
+// RunDimensionView 与 export 命令共用本方法,保证两边行集合与排序一致。
+func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, view DimensionView) ([]DimensionRow, GroupAggregate, error) {
 	ctx, err := q.readyContext(ctx)
 	if err != nil {
-		return "", err
+		return nil, GroupAggregate{}, err
 	}
 	if len(view.Dimensions) == 0 {
-		return "", errors.New(ui.Bi("dimension view requires at least one dimension", "维度视图至少需要一个维度"))
+		return nil, GroupAggregate{}, errors.New(ui.Bi("dimension view requires at least one dimension", "维度视图至少需要一个维度"))
 	}
 	dims := make([]dimension, 0, len(view.Dimensions))
 	seen := map[string]bool{}
 	for _, name := range view.Dimensions {
 		d, ok := dimensionWhitelist[name]
 		if !ok {
-			return "", fmt.Errorf("%s", ui.Bi(
+			return nil, GroupAggregate{}, fmt.Errorf("%s", ui.Bi(
 				fmt.Sprintf("unknown query dimension %q (allowed: %s)", name, dimensionNameList()),
 				fmt.Sprintf("未知查询维度 %q(允许: %s)", name, dimensionNameList()),
 			))
 		}
 		if seen[name] {
-			return "", fmt.Errorf("%s", ui.Bi(
+			return nil, GroupAggregate{}, fmt.Errorf("%s", ui.Bi(
 				fmt.Sprintf("duplicate query dimension %q", name),
 				fmt.Sprintf("重复查询维度 %q", name),
 			))
@@ -334,9 +341,8 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 		seen[name] = true
 		dims = append(dims, d)
 	}
-	title := ui.Bi(view.TitleEn, view.TitleZh)
 	if len(dates) == 0 {
-		return ui.Bi(view.TitleEn+" - no data", view.TitleZh+" - 无数据"), nil
+		return nil, GroupAggregate{}, nil
 	}
 
 	// raw 聚合:GROUP BY 各维度原始表达式(SQL 无序,排序统一在 Go 侧保证稳定)。
@@ -353,16 +359,11 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 	)
 	rows, err := q.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
+		return nil, GroupAggregate{}, fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
 	}
 	defer rows.Close()
 
-	type compositeRow struct {
-		// parts 槽位数与当前内置维度白名单容量一致,再增维须同步扩容否则越界。
-		parts [5]string
-		agg   groupAggregate
-	}
-	rowOrder := make([]compositeRow, 0, 8)
+	rowOrder := make([]DimensionRow, 0, 8)
 	rowIndex := map[string]int{}
 	for rows.Next() {
 		rawKeys := make([]string, len(dims))
@@ -370,26 +371,26 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 		for i := range rawKeys {
 			scanArgs[i] = &rawKeys[i]
 		}
-		var agg groupAggregate
-		scanArgs = append(scanArgs, &agg.requests, &agg.freshInput, &agg.outputTokens,
-			&agg.cacheRead, &agg.cacheCreate, &agg.reasoning, &agg.totalTokens)
+		var row DimensionRow
+		scanArgs = append(scanArgs, &row.Agg.Requests, &row.Agg.FreshInput, &row.Agg.OutputTokens,
+			&row.Agg.CacheRead, &row.Agg.CacheCreate, &row.Agg.Reasoning, &row.Agg.TotalTokens)
 		if err := rows.Scan(scanArgs...); err != nil {
-			return "", fmt.Errorf("%s: %w", ui.Bi("scan aggregate rows failed", "扫描聚合结果失败"), err)
+			return nil, GroupAggregate{}, fmt.Errorf("%s: %w", ui.Bi("scan aggregate rows failed", "扫描聚合结果失败"), err)
 		}
-		var parts [5]string
+		row.Keys = make([]string, len(dims))
 		for i, d := range dims {
-			parts[i] = d.displayKey(rawKeys[i], view.Aliases)
+			row.Keys[i] = d.displayKey(rawKeys[i], view.Aliases)
 		}
-		key := strings.Join(parts[:len(dims)], "\x00")
+		key := strings.Join(row.Keys, "\x00")
 		if idx, ok := rowIndex[key]; ok {
-			rowOrder[idx].agg.add(agg)
+			rowOrder[idx].Agg.add(row.Agg)
 			continue
 		}
 		rowIndex[key] = len(rowOrder)
-		rowOrder = append(rowOrder, compositeRow{parts: parts, agg: agg})
+		rowOrder = append(rowOrder, row)
 	}
 	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("%s: %w", ui.Bi("iterate aggregate rows failed", "遍历聚合结果失败"), err)
+		return nil, GroupAggregate{}, fmt.Errorf("%s: %w", ui.Bi("iterate aggregate rows failed", "遍历聚合结果失败"), err)
 	}
 
 	// day 维度在本次维度列表中的下标(-1 表示不含 day);重复维度已在参数校验拒绝,
@@ -408,31 +409,29 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 	if len(dims) == 1 && dayIdx == 0 {
 		seenDates := make(map[string]bool, len(rowOrder))
 		for _, r := range rowOrder {
-			seenDates[r.parts[0]] = true
+			seenDates[r.Keys[0]] = true
 		}
 		for _, date := range dates {
 			if seenDates[date] {
 				continue
 			}
 			seenDates[date] = true
-			var parts [5]string
-			parts[0] = date
-			rowOrder = append(rowOrder, compositeRow{parts: parts})
+			rowOrder = append(rowOrder, DimensionRow{Keys: []string{date}})
 		}
 	}
 
 	// 稳定排序:含 day 时按该维度显示值升序优先(YYYY-MM-DD 字典序即时间序),
 	// 再按 total 降序、完整显示键元组升序(同一有效配置与语言下确定)。
 	sort.SliceStable(rowOrder, func(i, j int) bool {
-		if dayIdx >= 0 && rowOrder[i].parts[dayIdx] != rowOrder[j].parts[dayIdx] {
-			return rowOrder[i].parts[dayIdx] < rowOrder[j].parts[dayIdx]
+		if dayIdx >= 0 && rowOrder[i].Keys[dayIdx] != rowOrder[j].Keys[dayIdx] {
+			return rowOrder[i].Keys[dayIdx] < rowOrder[j].Keys[dayIdx]
 		}
-		if rowOrder[i].agg.totalTokens != rowOrder[j].agg.totalTokens {
-			return rowOrder[i].agg.totalTokens > rowOrder[j].agg.totalTokens
+		if rowOrder[i].Agg.TotalTokens != rowOrder[j].Agg.TotalTokens {
+			return rowOrder[i].Agg.TotalTokens > rowOrder[j].Agg.TotalTokens
 		}
 		for k := range dims {
-			if rowOrder[i].parts[k] != rowOrder[j].parts[k] {
-				return rowOrder[i].parts[k] < rowOrder[j].parts[k]
+			if rowOrder[i].Keys[k] != rowOrder[j].Keys[k] {
+				return rowOrder[i].Keys[k] < rowOrder[j].Keys[k]
 			}
 		}
 		return false
@@ -441,15 +440,50 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 	// 总计:同一日期范围的独立全量聚合。
 	totals, err := q.rangeTotals(ctx, dates)
 	if err != nil {
+		return nil, GroupAggregate{}, err
+	}
+	return rowOrder, totals, nil
+}
+
+// RunDimensionView 按维度列表输出一张分组聚合表:聚合与排序委托给
+// AggregateDimensionView(维度校验、raw 聚合、alias 合并、缺口填充与稳定排序
+// 均在其中,空 dates 于维度校验之后短路),本方法只负责 readiness 检查与渲染:
+// 标题 → 表头 → 趋势列(含 day 时) → 数据行 → 总计行。
+// 「标题 - 无数据」早退在委托调用之后判定:「空 dates + 非法维度」报维度校验
+// 错误(与旧实现一致),「空 dates + 合法维度」渲染无数据文本。
+// 总计来自同一日期范围的独立全量聚合,不由渲染后的行文本反推;无数据日期渲染表头 + 零值总计
+// (纯 day 单维视图改为对缺口日期插入零值行,保证逐日时间轴连续)。
+func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view DimensionView) (string, error) {
+	ctx, err := q.readyContext(ctx)
+	if err != nil {
 		return "", err
+	}
+	title := ui.Bi(view.TitleEn, view.TitleZh)
+
+	rows, totals, err := q.AggregateDimensionView(ctx, dates, view)
+	if err != nil {
+		return "", err
+	}
+	if len(dates) == 0 {
+		return ui.Bi(view.TitleEn+" - no data", view.TitleZh+" - 无数据"), nil
+	}
+
+	// 维度已在聚合核内完成白名单校验,此处按声明顺序取渲染表头与 day 下标。
+	dimHeaders := make([]string, len(view.Dimensions))
+	dayIdx := -1
+	for i, name := range view.Dimensions {
+		dimHeaders[i] = dimensionWhitelist[name].header
+		if name == "day" {
+			dayIdx = i
+		}
 	}
 
 	metrics := q.metricColumns()
 	var sb strings.Builder
 	sb.WriteString(title + "\n")
-	defs := make([]tableCol, 0, len(dims)+len(metrics)+1)
-	for _, d := range dims {
-		defs = append(defs, tableCol{header: d.header, align: ui.AlignLeft, limit: 0})
+	defs := make([]tableCol, 0, len(dimHeaders)+len(metrics)+1)
+	for _, h := range dimHeaders {
+		defs = append(defs, tableCol{header: h, align: ui.AlignLeft, limit: 0})
 	}
 	// 含 day 时在全部维度键列之后、指标列之前插入趋势条形列。
 	if dayIdx >= 0 {
@@ -459,24 +493,24 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 	t := buildTable(defs)
 	// 趋势条以结果集内最大行 totalTokens 为基准(不含总计行)。
 	maxTotal := int64(0)
-	for _, row := range rowOrder {
-		if row.agg.totalTokens > maxTotal {
-			maxTotal = row.agg.totalTokens
+	for _, row := range rows {
+		if row.Agg.TotalTokens > maxTotal {
+			maxTotal = row.Agg.TotalTokens
 		}
 	}
-	for _, row := range rowOrder {
-		cells := make([]string, 0, len(dims)+len(metrics)+1)
-		cells = append(cells, row.parts[:len(dims)]...)
+	for _, row := range rows {
+		cells := make([]string, 0, len(dimHeaders)+len(metrics)+1)
+		cells = append(cells, row.Keys...)
 		if dayIdx >= 0 {
-			cells = append(cells, trendBar(row.agg.totalTokens, maxTotal))
+			cells = append(cells, trendBar(row.Agg.TotalTokens, maxTotal))
 		}
-		cells = appendMetricCells(cells, metrics, row.agg)
+		cells = appendMetricCells(cells, metrics, row.Agg)
 		t.Row(cells...)
 	}
 	// 总计行:第一个维度列写 Total / 总计,其余维度列留空;趋势单元格为空串。
-	totalCells := make([]string, 0, len(dims)+len(metrics)+1)
+	totalCells := make([]string, 0, len(dimHeaders)+len(metrics)+1)
 	totalCells = append(totalCells, ui.Bi("Total", "总计"))
-	for i := 1; i < len(dims); i++ {
+	for i := 1; i < len(dimHeaders); i++ {
 		totalCells = append(totalCells, "")
 	}
 	if dayIdx >= 0 {
@@ -489,16 +523,16 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 }
 
 // rangeTotals 返回日期范围的全量聚合(总计行数据源,独立于分组结果)。
-func (q *Querier) rangeTotals(ctx context.Context, dates []string) (groupAggregate, error) {
+func (q *Querier) rangeTotals(ctx context.Context, dates []string) (GroupAggregate, error) {
 	placeholders, args := buildPlaceholders(dates)
 	query := fmt.Sprintf(
 		"SELECT %s FROM messages WHERE date IN (%s)",
 		groupSelectColumns, placeholders,
 	)
-	var totals groupAggregate
+	var totals GroupAggregate
 	err := q.db.QueryRowContext(ctx, query, args...).Scan(
-		&totals.requests, &totals.freshInput, &totals.outputTokens,
-		&totals.cacheRead, &totals.cacheCreate, &totals.reasoning, &totals.totalTokens)
+		&totals.Requests, &totals.FreshInput, &totals.OutputTokens,
+		&totals.CacheRead, &totals.CacheCreate, &totals.Reasoning, &totals.TotalTokens)
 	if err != nil {
 		return totals, fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
 	}
@@ -544,13 +578,24 @@ func (q *Querier) ByDay(ctx context.Context, dates []string) (string, error) {
 	})
 }
 
-func (q *Querier) Sessions(ctx context.Context, dates []string) (string, error) {
+// SessionRow 是一条会话聚合结果:会话标识字段与该会话在日期范围内的聚合值。
+type SessionRow struct {
+	Client  string
+	Project string
+	Title   string
+	Agg     GroupAggregate
+}
+
+// SessionRows 返回会话明细的结构化行:SQL 与排序与 Sessions 完全一致
+// (首条消息日期、client、total 降序)。Project 返回源字段原值(空串不映射
+// 为「未分类」,显示形态由渲染方决定),供导出等机器消费方使用。
+func (q *Querier) SessionRows(ctx context.Context, dates []string) ([]SessionRow, error) {
 	ctx, err := q.readyContext(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if len(dates) == 0 {
-		return ui.Bi("Session details - no data", "会话明细 - 无数据"), nil
+		return nil, nil
 	}
 
 	placeholders, args := buildPlaceholders(dates)
@@ -574,9 +619,43 @@ func (q *Querier) Sessions(ctx context.Context, dates []string) (string, error) 
 
 	rows, err := q.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
+		return nil, fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
 	}
 	defer rows.Close()
+
+	var result []SessionRow
+	for rows.Next() {
+		var row SessionRow
+		// directory 列照旧 SELECT 维持 SQL 形态,机器行不消费,扫描进废弃变量。
+		var directory string
+		if err := rows.Scan(
+			&row.Client, &row.Title, &directory, &row.Project,
+			&row.Agg.Requests, &row.Agg.FreshInput, &row.Agg.OutputTokens,
+			&row.Agg.CacheRead, &row.Agg.CacheCreate, &row.Agg.Reasoning, &row.Agg.TotalTokens,
+		); err != nil {
+			return nil, fmt.Errorf("%s: %w", ui.Bi("scan session detail rows failed", "扫描会话明细结果失败"), err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", ui.Bi("iterate session detail rows failed", "遍历会话明细结果失败"), err)
+	}
+	return result, nil
+}
+
+func (q *Querier) Sessions(ctx context.Context, dates []string) (string, error) {
+	ctx, err := q.readyContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(dates) == 0 {
+		return ui.Bi("Session details - no data", "会话明细 - 无数据"), nil
+	}
+
+	rows, err := q.SessionRows(ctx, dates)
+	if err != nil {
+		return "", err
+	}
 
 	var sb strings.Builder
 	sb.WriteString(ui.Bi("Session details", "会话明细") + "\n")
@@ -594,27 +673,14 @@ func (q *Querier) Sessions(ctx context.Context, dates []string) (string, error) 
 	}, metricTailCols(metrics)...)
 	t := buildTable(defs)
 
-	for rows.Next() {
-		var client, title, directory, project string
-		var requestCount, freshInput, outputTokens, cacheRead, cacheCreate, reasoning, totalTokens int64
-		if err := rows.Scan(
-			&client, &title, &directory, &project,
-			&requestCount, &freshInput, &outputTokens, &cacheRead, &cacheCreate, &reasoning, &totalTokens,
-		); err != nil {
-			return "", fmt.Errorf("%s: %w", ui.Bi("scan session detail rows failed", "扫描会话明细结果失败"), err)
-		}
+	for _, row := range rows {
+		project := row.Project
+		// 「(未分类)」空值映射留在渲染侧,SessionRows 保留源字段原值供机器消费。
 		if project == "" {
 			project = ui.Bi("(uncategorized)", "(未分类)")
 		}
-		agg := groupAggregate{
-			requests: requestCount, freshInput: freshInput, outputTokens: outputTokens,
-			cacheRead: cacheRead, cacheCreate: cacheCreate, reasoning: reasoning, totalTokens: totalTokens,
-		}
-		cells := appendMetricCells([]string{client, project, title}, metrics, agg)
+		cells := appendMetricCells([]string{row.Client, project, row.Title}, metrics, row.Agg)
 		t.Row(cells...)
-	}
-	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("%s: %w", ui.Bi("iterate session detail rows failed", "遍历会话明细结果失败"), err)
 	}
 
 	sb.WriteString(t.String())

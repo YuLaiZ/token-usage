@@ -730,6 +730,183 @@ func TestRunDimensionView_StableSort(t *testing.T) {
 	}
 }
 
+// SessionRows 返回原始空 project(空串,不映射「未分类」),且排序与 Sessions
+// 渲染一致(首条消息日期、client、total 降序)。
+func TestSessionRows_RawProjectAndSameOrderAsSessions(t *testing.T) {
+	q := setupMessageFixture(t)
+	// 追加一个空 project 的会话,total 高于 sess-alpha 在 07-09 的 1100,
+	// 使其按 total 降序应排在前面。
+	if _, err := db.UpsertSessionMeta(context.Background(), q.db, []model.Session{{
+		ID: "sess-empty-proj", Client: model.ClientClaudeCode, Directory: "/work", Project: "", Title: "no-proj",
+		FirstTS: 1000, LastTS: 2000,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, []model.Message{{
+		ID: "msg-empty-proj", SessionID: "sess-empty-proj", Client: model.ClientClaudeCode,
+		Date: "2026-07-09", TS: 1500, TotalTokens: 2000,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := q.SessionRows(context.Background(), []string{"2026-07-09"})
+	if err != nil {
+		t.Fatalf("SessionRows failed: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("应恰 2 行(空会话不出现),实际 %d: %+v", len(rows), rows)
+	}
+	// total 降序:no-proj(2000) 在前,fix-login(1100) 在后。
+	if rows[0].Title != "no-proj" || rows[1].Title != "fix-login" {
+		t.Errorf("排序应与 Sessions 一致(total 降序): %+v", rows)
+	}
+	// Project 保留源字段原值:空 project 就是空串,不做「未分类」映射。
+	if rows[0].Project != "" {
+		t.Errorf("空 project 应保持空串,实际 %q", rows[0].Project)
+	}
+	// 渲染侧才做映射,且两个标题在 Sessions 输出中的先后与 SessionRows 一致。
+	out, err := q.Sessions(context.Background(), []string{"2026-07-09"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "(uncategorized)") || !strings.Contains(out, "(未分类)") {
+		t.Errorf("Sessions 渲染应保留未分类映射:\n%s", out)
+	}
+	if !(strings.Index(out, "no-proj") < strings.Index(out, "fix-login")) {
+		t.Errorf("Sessions 渲染行序应与 SessionRows 一致:\n%s", out)
+	}
+}
+
+// AggregateDimensionView 的行集合与排序和 RunDimensionView 渲染的数据行一致
+// (同一夹具对比 client 与 day 两个视图,day 视图含缺口填充)。
+func TestAggregateDimensionView_MatchesRunDimensionViewRows(t *testing.T) {
+	q := setupMessageFixture(t)
+	// 增加第二个 client 与一个无数据日期,覆盖排序(total 降序)与缺口填充。
+	msgs := []model.Message{
+		{ID: "agg-codex", SessionID: "sess-alpha", Client: model.ClientCodexApp,
+			Date: "2026-07-09", TS: 3000, TotalTokens: 300},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	dates := []string{"2026-07-08", "2026-07-09", "2026-07-10"}
+
+	// 从渲染表提取数据行首列(显示键):只取表头分隔线 ├ 与底部 └ 之间的表格行,
+	// 排除表头(两行)与总计行。
+	renderedKeys := func(t *testing.T, out string) []string {
+		t.Helper()
+		var keys []string
+		inBody := false
+		for _, ln := range strings.Split(out, "\n") {
+			if strings.Contains(ln, "├") {
+				inBody = true
+				continue
+			}
+			if strings.Contains(ln, "└") {
+				inBody = false
+			}
+			if !inBody || !strings.Contains(ln, "│") || strings.Contains(ln, "Total / 总计") {
+				continue
+			}
+			cells := strings.Split(strings.Trim(ln, "│"), "│")
+			if len(cells) == 0 {
+				continue
+			}
+			keys = append(keys, strings.TrimSpace(cells[0]))
+		}
+		return keys
+	}
+
+	for _, view := range []DimensionView{
+		{Dimensions: []string{"client"}, TitleEn: "Group by client", TitleZh: "按客户端分组"},
+		{Dimensions: []string{"day"}, TitleEn: "Usage by day", TitleZh: "按天用量"},
+	} {
+		rows, totals, err := q.AggregateDimensionView(context.Background(), dates, view)
+		if err != nil {
+			t.Fatalf("%v: %v", view.Dimensions, err)
+		}
+		out, err := q.RunDimensionView(context.Background(), dates, view)
+		if err != nil {
+			t.Fatalf("%v render: %v", view.Dimensions, err)
+		}
+		// 表头(两行)与总计行已由 renderedKeys 排除。
+		var aggKeys []string
+		for _, r := range rows {
+			if len(r.Keys) != 1 {
+				t.Fatalf("单维视图行键数应为 1: %+v", r.Keys)
+			}
+			aggKeys = append(aggKeys, r.Keys[0])
+		}
+		want := renderedKeys(t, out)
+		if strings.Join(aggKeys, ",") != strings.Join(want, ",") {
+			t.Errorf("%v 行集合/排序不一致:\nAggregateDimensionView=%v\nRunDimensionView=%v\n%s",
+				view.Dimensions, aggKeys, want, out)
+		}
+		// 总计与各行聚合一致:total 求和恰等于 rangeTotals(缺口行为零值)。
+		var sum int64
+		for _, r := range rows {
+			sum += r.Agg.TotalTokens
+		}
+		if sum != totals.TotalTokens {
+			t.Errorf("%v 行 total 求和 %d 与总计 %d 不一致", view.Dimensions, sum, totals.TotalTokens)
+		}
+	}
+
+	// day 视图缺口行为零值行;client 视图按 total 降序:Claude Code(2200) 在 Codex(300) 前。
+	dayRows, _, err := q.AggregateDimensionView(context.Background(), dates, DimensionView{
+		Dimensions: []string{"day"}, TitleEn: "Usage by day", TitleZh: "按天用量",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dayRows[0].Keys[0] != "2026-07-08" || dayRows[0].Agg.TotalTokens != 0 {
+		t.Errorf("缺口日期应补零值行且居首(升序): %+v", dayRows[0])
+	}
+	if dayRows[0].Agg.Requests != 0 {
+		t.Errorf("缺口行 requests 应为 0: %+v", dayRows[0].Agg)
+	}
+}
+
+// 空 dates 的校验顺序锚定:「空 dates + 未知维度」报维度校验错误(校验先于
+// 无数据早退,与旧实现一致);「空 dates + 合法维度」渲染「标题 - 无数据」文本。
+func TestRunDimensionView_EmptyDatesValidationOrder(t *testing.T) {
+	q := setupMessageFixture(t)
+
+	_, err := q.RunDimensionView(context.Background(), nil, DimensionView{
+		Dimensions: []string{"bogus"}, TitleEn: "x", TitleZh: "x",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unknown query dimension") {
+		t.Fatalf("空 dates + 未知维度应报维度校验错误: %v", err)
+	}
+
+	out, err := q.RunDimensionView(context.Background(), nil, DimensionView{
+		Dimensions: []string{"client"}, TitleEn: "Group by client", TitleZh: "按客户端分组",
+	})
+	if err != nil {
+		t.Fatalf("空 dates + 合法维度不应报错: %v", err)
+	}
+	if out != "Group by client - no data / 按客户端分组 - 无数据" {
+		t.Errorf("空 dates + 合法维度应渲染无数据文本: %q", out)
+	}
+}
+
+// AggregateDimensionView 空 dates 返回空行与零值总计(渲染与导出共用此语义)。
+func TestAggregateDimensionView_EmptyDates(t *testing.T) {
+	q := setupMessageFixture(t)
+	rows, totals, err := q.AggregateDimensionView(context.Background(), nil, DimensionView{
+		Dimensions: []string{"client"}, TitleEn: "Group by client", TitleZh: "按客户端分组",
+	})
+	if err != nil {
+		t.Fatalf("空 dates 不应报错: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("空 dates 应返回空行,实际 %d 行: %+v", len(rows), rows)
+	}
+	if totals != (GroupAggregate{}) {
+		t.Errorf("空 dates 应返回零值总计: %+v", totals)
+	}
+}
+
 // 未知维度名被白名单拒绝,不得拼进 SQL。
 func TestRunDimensionView_RejectsUnknownDimension(t *testing.T) {
 	q := setupMessageFixture(t)

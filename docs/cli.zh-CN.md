@@ -21,6 +21,7 @@ token-usage
 │   ├── project [DATE|DATE-DATE]   # 按项目分组
 │   ├── session [DATE|DATE-DATE]   # 会话明细
 │   └── summary [DATE|DATE-DATE]   # 总览摘要
+├── export [view] [DATE|DATE-DATE] # 以 CSV 或 JSON 导出使用数据（--format csv|json）
 ├── errors [YYYYMMDD]
 ├── config                                # 无参数：打开交互式配置 TUI
 │   ├── show                              # 输出完整 effective TOML（只读、纯 TOML）
@@ -51,7 +52,7 @@ token-usage
 
 | 命令 | 接受形式 | 缺省 |
 |------|----------|------|
-| `collect` / `query` 及其子命令 | `DATE`（日 `YYYYMMDD`、月 `YYYYMM` 或年 `YYYY`，年仅单独使用）或 `DATE-DATE`（日/月端点，闭区间） | 今天 |
+| `collect`、`query`（含子命令）、`export` | `DATE`（日 `YYYYMMDD`、月 `YYYYMM` 或年 `YYYY`，年仅单独使用）或 `DATE-DATE`（日/月端点，闭区间） | 今天 |
 | `errors` | `YYYYMMDD` 单日（不接受区间） | 无日期且无 `--source` 时只看未解决 |
 
 `YYYYMMDD` 为 8 位紧凑格式（如 `20260701`）；`YYYYMM` 表示一个自然月，`YYYY` 表示一个自然年（年形态仅单独使用）。`YYYY-MM-DD`、多余位置参数、年做区间端点、结束早于开始均报错并给出命令示例。单参数或区间统一归一化为逐日列表（含两端），上限 366 天（一个闰年），更长范围请拆分多次执行。
@@ -70,6 +71,7 @@ token-usage
 - `--client`：`collect` 的 **PersistentFlag**，被 `all`/`router`/`retry` 三个子命令继承。
 - `--force`：`collect` 的 **LocalFlag**，子命令**不继承**（子命令传 `--force` 会报 unknown flag）。
 - `errors` 的 `--source`/`--unresolved`：`errors` 的 LocalFlag。
+- `export` 的 `--format`：`export` 的 **LocalFlag**（`csv` 或 `json`，缺省 `csv`）。
 - 根命令的 `-v, --version`：根级 flag，输出单行短版本。
 
 ## version
@@ -299,6 +301,49 @@ token-usage query mpc                # 今日，mpc 多维表（直接简写）
 token-usage query custom group_q 20260701  # 显式写法：按声明顺序输出四张表
 token-usage query summary 20260701   # 单日总览
 token-usage query list               # 列出已配置视图，不触碰数据库
+```
+
+## export
+
+将用量聚合数据以机器可读的 CSV 或 JSON 导出到标准输出。聚合直接从 `messages`（含 `sessions` 元数据）实时计算，并与对应 `query` 视图共用同一条聚合核，行集合与排序完全一致。
+
+```text
+token-usage export [view] [DATE|DATE-DATE] [--format csv|json]
+```
+
+| 视图 | 键列 | 内容 |
+|---|---|---|
+| `client`（默认） | `client` | 按客户端分组 |
+| `model` | `model` | 按模型分组 |
+| `provider` | `provider` | 按供应商分组（路由归因优先；`provider_aliases` 合并行，行为与 `query provider` 一致；空 provider 导出为 `(unattributed) / (未归因)`，与 query 显示一致） |
+| `project` | `project` | 按项目分组（空 project 导出为 `(uncategorized) / (未分类)`，与 query 显示一致） |
+| `day` | `date` | 按天用量，日期升序，无数据日期补零值行 |
+| `session` | `client`、`project`、`title` | 会话明细，顺序与 `query session` 一致；`project`/`title` 保留源字段原值——空 project 就是空串，与分组视图替换占位文案不同 |
+
+`summary` 与已配置自定义视图（`query.subqueries` / `query.groups`）明确不可导出；未知视图会在加载配置与打开数据库之前按允许集合拒绝。
+
+日期参数与 `query` 相同：`DATE` 为日（`YYYYMMDD`）、月（`YYYYMM`）或年（`YYYY`，仅单独使用），`DATE-DATE` 为闭区间（端点为日或月）；缺省日期为今天（见「[日期参数格式](#日期参数格式)」）。位置参数分派与 `query` 一致：数字开头的单参数是日期（`token-usage export 20260901` 等价 `token-usage export client 20260901`）；两个位置参数时第一个必须是视图名。
+
+`--format` 选择 `csv`（默认）或 `json`。非法取值在加载配置与打开数据库之前拒绝。
+
+固定机器 schema 合同：
+
+- 列固定且有序——上方键列后接 `requests, input, output, cache_read, cache_create, reasoning, total`——且有意不应用 `[query.output.columns]` 输出布局：无论显示配置如何，导出保持同一稳定 schema。
+- 所有指标值为原始整数（int64 十进制），不做 K/M/B 缩写。
+- 没有 `Total / 总计` 行。
+- CSV：`encoding/csv` 引号转义（含逗号或双引号的字段自动转义）、LF 行尾、UTF-8 无 BOM。
+- JSON：对象数组，键名与 CSV 列名一致；整数为 JSON number，其余字段为 string；两空格缩进加尾随换行。
+- stdout 只有纯数据：不打印统计信息区，采集异常警告改走 stderr——可用重定向保存文件。
+
+同一批视图的人类可读表格形态（统计信息区、K/M/B 缩写、总计行）见「[query](#query)」。
+
+示例：
+
+```bash
+token-usage export day 20260901-20260907 > usage.csv
+token-usage export session --format json | jq .
+token-usage export 20260701                # 单日 client 视图
+token-usage export provider --format json  # provider 视图，JSON 输出到 stdout
 ```
 
 ## errors

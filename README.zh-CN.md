@@ -137,6 +137,7 @@ token-usage query list
 | `query client/model/provider/project/day/session/summary [date]` | 运行内置报表。 |
 | `query <name> [date]` | 运行已配置视图或报表组合。 |
 | `query list` | 不打开 usage 数据库，列出视图。 |
+| `export [view] [date]` | 将使用数据以 CSV 或 JSON 导出到 stdout。 |
 | `errors` | 查看采集失败。 |
 | `version` / `--version` | 查看多行详细 / 单行简要的版本信息。 |
 | `start` / `status` / `stop` / `restart` | 控制后台守护进程。 |

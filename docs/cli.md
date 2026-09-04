@@ -21,6 +21,7 @@ token-usage
 │   ├── project [DATE|DATE-DATE]   # group by project
 │   ├── session [DATE|DATE-DATE]   # session details
 │   └── summary [DATE|DATE-DATE]   # overview summary
+├── export [view] [DATE|DATE-DATE] # export usage data as CSV or JSON (--format csv|json)
 ├── errors [YYYYMMDD]
 ├── config                                # no arguments: open the interactive configuration TUI
 │   ├── show                              # output complete effective TOML (read-only, pure TOML)
@@ -51,7 +52,7 @@ Design points:
 
 | Command | Accepted form | Default |
 |------|----------|------|
-| `collect` / `query` and their subcommands | `DATE` (day `YYYYMMDD`, month `YYYYMM`, or year `YYYY`; year as a single arg only) or `DATE-DATE` (inclusive day/month endpoints) | Today |
+| `collect`, `query` (with subcommands), and `export` | `DATE` (day `YYYYMMDD`, month `YYYYMM`, or year `YYYY`; year as a single arg only) or `DATE-DATE` (inclusive day/month endpoints) | Today |
 | `errors` | A single `YYYYMMDD` (ranges are not accepted) | With neither a date nor `--source`, only unresolved errors are shown. |
 
 `YYYYMMDD` is an eight-digit compact format (for example, `20260701`); `YYYYMM` selects a calendar month and `YYYY` a calendar year (the year form is accepted only as a single arg). `YYYY-MM-DD`, extra positional arguments, a year used as a range endpoint, and an end date before the start date all fail with an error and command examples. A single arg or a range normalizes to an inclusive per-day list capped at 366 days (one leap year); split longer ranges into multiple runs.
@@ -70,6 +71,7 @@ The stdout/stderr contract for success and failure is described in each command 
 - `--client`: a **PersistentFlag** of `collect`, inherited by its `all`, `router`, and `retry` subcommands.
 - `--force`: a **LocalFlag** of `collect`, **not** inherited by subcommands (passing it to a subcommand returns an unknown-flag error).
 - `errors` `--source` / `--unresolved`: LocalFlags of `errors`.
+- `export` `--format`: a **LocalFlag** of `export` (`csv` or `json`, default `csv`).
 - Root `-v, --version`: a root-level flag that outputs the one-line short version.
 
 ## version
@@ -299,6 +301,49 @@ token-usage query mpc                # today, the mpc multi-dimensional table (d
 token-usage query custom group_q 20260701  # explicit spelling: four tables in declared order
 token-usage query summary 20260701   # single-day overview
 token-usage query list               # list configured views without touching the database
+```
+
+## export
+
+Exports aggregated usage data as machine-readable CSV or JSON to standard output. Aggregation is computed directly from `messages` (plus `sessions` metadata) and shares one aggregation core with the corresponding `query` views, so row sets and ordering match exactly.
+
+```text
+token-usage export [view] [DATE|DATE-DATE] [--format csv|json]
+```
+
+| View | Key column(s) | Content |
+|---|---|---|
+| `client` (default) | `client` | group by client |
+| `model` | `model` | group by model |
+| `provider` | `provider` | group by provider (router attribution first; `provider_aliases` merge rows exactly like `query provider`; an empty provider exports as `(unattributed) / (未归因)`, matching the query display) |
+| `project` | `project` | group by project (an empty project exports as `(uncategorized) / (未分类)`, matching the query display) |
+| `day` | `date` | usage by day, date ascending, days without data inserted as zero rows |
+| `session` | `client`, `project`, `title` | session details in the same order as `query session`; `project`/`title` keep their raw source values — an empty project stays an empty string, unlike the grouped views which substitute the placeholder |
+
+`summary` and configured custom views (`query.subqueries` / `query.groups`) are deliberately not exportable; an unknown view is rejected with the allowed set before the configuration is loaded or the database opens.
+
+The date argument accepts the same forms as `query`: `DATE` is a day (`YYYYMMDD`), month (`YYYYMM`), or year (`YYYY`; single arg only), and `DATE-DATE` is an inclusive range whose endpoints are days or months; with no date it defaults to today (see [Date Argument Format](#date-argument-format)). Positional dispatch mirrors `query`: a digit-leading single argument is a date (`token-usage export 20260901` equals `token-usage export client 20260901`), and with two positional args the first must be a view name.
+
+`--format` selects `csv` (default) or `json`. Invalid format values are rejected before the configuration is loaded and the database is opened.
+
+Fixed machine-schema contract:
+
+- Columns are fixed and ordered — the key column(s) above followed by `requests, input, output, cache_read, cache_create, reasoning, total` — and the `[query.output.columns]` layout is deliberately not applied: exports keep one stable schema regardless of display configuration.
+- All metric values are raw integers (int64 in decimal); there is no K/M/B abbreviation.
+- There is no `Total` row.
+- CSV: `encoding/csv` quoting (fields containing commas or quotes are escaped), LF line endings, UTF-8 without BOM.
+- JSON: an array of objects whose keys match the CSV column names; integers are JSON numbers, all other fields are strings; two-space indentation with a trailing newline.
+- stdout carries pure data only: the statistics header is not printed, and collection-error warnings go to stderr instead — redirect stdout to save the file.
+
+For the same views rendered as human-readable tables (statistics header, K/M/B abbreviations, total rows), see [query](#query).
+
+Examples:
+
+```bash
+token-usage export day 20260901-20260907 > usage.csv
+token-usage export session --format json | jq .
+token-usage export 20260701                # client view for one day
+token-usage export provider --format json  # provider view as JSON on stdout
 ```
 
 ## errors

@@ -137,6 +137,7 @@ token-usage query list
 | `query client/model/provider/project/day/session/summary [date]` | Run a built-in report. |
 | `query <name> [date]` | Run a configured view or group. |
 | `query list` | List views without opening the usage database. |
+| `export [view] [date]` | Export usage data as CSV or JSON to stdout. |
 | `errors` | Show collection failures. |
 | `version` / `--version` | Show detailed / one-line version information. |
 | `start` / `status` / `stop` / `restart` | Control the background daemon. |
