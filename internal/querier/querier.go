@@ -202,7 +202,8 @@ const effectiveProviderExpr = `CASE
 END`
 
 // dimensionOrder 是内置聚合维度的有序单一来源：声明顺序即错误文案中的
-// 允许集合展示顺序。day 维度取 date 列（YYYY-MM-DD），该列恒非空，无空值处理。
+// 允许集合展示顺序。day/month 时间维度取 date 列（YYYY-MM-DD / substr 前缀
+// YYYY-MM），该列恒非空，均无空值处理。
 var dimensionOrder = []dimension{
 	{name: "client", selectExpr: "client", header: ui.HClient},
 	{name: "model", selectExpr: "model", header: ui.HModel},
@@ -219,6 +220,9 @@ var dimensionOrder = []dimension{
 		empty:      func() string { return ui.Bi("(uncategorized)", "(未分类)") },
 	},
 	{name: "day", selectExpr: "date", header: ui.HDate},
+	// month 取 date 列前 7 位:messages.date 恒为 YYYY-MM-DD,substr 1..7
+	// 即 YYYY-MM;ASCII 定长截取,无 UTF-8 多字节截断问题。
+	{name: "month", selectExpr: "substr(date, 1, 7)", header: ui.HMonth},
 }
 
 // dimensionWhitelist 由 dimensionOrder 派生的按名查找表：有序切片是唯一
@@ -239,6 +243,13 @@ func dimensionNameList() string {
 		names[i] = d.name
 	}
 	return strings.Join(names, ", ")
+}
+
+// isTemporalDimension 报告维度名是否为时间维度:day 与 month 的显示值均为
+// 字典序即时间序(YYYY-MM-DD / YYYY-MM),共用「时间升序优先排序」与「纯单维
+// 视图缺口填充」两条时间轴语义。
+func isTemporalDimension(name string) bool {
+	return name == "day" || name == "month"
 }
 
 // DimensionView 描述一张分组聚合表的渲染输入(内置单维与自定义多维共用)。
@@ -310,8 +321,8 @@ type DimensionRow struct {
 }
 
 // AggregateDimensionView 执行维度视图的数据聚合与排序(不含渲染):
-// 维度白名单校验 → raw 聚合 → alias 后复合键聚合 → 缺口填充(纯 day 单维) →
-// 稳定排序(含 day 时日期升序优先,再 total 降序、显示键元组升序)。
+// 维度白名单校验 → raw 聚合 → alias 后复合键聚合 → 缺口填充(纯单维时间视图) →
+// 稳定排序(含时间维度时时间升序优先,再 total 降序、显示键元组升序)。
 // 返回数据行(不含总计)与同一日期范围的总计聚合;dates 为空时返回空行与零值总计。
 // RunDimensionView 与 export 命令共用本方法,保证两边行集合与排序一致。
 func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, view DimensionView) ([]DimensionRow, GroupAggregate, error) {
@@ -393,38 +404,48 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 		return nil, GroupAggregate{}, fmt.Errorf("%s: %w", ui.Bi("iterate aggregate rows failed", "遍历聚合结果失败"), err)
 	}
 
-	// day 维度在本次维度列表中的下标(-1 表示不含 day);重复维度已在参数校验拒绝,
-	// 至多出现一次。
-	dayIdx := -1
+	// 时间维度(day/month)在本次维度列表中的下标(-1 表示不含时间维度);
+	// 重复维度已在参数校验拒绝,同一维度至多出现一次,取首个命中下标。
+	temporalIdx := -1
 	for i, d := range dims {
-		if d.name == "day" {
-			dayIdx = i
+		if isTemporalDimension(d.name) {
+			temporalIdx = i
 			break
 		}
 	}
 
-	// 纯 day 单维视图做缺口填充:请求 dates 中没有数据行的日期插入零值行,
-	// 保证逐日时间轴连续(dates 为连续逐日列表,直接遍历对照已见日期集合)。
-	// 多维 day 视图(如 day,model)不做缺口填充。
-	if len(dims) == 1 && dayIdx == 0 {
-		seenDates := make(map[string]bool, len(rowOrder))
+	// 纯单维时间视图做缺口填充:请求时间轴上没有数据行的位置插入零值行,
+	// 保证时间轴连续;多维时间视图(如 day,model / month,model)不做。
+	// day 视图按日期补零(dates 为连续逐日列表);month 视图按月前缀补零:
+	// 从请求 dates 推导去重的有序 YYYY-MM 前缀序列(dates 连续逐日,按遍历
+	// 顺序去重即保序),对没有数据行的月份插入零值行(Keys=[月前缀])。
+	if len(dims) == 1 && temporalIdx == 0 {
+		// period 把请求日期归一为当前时间维度的轴刻度:day 即日期本身,
+		// month 取 YYYY-MM 前缀(数据行键已是该形态,截取为幂等)。
+		period := func(key string) string { return key }
+		if dims[0].name == "month" {
+			period = func(key string) string { return key[:7] }
+		}
+		seenPeriods := make(map[string]bool, len(rowOrder))
 		for _, r := range rowOrder {
-			seenDates[r.Keys[0]] = true
+			seenPeriods[period(r.Keys[0])] = true
 		}
 		for _, date := range dates {
-			if seenDates[date] {
+			p := period(date)
+			if seenPeriods[p] {
 				continue
 			}
-			seenDates[date] = true
-			rowOrder = append(rowOrder, DimensionRow{Keys: []string{date}})
+			seenPeriods[p] = true
+			rowOrder = append(rowOrder, DimensionRow{Keys: []string{p}})
 		}
 	}
 
-	// 稳定排序:含 day 时按该维度显示值升序优先(YYYY-MM-DD 字典序即时间序),
-	// 再按 total 降序、完整显示键元组升序(同一有效配置与语言下确定)。
+	// 稳定排序:含时间维度时该维度显示值升序优先(YYYY-MM-DD / YYYY-MM
+	// 字典序即时间序),再按 total 降序、完整显示键元组升序(同一有效配置与
+	// 语言下确定)。
 	sort.SliceStable(rowOrder, func(i, j int) bool {
-		if dayIdx >= 0 && rowOrder[i].Keys[dayIdx] != rowOrder[j].Keys[dayIdx] {
-			return rowOrder[i].Keys[dayIdx] < rowOrder[j].Keys[dayIdx]
+		if temporalIdx >= 0 && rowOrder[i].Keys[temporalIdx] != rowOrder[j].Keys[temporalIdx] {
+			return rowOrder[i].Keys[temporalIdx] < rowOrder[j].Keys[temporalIdx]
 		}
 		if rowOrder[i].Agg.TotalTokens != rowOrder[j].Agg.TotalTokens {
 			return rowOrder[i].Agg.TotalTokens > rowOrder[j].Agg.TotalTokens
@@ -448,11 +469,11 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 // RunDimensionView 按维度列表输出一张分组聚合表:聚合与排序委托给
 // AggregateDimensionView(维度校验、raw 聚合、alias 合并、缺口填充与稳定排序
 // 均在其中,空 dates 于维度校验之后短路),本方法只负责 readiness 检查与渲染:
-// 标题 → 表头 → 趋势列(含 day 时) → 数据行 → 总计行。
+// 标题 → 表头 → 趋势列(含时间维度时) → 数据行 → 总计行。
 // 「标题 - 无数据」早退在委托调用之后判定:「空 dates + 非法维度」报维度校验
 // 错误(与旧实现一致),「空 dates + 合法维度」渲染无数据文本。
 // 总计来自同一日期范围的独立全量聚合,不由渲染后的行文本反推;无数据日期渲染表头 + 零值总计
-// (纯 day 单维视图改为对缺口日期插入零值行,保证逐日时间轴连续)。
+// (纯单维时间视图改为对缺口日期/月份插入零值行,保证时间轴连续)。
 func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view DimensionView) (string, error) {
 	ctx, err := q.readyContext(ctx)
 	if err != nil {
@@ -468,13 +489,16 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 		return ui.Bi(view.TitleEn+" - no data", view.TitleZh+" - 无数据"), nil
 	}
 
-	// 维度已在聚合核内完成白名单校验,此处按声明顺序取渲染表头与 day 下标。
+	// 维度已在聚合核内完成白名单校验,此处按声明顺序取渲染表头与时间维度下标。
+	// temporalIdx 取首个命中下标即 break,与聚合核 AggregateDimensionView 的
+	// 取向一致(渲染侧仅作布尔消费,但两侧取向不一致是潜伏陷阱)。
 	dimHeaders := make([]string, len(view.Dimensions))
-	dayIdx := -1
+	temporalIdx := -1
 	for i, name := range view.Dimensions {
 		dimHeaders[i] = dimensionWhitelist[name].header
-		if name == "day" {
-			dayIdx = i
+		if isTemporalDimension(name) {
+			temporalIdx = i
+			break
 		}
 	}
 
@@ -485,8 +509,8 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 	for _, h := range dimHeaders {
 		defs = append(defs, tableCol{header: h, align: ui.AlignLeft, limit: 0})
 	}
-	// 含 day 时在全部维度键列之后、指标列之前插入趋势条形列。
-	if dayIdx >= 0 {
+	// 含时间维度时在全部维度键列之后、指标列之前插入趋势条形列。
+	if temporalIdx >= 0 {
 		defs = append(defs, tableCol{header: ui.HTrend, align: ui.AlignLeft, limit: 0})
 	}
 	defs = append(defs, metricTailCols(metrics)...)
@@ -501,7 +525,7 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 	for _, row := range rows {
 		cells := make([]string, 0, len(dimHeaders)+len(metrics)+1)
 		cells = append(cells, row.Keys...)
-		if dayIdx >= 0 {
+		if temporalIdx >= 0 {
 			cells = append(cells, trendBar(row.Agg.TotalTokens, maxTotal))
 		}
 		cells = appendMetricCells(cells, metrics, row.Agg)
@@ -513,7 +537,7 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 	for i := 1; i < len(dimHeaders); i++ {
 		totalCells = append(totalCells, "")
 	}
-	if dayIdx >= 0 {
+	if temporalIdx >= 0 {
 		totalCells = append(totalCells, "")
 	}
 	totalCells = appendMetricCells(totalCells, metrics, totals)
@@ -575,6 +599,13 @@ func (q *Querier) ByDay(ctx context.Context, dates []string) (string, error) {
 	return q.RunDimensionView(ctx, dates, DimensionView{
 		Dimensions: []string{"day"},
 		TitleEn:    "Usage by day", TitleZh: "按天用量",
+	})
+}
+
+func (q *Querier) ByMonth(ctx context.Context, dates []string) (string, error) {
+	return q.RunDimensionView(ctx, dates, DimensionView{
+		Dimensions: []string{"month"},
+		TitleEn:    "Usage by month", TitleZh: "按月用量",
 	})
 }
 

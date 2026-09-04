@@ -259,7 +259,7 @@ func TestExportUnknownViewRejectedBeforeOpen(t *testing.T) {
 		t.Fatal("未知视图应报错")
 	}
 	msg := err.Error()
-	for _, want := range []string{"client, model, provider, project, day, session", "/"} {
+	for _, want := range []string{"client, model, provider, project, day, month, session", "/"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("错误应含允许集合 %q: %q", want, msg)
 		}
@@ -590,5 +590,120 @@ func TestParseExportInvocation(t *testing.T) {
 		if strings.Contains(msg, second) {
 			t.Errorf("错误不应检查第二参数(不得含 %q): %q", second, msg)
 		}
+	}
+}
+
+// TestExportCSVMonthView month 视图 CSV:表头为 month 前缀加固定指标列,
+// 跨月数据行按时间升序,缺口月份按月前缀补零值行。
+func TestExportCSVMonthView(t *testing.T) {
+	open := func(string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { usageDB.Close() })
+		msgs := []model.Message{
+			{ID: "exm-a", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-08-15", TS: 1, TotalTokens: 1000},
+			{ID: "exm-b", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-10-05", TS: 2, TotalTokens: 500},
+		}
+		if _, err := db.UpsertMessages(context.Background(), usageDB, msgs); err != nil {
+			return nil, err
+		}
+		return usageDB, nil
+	}
+	cmd, out, _ := newExportOutputCmdWithDeps(loadWithRaw(nil, nil), open)
+	cmd.SetArgs([]string{"month", "20260801-20261030"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("export month: %v", err)
+	}
+	got := out.String()
+	records, err := csv.NewReader(strings.NewReader(got)).ReadAll()
+	if err != nil {
+		t.Fatalf("输出应为合法 CSV:\n%s", got)
+	}
+	wantHeader := []string{"month", "requests", "input", "output", "cache_read", "cache_create", "reasoning", "total"}
+	if len(records) != 4 {
+		t.Fatalf("应恰为表头 + 3 月行(含缺口月补零),实际 %d 行:\n%s", len(records), got)
+	}
+	if !reflect.DeepEqual(records[0], wantHeader) {
+		t.Errorf("表头 = %v, want %v", records[0], wantHeader)
+	}
+	wantMonths := []string{"2026-08", "2026-09", "2026-10"}
+	for i, month := range wantMonths {
+		if records[i+1][0] != month {
+			t.Errorf("第 %d 数据行键 = %q, want %q(按月升序)", i, records[i+1][0], month)
+		}
+	}
+	if records[1][7] != "1000" || records[3][7] != "500" {
+		t.Errorf("数据月 total 应为原始整数: %v", records[1:4])
+	}
+	// 缺口月 2026-09 整行零值。
+	for j, want := range []string{"2026-09", "0", "0", "0", "0", "0", "0", "0"} {
+		if records[2][j] != want {
+			t.Errorf("缺口月行第 %d 列 = %q, want %q", j, records[2][j], want)
+		}
+	}
+}
+
+// TestExportJSONMonthViewKeys month 视图 JSON:键集合为 month 加固定指标列,
+// 行按月升序,缺口月整数字段为 JSON number 0。
+func TestExportJSONMonthViewKeys(t *testing.T) {
+	open := func(string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { usageDB.Close() })
+		if _, err := db.UpsertMessages(context.Background(), usageDB, []model.Message{{
+			ID: "exm-j", SessionID: "s", Client: model.ClientClaudeCode,
+			Date: "2026-08-15", TS: 1, TotalTokens: 1000,
+		}}); err != nil {
+			return nil, err
+		}
+		return usageDB, nil
+	}
+	cmd, out, _ := newExportOutputCmdWithDeps(loadWithRaw(nil, nil), open)
+	cmd.SetArgs([]string{"month", "20260801-20261030", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("export month json: %v", err)
+	}
+	got := out.String()
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(got), &rows); err != nil {
+		t.Fatalf("输出应为合法 JSON:\n%s", got)
+	}
+	wantKeys := map[string]bool{
+		"month": true, "requests": true, "input": true, "output": true,
+		"cache_read": true, "cache_create": true, "reasoning": true, "total": true,
+	}
+	wantMonths := []string{"2026-08", "2026-09", "2026-10"}
+	if len(rows) != len(wantMonths) {
+		t.Fatalf("应恰 %d 行,实际 %d:\n%s", len(wantMonths), len(rows), got)
+	}
+	for i, row := range rows {
+		if len(row) != len(wantKeys) {
+			t.Errorf("第 %d 行键数 = %d, want %d: %v", i, len(row), len(wantKeys), row)
+		}
+		for key := range row {
+			if !wantKeys[key] {
+				t.Errorf("第 %d 行出现意外键 %q: %v", i, key, row)
+			}
+		}
+		if month, _ := row["month"].(string); month != wantMonths[i] {
+			t.Errorf("第 %d 行 month = %q, want %q(按月升序)", i, month, wantMonths[i])
+		}
+	}
+	// 缺口月 2026-09 的整数字段为 number 0。
+	if rows[1]["month"] != "2026-09" {
+		t.Fatalf("第 2 行应为缺口月 2026-09: %v", rows[1])
+	}
+	for _, col := range []string{"requests", "input", "output", "cache_read", "cache_create", "reasoning", "total"} {
+		if v, ok := rows[1][col].(float64); !ok || v != 0 {
+			t.Errorf("缺口月 %s 应为 number 0,实际 %v", col, rows[1][col])
+		}
+	}
+	// 数据月数值锚定。
+	if total, ok := rows[0]["total"].(float64); !ok || total != 1000 {
+		t.Errorf("2026-08 total 应为 number 1000: %v", rows[0])
 	}
 }

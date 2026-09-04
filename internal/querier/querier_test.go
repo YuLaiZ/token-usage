@@ -7,6 +7,7 @@ import (
 	"github.com/mattn/go-runewidth"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/model"
@@ -1054,8 +1055,9 @@ func TestRunDimensionView_DayModelOrdersByDateThenTotal(t *testing.T) {
 	}
 }
 
-// 未知维度错误文案由有序名单动态拼接:含 day,不再是不含 day 的旧四维文本。
-func TestRunDimensionView_UnknownDimensionMessageListsDay(t *testing.T) {
+// 未知维度错误文案由有序名单动态拼接:含 day 与 month 两个时间维度,
+// 不再是不含 month 的旧六维文本。
+func TestRunDimensionView_UnknownDimensionMessageListsDayAndMonth(t *testing.T) {
 	q := setupMessageFixture(t)
 	_, err := q.RunDimensionView(context.Background(), bothDates, DimensionView{
 		Dimensions: []string{"client", "bogus"},
@@ -1065,15 +1067,211 @@ func TestRunDimensionView_UnknownDimensionMessageListsDay(t *testing.T) {
 		t.Fatal("未知维度必须被拒绝")
 	}
 	msg := err.Error()
-	for _, want := range []string{"(allowed: client, model, provider, project, day)", "(允许: client, model, provider, project, day)"} {
+	for _, want := range []string{
+		"(allowed: client, model, provider, project, day, month)",
+		"(允许: client, model, provider, project, day, month)",
+	} {
 		if !strings.Contains(msg, want) {
-			t.Errorf("错误应含含 day 的允许集合 %q:\n%s", want, msg)
+			t.Errorf("错误应含含 month 的允许集合 %q:\n%s", want, msg)
 		}
 	}
-	// 旧的不含 day 的四维文案不得再出现(以此保证本断言的区分度)。
-	for _, legacy := range []string{"(allowed: client, model, provider, project)", "(允许: client, model, provider, project)"} {
+	// 旧的不含 month 的六维文案不得再出现(以此保证本断言的区分度)。
+	for _, legacy := range []string{
+		"(allowed: client, model, provider, project, day)",
+		"(允许: client, model, provider, project, day)",
+	} {
 		if strings.Contains(msg, legacy) {
-			t.Errorf("错误不得再使用不含 day 的旧文案 %q:\n%s", legacy, msg)
+			t.Errorf("错误不得再使用不含 month 的旧文案 %q:\n%s", legacy, msg)
+		}
+	}
+}
+
+// ---- month 维度:按月用量视图 ----
+
+// 纯 month 视图:行按月升序、跨月缺口补零值行、趋势条按 totalTokens 比例分块、总计行数值正确。
+// 夹具固定消息在 2026-07,本组数据选 2026-08 与 2026-10,请求 0801-1030
+// (92 天,不与夹具日期重叠):2026-09 无数据应补零值行,共 3 行。
+func TestByMonth_AscendingRowsCrossMonthGapFillAndTrendBars(t *testing.T) {
+	q := setupMessageFixture(t)
+	msgs := []model.Message{
+		{ID: "mo-max", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-08-15", TS: 1000, TotalTokens: 1000},
+		{ID: "mo-half", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-10-05", TS: 2000, TotalTokens: 500},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	var dates []string
+	// 2026-08-01..2026-10-30 连续逐日列表(与 parseDateArgs 展开形态一致)。
+	for d := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC); !d.After(time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)); d = d.AddDate(0, 0, 1) {
+		dates = append(dates, d.Format("2006-01-02"))
+	}
+	out, err := q.ByMonth(context.Background(), dates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Usage by month / 按月用量") {
+		t.Errorf("输出应含双语标题:\n%s", out)
+	}
+
+	// 逐月行断言:按月升序,趋势条块数为 max=1000→20、半值=500→10、缺口→0。
+	wantBlocks := map[string]int{
+		"2026-08": 20,
+		"2026-09": 0,
+		"2026-10": 10,
+	}
+	var rowOrder []string
+	for _, ln := range strings.Split(out, "\n") {
+		if !strings.Contains(ln, "│") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(ln, "│"), "│")
+		if len(cells) == 0 {
+			continue
+		}
+		key := strings.TrimSpace(cells[0])
+		blocks, isMonthRow := wantBlocks[key]
+		if !isMonthRow {
+			continue
+		}
+		rowOrder = append(rowOrder, key)
+		if got := strings.Count(ln, "█"); got != blocks {
+			t.Errorf("月份 %s 趋势条应 %d 块,实际 %d:\n%s", key, blocks, got, ln)
+		}
+	}
+	wantOrder := []string{"2026-08", "2026-09", "2026-10"}
+	if strings.Join(rowOrder, ",") != strings.Join(wantOrder, ",") {
+		t.Errorf("月份行应按时间升序且缺口月份补零值行: got %v\n%s", rowOrder, out)
+	}
+
+	// 总计行:两月 total 聚合恰为 1500,请求数 2,且总计行趋势单元格为空。
+	if n := strings.Count(out, "Total / 总计"); n != 1 {
+		t.Errorf("应恰有一行总计,实际 %d:\n%s", n, out)
+	}
+	if !strings.Contains(out, formatTokens(1500)) {
+		t.Errorf("总计行 total 应为聚合值 1500 的换算(%s):\n%s", formatTokens(1500), out)
+	}
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "Total / 总计") && strings.Contains(ln, "█") {
+			t.Errorf("总计行趋势单元格应为空串:\n%s", ln)
+		}
+	}
+}
+
+// month,model 多维视图:主序为月升序、同月内 total 降序,无缺口填充,趋势列存在。
+func TestRunDimensionView_MonthModelOrdersByMonthThenTotal(t *testing.T) {
+	q := setupMessageFixture(t)
+	msgs := []model.Message{
+		{ID: "mm-a", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-08-15", TS: 1000, Model: "model-a", TotalTokens: 300},
+		{ID: "mm-b", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-08-15", TS: 2000, Model: "model-b", TotalTokens: 100},
+		{ID: "mm-c", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-10-05", TS: 3000, Model: "model-c", TotalTokens: 200},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	out, err := q.RunDimensionView(context.Background(), []string{"2026-08-15", "2026-09-15", "2026-10-05"}, DimensionView{
+		Dimensions: []string{"month", "model"},
+		TitleEn:    "Usage by month and model", TitleZh: "按月与模型用量",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 趋势列以两行表头渲染(上行 Trend、下行 趋势),输出中二者仅出现在该列。
+	if !strings.Contains(out, "Trend") || !strings.Contains(out, "趋势") {
+		t.Errorf("含 month 维度的多维视图应含趋势列:\n%s", out)
+	}
+	// 数据行(首列为月份)序列:2026-08 内 total 降序(a 300 在 b 100 前),随后 2026-10;
+	// 2026-09 无数据,多维视图不补零值行。
+	type monthRow struct{ month, model string }
+	var rows []monthRow
+	for _, ln := range strings.Split(out, "\n") {
+		if !strings.Contains(ln, "│") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(ln, "│"), "│")
+		if len(cells) < 2 {
+			continue
+		}
+		month := strings.TrimSpace(cells[0])
+		if len(month) != 7 || !strings.HasPrefix(month, "2026-") {
+			continue
+		}
+		rows = append(rows, monthRow{month: month, model: strings.TrimSpace(cells[1])})
+	}
+	want := []monthRow{
+		{"2026-08", "model-a"},
+		{"2026-08", "model-b"},
+		{"2026-10", "model-c"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("数据行数 = %d, want %d(多维不补缺口):\n%s", len(rows), len(want), out)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Errorf("第 %d 行 = %+v, want %+v(月升序优先,同月 total 降序):\n%s", i, rows[i], want[i], out)
+		}
+	}
+}
+
+// month,day 双时间维度组合视图:排序主轴取声明首维(month 升序),同月内按
+// total 降序,第二时间维 day 不参与主序;temporalIdx 只作布尔消费(趋势列存在),
+// 双时间维度不做缺口填充。
+func TestRunDimensionView_MonthDayDualTemporalOrdersByDeclaredFirst(t *testing.T) {
+	q := setupMessageFixture(t)
+	// 夹具固定消息在 2026-07,本组数据放 2026-08(同月三条不同 total,日期序
+	// 与 total 序相反以区分排序依据)与 2026-10,请求列表覆盖全部数据日期。
+	msgs := []model.Message{
+		{ID: "md-a", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-08-15", TS: 1000, Model: "model-a", TotalTokens: 300},
+		{ID: "md-b", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-08-20", TS: 2000, Model: "model-b", TotalTokens: 100},
+		{ID: "md-c", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-08-25", TS: 2500, Model: "model-c", TotalTokens: 200},
+		{ID: "md-d", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-10-05", TS: 3000, Model: "model-d", TotalTokens: 500},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	out, err := q.RunDimensionView(context.Background(),
+		[]string{"2026-08-15", "2026-08-20", "2026-08-25", "2026-10-05"},
+		DimensionView{
+			Dimensions: []string{"month", "day"},
+			TitleEn:    "Usage by month and day", TitleZh: "按月与日用量",
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 趋势列存在即证明时间维度只作布尔消费(任一时间维度命中即插趋势列)。
+	if !strings.Contains(out, "Trend") || !strings.Contains(out, "趋势") {
+		t.Fatalf("双时间维度视图应含趋势列:\n%s", out)
+	}
+	type row struct{ month, day string }
+	var rows []row
+	for _, ln := range strings.Split(out, "\n") {
+		if !strings.Contains(ln, "│") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(ln, "│"), "│")
+		if len(cells) < 2 {
+			continue
+		}
+		month := strings.TrimSpace(cells[0])
+		// 数据行首列是 7 字符月份;表头(Month/月份)与总计行不匹配该形态。
+		if len(month) != 7 || !strings.HasPrefix(month, "2026-") {
+			continue
+		}
+		rows = append(rows, row{month: month, day: strings.TrimSpace(cells[1])})
+	}
+	// 行序锚定:主轴 month 升序(2026-08 全部行在 2026-10 前),同月内 total
+	// 降序(300→200→100,日期序 15→20→25 被打乱即为排序依据的区分度)。
+	want := []row{
+		{"2026-08", "2026-08-15"},
+		{"2026-08", "2026-08-25"},
+		{"2026-08", "2026-08-20"},
+		{"2026-10", "2026-10-05"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("数据行数 = %d, want %d(双时间维度不补缺口):\n%s", len(rows), len(want), out)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Errorf("第 %d 行 = %+v, want %+v(主轴 month 升序,同月 total 降序):\n%s", i, rows[i], want[i], out)
 		}
 	}
 }

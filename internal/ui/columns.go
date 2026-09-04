@@ -33,6 +33,7 @@ func HeaderLines(en, zh string) string {
 var (
 	HClient      = HeaderLines("Client", "客户端")
 	HDate        = HeaderLines("Date", "日期")
+	HMonth       = HeaderLines("Month", "月份")
 	HTrend       = HeaderLines("Trend", "趋势")
 	HProvider    = HeaderLines("Provider", "供应商")
 	HModel       = HeaderLines("Model", "模型")

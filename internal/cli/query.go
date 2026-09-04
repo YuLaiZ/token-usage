@@ -30,6 +30,7 @@ const (
 	viewProvider
 	viewProject
 	viewDay
+	viewMonth
 	viewSessions
 	viewSummary
 	// viewDefault 表示裸 query:执行 query.default 指向的对象(未配置时等价 client)。
@@ -43,7 +44,7 @@ type queryBuiltinCmd struct {
 	view  queryView
 }
 
-// queryBuiltinCmds 是七个内置查询命令的唯一元数据来源:子命令注册与
+// queryBuiltinCmds 是八个内置查询命令的唯一元数据来源:子命令注册与
 // query list 内置表渲染共用,避免 Short 与列表文案漂移。
 // custom/list 是固定操作入口而非内置视图,不入此表。
 var queryBuiltinCmds = []queryBuiltinCmd{
@@ -52,6 +53,7 @@ var queryBuiltinCmds = []queryBuiltinCmd{
 	{"provider", "Group by provider / 按供应商分组", viewProvider},
 	{"project", "Group by project / 按项目分组", viewProject},
 	{"day", "Usage by day / 按天用量", viewDay},
+	{"month", "Usage by month / 按月用量", viewMonth},
 	{"session", "View session details / 查看会话明细", viewSessions},
 	{"summary", "View summary / 查看总览摘要", viewSummary},
 }
@@ -61,7 +63,7 @@ func newQueryCmd() *cobra.Command {
 }
 
 // newQueryCmdWithDeps 构造 query 根命令;load/open 可注入供包内测试根命令的
-// 真实 RunE 接线(生产路径传入 loadConfig 与 dbOpener)。七个内置子命令与
+// 真实 RunE 接线(生产路径传入 loadConfig 与 dbOpener)。八个内置子命令与
 // custom 保持既有执行路径;用户配置中的名称绝不动态 AddCommand。
 func newQueryCmdWithDeps(load func() (*config.Config, error), open func(string) (*db.DB, error)) *cobra.Command {
 	cmd := &cobra.Command{
@@ -622,6 +624,8 @@ func builtinDimensionView(name string) (querier.DimensionView, error) {
 		return querier.DimensionView{Dimensions: []string{"project"}, TitleEn: "Group by project", TitleZh: "按项目分组"}, nil
 	case "day":
 		return querier.DimensionView{Dimensions: []string{"day"}, TitleEn: "Usage by day", TitleZh: "按天用量"}, nil
+	case "month":
+		return querier.DimensionView{Dimensions: []string{"month"}, TitleEn: "Usage by month", TitleZh: "按月用量"}, nil
 	}
 	return querier.DimensionView{}, fmt.Errorf("%s", ui.Bi(
 		fmt.Sprintf("unknown query dimension %q", name),
@@ -671,6 +675,8 @@ func executeQueryDatesWithAliases(ctx context.Context, out io.Writer, usageDB *d
 		result, err = q.ByProject(ctx, dates)
 	case viewDay:
 		result, err = q.ByDay(ctx, dates)
+	case viewMonth:
+		result, err = q.ByMonth(ctx, dates)
 	case viewSessions:
 		result, err = q.Sessions(ctx, dates)
 	case viewSummary:

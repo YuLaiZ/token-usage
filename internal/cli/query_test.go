@@ -36,7 +36,7 @@ func TestNewQueryCmd_NoOldFlags(t *testing.T) {
 	}
 }
 
-// TestNewQueryCmd_SubcommandTree 断言 query 命令树包含且仅包含七个内置子命令
+// TestNewQueryCmd_SubcommandTree 断言 query 命令树包含且仅包含八个内置子命令
 // 加 custom/list 两个固定入口,且每个子命令的 Short/Use 与公开 CLI 文档一致。
 func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 	cmd := newQueryCmd()
@@ -47,6 +47,7 @@ func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 		"provider": "Group by provider / 按供应商分组",
 		"project":  "Group by project / 按项目分组",
 		"day":      "Usage by day / 按天用量",
+		"month":    "Usage by month / 按月用量",
 		"session":  "View session details / 查看会话明细",
 		"summary":  "View summary / 查看总览摘要",
 		"custom":   "Run a configured custom or group query / 执行已配置的自定义或组合查询",
@@ -76,7 +77,7 @@ func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 // 超出则在 args 校验阶段报错（不是 silently 接受）。
 func TestNewQueryCmd_SubcommandMaxOneArg(t *testing.T) {
 	cmd := newQueryCmd()
-	for _, name := range []string{"client", "model", "provider", "project", "day", "session", "summary"} {
+	for _, name := range []string{"client", "model", "provider", "project", "day", "month", "session", "summary"} {
 		sub, _, err := cmd.Find([]string{name})
 		if err != nil {
 			t.Fatalf("Find(%q) err: %v", name, err)
@@ -196,6 +197,46 @@ func TestExecuteQuery_ViewDayDispatch(t *testing.T) {
 	// 夹具消息 total_tokens=0,全区间为零值:趋势条不应出现任何 █ 块(趋势列为空)。
 	if strings.Contains(out, "█") {
 		t.Errorf("全零区间不应出现趋势条 █:\n%s", out)
+	}
+}
+
+// TestExecuteQuery_ViewMonthDispatch 为 viewMonth 补执行接线:输出含按月用量标题,
+// 纯 month 视图对无数据月份按月前缀补零值行(与 day 视图缺口填充同构)。
+// 夹具用非零 total_tokens:非全零区间应出现趋势条字符,并锚定缺口月在前、
+// 数据月在后的行序。
+func TestExecuteQuery_ViewMonthDispatch(t *testing.T) {
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+	// 仅 2026-09 有数据(TotalTokens>0):请求跨 2026-08 与 2026-09 两个月,
+	// 08 月为缺口,应补零值行且按月升序排在数据月之前。
+	if _, err := db.UpsertMessages(context.Background(), usageDB, []model.Message{{
+		ID: "month-dispatch", SessionID: "s", Client: "claude",
+		Date: "2026-09-15", TS: 1, TotalTokens: 800,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := &bytes.Buffer{}
+	if err := executeQueryDates(context.Background(), buf, usageDB,
+		[]string{"2026-08-15", "2026-09-15"}, viewMonth); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Usage by month / 按月用量") {
+		t.Errorf("viewMonth 输出应含按月用量标题:\n%s", out)
+	}
+	// 行序:缺口月 2026-08 零值行居首(月升序),数据月 2026-09 随后。
+	idxGap := strings.Index(out, "2026-08")
+	idxData := strings.Index(out, "2026-09")
+	if idxGap < 0 || idxData < 0 || idxGap > idxData {
+		t.Errorf("行序应为缺口月 2026-08 在数据月 2026-09 之前:\n%s", out)
+	}
+	// 非全零区间:数据月行应渲染趋势条 █ 块。
+	if !strings.Contains(out, "█") {
+		t.Errorf("非全零区间应出现趋势条 █:\n%s", out)
 	}
 }
 
@@ -582,7 +623,7 @@ func TestRunQueryCustom_ArgsAndPrecedence(t *testing.T) {
 }
 
 // 坏 query 配置的边界:顶层问题态与视图定义错误只挡完整 query 路径
-// (裸 query/custom);六个静态表格命令不被阻断——顶层问题态静默使用
+// (裸 query/custom);七个静态表格命令不被阻断——顶层问题态静默使用
 // 默认布局,无关视图错误不阻止 query.output 布局生效。
 func TestRunQuery_BadQueryConfigBoundaryForStaticViews(t *testing.T) {
 	open := memOpen(t)
@@ -593,6 +634,11 @@ func TestRunQuery_BadQueryConfigBoundaryForStaticViews(t *testing.T) {
 	cmd, _ := newQueryOutputCmd()
 	if err := runQueryWithDeps(cmd, nil, viewModel, loadWithRaw(nil, issues), open); err != nil {
 		t.Fatalf("内置 model 不受坏 query 配置影响: %v", err)
+	}
+	// month 与 day 同为受布局影响的静态时间视图,边界行为一致。
+	cmdM, _ := newQueryOutputCmd()
+	if err := runQueryWithDeps(cmdM, nil, viewMonth, loadWithRaw(nil, issues), open); err != nil {
+		t.Fatalf("内置 month 不受坏 query 配置影响: %v", err)
 	}
 	cmd2, _ := newQueryOutputCmd()
 	if err := runQueryWithDeps(cmd2, nil, viewDefault, loadWithRaw(nil, issues), open); err == nil {
@@ -1354,8 +1400,8 @@ func TestRunQuery_RootErrorsBeforeDB(t *testing.T) {
 		t.Errorf("顶层问题应在具名路径拒绝并定位: %v", err)
 	}
 
-	// 坏 query 定义不阻断七个内置静态视图(内置子命令经 runQueryWithDeps 保持既有路径)。
-	for _, v := range []queryView{viewClient, viewModel, viewProvider, viewProject, viewDay, viewSessions, viewSummary} {
+	// 坏 query 定义不阻断八个内置静态视图(内置子命令经 runQueryWithDeps 保持既有路径)。
+	for _, v := range []queryView{viewClient, viewModel, viewProvider, viewProject, viewDay, viewMonth, viewSessions, viewSummary} {
 		cmdB, _ := newQueryOutputCmd()
 		if err := runQueryWithDeps(cmdB, nil, v, loadWithRaw(nil, issues), memOpen(t)); err != nil {
 			t.Errorf("内置视图 %d 受坏配置阻断: %v", v, err)
@@ -1406,13 +1452,13 @@ func TestRunQuery_StaticRoutingAndTreeStable(t *testing.T) {
 	for _, sub := range root.Commands() {
 		names[sub.Name()] = true
 	}
-	for _, want := range []string{"client", "model", "provider", "project", "day", "session", "summary", "custom", "list"} {
+	for _, want := range []string{"client", "model", "provider", "project", "day", "month", "session", "summary", "custom", "list"} {
 		if !names[want] {
 			t.Errorf("缺少静态子命令 %q", want)
 		}
 	}
-	if len(root.Commands()) != 9 {
-		t.Errorf("静态命令树应恰为 9 个子命令: %v", root.Commands())
+	if len(root.Commands()) != 10 {
+		t.Errorf("静态命令树应恰为 10 个子命令: %v", root.Commands())
 	}
 
 	// 执行过具名查询后命令树不变:配置中的名称不会注册为动态子命令。
@@ -1630,7 +1676,7 @@ func withSubGroupAndDefault(raw map[string]any, def string) map[string]any {
 }
 
 // 固定输出结构:分区顺序恒为 标题→默认行为→调用说明→内置表→自定义子查询→组合查询;
-// 内置表恰七行且用途逐字等于静态元数据 Short;调用说明各出现一次且声明等价;
+// 内置表恰八行且用途逐字等于静态元数据 Short;调用说明各出现一次且声明等价;
 // 每条配置只渲染一条不含 [date] 占位符的简写完整命令([date] 全文仅出现在两行说明中);
 // custom/list 的 Short 不作为内置视图行出现;空分区显示 None / 无而非空表头;
 // 成功输出不含统计信息区或采集异常提示。
@@ -1685,7 +1731,7 @@ func TestRunQueryList_OutputContract(t *testing.T) {
 		t.Errorf("[date] 应只出现在两行调用说明中,实际 %d 次:\n%s", n, out)
 	}
 
-	// 内置表:七行固定命令,用途等于元数据 Short。
+	// 内置表:八行固定命令,用途等于元数据 Short。
 	for _, meta := range queryBuiltinCmds {
 		cell := "token-usage query " + meta.name
 		if strings.Count(out, cell) != 1 {
