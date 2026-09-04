@@ -25,6 +25,7 @@ token-usage
 │   └── summary [DATE|DATE-DATE]   # overview summary
 ├── export [view] [DATE|DATE-DATE] # export usage data as CSV or JSON (--format csv|json)
 ├── errors [YYYYMMDD]
+├── doctor                                # read-only health check (config, data directory, database, clients, collection, errors)
 ├── config                                # no arguments: open the interactive configuration TUI
 │   ├── show                              # output complete effective TOML (read-only, pure TOML)
 │   ├── get <key>
@@ -374,6 +375,34 @@ token-usage errors                     # unresolved errors
 token-usage errors 20260721            # all errors for one date
 token-usage errors --source codex      # all errors for one source
 token-usage errors --unresolved        # explicitly unresolved only
+```
+
+## doctor
+
+Runs read-only health checks and prints one line per check (`label: status description`, statuses `OK / 正常`, `WARN / 警告`, `FAIL / 失败`, plus `SKIPPED / 跳过` and one informational `INFO / 提示` line) followed by a summary. Strictly read-only: it **never starts, stops, or restarts the daemon and never modifies configuration; no business data is written** — opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own. The data-directory writability probe creates exactly one temporary file and removes it immediately.
+
+```text
+token-usage doctor
+```
+
+| Check | OK | WARN | FAIL |
+|---|---|---|---|
+| `Config / 配置` | effective config loads; prints the config path | — | config missing or invalid |
+| `Data directory / 数据目录` | directory exists and is writable (probe file created and removed immediately) | — | directory missing, not a directory, or not writable |
+| `Database / 数据库` | opens, `PRAGMA quick_check` passes; prints the path and message count | file not created yet (run `collect` to generate) | open failure or quick_check does not pass |
+| `Clients / 客户端` | count and names of enabled clients | no client enabled | — |
+| `Last collection / 最近采集` | last successful collection time (local timezone) | no successful collection recorded yet | query failure |
+| `Unresolved errors / 未解决异常` | none | count with pointers to `token-usage errors` and `token-usage collect retry` | query failure |
+| `Daemon / 守护进程` | informational only: points to `token-usage status`; doctor never probes or controls the daemon (probing would create lock/config-directory files) | | |
+
+- Checks that cannot run because an upstream check failed print `SKIPPED / 跳过` and add no new count (the upstream FAIL already counts): config failure skips every config-dependent check; a missing or broken database skips the collection and error checks.
+- The summary line (`Result / 结果`) is `OK / 一切正常`, `N warnings / N 项警告`, or `N problems / N 项失败` (FAIL takes precedence over WARN).
+- The exit code is always 0 in v1: FAIL/WARN are report-only.
+
+Example:
+
+```bash
+token-usage doctor
 ```
 
 ## config

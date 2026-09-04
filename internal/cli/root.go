@@ -41,6 +41,7 @@ func newRootCmd(info buildinfo.Info) *cobra.Command {
 		newStatusCmd(),
 		newStopCmd(),
 		newRestartCmd(),
+		newDoctorCmd(),
 		newUpdateCmd(info),
 		newInternalRunCmd(),
 		newUpdateHelperCmd(),

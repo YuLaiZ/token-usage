@@ -25,6 +25,7 @@ token-usage
 │   └── summary [DATE|DATE-DATE]   # 总览摘要
 ├── export [view] [DATE|DATE-DATE] # 以 CSV 或 JSON 导出使用数据（--format csv|json）
 ├── errors [YYYYMMDD]
+├── doctor                                # 只读健康自检（配置、数据目录、数据库、客户端、采集、异常）
 ├── config                                # 无参数：打开交互式配置 TUI
 │   ├── show                              # 输出完整 effective TOML（只读、纯 TOML）
 │   ├── get <key>
@@ -374,6 +375,34 @@ token-usage errors                     # 未解决异常
 token-usage errors 20260721            # 某日全部异常
 token-usage errors --source codex      # 某数据源全部异常
 token-usage errors --unresolved        # 显式只看未解决
+```
+
+## doctor
+
+运行只读健康检查，逐项输出一行结果（格式为「标签: 状态 描述」，状态为 `OK / 正常`、`WARN / 警告`、`FAIL / 失败`，另有 `SKIPPED / 跳过` 与一条信息性的 `INFO / 提示`），最后给出汇总。严格只读：**绝不启动/停止/重启守护进程，绝不修改配置；不写业务数据**——打开数据库的行为（journal 模式设置与 schema 迁移）与其它读取类命令一致，doctor 自身不执行任何特有的写操作。数据目录可写性探针仅创建一个临时文件并立即删除。
+
+```text
+token-usage doctor
+```
+
+| 检查项 | OK | WARN | FAIL |
+|---|---|---|---|
+| `Config / 配置` | 有效配置加载成功，显示配置路径 | — | 配置缺失或非法 |
+| `Data directory / 数据目录` | 目录存在且可写（探针文件即建即删） | — | 目录缺失、不是目录或不可写 |
+| `Database / 数据库` | 可打开且 `PRAGMA quick_check` 通过，显示路径与消息行数 | 文件尚未创建（运行 `collect` 后生成） | 打开失败或 quick_check 未通过 |
+| `Clients / 客户端` | 已启用客户端数量与名字 | 未启用任何客户端 | — |
+| `Last collection / 最近采集` | 最近成功采集时间（本机时区） | 尚无成功采集记录 | 查询失败 |
+| `Unresolved errors / 未解决异常` | 无 | 数量，并提示 `token-usage errors` 与 `token-usage collect retry` | 查询失败 |
+| `Daemon / 守护进程` | 纯提示：指向 `token-usage status`;doctor 绝不探测或操作守护进程（探测会创建锁文件/配置目录） | | |
+
+- 因上游检查失败而无法执行的检查项输出 `SKIPPED / 跳过`，不重复计数（上游 FAIL 已计数）：配置失败跳过全部依赖配置的检查项；数据库缺失或损坏跳过采集与异常两项。
+- 汇总行（`Result / 结果`）为 `OK / 一切正常`、`N warnings / N 项警告` 或 `N problems / N 项失败`（FAIL 优先于 WARN）。
+- v1 退出码恒为 0：FAIL/WARN 仅体现在报告。
+
+示例：
+
+```bash
+token-usage doctor
 ```
 
 ## config
