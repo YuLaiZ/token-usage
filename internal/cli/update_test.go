@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,7 +46,7 @@ func (s *stubUpdateService) Apply(ctx context.Context, opts update.ApplyOptions)
 func withStubUpdateService(t *testing.T, stub *stubUpdateService) {
 	t.Helper()
 	orig := updateServiceFactory
-	updateServiceFactory = func(info buildinfo.Info, checkOnly bool) (UpdateService, error) {
+	updateServiceFactory = func(info buildinfo.Info, checkOnly bool, out io.Writer) (UpdateService, error) {
 		return stub, nil
 	}
 	t.Cleanup(func() { updateServiceFactory = orig })
@@ -629,7 +630,7 @@ func TestUpdateCmd_RootVersionFlagNotConflicting(t *testing.T) {
 func TestUpdateCmd_CheckOnlyNeverCreatesControlManager(t *testing.T) {
 	orig := updateServiceFactory
 	var seenCheckOnly bool
-	updateServiceFactory = func(info buildinfo.Info, checkOnly bool) (UpdateService, error) {
+	updateServiceFactory = func(info buildinfo.Info, checkOnly bool, out io.Writer) (UpdateService, error) {
 		seenCheckOnly = checkOnly
 		return &stubUpdateService{
 			checkResult: update.CheckResult{CurrentTag: "v0.1.0", TargetTag: "v0.1.0"},
@@ -803,7 +804,7 @@ func TestUpdateCmd_CheckOnlyRealFactorySkipsControlManager(t *testing.T) {
 
 	// 直接调用真实工厂（不替换 updateServiceFactory），验证 checkOnly=true 时
 	// 不构造 control.Manager。factory 仅构造 Service struct，不应触网或创建目录。
-	_, err := defaultUpdateServiceFactory(fixedInfo, true)
+	_, err := defaultUpdateServiceFactory(fixedInfo, true, io.Discard)
 	if err != nil {
 		t.Fatalf("checkOnly=true 工厂应成功构造 Service（不触网），got %v", err)
 	}
@@ -824,7 +825,7 @@ func TestUpdateCmd_ApplyRealFactoryCreatesControlManager(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
 
-	_, err := defaultUpdateServiceFactory(fixedInfo, false)
+	_, err := defaultUpdateServiceFactory(fixedInfo, false, io.Discard)
 	if err != nil {
 		t.Fatalf("checkOnly=false 工厂应成功构造完整 Service，got %v", err)
 	}
@@ -844,7 +845,7 @@ func TestUpdateCmd_ApplyRealFactoryWiresVersionProbe(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
 
-	service, err := defaultUpdateServiceFactory(fixedInfo, false)
+	service, err := defaultUpdateServiceFactory(fixedInfo, false, io.Discard)
 	if err != nil {
 		t.Fatalf("defaultUpdateServiceFactory: %v", err)
 	}
@@ -854,6 +855,9 @@ func TestUpdateCmd_ApplyRealFactoryWiresVersionProbe(t *testing.T) {
 	}
 	if svc.VersionProbe == nil {
 		t.Fatal("Apply 路径必须注入生产 VersionProbe")
+	}
+	if svc.Reporter == nil {
+		t.Fatal("Apply 路径必须注入过程输出 Reporter（步骤行 + TTY 下载进度）")
 	}
 }
 

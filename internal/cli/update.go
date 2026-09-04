@@ -57,7 +57,8 @@ var (
 // 但显式不注入 control.Manager（nil），保证 --check 路径永不获取 control lock、
 // 永不创建 ~/.token-usage 配置目录。checkOnly=false 时构造「完整更新」服务，
 // 在 ProvenanceDeps 之外再注入 control.Manager + ConfigLoader + Installer，
-// 使 Apply 在来源校验通过后能在 control lock 内完成二进制替换与 daemon 切换。
+// 使 Apply 在来源校验通过后能在 control lock 内完成二进制替换与 daemon 切换；
+// 并以 out 构造过程输出渲染器注入 svc.Reporter（步骤行 + TTY 下载进度）。
 //
 // 测试覆盖以注入 stub，避免访问真实网络/HOME/文件系统。
 var updateServiceFactory = defaultUpdateServiceFactory
@@ -71,10 +72,11 @@ var updateServiceFactory = defaultUpdateServiceFactory
 //     （仅 checkOnly=false 时构造）；
 //   - ConfigLoader：runtimecfg.LoadEffectiveConfig 的函数值（仅 checkOnly=false 时注入）；
 //   - Installer：非 Windows 平台用 POSIX 事务性安装器；Windows 用 staged replacement
-//     安装器（父进程 spawn 后台 helper，父退出后 helper 完成 MoveFileEx 与 daemon 切换）。
+//     安装器（父进程 spawn 后台 helper，父退出后 helper 完成 MoveFileEx 与 daemon 切换）；
 //   - VersionProbe：仅 Apply 路径注入，运行已校验 stage 的 --version，作为 manifest
-//     SHA256 之外的发布物版本交叉校验。
-func defaultUpdateServiceFactory(info buildinfo.Info, checkOnly bool) (UpdateService, error) {
+//     SHA256 之外的发布物版本交叉校验；
+//   - Reporter：仅 Apply 路径注入，把 Apply 过程事件渲染为步骤行与 TTY 下载进度。
+func defaultUpdateServiceFactory(info buildinfo.Info, checkOnly bool, out io.Writer) (UpdateService, error) {
 	releaseClient := update.NewGithubReleaseClient(nil)
 	// 一个下载器对象两用：既是 ManifestFetcher（来源校验拉取当前版本 SHA256SUMS），
 	// 又是 AssetDownloader（可信分支下载目标资产到 stage）。*downloader 同时实现两个接口，
@@ -107,6 +109,7 @@ func defaultUpdateServiceFactory(info buildinfo.Info, checkOnly bool) (UpdateSer
 		svc.Installer = buildUpdateInstaller()
 		svc.AssetDownloader = downloader
 		svc.VersionProbe = update.NewExecVersionProbe()
+		svc.Reporter = newUpdateProgressPrinter(out)
 
 		// 打开升级日志文件并注入 LogSink/LogPath + installer 的 writer/logDir。
 		// 日志打开失败是 best-effort：Apply 不依赖日志也能工作。
@@ -176,7 +179,8 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 			"--version accepts a strict release tag (vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N).\n"+
 			"A plain update never overwrites a source that fails the official-asset checks (a re-signed binary, go install, a dev/local build, a symlinked copy, or a non-official tag); it prints manual install instructions instead.\n"+
 			"With --force the update overwrites a re-signed official asset, a `go install` of a tagged version, or a dev build, so automatic updates resume from the official channel; symlinked copies and non-official tags cannot be forced and always require manual installation.\n"+
-			"--check and --force cannot be combined.",
+			"--check and --force cannot be combined.\n"+
+			"While running, update prints step-by-step progress (check, versions, download, verify, install, daemon switch) and, on a terminal, a live download indicator with percentage and average speed.",
 			"检查并更新 token-usage 自身到最新稳定版或指定版本。\n\n"+
 				"  token-usage update            更新到最新稳定版（来源校验通过后替换二进制并恢复 daemon）\n"+
 				"  token-usage update --check    只检查是否有新版本，不做任何修改\n"+
@@ -186,7 +190,8 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 				"--version 接受严格 Release tag（vMAJOR.MINOR.PATCH 或 vMAJOR.MINOR.PATCH-rc.N）。\n"+
 				"默认不覆盖未通过官方资产校验的来源（已重签二进制、go install、dev 本地构建、软链副本、非官方 tag），改为输出人工安装指引。\n"+
 				"使用 --force 可强制覆盖已重签的官方资产、指定 tag 的 go install 产物或 dev 本地构建，使自动更新回归官方通道；软链副本与非官方 tag 不可被 force 覆盖，只能手动安装。\n"+
-				"--check 与 --force 不能组合。"),
+				"--check 与 --force 不能组合。\n"+
+				"执行期间逐步输出过程（检查、版本对比、下载、校验、安装、daemon 切换），终端上下载还会显示带百分比与平均速度的实时进度。"),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUpdate(cmd, info)
@@ -220,7 +225,7 @@ func runUpdate(cmd *cobra.Command, info buildinfo.Info) error {
 		}
 	}
 
-	svc, err := updateServiceFactory(info, checkOnly)
+	svc, err := updateServiceFactory(info, checkOnly, out)
 	if err != nil {
 		return fmt.Errorf("%s: %w", ui.Bi("failed to assemble update service", "装配更新服务失败"), err)
 	}
@@ -229,6 +234,10 @@ func runUpdate(cmd *cobra.Command, info buildinfo.Info) error {
 	if rs, ok := svc.(*update.Service); ok {
 		defer rs.CloseLogSink()
 	}
+
+	// 过程输出的第一步：检查开始即告知（--check 与 Apply 两路径一致；
+	// 后续过程事件由 Apply 经 Reporter 发射，Check 本身不再重复）。
+	fmt.Fprintln(out, ui.Bi("Checking for updates…", "正在检查更新…"))
 
 	ctx := cmdContext(cmd)
 

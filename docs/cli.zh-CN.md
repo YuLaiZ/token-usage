@@ -518,6 +518,8 @@ catch-up 经 analyzer 的串行化锁 Submit（与实时触发同一路径，保
 
 从官方 GitHub Release 原地更新 `token-usage` 二进制。CLI 只解析参数、装配依赖、格式化结果，自更新核心位于 `internal/update`（见[架构设计](architecture.zh-CN.md)）。
 
+`update` 执行期间会逐步输出过程：先打印「正在检查更新…」行，发现新版本即给出当前/目标版本对（先于来源校验，拒绝路径同样可见），随后依次输出下载、校验、停止 daemon、安装、重启 daemon 的步骤行。交互终端上下载会渲染单行实时进度（百分比、已传输/总字节数、平均速度）；stdout 被重定向或接管道时省略进度行、只保留步骤行，下载失败也总会干净地收尾换行。更新前正在运行的 daemon 会被自动停止并用新二进制重启。`update --check` 只输出检查行与结果。
+
 ```text
 token-usage update
 token-usage update --check

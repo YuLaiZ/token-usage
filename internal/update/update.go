@@ -93,6 +93,10 @@ type Service struct {
 	// 由注入的 Installer 自行处理或测试注入 fake stagePath）。
 	AssetDownloader AssetDownloader
 
+	// Reporter 接收 Apply 执行过程的事件（版本判定、下载进度、daemon 切换等），
+	// 由 CLI 层渲染为用户可见的过程输出。未注入（nil）时完全静默，保持既有行为。
+	Reporter Reporter
+
 	// LogSink 是升级步骤日志的写入目标（注入，nil=静默）。生产由 CLI 工厂打开
 	// update-YYYY-MM-DD.log 注入；测试注入 buffer 可断言行内容。Apply 各关键步骤
 	// 经 stepLogger 输出 [update] 行到此处。
@@ -332,6 +336,15 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 		return result, err
 	}
 	result.CheckResult = checked
+	// 确有更新：版本信息一经 Check 得知立即通知（先于来源校验），拒绝/失败路径
+	// 也能先看到版本对比。无更新不通知——最终「已是最新版本」结果行已携带版本。
+	if checked.UpdateAvailable {
+		s.report(Event{
+			Kind:       EventVersionsDiscovered,
+			CurrentTag: checked.CurrentTag,
+			TargetTag:  checked.TargetTag,
+		})
+	}
 
 	// 来源校验提前到 Check 后（无论 UpdateAvailable），为 consume/sweep 提供可信门。
 	// 这样"升级成功后再次 update"（已是最新）也能消费上次的 result。
@@ -408,6 +421,11 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 	// 可信：标记「准备下载」。
 	s.downloaderInvoked = true
 	ul.step("started: %s → %s", checked.CurrentTag, checked.TargetTag)
+	s.report(Event{
+		Kind:       EventUpdateStart,
+		CurrentTag: checked.CurrentTag,
+		TargetTag:  checked.TargetTag,
+	})
 
 	// 下载目标资产到 stage 文件（若注入 AssetDownloader）。
 	// expectedHash 取自目标 Release 的 SHA256SUMS（ManifestFetcher 是 tag 参数化的，
@@ -430,6 +448,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 	// 默认 CLI 工厂注入的 stage --version 探针：用真实 stage 路径运行 --version，作为
 	// 发布工作流错误的额外防线。未注入仅发生在隔离测试或未完成装配的嵌入方。
 	if s.VersionProbe != nil {
+		s.report(Event{Kind: EventVerifyStage})
 		stageVer, verr := s.VersionProbe.ProbeVersion(ctx, stagePath)
 		result.StageVersion = stageVer
 		if verr != nil {
@@ -496,42 +515,60 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 // 未注入 AssetDownloader 时返回 ("", nil)，保持向后兼容（不下载，stagePath 为空，
 // 由注入的 Installer 自行处理或测试注入 fake stagePath）。
 // 清单查询或下载失败返回 error，调用方据此拒绝安装（ReadyToInstall=false）。
+//
+// 过程事件：进入下载阶段即发 EventDownloadStart（步骤行）；下载期间逐块转发
+// EventDownloadProgress；成功以 EventDownloadDone、任一失败以 EventDownloadFailed
+// 收尾——失败事件在每条 error return 前统一发射（含 Manifest 未配置、清单拉取失败、
+// 清单为空、缺 hash、下载失败全部路径），保证进度帧的终结事件在任何退出路径都成对出现。
+// 无 progress 回调的失败（清单阶段）Failed 携带 Copied=0、Total=-1。
 func (s *Service) downloadStage(ctx context.Context, targetTag, assetName, binPath string) (string, error) {
 	if s.AssetDownloader == nil {
 		return "", nil
 	}
+	var lastCopied int64
+	lastTotal := int64(-1)
+	s.report(Event{Kind: EventDownloadStart, Asset: assetName})
+	fail := func(err error) (string, error) {
+		s.report(Event{Kind: EventDownloadFailed, Copied: lastCopied, Total: lastTotal})
+		return "", err
+	}
+	progress := func(copied, total int64) {
+		lastCopied, lastTotal = copied, total
+		s.report(Event{Kind: EventDownloadProgress, Copied: copied, Total: total})
+	}
 	if s.ProvenanceDeps.Manifest == nil {
-		return "", errors.New(ui.Bi("no official manifest fetcher configured; cannot get the expected hash of the target asset", "未配置官方清单获取方式，无法取得目标资产预期 hash"))
+		return fail(errors.New(ui.Bi("no official manifest fetcher configured; cannot get the expected hash of the target asset", "未配置官方清单获取方式，无法取得目标资产预期 hash")))
 	}
 	targetManifest, merr := s.ProvenanceDeps.Manifest.FetchManifest(ctx, targetTag)
 	if merr != nil {
-		return "", fmt.Errorf("%s: %w", ui.Bi(
+		return fail(fmt.Errorf("%s: %w", ui.Bi(
 			fmt.Sprintf("failed to fetch manifest for target version %s", targetTag),
 			fmt.Sprintf("获取目标版本 %s 清单失败", targetTag),
-		), merr)
+		), merr))
 	}
 	if targetManifest == nil {
-		return "", fmt.Errorf("%s", ui.Bi(
+		return fail(fmt.Errorf("%s", ui.Bi(
 			fmt.Sprintf("manifest for target version %s is empty", targetTag),
 			fmt.Sprintf("目标版本 %s 清单为空", targetTag),
-		))
+		)))
 	}
 	expectedHash, ok := targetManifest.HashFor(assetName)
 	if !ok {
-		return "", fmt.Errorf("%s", ui.Bi(
+		return fail(fmt.Errorf("%s", ui.Bi(
 			fmt.Sprintf("manifest for target version %s is missing the hash of asset %s", targetTag, assetName),
 			fmt.Sprintf("目标版本 %s 清单缺少资产 %s 的 hash", targetTag, assetName),
-		))
+		)))
 	}
 	// stage 落在 target 同目录，保证后续 rename 同卷原子。
 	targetDir := filepath.Dir(binPath)
-	stagePath, derr := s.AssetDownloader.DownloadAsset(ctx, targetTag, assetName, expectedHash, targetDir, "")
+	stagePath, derr := s.AssetDownloader.DownloadAsset(ctx, targetTag, assetName, expectedHash, targetDir, "", progress)
 	if derr != nil {
-		return "", fmt.Errorf("%s: %w", ui.Bi(
+		return fail(fmt.Errorf("%s: %w", ui.Bi(
 			fmt.Sprintf("failed to download asset %s", assetName),
 			fmt.Sprintf("下载资产 %s 失败", assetName),
-		), derr)
+		), derr))
 	}
+	s.report(Event{Kind: EventDownloadDone, Copied: lastCopied, Total: lastTotal})
 	return stagePath, nil
 }
 
@@ -743,6 +780,7 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 
 		// 2. 运行中先 Stop（等 daemon lock 释放），为文件替换腾出干净状态。
 		if wasRunning {
+			s.report(Event{Kind: EventStopDaemon})
 			if serr := sess.Stop(ctx, cfg); serr != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("failed to stop daemon before replacement", "替换前停止 daemon 失败"), serr)
 			}
@@ -754,6 +792,7 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 		// TransactionHandler，由步骤 4 在 daemon Start 成功后 Commit、失败时 Rollback。
 		// wasRunning 传入 Install 以便写入 journal，供中断恢复时按原运行态重启 daemon。
 		if s.Installer != nil {
+			s.report(Event{Kind: EventInstall})
 			nb, ierr := s.Installer.Install(ctx, stagePath, oldBinPath, oldBinPath, wasRunning)
 			if ierr != nil {
 				// Windows staged replacement：Install 已构造 plan、复制 helper.exe 并 spawn
@@ -795,6 +834,7 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 		// 4. 替换前运行 → 用新二进制重启 daemon，完成「热切换」。
 		// Start 成功后调 Commit 清理事务文件；Start 失败调 Rollback 恢复旧版本再重启。
 		if wasRunning {
+			s.report(Event{Kind: EventRestartDaemon})
 			if serr := sess.StartWithExecutable(ctx, cfg, newBinPath); serr != nil {
 				// 启动失败：若 Installer 支持 TransactionHandler，先 Rollback（恢复旧版本）。
 				var rollbackErr error

@@ -59,6 +59,8 @@ token-usage update --check          # 只检查，不修改本地文件
 token-usage update --version vX.Y.Z # 更新指定 Release
 ```
 
+`update` 会逐步输出过程——检查更新、当前/目标版本、下载、校验、安装、daemon 切换；交互终端上下载还会显示单行实时进度（百分比、已传输/总字节数、平均速度），输出被重定向时只保留步骤行。更新前正在运行的 daemon 会自动停止并用新二进制重启。
+
 已重签的官方资产、源码构建产物（`Version = dev`）或通过 `go install` 安装的 Release tag 产物，需要先执行一次 `token-usage update --force`，将其替换为官方 Release 资产；之后即可正常更新。软链接副本和非官方 tag 不能通过这种方式转换。
 
 `update` 成功升级首次跨过携带安装脚本补全自动配置功能的版本时，成功输出会追加一条一次性迁移提示并给出官方安装命令——重跑一次即可自动配置 Tab 补全（zsh 会交互确认）。确切触发条件见 [CLI 参考](docs/cli.zh-CN.md)。

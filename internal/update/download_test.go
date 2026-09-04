@@ -107,7 +107,7 @@ func TestDownloadAsset_FixedURLConstruction(t *testing.T) {
 	ds.body = func() string { return string(payload) }
 
 	wantHash := sha256Hex(payload)
-	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", wantHash, t.TempDir(), "")
+	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", wantHash, t.TempDir(), "", nil)
 	if err != nil {
 		t.Fatalf("DownloadAsset err = %v", err)
 	}
@@ -136,7 +136,7 @@ func TestDownloadAsset_ChecksumMismatchDeletesStage(t *testing.T) {
 	ds.body = func() string { return string(payload) }
 	dir := t.TempDir()
 
-	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", "deadbeef", dir, "")
+	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", "deadbeef", dir, "", nil)
 	if err == nil {
 		t.Fatal("DownloadAsset(bad hash) err = nil, want error")
 	}
@@ -158,7 +158,7 @@ func TestDownloadAsset_OversizedDeletesStage(t *testing.T) {
 	ds.body = func() string { return payload }
 	dir := t.TempDir()
 
-	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", sha256Hex([]byte(payload)), dir, "")
+	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", sha256Hex([]byte(payload)), dir, "", nil)
 	if err == nil {
 		t.Fatal("DownloadAsset(oversized) err = nil, want error")
 	}
@@ -177,7 +177,7 @@ func TestDownloadAsset_NonHTTPSRedirectRejected(t *testing.T) {
 	ds.redirect = &redirectCfg{to: "http://evil.example/x"}
 	dir := t.TempDir()
 
-	_, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", "any", dir, "")
+	_, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", "any", dir, "", nil)
 	if err == nil {
 		t.Fatal("DownloadAsset(http redirect) err = nil, want error")
 	}
@@ -202,7 +202,7 @@ func TestDownloadAsset_HTTPSRedirectAccepted(t *testing.T) {
 		_, _ = w.Write(payload)
 	})
 
-	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", wantHash, dir, "")
+	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", wantHash, dir, "", nil)
 	if err != nil {
 		t.Fatalf("DownloadAsset(https redirect) err = %v, want nil", err)
 	}
@@ -222,7 +222,7 @@ func TestDownloadAsset_NonSuccessStatusRejected(t *testing.T) {
 			d, ds := newDownloader(t)
 			ds.status = code
 			dir := t.TempDir()
-			_, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", "any", dir, "")
+			_, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", "any", dir, "", nil)
 			if err == nil {
 				t.Fatalf("DownloadAsset(%d) err = nil, want error", code)
 			}
@@ -237,7 +237,7 @@ func TestDownloadAsset_UnixExecModeOnBinary(t *testing.T) {
 	ds.body = func() string { return string(payload) }
 	dir := t.TempDir()
 
-	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", sha256Hex(payload), dir, "")
+	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", sha256Hex(payload), dir, "", nil)
 	if err != nil {
 		t.Fatalf("DownloadAsset err = %v", err)
 	}
@@ -257,7 +257,7 @@ func TestDownloadAsset_StageInTargetDir(t *testing.T) {
 	ds.body = func() string { return string(payload) }
 	dir := t.TempDir()
 
-	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", sha256Hex(payload), dir, "")
+	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", sha256Hex(payload), dir, "", nil)
 	if err != nil {
 		t.Fatalf("DownloadAsset err = %v", err)
 	}
@@ -273,7 +273,7 @@ func TestDownloadAsset_StagePrefixUsed(t *testing.T) {
 	ds.body = func() string { return string(payload) }
 	dir := t.TempDir()
 
-	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", sha256Hex(payload), dir, ".myupdate-*")
+	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", sha256Hex(payload), dir, ".myupdate-*", nil)
 	if err != nil {
 		t.Fatalf("DownloadAsset err = %v", err)
 	}
@@ -293,7 +293,7 @@ func TestDownloadAsset_ShortWriteDeletesStage(t *testing.T) {
 	ds.body = func() string { return string(full[:5]) }
 	dir := t.TempDir()
 
-	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", sha256Hex(full), dir, "")
+	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", sha256Hex(full), dir, "", nil)
 	if err == nil {
 		t.Fatal("DownloadAsset(short write) err = nil, want error")
 	}
@@ -371,5 +371,64 @@ func TestNewDownloader_Defaults(t *testing.T) {
 	}
 	if d.temp == nil {
 		t.Fatal("temp must not be nil")
+	}
+}
+
+// TestDownloadAsset_ChunkedUnknownTotalProgress 分块传输（无 Content-Length）：
+// progress 回调的 total 恒为 -1（未知），copied 递增至完整长度；下载与校验不受影响。
+func TestDownloadAsset_ChunkedUnknownTotalProgress(t *testing.T) {
+	payload := []byte("chunked-binary-payload-0123456789")
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("httptest ResponseWriter 应支持 Flush")
+		}
+		// 分块写 + 逐块 Flush：响应走 chunked 编码，不携带 Content-Length。
+		for i := 0; i < len(payload); i += 8 {
+			end := i + 8
+			if end > len(payload) {
+				end = len(payload)
+			}
+			_, _ = w.Write(payload[i:end])
+			flusher.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	d := &downloader{
+		http:         srv.Client(),
+		maxBytes:     defaultMaxBinaryBytes,
+		temp:         tempFileCreator{},
+		userAgent:    defaultUserAgent,
+		downloadBase: srv.URL,
+	}
+
+	var frames []int64
+	var lastCopied int64
+	progress := func(copied, total int64) {
+		if total != -1 {
+			t.Errorf("chunked 传输 total 应为 -1（未知），got %d（copied=%d）", total, copied)
+		}
+		if copied <= lastCopied && copied != int64(len(payload)) {
+			t.Errorf("copied 应严格递增，got %d after %d", copied, lastCopied)
+		}
+		lastCopied = copied
+		frames = append(frames, copied)
+	}
+	stage, err := d.DownloadAsset(context.Background(), "v0.2.0", "token-usage-darwin-arm64", sha256Hex(payload), t.TempDir(), "", progress)
+	if err != nil {
+		t.Fatalf("DownloadAsset err = %v", err)
+	}
+	if len(frames) == 0 {
+		t.Fatal("chunked 传输也应逐块回调 progress")
+	}
+	if lastCopied != int64(len(payload)) {
+		t.Fatalf("最终 copied=%d，want %d", lastCopied, len(payload))
+	}
+	got, err := os.ReadFile(stage)
+	if err != nil {
+		t.Fatalf("读取 stage: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("chunked 下载内容损坏")
 	}
 }

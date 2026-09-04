@@ -59,6 +59,8 @@ token-usage update --check          # check only; makes no local changes
 token-usage update --version vX.Y.Z # a specific Release
 ```
 
+`update` prints its progress step by step — version check, current/target version, download, verify, install, daemon switch — and on an interactive terminal the download shows a live single-line indicator (percentage, transferred/total bytes, average speed); redirected output keeps only the step lines. A daemon that was running before the update is stopped and restarted automatically on the new binary.
+
 For a re-signed official asset, a source build (`Version = dev`), or `go install` of a tagged release, run `token-usage update --force` once to replace it with an official Release asset; later updates work normally. Symlinked copies and non-official tags cannot be converted this way.
 
 When a successful `update` first crosses a version that ships installer-managed shell completion, the success output appends a one-time migration notice with the official installer command — re-running it sets up Tab completion automatically (on zsh it asks interactively). See the [CLI Reference](docs/cli.md) for the exact trigger conditions.

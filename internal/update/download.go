@@ -73,14 +73,20 @@ func newHTTPSOnlyClient(timeout time.Duration) *http.Client {
 	}
 }
 
+// DownloadProgressFunc 是下载过程的进度回调：copied 为已写出的累计字节数，
+// total 为服务端给出的总大小（未知时为负值）。回调在下载循环内逐块同步调用，
+// 实现方自行节流，不得阻塞下载。
+type DownloadProgressFunc func(copied, total int64)
+
 // AssetDownloader 在可信分支下载目标 Release 资产并校验 SHA256，返回 stage 绝对路径。
 // 生产实现用 *downloader（NewDownloader 返回），与 ManifestFetcher 复用同一对象——
 // 一个 NewDownloader(nil) 既是 ManifestFetcher 又是 AssetDownloader。
 // 测试可注入基于 httptest.Server 的真实 *downloader（验证下载集成），或内存 fake。
 // Service.Apply 在来源校验通过后调用本接口下载目标资产；未注入时保持向后兼容，
 // 只到 ReadyToInstall，不下载（stagePath 为空，由注入的 Installer 自行处理或测试注入 fake）。
+// progress 为 nil 时不报告进度（行为与无进度钩子的既有调用一致）。
 type AssetDownloader interface {
-	DownloadAsset(ctx context.Context, tag, assetName, expectedHash, targetDir, stagePrefix string) (string, error)
+	DownloadAsset(ctx context.Context, tag, assetName, expectedHash, targetDir, stagePrefix string, progress DownloadProgressFunc) (string, error)
 }
 
 // downloader 是资产下载的生产实现，所有外部依赖通过字段注入：
@@ -125,14 +131,14 @@ func (osTempFileCreator) CreateTemp(dir, pattern string) (*os.File, error) {
 // 流程：
 //  1. 由固定 downloadBase + tag + assetName 构造 URL（绝不使用 Release JSON 提供的 URL）；
 //  2. 在 targetDir 创建 stage 临时文件（保证与目标同目录同卷，便于后续原子 rename）；
-//  3. 流式写入 stage，边写边算 SHA256，限制总字节数 <= maxBytes；
+//  3. 流式写入 stage，边写边算 SHA256，限制总字节数 <= maxBytes，逐块回调 progress；
 //  4. 只接受 2xx 状态；超过 maxBytes 删除 stage 并返回 ErrBinaryTooLarge；
 //  5. 写完 Sync + Close，比对 SHA256 == expectedHash；
 //  6. hash 不匹配删除 stage 并返回 ErrChecksumMismatch；
 //  7. 二进制类资产（NeedsUnixExecMode）为 stage 设置 owner-exec 权限位。
 //
-// stagePrefix 为空时使用默认 stageFilePattern。
-func (d *downloader) DownloadAsset(ctx context.Context, tag, assetName, expectedHash, targetDir, stagePrefix string) (string, error) {
+// stagePrefix 为空时使用默认 stageFilePattern。progress 为 nil 时不报告进度。
+func (d *downloader) DownloadAsset(ctx context.Context, tag, assetName, expectedHash, targetDir, stagePrefix string, progress DownloadProgressFunc) (string, error) {
 	if stagePrefix == "" {
 		stagePrefix = stageFilePattern
 	}
@@ -148,7 +154,7 @@ func (d *downloader) DownloadAsset(ctx context.Context, tag, assetName, expected
 	cleanup := func() { _ = os.Remove(stagePath) }
 
 	url := buildDownloadURLBase(d.downloadBase, tag, assetName)
-	written, err := d.streamToStage(ctx, url, stage)
+	written, err := d.streamToStage(ctx, url, stage, progress)
 	if err != nil {
 		_ = stage.Close()
 		cleanup()
@@ -183,7 +189,9 @@ func (d *downloader) DownloadAsset(ctx context.Context, tag, assetName, expected
 
 // streamToStage 流式下载 URL 到 stage 文件，边写边算 SHA256，返回写出的 sum。
 // 超过 maxBytes 时立即中断并返回 ErrBinaryTooLarge。
-func (d *downloader) streamToStage(ctx context.Context, requestURL string, stage *os.File) ([]byte, error) {
+// progress 非 nil 时逐块回调（copied 累计、total 取 Content-Length，未知为 -1）；
+// 拷贝用 32KB 缓冲手动循环替代 io.Copy，只为取得逐块回调点，字节语义不变。
+func (d *downloader) streamToStage(ctx context.Context, requestURL string, stage *os.File, progress DownloadProgressFunc) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to build download request", "构造下载请求失败"), err)
@@ -208,14 +216,37 @@ func (d *downloader) streamToStage(ctx context.Context, requestURL string, stage
 	limited := io.LimitReader(resp.Body, d.maxBytes+1)
 	// 同时写入 stage 文件与 hash 累加器，边落盘边计算 SHA256。
 	sink := io.MultiWriter(stage, h)
-	n, err := io.Copy(sink, limited)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", ui.Bi("failed to write stage file", "写入 stage 失败"), err)
+	// 服务端未给出 Content-Length（如 chunked）时以 -1 报告未知总大小。
+	total := resp.ContentLength
+	if total <= 0 {
+		total = -1
 	}
-	if n > d.maxBytes {
+	var copied int64
+	buf := make([]byte, 32*1024)
+	for {
+		nr, er := limited.Read(buf)
+		if nr > 0 {
+			if nw, ew := sink.Write(buf[:nr]); ew != nil {
+				return nil, fmt.Errorf("%s: %w", ui.Bi("failed to write stage file", "写入 stage 失败"), ew)
+			} else if nw != nr {
+				return nil, fmt.Errorf("%s: %w", ui.Bi("failed to write stage file", "写入 stage 失败"), io.ErrShortWrite)
+			}
+			copied += int64(nr)
+			if progress != nil {
+				progress(copied, total)
+			}
+		}
+		if er != nil {
+			if er == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("%s: %w", ui.Bi("failed to write stage file", "写入 stage 失败"), er)
+		}
+	}
+	if copied > d.maxBytes {
 		return nil, fmt.Errorf("%w: %s", ErrBinaryTooLarge, ui.Bi(
-			fmt.Sprintf("wrote %d bytes", n),
-			fmt.Sprintf("已写 %d 字节", n),
+			fmt.Sprintf("wrote %d bytes", copied),
+			fmt.Sprintf("已写 %d 字节", copied),
 		))
 	}
 	return h.Sum(nil), nil

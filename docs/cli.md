@@ -518,6 +518,8 @@ An internal command started by `start` through detached spawn or directly by lau
 
 Updates the `token-usage` binary in place from official GitHub Releases. The CLI only parses flags, assembles dependencies, and formats results; the self-update core lives in `internal/update` (see [Architecture](architecture.md)).
 
+`update` prints its progress while it works: a `Checking for updates…` line, the current/target version pair as soon as a newer release is found (before source verification, so refusals also show it), then step lines for downloading, verifying, stopping the daemon, installing, and restarting the daemon. On an interactive terminal the download renders a single-line live indicator (percentage, transferred/total bytes, average speed); when stdout is redirected or piped the indicator is omitted and only the step lines are printed, and a failed download always closes the line cleanly. A daemon that was running before the update is stopped and restarted automatically on the new binary. `update --check` prints only the checking line and its result.
+
 ```text
 token-usage update
 token-usage update --check
