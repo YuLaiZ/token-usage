@@ -59,7 +59,7 @@ token-usage update --check          # check only; makes no local changes
 token-usage update --version vX.Y.Z # a specific Release
 ```
 
-`update` prints its progress step by step — version check, current/target version, download, verify, install, daemon switch — and on an interactive terminal the download shows a live single-line indicator (percentage, transferred/total bytes, average speed); redirected output keeps only the step lines. A daemon that was running before the update is stopped and restarted automatically on the new binary.
+`update` prints its progress step by step — version check, current/target version, download, verify, install, daemon switch — and on an interactive terminal the download shows a live single-line indicator (percentage, transferred/total bytes, average speed); redirected output keeps only the step lines. A daemon that was running before the update is stopped and restarted automatically on the new binary; a daemon that was stopped stays stopped (the success output points to `token-usage start`).
 
 For a re-signed official asset, a source build (`Version = dev`), or `go install` of a tagged release, run `token-usage update --force` once to replace it with an official Release asset; later updates work normally. Symlinked copies and non-official tags cannot be converted this way.
 

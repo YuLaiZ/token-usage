@@ -59,7 +59,7 @@ token-usage update --check          # 只检查，不修改本地文件
 token-usage update --version vX.Y.Z # 更新指定 Release
 ```
 
-`update` 会逐步输出过程——检查更新、当前/目标版本、下载、校验、安装、daemon 切换；交互终端上下载还会显示单行实时进度（百分比、已传输/总字节数、平均速度），输出被重定向时只保留步骤行。更新前正在运行的 daemon 会自动停止并用新二进制重启。
+`update` 会逐步输出过程——检查更新、当前/目标版本、下载、校验、安装、daemon 切换；交互终端上下载还会显示单行实时进度（百分比、已传输/总字节数、平均速度），输出被重定向时只保留步骤行。更新前正在运行的 daemon 会自动停止并用新二进制重启；原本已停止的 daemon 保持停止（成功输出会提示 `token-usage start`）。
 
 已重签的官方资产、源码构建产物（`Version = dev`）或通过 `go install` 安装的 Release tag 产物，需要先执行一次 `token-usage update --force`，将其替换为官方 Release 资产；之后即可正常更新。软链接副本和非官方 tag 不能通过这种方式转换。
 

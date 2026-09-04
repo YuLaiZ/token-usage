@@ -529,7 +529,7 @@ token-usage update --force
 
 | Form | Purpose |
 |------|---------|
-| `update` | Updates to the latest stable Release. If a restricted transaction journal from an interrupted POSIX update exists beside this binary, it is recovered first; a new replacement then proceeds only when the target is strictly higher than the current version and the current source is trusted. It downloads the asset, verifies its SHA256 against the `SHA256SUMS` manifest, stages a `--version` second check, replaces the binary, and restores the daemon to its previous run state. |
+| `update` | Updates to the latest stable Release. If a restricted transaction journal from an interrupted POSIX update exists beside this binary, it is recovered first; a new replacement then proceeds only when the target is strictly higher than the current version and the current source is trusted. It downloads the asset, verifies its SHA256 against the `SHA256SUMS` manifest, stages a `--version` second check, and replaces the binary. A daemon that was running before the update is restarted automatically on the new binary; a daemon that was stopped stays stopped, and the success output points to `token-usage start`. |
 | `update --check` | Read-only check; creates no local files (no configuration directory, lock, log, database, or service definition). |
 | `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | Updates (or, with `--check`, only checks) the specified exact Release tag. `--version` accepts a strict Release tag (`v` prefix, `MAJOR.MINOR.PATCH`, optional `-rc.N`, no leading zeros); an invalid value errors before any network request. |
 | `update --force` | Overwrites the current binary even when its source is not an official Release asset, for exactly two exemptions: a hash mismatch against the official asset of the reported version (a binary re-signed per the install guide, or `go install pkg@vX.Y.Z`), and a dev local build (`Version = dev`; plain-build pseudo-versions are normalized to `dev`). All structural checks and the target asset's SHA256 / staged `--version` verification still run; symlinked copies and non-official tags cannot be forced. |
@@ -547,6 +547,8 @@ Flags:
 ### Stable / Release-Candidate Selection
 
 By default `update` resolves only the latest **stable** Release and never selects a prerelease. A release candidate is consulted or installed only when you pass its tag explicitly with `--version` (for example `--version vX.Y.Z-rc.N`).
+
+When the local version is strictly newer than the requested or latest release — an RC ahead of the stable channel, or an explicit `--version` downgrade — both `update` and `update --check` report the local/target version pair and make no changes.
 
 ### Completion Migration Notice
 
@@ -584,7 +586,7 @@ This source gate applies to a new replacement. Recovering an already recorded lo
 
 ### Windows Asynchronous Replacement
 
-Replacing a running `.exe` is restricted on Windows, so the update hands the replacement off to a background helper and returns. Once that helper has been started, the command explicitly reports that the background replacement has been queued, exits `0`, and asks you to run `token-usage version` or `token-usage update --check` shortly to confirm the final version; it never claims completion. On macOS/POSIX the replacement is synchronous and atomic (same-directory backup + rename + fsync, with rollback on failure and journal recovery on the next `update` invocation).
+Replacing a running `.exe` is restricted on Windows, so the update hands the replacement off to a background helper and returns. Once that helper has been started, the command explicitly reports that the background replacement has been queued, exits `0`, and asks you to run `token-usage version` or `token-usage update --check` shortly to confirm the final version; it never claims completion. If the daemon was stopped before the update, the output tells you to start it only after the replacement is confirmed complete — starting it earlier would make the helper abort the replacement (it refuses to touch the binary while the daemon runs). On macOS/POSIX the replacement is synchronous and atomic (same-directory backup + rename + fsync, with rollback on failure and journal recovery on the next `update` invocation).
 
 ## Configuration File
 

@@ -529,7 +529,7 @@ token-usage update --force
 
 | 形式 | 作用 |
 |------|------|
-| `update` | 更新到最新稳定 Release。若当前二进制同目录存在一次中断的 POSIX 更新留下的受限事务 journal，先完成恢复；之后仅当目标严格高于当前版本且当前来源可信时才继续新替换：下载资产、与 `SHA256SUMS` 清单比对 SHA256、stage `--version` 二次校验、替换二进制并按原运行态恢复 daemon。 |
+| `update` | 更新到最新稳定 Release。若当前二进制同目录存在一次中断的 POSIX 更新留下的受限事务 journal，先完成恢复；之后仅当目标严格高于当前版本且当前来源可信时才继续新替换：下载资产、与 `SHA256SUMS` 清单比对 SHA256、stage `--version` 二次校验、替换二进制。更新前正在运行的 daemon 会用新二进制自动重启；原本已停止的 daemon 保持停止，成功输出会提示 `token-usage start`。 |
 | `update --check` | 只读检查；不创建任何本地文件（不创建配置目录/锁/日志/数据库/服务定义）。 |
 | `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | 更新（或加 `--check` 后仅检查）指定精确版本 tag。`--version` 接受严格 Release tag（`v` 前缀、`MAJOR.MINOR.PATCH`、可选 `-rc.N`、无前导零）；非法值在任何网络请求前即报错。 |
 | `update --force` | 当前二进制来源非官方 Release 资产时仍强制覆盖，仅限两种豁免：与所报告版本官方资产 hash 不一致（按安装指引重签过的二进制、或 `go install pkg@vX.Y.Z` 产物），以及 dev 本地构建（`Version = dev`；直接构建的伪版本会被规范化为 `dev`）。全部结构检查与目标资产的 SHA256 / stage `--version` 校验照常执行；软链副本与非官方 tag 不可被 force。 |
@@ -547,6 +547,8 @@ token-usage update --force
 ### 稳定版 / RC 选择
 
 默认 `update` 只解析最新**稳定** Release，绝不选择 prerelease。只有用 `--version` 显式指定 rc tag（如 `--version vX.Y.Z-rc.N`）时才会查询/安装预发布版。
+
+本地版本严格高于所请求或最新的 Release 时（rc 领先稳定通道，或显式 `--version` 请求更低版本），`update` 与 `update --check` 都会报告本地/目标版本对，且不做任何变更。
 
 ### 补全迁移提示
 
@@ -584,7 +586,7 @@ token-usage update --force
 
 ### Windows 异步替换
 
-Windows 上替换运行中的 `.exe` 受限，自更新把替换交给后台 helper 后返回。helper 成功启动后，命令会明确说明「后台替换已排队」，以 `0` 退出，并提示稍后运行 `token-usage version` 或 `token-usage update --check` 确认最终版本，**不声称已完成**。macOS/POSIX 为同步原子替换（同目录 backup + rename + fsync，失败回滚 + 下一次 `update` 调用按 journal 恢复）。
+Windows 上替换运行中的 `.exe` 受限，自更新把替换交给后台 helper 后返回。helper 成功启动后，命令会明确说明「后台替换已排队」，以 `0` 退出，并提示稍后运行 `token-usage version` 或 `token-usage update --check` 确认最终版本，**不声称已完成**。更新前 daemon 已停止时，输出会要求先确认替换完成再运行 `token-usage start`——提前启动会使 helper 放弃替换（daemon 运行期间它拒绝改动二进制）。macOS/POSIX 为同步原子替换（同目录 backup + rename + fsync，失败回滚 + 下一次 `update` 调用按 journal 恢复）。
 
 ## 配置文件
 

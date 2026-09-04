@@ -230,6 +230,10 @@ type ApplyResult struct {
 	Recovered bool
 	// RecoveryState 仅在 Recovered=true 时有效。
 	RecoveryState RecoveryState
+	// DaemonWasRunning 表示替换前 daemon 是否在运行（锁内 Inspect 的结果，
+	// Deferred 路径同样填充）。恢复路径（Recovered）与未触碰 daemon 的路径为零值。
+	// 供 CLI 渲染区分「已更新并重启 daemon」与「daemon 原本未运行，提示 start」。
+	DaemonWasRunning bool
 	// LogPath 升级日志文件路径（注入 LogSink 时填充），供 CLI 提示用户日志位置。
 	LogPath string
 }
@@ -498,6 +502,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 		result.Deferred = outcome.Deferred
 		result.Recovered = outcome.Recovered
 		result.RecoveryState = outcome.RecoveryState
+		result.DaemonWasRunning = outcome.WasRunning
 		if result.Installed {
 			ul.step("installed: %s", checked.TargetTag)
 		} else if result.Deferred {
@@ -720,6 +725,9 @@ type installOutcome struct {
 	Deferred      bool
 	Recovered     bool
 	RecoveryState RecoveryState
+	// WasRunning 替换前 daemon 是否在运行（锁内 Inspect 判定），传出 Apply
+	// 边界填充 ApplyResult.DaemonWasRunning；Recovered 路径不适用（零值）。
+	WasRunning bool
 }
 
 // installUnderLockOutcome 在 control lock 内完成 daemon 切换与（占位）安装编排。
@@ -883,7 +891,8 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 	}
 	// deferred=true 表示 Windows helper 已接管替换（Install 返回 sentinel），installed=false。
 	// 否则表示执行了完整 Install 流程，installed=true。
-	return installOutcome{Installed: !deferred, Deferred: deferred}, nil
+	// WasRunning 一并传出，供结果文案按替换前运行态分流。
+	return installOutcome{Installed: !deferred, Deferred: deferred, WasRunning: wasRunning}, nil
 }
 
 // parseCurrent 解析当前版本。dev / 非正式 tag 返回 error；force=true 时 dev 放行

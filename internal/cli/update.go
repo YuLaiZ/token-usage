@@ -29,7 +29,7 @@ import (
 //     control.Manager 的服务，绝不创建 ~/.token-usage 配置目录；
 //   - 默认（无 --check）：执行完整更新（Service.Apply）。工厂构造含 control.Manager
 //     + ConfigLoader + Installer 的服务，Apply 在来源校验通过后于 control lock 内
-//     完成「替换二进制 + 按原运行态重启 daemon」。
+//     完成「替换二进制 + 按原运行态处置 daemon（运行则重启，停止则保持停止）」。
 //
 // --version 在任何工厂/网络调用之前由 update.ParseVersion 严格校验（v 前缀、数字段、
 // 可选 rc.N），非法值立即返回清晰错误（由 cobra 单次输出），杜绝非法输入触发网络请求。
@@ -171,7 +171,7 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 		Short:        "Update token-usage to the latest or a given version / 更新 token-usage 到最新或指定版本",
 		SilenceUsage: true,
 		Long: ui.Bi("Check and update token-usage itself to the latest stable or a given version.\n\n"+
-			"  token-usage update            Update to the latest stable version (replaces the binary and restores the daemon after provenance checks pass)\n"+
+			"  token-usage update            Update to the latest stable version (replaces the binary after provenance checks pass; a running daemon restarts automatically and a stopped one stays stopped)\n"+
 			"  token-usage update --check    Only check for a newer version; make no changes\n"+
 			"  token-usage update --version vX.Y.Z   Update to the given version\n"+
 			"  token-usage update --check --version vX.Y.Z-rc.N   Only check the given pre-release\n"+
@@ -182,7 +182,7 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 			"--check and --force cannot be combined.\n"+
 			"While running, update prints step-by-step progress (check, versions, download, verify, install, daemon switch) and, on a terminal, a live download indicator with percentage and average speed.",
 			"检查并更新 token-usage 自身到最新稳定版或指定版本。\n\n"+
-				"  token-usage update            更新到最新稳定版（来源校验通过后替换二进制并恢复 daemon）\n"+
+				"  token-usage update            更新到最新稳定版（来源校验通过后替换二进制；daemon 原本运行则自动重启，原本停止则保持停止）\n"+
 				"  token-usage update --check    只检查是否有新版本，不做任何修改\n"+
 				"  token-usage update --version vX.Y.Z   更新到指定版本\n"+
 				"  token-usage update --check --version vX.Y.Z-rc.N   只检查指定候选版\n"+
@@ -272,16 +272,9 @@ func renderCheckResult(out io.Writer, res update.CheckResult) error {
 		fmt.Fprintln(out, ui.Bi("Run `token-usage update` to apply it.", "运行 `token-usage update` 执行更新。"))
 		return nil
 	default:
-		// UpdateAvailable=false 且无领域标记：已是最新（含 CurrentTag/TargetTag 相等的显式情况）。
-		current := res.CurrentTag
-		if current == "" {
-			current = ui.Bi("(unknown)", "（未知）")
-		}
-		target := res.TargetTag
-		if target == "" {
-			target = current
-		}
-		fmt.Fprintf(out, "%s（%s）\n", ui.Bi("Already up to date", "已是最新版本"), target)
+		// UpdateAvailable=false 且无领域标记：无更新，按版本比较方向分流
+		//（同版 → 既有「已是最新版本」；本地高于目标 → 明示双版本）。
+		renderUpToDate(out, res)
 		return nil
 	}
 }
@@ -311,15 +304,19 @@ func runUpdateApply(ctx context.Context, cmd *cobra.Command, svc UpdateService, 
 //
 // 结果分支：
 //   - NoStableRelease：给出明确提示，退出 0；VersionNotFound 返回非 0；
-//   - 无更新：提示已是最新；
-//   - ProvenanceForced=true 且 Installed=true：--force 强制覆盖安装完成（含 daemon 恢复），退出 0；
-//   - ProvenanceForced=true 且 Deferred=true：--force 下 Windows helper 已排队，退出 0；
+//   - 无更新：按版本比较方向分流——本地与目标同版提示已是最新；本地严格高于目标
+//     （rc 领先稳定版或显式 --version 降级请求）明示当前/目标版本对，退出 0；
+//   - ProvenanceForced=true 且 Installed=true：--force 强制覆盖安装完成，退出 0；
 //   - ProvenanceChecked=true 且 Trusted=false 且未 forced：来源不可信——按 ForceEligible
 //     分流标题与 sentinel：可 force 而未 force（hash 失配）→ 提示 --force 出口并返回
 //     errUpdateForceRequired；不可 force（symlink / 非官方 tag 等）→ 维持人工安装指引
 //     并返回 errUpdateSourceUntrusted；两者均非 0 退出；
-//   - Installed=true：POSIX 已同步完成替换与 daemon 恢复，提示已更新；
-//   - Deferred=true：Windows helper 已排队，提示用户稍后验证并退出 0；
+//   - Installed=true：POSIX 已同步完成替换；主标题按替换前 daemon 运行态分流——
+//     原本运行提示「已更新并恢复 daemon」，原本未运行提示「已更新」并追加
+//     `token-usage start` 启动提示（既有次行全部保留），退出 0；
+//   - Deferred=true（含 --force 变体）：Windows helper 已排队，提示用户稍后验证；
+//     daemon 原本未运行时追加「确认后台替换完成后再 start」提示（立即启动会被
+//     helper 判定为停止后意外运行而放弃替换），退出 0；
 //   - Recovered=true：上次中断事务已恢复；新版本已落地时退出 0，恢复旧版本时非 0；
 //   - ReadyToInstall=true 但未 Installed/Deferred：更新未完成，返回非 0。
 //   - forced 后安装未完成：落入既有 ReadyToInstall / UpdateAvailable 失败分支（非 0），
@@ -340,14 +337,17 @@ func renderApplyResult(out, errOut io.Writer, goos string, res update.ApplyResul
 		return errRequestedUpdateVersionMissing
 	case res.ProvenanceForced && res.Installed:
 		// --force 强制覆盖安装成功：先于「来源不可信」分支返回成功，退出 0。
-		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Updated and daemon restored (--force overwrite)", "已更新并恢复 daemon（--force 强制覆盖）"), res.CurrentTag, res.TargetTag)
+		// 主标题按替换前 daemon 运行态分流；既有次行全部保留，未运行提示为纯追加行。
+		fmt.Fprintf(out, "%s：%s → %s\n", installedTitle(res, " (--force overwrite)", "（--force 强制覆盖）"), res.CurrentTag, res.TargetTag)
 		fmt.Fprintln(out, ui.Bi("Run `token-usage version` to confirm the current version.", "可用 `token-usage version` 确认当前版本。"))
+		printDaemonStartHint(out, res)
 		maybeCompletionMigrationNotice(out, goos, res, false)
 		return nil
 	case res.ProvenanceForced && res.Deferred:
 		// --force 下 Windows 后台替换已排队：非错误的排队状态，退出 0。
 		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Background replacement queued (--force overwrite)", "后台替换已排队（--force 强制覆盖）"), res.CurrentTag, res.TargetTag)
 		fmt.Fprintln(out, ui.Bi("Later run `token-usage version` or `token-usage update --check` to confirm the final version.", "请稍后运行 `token-usage version` 或 `token-usage update --check` 确认最终版本。"))
+		printDaemonStartHintAfterReplacement(out, res)
 		maybeCompletionMigrationNotice(out, goos, res, true)
 		return nil
 	case res.ProvenanceChecked && !res.ProvenanceTrusted && !res.ProvenanceForced:
@@ -368,13 +368,17 @@ func renderApplyResult(out, errOut io.Writer, goos string, res update.ApplyResul
 		}
 		return sentinel
 	case res.Installed:
-		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Updated and daemon restored", "已更新并恢复 daemon"), res.CurrentTag, res.TargetTag)
+		// POSIX 已同步完成替换与 daemon 恢复；主标题按替换前运行态分流
+		//（原本未运行时不误称「已恢复 daemon」，改为给出 start 提示）。
+		fmt.Fprintf(out, "%s：%s → %s\n", installedTitle(res, "", ""), res.CurrentTag, res.TargetTag)
 		fmt.Fprintln(out, ui.Bi("Run `token-usage version` to confirm the current version.", "可用 `token-usage version` 确认当前版本。"))
+		printDaemonStartHint(out, res)
 		maybeCompletionMigrationNotice(out, goos, res, false)
 		return nil
 	case res.Deferred:
 		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Background replacement queued", "后台替换已排队"), res.CurrentTag, res.TargetTag)
 		fmt.Fprintln(out, ui.Bi("Later run `token-usage version` or `token-usage update --check` to confirm the final version.", "请稍后运行 `token-usage version` 或 `token-usage update --check` 确认最终版本。"))
+		printDaemonStartHintAfterReplacement(out, res)
 		maybeCompletionMigrationNotice(out, goos, res, true)
 		return nil
 	case res.ReadyToInstall:
@@ -392,14 +396,92 @@ func renderApplyResult(out, errOut io.Writer, goos string, res update.ApplyResul
 		}
 		return errUpdateVerificationFailed
 	default:
-		// 无更新：已是最新。
-		target := res.TargetTag
-		if target == "" {
-			target = res.CurrentTag
-		}
-		fmt.Fprintf(out, "%s（%s）\n", ui.Bi("Already up to date", "已是最新版本"), target)
+		// 无更新：按版本比较方向分流（本地与目标同版 → 既有文案；
+		// 本地高于目标 → 明示双版本，不误称「已是最新版本（较低版本）」）。
+		renderUpToDate(out, res.CheckResult)
 		return nil
 	}
+}
+
+// installedTitle 生成 Installed 分支的主标题：替换前 daemon 在运行 →
+// 「已更新并恢复 daemon」；原本未运行 → 「已更新」，不再误称「恢复」。
+// forceEn/forceZh 为 --force 分支的后缀（普通分支传空串）。
+func installedTitle(res update.ApplyResult, forceEn, forceZh string) string {
+	if res.DaemonWasRunning {
+		return ui.Bi("Updated and daemon restored"+forceEn, "已更新并恢复 daemon"+forceZh)
+	}
+	return ui.Bi("Updated"+forceEn, "已更新"+forceZh)
+}
+
+// printDaemonStartHint 在 daemon 替换前未运行时追加启动提示（纯追加行，
+// 其余既有输出保持不变；原本运行则由标题句「恢复 daemon」覆盖语义）。
+// 仅用于替换已同步完成的分支（POSIX Installed）：此时启动是安全的。
+func printDaemonStartHint(out io.Writer, res update.ApplyResult) {
+	if res.DaemonWasRunning {
+		return
+	}
+	fmt.Fprintln(out, ui.Bi(
+		"The daemon was not running before the update; run `token-usage start` to start it.",
+		"daemon 更新前未在运行；如需启动请运行 `token-usage start`。",
+	))
+}
+
+// printDaemonStartHintAfterReplacement 是 Deferred 分支的未运行提示：替换由
+// Windows 后台 helper 在父进程退出后完成，立即启动 daemon 会被 helper 判定为
+// 「停止后意外运行」并放弃替换，因此提示必须先确认替换完成再启动。
+func printDaemonStartHintAfterReplacement(out io.Writer, res update.ApplyResult) {
+	if res.DaemonWasRunning {
+		return
+	}
+	fmt.Fprintln(out, ui.Bi(
+		"The daemon was not running before the update; after the background replacement completes (confirm with `token-usage version`), run `token-usage start` to start it.",
+		"daemon 更新前未在运行；待后台替换完成（用 `token-usage version` 确认）后，如需启动请运行 `token-usage start`。",
+	))
+}
+
+// renderUpToDate 输出无更新结果，按版本比较方向分流：
+//   - 本地与目标同版（或 TargetTag 空回退）→ 既有「已是最新版本（X）」；
+//   - 本地严格高于目标（rc 领先稳定版，或显式 --version 请求更低版本）→
+//     明示当前/目标版本对，不误称「已是最新版本（较低版本）」。
+//
+// renderCheckResult 与 renderApplyResult 的 default 分支共用本函数，
+// --check 与 Apply 两路径文案一致。
+func renderUpToDate(out io.Writer, res update.CheckResult) {
+	if localNewerThanTarget(res.CurrentTag, res.TargetTag) {
+		fmt.Fprintln(out, ui.Bi(
+			fmt.Sprintf("Local version %s is newer than the target release %s; nothing to update", res.CurrentTag, res.TargetTag),
+			fmt.Sprintf("本地版本 %s 已高于目标版本 %s，无需更新", res.CurrentTag, res.TargetTag),
+		))
+		return
+	}
+	current := res.CurrentTag
+	if current == "" {
+		current = ui.Bi("(unknown)", "（未知）")
+	}
+	target := res.TargetTag
+	if target == "" {
+		target = current
+	}
+	fmt.Fprintf(out, "%s（%s）\n", ui.Bi("Already up to date", "已是最新版本"), target)
+}
+
+// localNewerThanTarget 判定当前版本是否严格高于目标版本（目标 < 当前）。
+// 比较复用 update.ParseVersion + Compare（与 Check 判定同一实现）；
+// 任一侧为空或解析失败返回 false——渲染层是纯函数，调用方可构造任意状态，
+// 保守回退既有文案，不误报「本地较新」。
+func localNewerThanTarget(currentTag, targetTag string) bool {
+	if currentTag == "" || targetTag == "" {
+		return false
+	}
+	current, err := update.ParseVersion(currentTag)
+	if err != nil {
+		return false
+	}
+	target, err := update.ParseVersion(targetTag)
+	if err != nil {
+		return false
+	}
+	return target.Compare(current) < 0
 }
 
 // renderRecoveredApplyResult 输出上次更新中断后的恢复结果。NewInstalled 表示新版本
