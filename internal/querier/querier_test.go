@@ -749,3 +749,154 @@ func TestRunDimensionView_RejectsEmptyDimensions(t *testing.T) {
 		t.Fatal("空维度列表必须被拒绝")
 	}
 }
+
+// ---- day 维度:按天用量视图 ----
+
+// 纯 day 视图:行按日期升序、缺口日期补零值行、趋势条按 totalTokens 比例分块、总计行数值正确。
+func TestByDay_AscendingRowsGapFillAndTrendBars(t *testing.T) {
+	q := setupMessageFixture(t)
+	// 四个日期(含非连续):07-01 total=1000(最大), 07-03 total=500(半值), 07-05 total=5(小值)。
+	// 请求连续 07-01..07-05,07-02 与 07-04 无数据,应补零值行(趋势为空)。
+	msgs := []model.Message{
+		{ID: "day-max", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-01", TS: 1000, TotalTokens: 1000},
+		{ID: "day-half", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-03", TS: 2000, TotalTokens: 500},
+		{ID: "day-small", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-05", TS: 3000, TotalTokens: 5},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	dates := []string{"2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04", "2026-07-05"}
+	out, err := q.ByDay(context.Background(), dates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Usage by day / 按天用量") {
+		t.Errorf("输出应含双语标题:\n%s", out)
+	}
+
+	// 逐日期行断言:按日期升序,趋势条块数为 max=1000→20、半值=500→10、
+	// 小值=5→1(正值但整除为 0 取 1)、缺口与零值→0。
+	wantBlocks := map[string]int{
+		"2026-07-01": 20,
+		"2026-07-02": 0,
+		"2026-07-03": 10,
+		"2026-07-04": 0,
+		"2026-07-05": 1,
+	}
+	var rowOrder []string
+	for _, ln := range strings.Split(out, "\n") {
+		if !strings.Contains(ln, "│") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(ln, "│"), "│")
+		if len(cells) == 0 {
+			continue
+		}
+		key := strings.TrimSpace(cells[0])
+		blocks, isDayRow := wantBlocks[key]
+		if !isDayRow {
+			continue
+		}
+		rowOrder = append(rowOrder, key)
+		if got := strings.Count(ln, "█"); got != blocks {
+			t.Errorf("日期 %s 趋势条应 %d 块,实际 %d:\n%s", key, blocks, got, ln)
+		}
+	}
+	wantOrder := []string{"2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04", "2026-07-05"}
+	if strings.Join(rowOrder, ",") != strings.Join(wantOrder, ",") {
+		t.Errorf("日期行应按时间升序且缺口日期补零值行: got %v\n%s", rowOrder, out)
+	}
+
+	// 总计行:三行 total 聚合恰为 1505(用 formatTokens 换算,聚合值错即不等),
+	// 请求数 3,且总计行趋势单元格为空(总计行不含 █)。
+	if n := strings.Count(out, "Total / 总计"); n != 1 {
+		t.Errorf("应恰有一行总计,实际 %d:\n%s", n, out)
+	}
+	if !strings.Contains(out, formatTokens(1505)) {
+		t.Errorf("总计行 total 应为聚合值 1505 的换算(%s):\n%s", formatTokens(1505), out)
+	}
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "Total / 总计") && strings.Contains(ln, "█") {
+			t.Errorf("总计行趋势单元格应为空串:\n%s", ln)
+		}
+	}
+}
+
+// day,model 多维视图:主序为日期升序、同日内 total 降序,无缺口填充,趋势列存在。
+func TestRunDimensionView_DayModelOrdersByDateThenTotal(t *testing.T) {
+	q := setupMessageFixture(t)
+	msgs := []model.Message{
+		{ID: "dm-a", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-01", TS: 1000, Model: "model-a", TotalTokens: 300},
+		{ID: "dm-b", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-01", TS: 2000, Model: "model-b", TotalTokens: 100},
+		{ID: "dm-c", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-03", TS: 3000, Model: "model-c", TotalTokens: 200},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	out, err := q.RunDimensionView(context.Background(), []string{"2026-07-01", "2026-07-02", "2026-07-03"}, DimensionView{
+		Dimensions: []string{"day", "model"},
+		TitleEn:    "Usage by day and model", TitleZh: "按天与模型用量",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 趋势列以两行表头渲染(上行 Trend、下行 趋势),输出中二者仅出现在该列。
+	if !strings.Contains(out, "Trend") || !strings.Contains(out, "趋势") {
+		t.Errorf("含 day 维度的多维视图应含趋势列:\n%s", out)
+	}
+	// 数据行(首列为日期)序列:07-01 内 total 降序(a 300 在 b 100 前),随后 07-03;
+	// 07-02 无数据,多维视图不补零值行。
+	type dayRow struct{ day, model string }
+	var rows []dayRow
+	for _, ln := range strings.Split(out, "\n") {
+		if !strings.Contains(ln, "│") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(ln, "│"), "│")
+		if len(cells) < 2 {
+			continue
+		}
+		day := strings.TrimSpace(cells[0])
+		if !strings.Contains(day, "2026-07-") {
+			continue
+		}
+		rows = append(rows, dayRow{day: day, model: strings.TrimSpace(cells[1])})
+	}
+	want := []dayRow{
+		{"2026-07-01", "model-a"},
+		{"2026-07-01", "model-b"},
+		{"2026-07-03", "model-c"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("数据行数 = %d, want %d(多维不补缺口):\n%s", len(rows), len(want), out)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Errorf("第 %d 行 = %+v, want %+v(日期升序优先,同日 total 降序):\n%s", i, rows[i], want[i], out)
+		}
+	}
+}
+
+// 未知维度错误文案由有序名单动态拼接:含 day,不再是不含 day 的旧四维文本。
+func TestRunDimensionView_UnknownDimensionMessageListsDay(t *testing.T) {
+	q := setupMessageFixture(t)
+	_, err := q.RunDimensionView(context.Background(), bothDates, DimensionView{
+		Dimensions: []string{"client", "bogus"},
+		TitleEn:    "x", TitleZh: "x",
+	})
+	if err == nil {
+		t.Fatal("未知维度必须被拒绝")
+	}
+	msg := err.Error()
+	for _, want := range []string{"(allowed: client, model, provider, project, day)", "(允许: client, model, provider, project, day)"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("错误应含含 day 的允许集合 %q:\n%s", want, msg)
+		}
+	}
+	// 旧的不含 day 的四维文案不得再出现(以此保证本断言的区分度)。
+	for _, legacy := range []string{"(allowed: client, model, provider, project)", "(允许: client, model, provider, project)"} {
+		if strings.Contains(msg, legacy) {
+			t.Errorf("错误不得再使用不含 day 的旧文案 %q:\n%s", legacy, msg)
+		}
+	}
+}

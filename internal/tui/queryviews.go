@@ -798,7 +798,7 @@ func validateQueryName(draft *config.Config, name string, table string) string {
 
 // ---- 子查询编辑页 ----
 
-// subqueryEditPage 用有序多选编辑一个自定义子查询(候选仅四个内置维度);
+// subqueryEditPage 用有序多选编辑一个自定义子查询(候选为全部内置维度);
 // Enter 提交(≥2 维)直接写 draft;Esc 取消未提交选择(草稿不变)。
 type subqueryEditPage struct {
 	app    *App
@@ -811,7 +811,7 @@ func newSubqueryEditPage(app *App, name string, initial []string) *subqueryEditP
 	return &subqueryEditPage{
 		app:  app,
 		name: name,
-		sel: newOrderedSelect([]string{"client", "model", "provider", "project"}, initial,
+		sel: newOrderedSelect(querydef.BuiltinDimensionNames(), initial,
 			ui.Bi("Custom subquery "+name, "自定义子查询 "+name)),
 	}
 }
@@ -873,8 +873,8 @@ func (p *groupListPage) names() []string {
 }
 
 func (p *groupListPage) candidates() []string {
-	// 组合查询候选 = 四个内置视图 + 已定义自定义子查询(不含组合查询自身)。
-	cands := []string{"client", "model", "provider", "project"}
+	// 组合查询候选 = 全部内置视图 + 已定义自定义子查询(不含组合查询自身)。
+	cands := querydef.BuiltinDimensionNames()
 	cands = append(cands, sortedTableKeys(queryRawTable(p.app.draft, "subqueries"))...)
 	return cands
 }
@@ -1043,7 +1043,7 @@ type defaultSelectPage struct {
 const useDefaultClientSentinel = "\x00default-client"
 
 func newDefaultSelectPage(app *App) *defaultSelectPage {
-	items := []string{"client", "model", "provider", "project"}
+	items := querydef.BuiltinDimensionNames()
 	items = append(items, sortedTableKeys(queryRawTable(app.draft, "subqueries"))...)
 	items = append(items, sortedTableKeys(queryRawTable(app.draft, "groups"))...)
 	items = append(items, useDefaultClientSentinel)

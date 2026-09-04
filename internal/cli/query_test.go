@@ -36,8 +36,8 @@ func TestNewQueryCmd_NoOldFlags(t *testing.T) {
 	}
 }
 
-// TestNewQueryCmd_SubcommandTree 断言 query 命令树包含且仅包含六个子命令，
-// 且每个子命令的 Short/Use 与公开 CLI 文档一致。
+// TestNewQueryCmd_SubcommandTree 断言 query 命令树包含且仅包含七个内置子命令
+// 加 custom/list 两个固定入口,且每个子命令的 Short/Use 与公开 CLI 文档一致。
 func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 	cmd := newQueryCmd()
 
@@ -46,6 +46,7 @@ func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 		"model":    "Group by model / 按模型分组",
 		"provider": "Group by provider / 按供应商分组",
 		"project":  "Group by project / 按项目分组",
+		"day":      "Usage by day / 按天用量",
 		"session":  "View session details / 查看会话明细",
 		"summary":  "View summary / 查看总览摘要",
 		"custom":   "Run a configured custom or group query / 执行已配置的自定义或组合查询",
@@ -75,7 +76,7 @@ func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 // 超出则在 args 校验阶段报错（不是 silently 接受）。
 func TestNewQueryCmd_SubcommandMaxOneArg(t *testing.T) {
 	cmd := newQueryCmd()
-	for _, name := range []string{"client", "model", "provider", "project", "session", "summary"} {
+	for _, name := range []string{"client", "model", "provider", "project", "day", "session", "summary"} {
 		sub, _, err := cmd.Find([]string{name})
 		if err != nil {
 			t.Fatalf("Find(%q) err: %v", name, err)
@@ -165,6 +166,113 @@ func TestExecuteQuery_ViewDispatch(t *testing.T) {
 		if strings.Contains(got, c.wantNoHeader) {
 			t.Errorf("view %v 输出不应含 %q, got: %s", c.view, c.wantNoHeader, got)
 		}
+	}
+}
+
+// TestExecuteQuery_ViewDayDispatch 为 viewDay 补执行接线:输出含按天用量标题,
+// 纯 day 视图对无数据日期补零值行(趋势列为空)。
+func TestExecuteQuery_ViewDayDispatch(t *testing.T) {
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+	if err := insertOneMessage(usageDB, "2026-07-09", "claude"); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := &bytes.Buffer{}
+	if err := executeQueryDates(context.Background(), buf, usageDB, []string{"2026-07-08", "2026-07-09"}, viewDay); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Usage by day / 按天用量") {
+		t.Errorf("viewDay 输出应含按天用量标题:\n%s", out)
+	}
+	// 缺口填充:请求区间内无数据的 2026-07-08 也应出现。
+	if !strings.Contains(out, "2026-07-08") {
+		t.Errorf("viewDay 应对缺口日期补零值行:\n%s", out)
+	}
+	// 夹具消息 total_tokens=0,全区间为零值:趋势条不应出现任何 █ 块(趋势列为空)。
+	if strings.Contains(out, "█") {
+		t.Errorf("全零区间不应出现趋势条 █:\n%s", out)
+	}
+}
+
+// TestRunQuery_ViewDayFullYearBoundary 锁定 366 天上限边界与纯 day 视图的整年缺口填充:
+// 2024 为闰年(366 天),20240101-20241231 恰达展开上限、合法并展开为 366 个连续日期,
+// 插 1 条消息后输出应恰有 366 行日期行(无数据日期全部补零值行);
+// 20240101-20250101 按 2024 闰年 + 2025-01-01 计为 367 天,超过上限,
+// parseDateArgs 在配置加载与开库之前拒绝。
+func TestRunQuery_ViewDayFullYearBoundary(t *testing.T) {
+	// 2024 闰年:2024-01-01 ~ 2024-12-31 含两端恰 366 天。
+	leapDates, err := parseDateArgs([]string{"20240101-20241231"}, true, "query")
+	if err != nil {
+		t.Fatalf("闰年全年 366 天应合法: %v", err)
+	}
+	if len(leapDates) != 366 {
+		t.Fatalf("2024 全年应展开为 366 天,实际 %d", len(leapDates))
+	}
+
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+	if err := insertOneMessage(usageDB, "2024-06-15", "claude"); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := &bytes.Buffer{}
+	if err := executeQueryDatesWithAliases(context.Background(), buf, usageDB, leapDates, viewDay, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Usage by day / 按天用量") {
+		t.Fatalf("输出应含按天用量标题:\n%s", out)
+	}
+	// 日期数据行 = 首列为 2024 日期的表格行;缺口补零后应恰为 366 行。
+	dayRows := 0
+	for _, ln := range strings.Split(out, "\n") {
+		if !strings.Contains(ln, "│") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(ln, "│"), "│")
+		if len(cells) == 0 {
+			continue
+		}
+		if key := strings.TrimSpace(cells[0]); strings.HasPrefix(key, "2024-") {
+			dayRows++
+		}
+	}
+	if dayRows != 366 {
+		t.Errorf("日期行应恰 366 行(闰年全年,缺口补零),实际 %d:\n%s", dayRows, out)
+	}
+
+	// 2024 全年 366 天再加 2025-01-01 共 367 天,超上限应报错(开库前的参数阶段)。
+	if _, err := parseDateArgs([]string{"20240101-20250101"}, true, "query"); err == nil {
+		t.Error("367 天区间应被拒绝")
+	}
+}
+
+// query custom day:day 是内置视图保留名,不属于 custom 可引用集合,
+// 按未知视图名拒绝;注入必然失败的 open,证明拒绝发生在打开数据库之前。
+func TestRunQueryCustom_DayReservedRejectedBeforeOpen(t *testing.T) {
+	openCalls := 0
+	failingOpen := func(string) (*db.DB, error) {
+		openCalls++
+		return nil, errors.New("must not open database")
+	}
+	cmd, _ := newQueryOutputCmd()
+	err := runQueryCustomWithDeps(cmd, "day", nil, loadWithRaw(nil, nil), failingOpen)
+	if err == nil {
+		t.Fatal("custom day 应按保留名拒绝")
+	}
+	if !strings.Contains(err.Error(), `unknown query view "day"`) {
+		t.Errorf("错误应含 unknown query view %q: %v", "day", err)
+	}
+	if openCalls != 0 {
+		t.Errorf("保留名拒绝不得打开 DB,实际调用 open %d 次", openCalls)
 	}
 }
 
@@ -474,7 +582,7 @@ func TestRunQueryCustom_ArgsAndPrecedence(t *testing.T) {
 }
 
 // 坏 query 配置的边界:顶层问题态与视图定义错误只挡完整 query 路径
-// (裸 query/custom);五个静态表格命令不被阻断——顶层问题态静默使用
+// (裸 query/custom);六个静态表格命令不被阻断——顶层问题态静默使用
 // 默认布局,无关视图错误不阻止 query.output 布局生效。
 func TestRunQuery_BadQueryConfigBoundaryForStaticViews(t *testing.T) {
 	open := memOpen(t)
@@ -1246,8 +1354,8 @@ func TestRunQuery_RootErrorsBeforeDB(t *testing.T) {
 		t.Errorf("顶层问题应在具名路径拒绝并定位: %v", err)
 	}
 
-	// 坏 query 定义不阻断六个内置静态视图(内置子命令经 runQueryWithDeps 保持既有路径)。
-	for _, v := range []queryView{viewClient, viewModel, viewProvider, viewProject, viewSessions, viewSummary} {
+	// 坏 query 定义不阻断七个内置静态视图(内置子命令经 runQueryWithDeps 保持既有路径)。
+	for _, v := range []queryView{viewClient, viewModel, viewProvider, viewProject, viewDay, viewSessions, viewSummary} {
 		cmdB, _ := newQueryOutputCmd()
 		if err := runQueryWithDeps(cmdB, nil, v, loadWithRaw(nil, issues), memOpen(t)); err != nil {
 			t.Errorf("内置视图 %d 受坏配置阻断: %v", v, err)
@@ -1298,13 +1406,13 @@ func TestRunQuery_StaticRoutingAndTreeStable(t *testing.T) {
 	for _, sub := range root.Commands() {
 		names[sub.Name()] = true
 	}
-	for _, want := range []string{"client", "model", "provider", "project", "session", "summary", "custom", "list"} {
+	for _, want := range []string{"client", "model", "provider", "project", "day", "session", "summary", "custom", "list"} {
 		if !names[want] {
 			t.Errorf("缺少静态子命令 %q", want)
 		}
 	}
-	if len(root.Commands()) != 8 {
-		t.Errorf("静态命令树应恰为 8 个子命令: %v", root.Commands())
+	if len(root.Commands()) != 9 {
+		t.Errorf("静态命令树应恰为 9 个子命令: %v", root.Commands())
 	}
 
 	// 执行过具名查询后命令树不变:配置中的名称不会注册为动态子命令。
@@ -1522,7 +1630,7 @@ func withSubGroupAndDefault(raw map[string]any, def string) map[string]any {
 }
 
 // 固定输出结构:分区顺序恒为 标题→默认行为→调用说明→内置表→自定义子查询→组合查询;
-// 内置表恰六行且用途逐字等于静态元数据 Short;调用说明各出现一次且声明等价;
+// 内置表恰七行且用途逐字等于静态元数据 Short;调用说明各出现一次且声明等价;
 // 每条配置只渲染一条不含 [date] 占位符的简写完整命令([date] 全文仅出现在两行说明中);
 // custom/list 的 Short 不作为内置视图行出现;空分区显示 None / 无而非空表头;
 // 成功输出不含统计信息区或采集异常提示。
@@ -1577,7 +1685,7 @@ func TestRunQueryList_OutputContract(t *testing.T) {
 		t.Errorf("[date] 应只出现在两行调用说明中,实际 %d 次:\n%s", n, out)
 	}
 
-	// 内置表:六行固定命令,用途等于元数据 Short。
+	// 内置表:七行固定命令,用途等于元数据 Short。
 	for _, meta := range queryBuiltinCmds {
 		cell := "token-usage query " + meta.name
 		if strings.Count(out, cell) != 1 {

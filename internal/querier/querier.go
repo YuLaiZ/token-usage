@@ -201,21 +201,44 @@ const effectiveProviderExpr = `CASE
 	ELSE ''
 END`
 
-var dimensionWhitelist = map[string]dimension{
-	"client": {name: "client", selectExpr: "client", header: ui.HClient},
-	"model":  {name: "model", selectExpr: "model", header: ui.HModel},
-	"provider": {
+// dimensionOrder 是内置聚合维度的有序单一来源：声明顺序即错误文案中的
+// 允许集合展示顺序。day 维度取 date 列（YYYY-MM-DD），该列恒非空，无空值处理。
+var dimensionOrder = []dimension{
+	{name: "client", selectExpr: "client", header: ui.HClient},
+	{name: "model", selectExpr: "model", header: ui.HModel},
+	{
 		name:       "provider",
 		selectExpr: effectiveProviderExpr,
 		header:     ui.HProvider,
 		empty:      func() string { return ui.Bi("(unattributed)", "(未归因)") },
 	},
-	"project": {
+	{
 		name:       "project",
 		selectExpr: "project",
 		header:     ui.HProject,
 		empty:      func() string { return ui.Bi("(uncategorized)", "(未分类)") },
 	},
+	{name: "day", selectExpr: "date", header: ui.HDate},
+}
+
+// dimensionWhitelist 由 dimensionOrder 派生的按名查找表：有序切片是唯一
+// 名单来源，map 仅提供 O(1) 查找语义。
+var dimensionWhitelist = func() map[string]dimension {
+	m := make(map[string]dimension, len(dimensionOrder))
+	for _, d := range dimensionOrder {
+		m[d.name] = d
+	}
+	return m
+}()
+
+// dimensionNameList 返回逗号分隔的内置维度名单（错误信息中的允许集合），
+// 顺序与 dimensionOrder 一致。
+func dimensionNameList() string {
+	names := make([]string, len(dimensionOrder))
+	for i, d := range dimensionOrder {
+		names[i] = d.name
+	}
+	return strings.Join(names, ", ")
 }
 
 // DimensionView 描述一张分组聚合表的渲染输入(内置单维与自定义多维共用)。
@@ -261,9 +284,29 @@ func (d dimension) displayKey(raw string, aliases map[string]string) string {
 	return raw
 }
 
+// trendBarWidth 是趋势条的最大块数:含 day 维度视图中趋势列的长度上限。
+const trendBarWidth = 20
+
+// trendBar 按行 totalTokens 相对结果集最大行 totalTokens 的比例生成趋势条:
+// 长度 = 比例 × trendBarWidth(整数除法向下取整),totalTokens>0 但算出 0 块时
+// 取 1 块;maxTotal<=0 或该行 totalTokens==0 时为空串。
+// 量级前提:total ≤ maxTotal 且 maxTotal ≤ MaxInt64/20 时,total×20 的整数乘法不溢出。
+func trendBar(total, maxTotal int64) string {
+	if maxTotal <= 0 || total <= 0 {
+		return ""
+	}
+	n := int(total * int64(trendBarWidth) / maxTotal)
+	if n == 0 {
+		n = 1
+	}
+	return strings.Repeat("█", n)
+}
+
 // RunDimensionView 按维度列表输出一张分组聚合表:
-// raw 聚合 → alias 后复合键聚合 → 稳定排序(total 降序、完整显示键元组升序)→ 表格 + 总计行。
-// 总计来自同一日期范围的独立全量聚合,不由渲染后的行文本反推;无数据日期渲染表头 + 零值总计。
+// raw 聚合 → alias 后复合键聚合 → 稳定排序(含 day 时按该维度显示值升序优先,
+// 再 total 降序、完整显示键元组升序)→ 表格 + 总计行。
+// 总计来自同一日期范围的独立全量聚合,不由渲染后的行文本反推;无数据日期渲染表头 + 零值总计
+// (纯 day 单维视图改为对缺口日期插入零值行,保证逐日时间轴连续)。
 func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view DimensionView) (string, error) {
 	ctx, err := q.readyContext(ctx)
 	if err != nil {
@@ -278,8 +321,8 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 		d, ok := dimensionWhitelist[name]
 		if !ok {
 			return "", fmt.Errorf("%s", ui.Bi(
-				fmt.Sprintf("unknown query dimension %q (allowed: client, model, provider, project)", name),
-				fmt.Sprintf("未知查询维度 %q(允许: client, model, provider, project)", name),
+				fmt.Sprintf("unknown query dimension %q (allowed: %s)", name, dimensionNameList()),
+				fmt.Sprintf("未知查询维度 %q(允许: %s)", name, dimensionNameList()),
 			))
 		}
 		if seen[name] {
@@ -315,7 +358,8 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 	defer rows.Close()
 
 	type compositeRow struct {
-		parts [4]string
+		// parts 槽位数与当前内置维度白名单容量一致,再增维须同步扩容否则越界。
+		parts [5]string
 		agg   groupAggregate
 	}
 	rowOrder := make([]compositeRow, 0, 8)
@@ -332,7 +376,7 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 		if err := rows.Scan(scanArgs...); err != nil {
 			return "", fmt.Errorf("%s: %w", ui.Bi("scan aggregate rows failed", "扫描聚合结果失败"), err)
 		}
-		var parts [4]string
+		var parts [5]string
 		for i, d := range dims {
 			parts[i] = d.displayKey(rawKeys[i], view.Aliases)
 		}
@@ -348,8 +392,41 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 		return "", fmt.Errorf("%s: %w", ui.Bi("iterate aggregate rows failed", "遍历聚合结果失败"), err)
 	}
 
-	// 稳定排序:total 降序,再按完整显示键元组升序(同一有效配置与语言下确定)。
+	// day 维度在本次维度列表中的下标(-1 表示不含 day);重复维度已在参数校验拒绝,
+	// 至多出现一次。
+	dayIdx := -1
+	for i, d := range dims {
+		if d.name == "day" {
+			dayIdx = i
+			break
+		}
+	}
+
+	// 纯 day 单维视图做缺口填充:请求 dates 中没有数据行的日期插入零值行,
+	// 保证逐日时间轴连续(dates 为连续逐日列表,直接遍历对照已见日期集合)。
+	// 多维 day 视图(如 day,model)不做缺口填充。
+	if len(dims) == 1 && dayIdx == 0 {
+		seenDates := make(map[string]bool, len(rowOrder))
+		for _, r := range rowOrder {
+			seenDates[r.parts[0]] = true
+		}
+		for _, date := range dates {
+			if seenDates[date] {
+				continue
+			}
+			seenDates[date] = true
+			var parts [5]string
+			parts[0] = date
+			rowOrder = append(rowOrder, compositeRow{parts: parts})
+		}
+	}
+
+	// 稳定排序:含 day 时按该维度显示值升序优先(YYYY-MM-DD 字典序即时间序),
+	// 再按 total 降序、完整显示键元组升序(同一有效配置与语言下确定)。
 	sort.SliceStable(rowOrder, func(i, j int) bool {
+		if dayIdx >= 0 && rowOrder[i].parts[dayIdx] != rowOrder[j].parts[dayIdx] {
+			return rowOrder[i].parts[dayIdx] < rowOrder[j].parts[dayIdx]
+		}
 		if rowOrder[i].agg.totalTokens != rowOrder[j].agg.totalTokens {
 			return rowOrder[i].agg.totalTokens > rowOrder[j].agg.totalTokens
 		}
@@ -370,22 +447,39 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 	metrics := q.metricColumns()
 	var sb strings.Builder
 	sb.WriteString(title + "\n")
-	defs := make([]tableCol, 0, len(dims)+len(metrics))
+	defs := make([]tableCol, 0, len(dims)+len(metrics)+1)
 	for _, d := range dims {
 		defs = append(defs, tableCol{header: d.header, align: ui.AlignLeft, limit: 0})
 	}
+	// 含 day 时在全部维度键列之后、指标列之前插入趋势条形列。
+	if dayIdx >= 0 {
+		defs = append(defs, tableCol{header: ui.HTrend, align: ui.AlignLeft, limit: 0})
+	}
 	defs = append(defs, metricTailCols(metrics)...)
 	t := buildTable(defs)
+	// 趋势条以结果集内最大行 totalTokens 为基准(不含总计行)。
+	maxTotal := int64(0)
 	for _, row := range rowOrder {
-		cells := make([]string, 0, len(dims)+len(metrics))
+		if row.agg.totalTokens > maxTotal {
+			maxTotal = row.agg.totalTokens
+		}
+	}
+	for _, row := range rowOrder {
+		cells := make([]string, 0, len(dims)+len(metrics)+1)
 		cells = append(cells, row.parts[:len(dims)]...)
+		if dayIdx >= 0 {
+			cells = append(cells, trendBar(row.agg.totalTokens, maxTotal))
+		}
 		cells = appendMetricCells(cells, metrics, row.agg)
 		t.Row(cells...)
 	}
-	// 总计行:第一个维度列写 Total / 总计,其余维度列留空。
-	totalCells := make([]string, 0, len(dims)+len(metrics))
+	// 总计行:第一个维度列写 Total / 总计,其余维度列留空;趋势单元格为空串。
+	totalCells := make([]string, 0, len(dims)+len(metrics)+1)
 	totalCells = append(totalCells, ui.Bi("Total", "总计"))
 	for i := 1; i < len(dims); i++ {
+		totalCells = append(totalCells, "")
+	}
+	if dayIdx >= 0 {
 		totalCells = append(totalCells, "")
 	}
 	totalCells = appendMetricCells(totalCells, metrics, totals)
@@ -440,6 +534,13 @@ func (q *Querier) ByProject(ctx context.Context, dates []string) (string, error)
 	return q.RunDimensionView(ctx, dates, DimensionView{
 		Dimensions: []string{"project"},
 		TitleEn:    "Group by project", TitleZh: "按项目分组",
+	})
+}
+
+func (q *Querier) ByDay(ctx context.Context, dates []string) (string, error) {
+	return q.RunDimensionView(ctx, dates, DimensionView{
+		Dimensions: []string{"day"},
+		TitleEn:    "Usage by day", TitleZh: "按天用量",
 	})
 }
 

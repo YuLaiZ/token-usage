@@ -39,8 +39,8 @@ func newQueryApp(t *testing.T, draft *config.Config) *App {
 
 func keyString(s string) string { return s }
 
-// 候选集合严格受限:custom 只选四个 builtin;group 只选 builtin+已定义 custom;
-// default 只选 builtin+custom+group。
+// 候选集合严格受限:custom 只选内置维度(名单来自 querydef 单一来源);
+// group 只选 builtin+已定义 custom;default 只选 builtin+custom+group。
 func TestQueryViews_CandidateSetsRestricted(t *testing.T) {
 	draft := &config.Config{DataDir: "/x", RawQuery: map[string]any{
 		"subqueries": map[string]any{"mpc": "model,provider"},
@@ -49,23 +49,23 @@ func TestQueryViews_CandidateSetsRestricted(t *testing.T) {
 	a := newQueryApp(t, draft)
 
 	sub := newSubqueryEditPage(a, "s2", nil)
-	if len(sub.sel.candidates) != 4 {
-		t.Errorf("custom 候选应恰为 4 个内置维度: %v", sub.sel.candidates)
+	if len(sub.sel.candidates) != 5 {
+		t.Errorf("custom 候选应恰为 5 个内置维度: %v", sub.sel.candidates)
 	}
 	for _, c := range sub.sel.candidates {
-		if c != "client" && c != "model" && c != "provider" && c != "project" {
+		if c != "client" && c != "model" && c != "provider" && c != "project" && c != "day" {
 			t.Errorf("custom 候选含非法项 %q", c)
 		}
 	}
 
 	grp := newGroupEditPage(a, "g2", nil)
-	want := []string{"client", "model", "provider", "project", "mpc"}
+	want := []string{"client", "model", "provider", "project", "day", "mpc"}
 	if strings.Join(grp.sel.candidates, ",") != strings.Join(want, ",") {
 		t.Errorf("group 候选 = %v, want %v(group 不得含 group 自身)", grp.sel.candidates, want)
 	}
 
 	def := newDefaultSelectPage(a)
-	if len(def.items) != 7 { // 4 builtin + mpc + g + 使用默认 client
+	if len(def.items) != 8 { // 5 builtin + mpc + g + 使用默认 client
 		t.Errorf("default 候选数 = %d: %v", len(def.items), def.items)
 	}
 	found := map[string]bool{}
@@ -142,9 +142,9 @@ func TestQueryViews_GroupEditAndDefaultSelect(t *testing.T) {
 	}}
 	a := newQueryApp(t, draft)
 
-	// group:选 client、mpc(候选序 client model provider project mpc)。
+	// group:选 client、mpc(候选序 client model provider project day mpc)。
 	g := newGroupEditPage(a, "g", nil)
-	for _, key := range []string{" ", "down", "down", "down", "down", " ", "enter"} {
+	for _, key := range []string{" ", "down", "down", "down", "down", "down", " ", "enter"} {
 		g.Update(queryTestKeyMsg(key))
 	}
 	if got := draft.RawQuery["groups"].(map[string]any)["g"]; got != "client,mpc" {
@@ -153,8 +153,8 @@ func TestQueryViews_GroupEditAndDefaultSelect(t *testing.T) {
 
 	// default 单选:Space 设定唯一选择,Enter 提交。
 	def := newDefaultSelectPage(a)
-	// 光标移到 mpc(索引 4)。
-	for i := 0; i < 4; i++ {
+	// 光标移到 mpc(索引 5)。
+	for i := 0; i < 5; i++ {
 		def.Update(queryTestKeyMsg("down"))
 	}
 	def.Update(queryTestKeyMsg(" "))

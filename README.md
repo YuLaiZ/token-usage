@@ -92,6 +92,7 @@ token-usage start
 ```bash
 token-usage query             # today's default report (client when unconfigured)
 token-usage query model       # group by model
+token-usage query day         # usage by day
 token-usage query 20260701-20260721
 ```
 
@@ -133,7 +134,7 @@ token-usage query list
 | `collect all` | Collect all history without `collection_log` date deduplication; safe to rerun. |
 | `collect retry` | Retry unresolved collection failures. |
 | `query [date]` | Run the default report. |
-| `query client/model/provider/project/session/summary [date]` | Run a built-in report. |
+| `query client/model/provider/project/day/session/summary [date]` | Run a built-in report. |
 | `query <name> [date]` | Run a configured view or group. |
 | `query list` | List views without opening the usage database. |
 | `errors` | Show collection failures. |
