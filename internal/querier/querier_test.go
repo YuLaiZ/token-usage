@@ -1548,3 +1548,45 @@ func TestRunDimensionView_WeekdayModelOrdersByISOWeekdayThenTotal(t *testing.T) 
 		}
 	}
 }
+
+// Summary 追加活跃天数/单日峰值/日均总量三行:峰值日按日聚合 total 的最大行,
+// 同分取日期升序首个;日均总量 = 全范围 total / 活跃天数。
+func TestSummary_ActiveDaysPeakDayAndDailyAverage(t *testing.T) {
+	q := setupMessageFixture(t)
+
+	out, err := q.Summary(context.Background(), bothDates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// fixture 两天各有 1 条消息:活跃天数 2。
+	if !strings.Contains(out, "Active days / 活跃天数: 2") {
+		t.Errorf("应含活跃天数 2:\n%s", out)
+	}
+	// 两天 total 相同(各 1100):同分取日期升序首个 2026-07-09。
+	if !strings.Contains(out, "Peak day / 单日峰值: 2026-07-09 (1.10 K)") {
+		t.Errorf("峰值日应为 2026-07-09(同分取日期升序首个):\n%s", out)
+	}
+	// 日均总量 = 2200/2 = 1100 → 1.10 K。
+	if !strings.Contains(out, "Daily average / 日均总量: 1.10 K") {
+		t.Errorf("日均总量应为 1.10 K:\n%s", out)
+	}
+}
+
+// 范围内无数据时(活跃天数 0):峰值日与日均总量两行不渲染,活跃天数行保留 0。
+func TestSummary_OmitsPeakAndAverageWhenRangeEmpty(t *testing.T) {
+	q := setupMessageFixture(t)
+
+	out, err := q.Summary(context.Background(), []string{"2030-01-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Active days / 活跃天数: 0") {
+		t.Errorf("应含活跃天数 0:\n%s", out)
+	}
+	if strings.Contains(out, "Peak day") || strings.Contains(out, "单日峰值") {
+		t.Errorf("空范围不应渲染峰值日行:\n%s", out)
+	}
+	if strings.Contains(out, "Daily average") || strings.Contains(out, "日均总量") {
+		t.Errorf("空范围不应渲染日均总量行:\n%s", out)
+	}
+}

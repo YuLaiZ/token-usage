@@ -2,6 +2,7 @@ package querier
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"sort"
@@ -870,17 +871,41 @@ func (q *Querier) Summary(ctx context.Context, dates []string) (string, error) {
 		return "", fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
 	}
 
+	// 活跃天数:请求范围内实际有数据的天数(日均的分母)。
+	var activeDays int64
+	err = q.db.QueryRowContext(ctx, fmt.Sprintf(
+		"SELECT COUNT(DISTINCT date) FROM messages WHERE date IN (%s)", placeholders), args...).Scan(&activeDays)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
+	}
+
+	// 单日峰值:按日聚合 total 的最大行,同分取日期升序首个,保证确定性;
+	// 范围内无数据时无行,保持零值即可。
+	var peakDate string
+	var peakTotal int64
+	err = q.db.QueryRowContext(ctx, fmt.Sprintf(
+		"SELECT date, SUM(total_tokens) FROM messages WHERE date IN (%s) GROUP BY date ORDER BY 2 DESC, 1 ASC LIMIT 1",
+		placeholders), args...).Scan(&peakDate, &peakTotal)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
+	}
+
 	var sb strings.Builder
 	sb.WriteString(ui.Bi("Summary", "总览摘要") + "\n\n")
 	// 统计范围只由 CLI 统一信息区的 Query range 行承载(单日不渲染 a ~ a),这里不再重复。
 	fmt.Fprintf(&sb, "%s: %d\n", ui.Bi("Clients", "客户端数"), clientCount)
 	fmt.Fprintf(&sb, "%s: %d\n", ui.Bi("Total requests", "请求总数"), requestCount)
+	fmt.Fprintf(&sb, "%s: %d\n", ui.Bi("Active days", "活跃天数"), activeDays)
 	fmt.Fprintf(&sb, "%s: %s\n", ui.ColInput, formatTokens(freshInput))
 	fmt.Fprintf(&sb, "%s: %s\n", ui.ColOutput, formatTokens(outputTokens))
 	fmt.Fprintf(&sb, "%s: %s\n", ui.ColCacheRead, formatTokens(cacheRead))
 	fmt.Fprintf(&sb, "%s: %s\n", ui.ColCacheCreate, formatTokens(cacheCreate))
 	fmt.Fprintf(&sb, "%s: %s\n", ui.ColReasoning, formatTokens(reasoning))
 	fmt.Fprintf(&sb, "%s: %s\n", ui.ColTotal, formatTokens(totalTokens))
+	if activeDays > 0 {
+		fmt.Fprintf(&sb, "%s: %s (%s)\n", ui.Bi("Peak day", "单日峰值"), peakDate, formatTokens(peakTotal))
+		fmt.Fprintf(&sb, "%s: %s\n", ui.Bi("Daily average", "日均总量"), formatTokens(totalTokens/activeDays))
+	}
 
 	return sb.String(), nil
 }

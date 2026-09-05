@@ -65,7 +65,7 @@ func TestStaticTableCommands_ApplyOutputLayout(t *testing.T) {
 	if err := runQueryWithDeps(cmd, []string{"20260709"}, viewSummary, loadWithRaw(raw, nil), open); err != nil {
 		t.Fatalf("summary 应正常执行: %v", err)
 	}
-	wantSummary := "Summary / 总览摘要\n\nClients / 客户端数: 2\nTotal requests / 请求总数: 2\nInput / 输入: 0\nOutput / 输出: 0\nCache Read / 缓存读取: 0\nCache Create / 缓存创建: 0\nReasoning / 推理: 0\nTotal / 总计: 0\n\n"
+	wantSummary := "Summary / 总览摘要\n\nClients / 客户端数: 2\nTotal requests / 请求总数: 2\nActive days / 活跃天数: 1\nInput / 输入: 0\nOutput / 输出: 0\nCache Read / 缓存读取: 0\nCache Create / 缓存创建: 0\nReasoning / 推理: 0\nTotal / 总计: 0\nPeak day / 单日峰值: 2026-07-09 (0)\nDaily average / 日均总量: 0\n\n"
 	if idx := strings.Index(buf.String(), "Summary / 总览摘要"); idx < 0 || buf.String()[idx:] != wantSummary {
 		t.Errorf("summary golden 不变(含 Cache Create):\ngot:\n%q\nwant:\n%q", buf.String()[idx:], wantSummary)
 	}

@@ -246,6 +246,8 @@ Last successful collection / 最近成功采集: 2026-07-22 08:15:03
 
 `query day`、`query month`、`query hour`、`query weekday` 及任何含 `day`、`month`、`hour` 或 `weekday` 时间维度的视图按时间升序呈现时间轴：行按时间维度升序排列（日 `YYYY-MM-DD`、月 `YYYY-MM`、小时 `00:00`..`23:00` 或 ISO 周序的星期名，而非按总量降序；多个时间维度并存时按声明首个为排序主轴），`Trend / 趋势` 条形列以区间内最繁忙的行为基准对比各行总量。纯 `day` 与 `month` 视图为请求区间内无数据的日期/月份插入零值行；纯 `hour` 与 `weekday` 视图按本机时区折算小时/星期（与 date 列同一时区语义），任一请求区间都呈现整日 24 小时固定刻度与 ISO 周序（周一在首）的整周 7 天固定刻度，为无数据小时/星期补零值行，时间轴不留缺口。
 
+`query summary` 输出固定的纵向摘要：`Clients / 客户端数`、`Total requests / 请求总数`、`Active days / 活跃天数`（区间内有数据的天数）、每个 token 列一行（`Input` 至 `Total`，恒含 `Cache Create`）；区间内至少有一天有数据时，追加 `Peak day / 单日峰值`（源 total 最高的日期，同分取日期最早者）与 `Daily average / 日均总量`（区间总量除以活跃天数）。区间内无数据时最后两行不渲染。
+
 ### 可配置查询视图
 
 可选的 `[query]` 段配置裸 `query` 的执行对象与自定义视图：
