@@ -6,10 +6,10 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
-	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -143,7 +143,7 @@ func TestExportCSVSessionQuoting(t *testing.T) {
 		t.Errorf("title 转义后应完整 = %q, want %q", row[2], wantTitle)
 	}
 	if row[3] != "0" {
-		t.Errorf("duration_ms 应为原始整数 0(夹具单条消息,首末同为 ts=0),实际 %q", row[3])
+		t.Errorf("duration_ms 应为原始整数 0(夹具单条消息,首末时间戳相同),实际 %q", row[3])
 	}
 	if row[10] != "42" {
 		t.Errorf("total 应为原始整数 42,实际 %q", row[10])
@@ -728,10 +728,10 @@ func TestExportJSONHourView(t *testing.T) {
 		// ts 按本机时区取 09:30 与 15:00,消息分别折入 "09:00"/"15:00" 行。
 		msgs := []model.Message{
 			{ID: "hour-a", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-01",
-				TS: time.Date(2026, 7, 1, 9, 30, 0, 0, time.Local).UnixMilli(),
+				TS:               time.Date(2026, 7, 1, 9, 30, 0, 0, time.Local).UnixMilli(),
 				FreshInputTokens: 1000, TotalTokens: 1000},
 			{ID: "hour-b", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-01",
-				TS: time.Date(2026, 7, 1, 15, 0, 0, 0, time.Local).UnixMilli(),
+				TS:          time.Date(2026, 7, 1, 15, 0, 0, 0, time.Local).UnixMilli(),
 				TotalTokens: 5},
 		}
 		if _, err := db.UpsertMessages(context.Background(), usageDB, msgs); err != nil {

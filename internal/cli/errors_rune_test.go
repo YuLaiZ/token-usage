@@ -112,7 +112,7 @@ func TestErrorsRunE_FilterBySource(t *testing.T) {
 	}
 }
 
-// TestErrorsRunE_FilterByDate 位置日期参数只看指定日期（验证 RunE 经 parseErrorDateArg 转 YYYY-MM-DD）。
+// TestErrorsRunE_FilterByDate 位置日期参数只看指定日期（RunE 经 parseDateArgs 归一化为逐日列表）。
 func TestErrorsRunE_FilterByDate(t *testing.T) {
 	dataDir := setupErrorsEnv(t)
 	usageDB, err := db.Open(filepath.Join(dataDir, "usage.db"))
@@ -140,7 +140,7 @@ func TestErrorsRunE_FilterByDate(t *testing.T) {
 	}
 }
 
-// TestErrorsRunE_InvalidDateReturnsError 位置日期参数非法值应返回 error（RunE 透传 parseErrorDateArg 的错误）。
+// TestErrorsRunE_InvalidDateReturnsError 位置日期参数非法值应返回 error（RunE 透传 parseDateArgs 的错误）。
 func TestErrorsRunE_InvalidDateReturnsError(t *testing.T) {
 	setupErrorsEnv(t)
 

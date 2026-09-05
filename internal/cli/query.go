@@ -67,7 +67,7 @@ func newQueryCmd() *cobra.Command {
 }
 
 // newQueryCmdWithDeps 构造 query 根命令;load/open 可注入供包内测试根命令的
-// 真实 RunE 接线(生产路径传入 loadConfig 与 dbOpener)。八个内置子命令与
+// 真实 RunE 接线(生产路径传入 loadConfig 与 dbOpener)。十个内置子命令与
 // custom 保持既有执行路径;用户配置中的名称绝不动态 AddCommand。
 func newQueryCmdWithDeps(load func() (*config.Config, error), open func(string) (*db.DB, error)) *cobra.Command {
 	cmd := &cobra.Command{

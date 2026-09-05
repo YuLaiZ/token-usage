@@ -246,7 +246,7 @@ Every grouped view (the eight built-in views and every custom multi-dimensional 
 
 `query day`, `query month`, `query hour`, `query weekday`, and every view containing the `day`, `month`, `hour`, or `weekday` dimension present a time-ordered timeline: rows are ordered by the time dimension ascending (`YYYY-MM-DD` days, `YYYY-MM` months, `00:00`..`23:00` hourly ticks, or weekday names in ISO week order, not by total; when several time dimensions coexist, the first declared one is the sort axis), and a `Trend / 趋势` bar column compares each row's total against the busiest row in the range. The pure `day` and `month` views insert a zero-value row for each day or month without data within the requested range, whereas the pure `hour` view always presents the fixed 24 hourly ticks of the day and the pure `weekday` view always presents the fixed 7 weekday ticks in ISO week order (Monday first), each with zero-value rows for hours or weekdays without data, independent of the requested date range (hours and weekdays are folded from message timestamps to local time, the same timezone semantics as the date column), so the timeline has no gaps.
 
-`query summary` renders a fixed vertical summary: `Clients / 客户端数`, `Total requests / 请求总数`, `Active days / 活跃天数` (days with data inside the range), one line per token column (`Input` through `Total`, always including `Cache Create`), and, when the range contains at least one day with data, `Peak day / 单日峰值` (the date with the highest source total, ties broken by earliest date) and `Daily average / 日均总量` (range total divided by active days). Those last two lines are omitted when the range has no data.
+`query summary` renders a fixed vertical summary: `Clients / 客户端数`, `Total requests / 请求总数`, `Active days / 活跃天数` (days with data inside the range), one line per token column (`Input` through `Total`, always including `Cache Create`), and, when the range contains at least one day with data, `Peak day / 单日峰值` (the date with the highest source total, ties broken by earliest date) and `Daily average / 日均总量` (range total divided by active days, integer division rounded down). Those last two lines are omitted when the range has no data.
 
 ### Configurable Query Views
 
@@ -330,7 +330,7 @@ token-usage export [view] [DATE|DATE-DATE] [--format csv|json]
 | `day` | `date` | usage by day, date ascending, days without data inserted as zero rows |
 | `month` | `month` | usage by month, month ascending, months without data inserted as zero rows |
 | `hour` | `hour` | usage by hour in local time, hour ascending, all 24 hourly ticks present with zero rows for hours without data |
-| `weekday` | `weekday` | usage by weekday in local time, ISO week order (Monday first), all 7 weekday ticks present with zero rows for days without data |
+| `weekday` | `weekday` | usage by weekday in local time, ISO week order (Monday first), all 7 weekday ticks present with zero rows for weekdays without data |
 | `session` | `client`, `project`, `title`, `duration_ms` | session details in the same order as `query session`; `project`/`title` keep their raw source values — an empty project stays an empty string, unlike the grouped views which substitute the placeholder; `duration_ms` is the session's request span (last minus first message timestamp, in milliseconds) |
 
 `summary` and configured custom views (`query.subqueries` / `query.groups`) are deliberately not exportable; an unknown view is rejected with the allowed set before the configuration is loaded or the database opens.

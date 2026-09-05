@@ -45,15 +45,19 @@ func TestStaticTableCommands_ApplyOutputLayout(t *testing.T) {
 	}
 	open := memOpen(t)
 
-	for _, view := range []queryView{viewClient, viewModel, viewProvider, viewProject, viewSessions} {
+	for _, view := range []queryView{viewClient, viewModel, viewProvider, viewProject, viewDay, viewMonth, viewHour, viewWeekday, viewSessions} {
 		cmd, buf := newQueryOutputCmd()
 		if err := runQueryWithDeps(cmd, []string{"20260709"}, view, loadWithRaw(raw, nil), open); err != nil {
 			t.Fatalf("静态视图 %d 应不受坏视图定义阻断: %v", view, err)
 		}
 		header := layoutHeaderCells(t, buf.String())
 		dimCount := 1
-		if view == viewSessions {
+		switch {
+		case view == viewSessions:
 			dimCount = 4 // Client / Project / Title / Duration 固定在前
+		case view == viewDay || view == viewMonth || view == viewHour || view == viewWeekday:
+			// 时间维度列之后插入非布局的 Trend / 趋势 趋势列。
+			dimCount = 2
 		}
 		if got := strings.Join(header[dimCount:], "|"); got != "Total|Requests" {
 			t.Errorf("静态视图 %d 布局 = %q, want Total|Requests:\n%s", view, got, buf.String())
@@ -174,7 +178,7 @@ func TestBadOutputBlocksStaticTableCommands(t *testing.T) {
 			opens := 0
 			open := countingOpen(t, &opens)
 
-			for _, view := range []queryView{viewClient, viewModel, viewProvider, viewProject, viewSessions} {
+			for _, view := range []queryView{viewClient, viewModel, viewProvider, viewProject, viewDay, viewMonth, viewHour, viewWeekday, viewSessions} {
 				cmd, _ := newQueryOutputCmd()
 				err := runQueryWithDeps(cmd, []string{"20260709"}, view, loadWithRaw(raw, nil), open)
 				if err == nil {
@@ -224,7 +228,7 @@ func TestTopLevelIssues_StaticCommandsUseDefaultLayout(t *testing.T) {
 	}
 	open := memOpen(t)
 
-	for _, view := range []queryView{viewClient, viewModel, viewProvider, viewProject, viewSessions} {
+	for _, view := range []queryView{viewClient, viewModel, viewProvider, viewProject, viewDay, viewMonth, viewHour, viewWeekday, viewSessions} {
 		cmd, buf := newQueryOutputCmd()
 		if err := runQueryWithDeps(cmd, []string{"20260709"}, view, loadWithRaw(nil, issues), open); err != nil {
 			t.Fatalf("顶层问题态下静态视图 %d 应可用: %v", view, err)

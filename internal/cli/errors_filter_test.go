@@ -55,6 +55,18 @@ func TestBuildErrorsFilter(t *testing.T) {
 			unresolved: true,
 			want:       db.ErrorFilter{Dates: []string{"2026-07-01"}, Source: "claude", Unresolved: true},
 		},
+		{
+			name:       "区间+unresolved: 指定区间、仅未解决",
+			dates:      []string{"2026-07-01", "2026-07-02"},
+			unresolved: true,
+			want:       db.ErrorFilter{Dates: []string{"2026-07-01", "2026-07-02"}, Source: "", Unresolved: true},
+		},
+		{
+			name:       "仅 source+unresolved: 全部日期、仅未解决",
+			source:     "claude",
+			unresolved: true,
+			want:       db.ErrorFilter{Dates: nil, Source: "claude", Unresolved: true},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

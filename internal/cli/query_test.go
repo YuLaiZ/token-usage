@@ -36,7 +36,7 @@ func TestNewQueryCmd_NoOldFlags(t *testing.T) {
 	}
 }
 
-// TestNewQueryCmd_SubcommandTree 断言 query 命令树包含且仅包含八个内置子命令
+// TestNewQueryCmd_SubcommandTree 断言 query 命令树包含且仅包含十个内置子命令
 // 加 custom/list 两个固定入口,且每个子命令的 Short/Use 与公开 CLI 文档一致。
 func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 	cmd := newQueryCmd()
@@ -1440,7 +1440,7 @@ func TestRunQuery_RootErrorsBeforeDB(t *testing.T) {
 		t.Errorf("顶层问题应在具名路径拒绝并定位: %v", err)
 	}
 
-	// 坏 query 定义不阻断八个内置静态视图(内置子命令经 runQueryWithDeps 保持既有路径)。
+	// 坏 query 定义不阻断十个内置静态视图(内置子命令经 runQueryWithDeps 保持既有路径)。
 	for _, v := range []queryView{viewClient, viewModel, viewProvider, viewProject, viewDay, viewMonth, viewSessions, viewSummary} {
 		cmdB, _ := newQueryOutputCmd()
 		if err := runQueryWithDeps(cmdB, nil, v, loadWithRaw(nil, issues), memOpen(t)); err != nil {

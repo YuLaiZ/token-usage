@@ -329,7 +329,7 @@ func (d dimension) displayKey(raw string, aliases map[string]string) string {
 	return raw
 }
 
-// trendBarWidth 是趋势条的最大块数:含 day 维度视图中趋势列的长度上限。
+// trendBarWidth 是趋势条的最大块数:含时间维度(day/month/hour/weekday)视图中趋势列的长度上限。
 const trendBarWidth = 20
 
 // hourTicks 是 hour 维度纯单维视图缺口填充的固定原始键刻度(SQL 形态

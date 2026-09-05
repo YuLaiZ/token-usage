@@ -1075,7 +1075,7 @@ func TestRunDimensionView_UnknownDimensionMessageListsDayAndMonth(t *testing.T) 
 			t.Errorf("错误应含含 weekday 的允许集合 %q:\n%s", want, msg)
 		}
 	}
-	// 旧的不含 weekday 的八维文案不得再出现(以此保证本断言的区分度)。
+	// 旧的不含 weekday 的七维文案不得再出现(以此保证本断言的区分度)。
 	for _, legacy := range []string{
 		"(allowed: client, model, provider, project, day, month, hour)",
 		"(允许: client, model, provider, project, day, month, hour)",

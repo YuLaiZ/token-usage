@@ -511,7 +511,7 @@ func TestParse_EarlierErrorDoesNotPolluteLaterValidGroups(t *testing.T) {
 	}
 }
 
-// IsReservedName 是保留名的单一语义来源:八个内置视图名与 custom/list 固定入口
+// IsReservedName 是保留名的单一语义来源:十个内置视图名与 custom/list 固定入口
 // 均为保留名;普通合法名称(含以保留名为前缀/后缀的词)不是保留名。
 func TestIsReservedName(t *testing.T) {
 	for _, name := range []string{"client", "model", "provider", "project", "session", "summary", "day", "month", "custom", "list"} {
@@ -527,7 +527,7 @@ func TestIsReservedName(t *testing.T) {
 }
 
 // 保留名错误的双语列表由同一有序来源生成:两张表的 list 拒绝错误都必须
-// 完整列出十个名称(含 day/month 与 list),缺一即文案漂移。
+// 完整列出十二个名称(十个内置视图名与 custom/list),缺一即文案漂移。
 func TestParse_ReservedNameErrorListsAllReservedNames(t *testing.T) {
 	reserved := []string{"client", "model", "provider", "project", "session", "summary", "day", "month", "hour", "weekday", "custom", "list"}
 	for _, section := range []struct{ table, path string }{

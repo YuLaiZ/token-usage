@@ -191,5 +191,3 @@ func expansionOverLimitError(raw string, days int, cmdName string) error {
 		fmt.Sprintf("无效的日期参数 %q：区间展开为 %d 天，超过 %d 天上限；请拆分为较小的区间分次查询。%s，例如 token-usage %s 20260701", raw, days, expandDaysLimit, dateFormatsHintZH, cmdName),
 	))
 }
-
-// parseDateEndpoint 把单个日期端点解析为归一化区间 [first, last]：

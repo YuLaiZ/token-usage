@@ -58,8 +58,8 @@ func newExportCmdWithDeps(load func() (*config.Config, error), open func(string)
 		Use:   "export [view] [DATE|DATE-DATE]",
 		Short: "Export usage data as CSV or JSON / 以 CSV 或 JSON 导出使用数据",
 		Long: ui.Bi(
-			"Export aggregated usage data as machine-readable CSV or JSON to standard output. Views: client (default), model, provider, project, day, month, session; summary and custom views are not supported. The date argument accepts the same forms as query: a day (YYYYMMDD), month (YYYYMM), year (YYYY; single arg only), or an inclusive DATE-DATE range; it defaults to today. --format selects csv (default) or json. Output is pure data on stdout: no statistics header, no total row, raw integers without K/M abbreviations, a fixed column set that ignores the [query.output.columns] layout, UTF-8 without BOM; redirect it to save a file. Collection-error warnings go to stderr.",
-			"将用量聚合数据以机器可读的 CSV 或 JSON 导出到标准输出。视图集合：client（默认）、model、provider、project、day、month、session；不支持 summary 与自定义视图。日期参数与 query 相同：日 YYYYMMDD、月 YYYYMM、年 YYYY（年仅单独使用）或闭区间 DATE-DATE，缺省今天。--format 选择 csv（默认）或 json。stdout 为纯数据：无统计信息区、无总计行、整数为原始值（不做 K/M 缩写）、列固定且不应用 [query.output.columns] 输出布局、UTF-8 无 BOM；可用重定向保存文件。采集异常警告写 stderr。",
+			"Export aggregated usage data as machine-readable CSV or JSON to standard output. Views: client (default), model, provider, project, day, month, hour, weekday, session; summary and custom views are not supported. The date argument accepts the same forms as query: a day (YYYYMMDD), month (YYYYMM), year (YYYY; single arg only), or an inclusive DATE-DATE range; it defaults to today. --format selects csv (default) or json. Output is pure data on stdout: no statistics header, no total row, raw integers without K/M abbreviations, a fixed column set that ignores the [query.output.columns] layout, UTF-8 without BOM; redirect it to save a file. Collection-error warnings go to stderr.",
+			"将用量聚合数据以机器可读的 CSV 或 JSON 导出到标准输出。视图集合：client（默认）、model、provider、project、day、month、hour、weekday、session；不支持 summary 与自定义视图。日期参数与 query 相同：日 YYYYMMDD、月 YYYYMM、年 YYYY（年仅单独使用）或闭区间 DATE-DATE，缺省今天。--format 选择 csv（默认）或 json。stdout 为纯数据：无统计信息区、无总计行、整数为原始值（不做 K/M 缩写）、列固定且不应用 [query.output.columns] 输出布局、UTF-8 无 BOM；可用重定向保存文件。采集异常警告写 stderr。",
 		),
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 2 {
@@ -296,7 +296,7 @@ func renderSessionCSV(rows []querier.SessionRow) (string, error) {
 	}
 	for _, row := range rows {
 		record := exportRecord([]string{row.Client, row.Project, row.Title,
-			strconv.FormatInt(row.LastTS - row.FirstTS, 10)}, row.Agg)
+			strconv.FormatInt(row.LastTS-row.FirstTS, 10)}, row.Agg)
 		if err := w.Write(record); err != nil {
 			return "", err
 		}
