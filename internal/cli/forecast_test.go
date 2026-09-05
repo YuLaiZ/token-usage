@@ -178,6 +178,60 @@ func TestChartCmd_EndToEndWithOut(t *testing.T) {
 	}
 }
 
+// chart --pie 合法路径端到端:--by model 的占比切片与图例进入 SVG,
+// 零值维度被跳过(不产生扇区)。
+func TestChartCmd_PieEndToEnd(t *testing.T) {
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+
+	today := time.Date(2026, 9, 6, 12, 0, 0, 0, time.Local)
+	msgs := []model.Message{
+		{ID: "p-a", SessionID: "s", Client: model.ClientClaudeCode,
+			Date: today.Format("2006-01-02"), TS: today.UnixMilli(), Model: "model-x", TotalTokens: 3000},
+		{ID: "p-b", SessionID: "s", Client: model.ClientClaudeCode,
+			Date: today.Format("2006-01-02"), TS: today.UnixMilli(), Model: "model-y", TotalTokens: 1000},
+	}
+	if _, err := db.UpsertMessages(context.Background(), usageDB, msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(t.TempDir(), "pie.svg")
+	cmd := newChartCmdWithDeps(
+		func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil },
+		func(string) (*db.DB, error) { return usageDB, nil },
+	)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--pie", "--by", "model", "--out", outPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	svg, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(svg), "model-x (75.0%)") || !strings.Contains(string(svg), "model-y (25.0%)") {
+		t.Errorf("图例应含两模型的占比:\n%s", svg)
+	}
+
+	// --pie --by month(时间维度)同 day 一样被拒绝。
+	cmd2 := newChartCmdWithDeps(
+		func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil },
+		func(string) (*db.DB, error) { return usageDB, nil },
+	)
+	cmd2.SetArgs([]string{"--pie", "--by", "month"})
+	cmd2.SetOut(&buf)
+	cmd2.SetErr(&buf)
+	if err := cmd2.Execute(); err == nil {
+		t.Fatal("--pie --by month 应被拒绝")
+	}
+}
+
 // watch 单帧渲染:输出实时监视头(刷新时间)、summary 与按模型分组;
 // --once 模式渲染一帧即返回,重定向与管道友好。
 func TestWatchCmd_OnceFrame(t *testing.T) {

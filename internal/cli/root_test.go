@@ -12,7 +12,7 @@ import (
 
 // TestRootCommand_HasSubcommands 收口：root 必须列出且仅列出
 // collect/config/doctor/errors/export/query/restart/start/status/stop/update/version/help/completion
-// 十四个用户可见子命令。
+// 十七个用户可见子命令。
 //
 // 这是 strict 集合断言：多余或缺失任一项均失败。newRootCmd 现在显式
 // InitDefaultHelpCmd/InitDefaultCompletionCmd（为改写双语 Short），因此

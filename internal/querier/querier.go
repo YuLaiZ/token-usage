@@ -984,20 +984,27 @@ const heatLevels = " .:-=+*#%@"
 // heatCell 按单元格 total 相对全表最大值折算 0..9 强度级并返回对应字符。
 // maxTotal ≤ 0 或该格 total ≤ 0 时为空格。
 func heatCell(total, maxTotal int64) byte {
-	if maxTotal <= 0 || total <= 0 {
-		return heatLevels[0]
+	return heatLevels[HeatLevel(total, maxTotal)]
+}
+
+// HeatLevel 把 v 相对 max 的占比折算为 0..9 强度级(终端字符下标);SVG 侧
+// 取色在其上加 1 得 1..10(0 值用最低级浅灰)。单一实现防止终端与 SVG 两处
+// 折算漂移。
+func HeatLevel(v, max int64) int {
+	if max <= 0 || v <= 0 {
+		return 0
 	}
 	var level int64
-	// 先乘后除在 maxTotal 较大时可能溢出,按阈值切换运算顺序。
-	if maxTotal < int64(1<<54) {
-		level = total * 9 / maxTotal
+	// 先乘后除在 max 较大时可能溢出,按阈值切换运算顺序。
+	if max < int64(1<<54) {
+		level = v * 9 / max
 	} else {
-		level = total / (maxTotal / 9)
+		level = v / (max / 9)
 	}
 	if level > 9 {
 		level = 9
 	}
-	return heatLevels[level]
+	return int(level)
 }
 
 // HeatmapMatrix 是星期×小时热力矩阵的结构化数据:星期与小时标签为显示形态

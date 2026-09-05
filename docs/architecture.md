@@ -139,7 +139,7 @@ Queries directly SUM `fresh_input_tokens` and `total_tokens`: values come from t
 | `collector/` | Parses raw data from each source and returns `CollectResult`. | `Collector.Collect()`, `RouterAdapter.CollectLogs()` |
 | `engine/` | Collection orchestration: dependency assembly, main loop, transactional writing, retries, and result validation. | `NewDeps()`, `RunCollect()`, `RunRetryWithDeps()`, `RunRouterBackfill()`, `ValidateResult()` |
 | `analyzer/` | Daemon monitoring: ChangedFile/Incremental/router-source collection triggers, debounced merging, and a serialization lock. | `NewFromConfig()`, `JSONLWatcher`, `SQLitePoller` |
-| `querier/` | Real-time aggregation from messages and formatted output. | `ByClient()`, `ByModel()`, `ByProject()`, `ByHour()`, `ByWeekday()`, `Heatmap()`, `RunDimensionView()`, `Sessions()`, `Summary()`, `StatsBetween()` |
+| `querier/` | Real-time aggregation from messages and formatted output. | `ByClient()`, `ByModel()`, `ByProject()`, `ByHour()`, `ByWeekday()`, `Heatmap()`, `HeatmapMatrix()`, `RunDimensionView()`, `Sessions()`, `Summary()`, `StatsBetween()` |
 | `tui/` | Interactive configuration-editing TUI (dual edit/display models; manual saves use `ApplyConfig`; includes autostart toggle). | `Run()` |
 | `logger/` | Built on log/slog, with daily rotation and automatic cleanup. | `Init()` |
 

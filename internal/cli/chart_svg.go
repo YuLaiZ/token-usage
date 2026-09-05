@@ -247,16 +247,9 @@ var heatFills = []string{
 	"#628fc0", "#4a79b2", "#3963a0", "#2b4f8c", "#1f3d6e",
 }
 
-// chartHeatCell 是热力矩阵的一个交点。
-type chartHeatCell struct {
-	weekday string // 显示标签(双语星期名)
-	hour    string // 两位小时标签("00".."23")
-	value   int64
-}
-
 // buildHeatmapSVG 渲染星期×小时热力矩阵:行=ISO 周序 7 星期,列=24 小时,
-// 格子取色按交点值相对最大值的 10 级渐变,每格带悬停提示;行尾日合计、
-// 尾行小时合计。cells 的行/列定位由 weekday/hour 标签匹配,缺失交点为最低级。
+// 格子取色按交点值相对最大值的 11 级渐变(0 级浅灰为无数据),每格带悬停
+// 提示(星期/小时/tokens)。行列由 weekdays/hours 与 values 回调按下标对应。
 func buildHeatmapSVG(title, subtitle string, weekdays, hours []string, values func(wi, hi int) int64) string {
 	c := chartCanvas{width: 860, height: 360, left: 150, right: 24, top: 64, bottom: 24}
 	var b strings.Builder
@@ -269,6 +262,14 @@ func buildHeatmapSVG(title, subtitle string, weekdays, hours []string, values fu
 		c.width/2, svgEscape(title))
 	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"48\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"12\" fill=\"#555\">%s</text>\n",
 		c.width/2, svgEscape(subtitle))
+
+	if len(hours) == 0 || len(weekdays) == 0 {
+		// 空矩阵(无数据/聚合失败兜底):只输出标题,不绘制网格。
+		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"14\" fill=\"#666\">%s</text>\n",
+			c.width/2, c.height/2, svgEscape(ui.Bi("no data", "无数据")))
+		b.WriteString("</svg>\n")
+		return b.String()
+	}
 
 	cellW, cellH, gap := 26.0, 26.0, 2.0
 	originX := float64(c.left)
@@ -292,22 +293,15 @@ func buildHeatmapSVG(title, subtitle string, weekdays, hours []string, values fu
 			originX+float64(hi)*cellW+cellW/2, originY-6, svgEscape(hours[hi]))
 	}
 
-	level := func(v int64) int {
-		if maxVal <= 0 || v <= 0 {
-			return 0
+	// 级数折算复用 querier.HeatLevel(0..9):0 值(缺失交点)取 heatFills[0]
+	// 最浅灰,有值交点取 2..11 档(与终端空格语义区分,SVG 用浅色可见)。
+	fill := func(v int64) string {
+		l := querier.HeatLevel(v, maxVal)
+		if l == 0 {
+			return heatFills[0]
 		}
-		var l int64
-		if maxVal < int64(1)<<54 {
-			l = v * 9 / maxVal
-		} else {
-			l = v / (maxVal / 9)
-		}
-		if l > 9 {
-			l = 9
-		}
-		return int(l) + 1 // 0 值恒最低级,有值至少 1 级(与终端版空格语义区分,SVG 用浅色可见)
+		return heatFills[l+1]
 	}
-	fill := func(l int) string { return heatFills[l] }
 
 	for wi, wd := range weekdays {
 		y := originY + float64(wi)*cellH
@@ -317,7 +311,7 @@ func buildHeatmapSVG(title, subtitle string, weekdays, hours []string, values fu
 			v := values(wi, hi)
 			x := originX + float64(hi)*cellW
 			fmt.Fprintf(&b, "  <rect x=\"%.0f\" y=\"%.0f\" width=\"%.0f\" height=\"%.0f\" fill=\"%s\"><title>%s %s: %s tokens</title></rect>\n",
-				x+gap/2, y+gap/2, cellW-gap, cellH-gap, fill(level(v)),
+				x+gap/2, y+gap/2, cellW-gap, cellH-gap, fill(v),
 				svgEscape(wd), svgEscape(h), svgEscape(querier.FormatTokens(v)))
 		}
 	}

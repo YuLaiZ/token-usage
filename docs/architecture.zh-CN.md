@@ -139,7 +139,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 | `collector/` | 从各数据源解析原始数据，输出 `CollectResult` | `Collector.Collect()`, `RouterAdapter.CollectLogs()` |
 | `engine/` | 采集编排：依赖装配、主循环、事务化写入、重试、结果校验 | `NewDeps()`, `RunCollect()`, `RunRetryWithDeps()`, `RunRouterBackfill()`, `ValidateResult()` |
 | `analyzer/` | 守护进程监控：ChangedFile/Incremental/router source 触发采集，debounce 合并，串行化锁 | `NewFromConfig()`, `JSONLWatcher`, `SQLitePoller` |
-| `querier/` | 从 messages 实时聚合查询，格式化输出 | `ByClient()`, `ByModel()`, `ByProject()`, `RunDimensionView()`, `Sessions()`, `Summary()` |
+| `querier/` | 从 messages 实时聚合查询，格式化输出 | `ByClient()`, `ByModel()`, `ByProject()`, `ByHour()`, `ByWeekday()`, `Heatmap()`, `HeatmapMatrix()`, `RunDimensionView()`, `Sessions()`, `Summary()`, `StatsBetween()` |
 | `tui/` | 配置交互编辑 TUI（双模型 edit/display + 手动保存经 `ApplyConfig` + 自启 toggle） | `Run()` |
 | `logger/` | 基于 log/slog，按天轮转，自动清理 | `Init()` |
 

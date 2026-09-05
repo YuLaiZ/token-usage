@@ -33,13 +33,13 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			}
 			by, _ := cmd.Flags().GetString("by")
 			pie, _ := cmd.Flags().GetBool("pie")
-			if pie && by == "day" {
+			heatmap, _ := cmd.Flags().GetBool("heatmap")
+			if pie && piePaletteBlockedDimensions[by] {
 				return fmt.Errorf("%s", ui.Bi(
-					"--pie requires --by with a non-temporal dimension (client/model/provider/project); day splits would be unreadable",
-					"--pie 需要 --by 指定非时间维度（client/model/provider/project）；按天切分饼图不可读",
+					"--pie requires --by with a non-temporal dimension (client/model/provider/project); temporal splits produce unreadable pie charts",
+					"--pie 需要 --by 指定非时间维度（client/model/provider/project）；时间维度切分的饼图不可读",
 				))
 			}
-			heatmap, _ := cmd.Flags().GetBool("heatmap")
 			if pie && heatmap {
 				return fmt.Errorf("%s", ui.Bi(
 					"--pie and --heatmap are mutually exclusive",
@@ -53,6 +53,8 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 				))
 			}
 
+			outFlag, _ := cmd.Flags().GetString("out")
+
 			cfg, err := load()
 			if err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
@@ -64,10 +66,21 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			}
 			defer usageDB.Close()
 
-			// 复用维度聚合核:day 视图升序逐日 total 且缺口日自动补零,
-			// 与 query day/export day 的行集合完全一致;其余维度按 total
-			// 降序(非时间维度的既有排序规则)。
 			q := querier.New(usageDB)
+
+			rangeLabel := dates[0]
+			if len(dates) > 1 {
+				rangeLabel = dates[0] + " ~ " + dates[len(dates)-1]
+			}
+			title := "token-usage " + rangeLabel
+
+			// heatmap 分支直接消费热力矩阵(--by/--pie 与其无关,不浪费聚合)。
+			if heatmap {
+				return writeChartOutput(cmd, outFlag, buildChartHeatmap(cmdContext(cmd), q, dates))
+			}
+
+			// 柱状/饼图:复用维度聚合核,缺口日自动补零(day)或 total 降序
+			// (非时间维度的既有排序规则)。
 			rows, totals, err := q.AggregateDimensionView(cmdContext(cmd), dates, querier.DimensionView{
 				Dimensions: []string{by},
 				TitleEn:    "chart", TitleZh: "chart",
@@ -75,7 +88,6 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			if err != nil {
 				return err
 			}
-
 			bars := make([]chartBar, 0, len(rows))
 			for _, row := range rows {
 				if len(row.Keys) != 1 {
@@ -88,47 +100,29 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 						querier.FormatTokens(row.Agg.TotalTokens), row.Agg.Requests),
 				})
 			}
-			rangeLabel := dates[0]
-			if len(dates) > 1 {
-				rangeLabel = dates[0] + " ~ " + dates[len(dates)-1]
-			}
-			title := "token-usage " + rangeLabel
 			subtitle := fmt.Sprintf("Total %s tokens / %d requests",
 				querier.FormatTokens(totals.TotalTokens), totals.Requests)
 
 			var svg string
-			if heatmap, _ := cmd.Flags().GetBool("heatmap"); heatmap {
-				svg = buildChartHeatmap(cmdContext(cmd), q, dates)
-			} else if pie {
+			if pie {
 				slices := make([]chartSlice, 0, len(bars))
-				for i, bar := range bars {
+				colorIdx := 0
+				for _, bar := range bars {
 					if bar.value <= 0 {
 						continue
 					}
 					slices = append(slices, chartSlice{
 						label: bar.label, value: bar.value, hover: bar.hover,
-						color: piePalette[i%len(piePalette)],
+						color: piePalette[colorIdx%len(piePalette)],
 					})
+					colorIdx++
 				}
 				svg = buildPieSVG(title+" by "+by, subtitle, slices)
 			} else {
 				svg = buildBarSVG(title, subtitle, bars)
 			}
 
-			outFlag, _ := cmd.Flags().GetString("out")
-			if outFlag == "" {
-				_, err = fmt.Fprint(cmd.OutOrStdout(), svg)
-				return err
-			}
-			// 原子写:先写临时文件再换名,失败不破坏既有图表文件。
-			if err := fileutil.ReplaceCompleteFile(outFlag, []byte(svg), 0o644); err != nil {
-				return fmt.Errorf("%s: %w", ui.Bi("failed to write chart", "写入图表失败"), err)
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", ui.Bi(
-				fmt.Sprintf("chart written to %s", outFlag),
-				fmt.Sprintf("图表已写入 %s", outFlag),
-			))
-			return nil
+			return writeChartOutput(cmd, outFlag, svg)
 		},
 	}
 
@@ -161,3 +155,24 @@ func buildChartHeatmap(ctx context.Context, q *querier.Querier, dates []string) 
 		},
 	)
 }
+
+// writeChartOutput 输出 SVG:未指定 --out 时写 stdout,指定时原子写入文件
+// (先写临时文件再换名,失败不破坏既有图表文件)并回执路径。
+func writeChartOutput(cmd *cobra.Command, outFlag, svg string) error {
+	if outFlag == "" {
+		_, err := fmt.Fprint(cmd.OutOrStdout(), svg)
+		return err
+	}
+	if err := fileutil.ReplaceCompleteFile(outFlag, []byte(svg), 0o644); err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("failed to write chart", "写入图表失败"), err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s\n", ui.Bi(
+		fmt.Sprintf("chart written to %s", outFlag),
+		fmt.Sprintf("图表已写入 %s", outFlag),
+	))
+	return nil
+}
+
+// piePaletteBlockedDimensions 是 --pie 拒绝的维度:时间维度切分的饼图不可读
+// (day 366 扇区、hour 24 项图例溢出画布),只有占比类维度适合饼图。
+var piePaletteBlockedDimensions = map[string]bool{"day": true, "month": true, "hour": true, "weekday": true}

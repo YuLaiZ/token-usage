@@ -144,7 +144,7 @@ token-usage query list
 | `errors [date]` | Show collection failures for a date or range. |
 | `doctor` | Run read-only health checks. |
 | `forecast` | Extrapolate upcoming usage from recent daily averages. |
-| `chart [date]` | Render usage as an SVG chart (`--by` dimension, `--pie`, `--out` to save). |
+| `chart [date]` | Render usage as an SVG chart (`--by` dimension, `--pie`, `--heatmap`, `--out` to save). |
 | `watch [date]` | Refresh a live summary at a fixed interval (`--once` for a single frame). |
 | `version` / `--version` | Show detailed / one-line version information. |
 | `start` / `status` / `stop` / `restart` | Control the background daemon. |
