@@ -21,6 +21,7 @@ token-usage
 │   ├── project [DATE|DATE-DATE]   # 按项目分组
 │   ├── day [DATE|DATE-DATE]       # 按天用量
 │   ├── month [DATE|DATE-DATE]     # 按月用量
+│   ├── hour [DATE|DATE-DATE]      # 按小时用量
 │   ├── session [DATE|DATE-DATE]   # 会话明细
 │   └── summary [DATE|DATE-DATE]   # 总览摘要
 ├── export [view] [DATE|DATE-DATE] # 以 CSV 或 JSON 导出使用数据（--format csv|json）
@@ -211,6 +212,7 @@ token-usage query provider [日期]
 token-usage query project [日期]
 token-usage query day [日期]
 token-usage query month [日期]
+token-usage query hour [日期]
 token-usage query session [日期]
 token-usage query summary [日期]
 token-usage query <name> [日期]        # 已配置子查询/组合查询的直接简写
@@ -238,9 +240,9 @@ Last successful collection / 最近成功采集: 2026-07-22 08:15:03
 
 缺省日期为今天。若查询的日期区间在 `collection_errors` 中存在未解决记录，结果末尾会附「采集异常」提示并列出条目（组合查询输出多张表时，全部表结束后只提示一次），建议用 `errors` 查看详情、`collect retry` 重试。
 
-所有分组视图（六个内置视图与全部自定义多维表）末行显示 `Total / 总计`，总计与表格使用同一日期范围独立聚合；会话明细与总览摘要不追加该行。
+所有分组视图（七个内置视图与全部自定义多维表）末行显示 `Total / 总计`，总计与表格使用同一日期范围独立聚合；会话明细与总览摘要不追加该行。
 
-`query day`、`query month` 及任何含 `day` 或 `month` 时间维度的视图按时间升序呈现时间轴：行按时间维度升序排列（日 `YYYY-MM-DD` 或月 `YYYY-MM`，而非按总量降序；多个时间维度并存时按声明首个为排序主轴），`Trend / 趋势` 条形列以区间内最繁忙的行为基准对比各行总量，纯 `day` 与 `month` 视图会把区间内无数据的日期/月份补为零值行，时间轴不留缺口。
+`query day`、`query month`、`query hour` 及任何含 `day`、`month` 或 `hour` 时间维度的视图按时间升序呈现时间轴：行按时间维度升序排列（日 `YYYY-MM-DD`、月 `YYYY-MM` 或小时 `00:00`..`23:00`，而非按总量降序；多个时间维度并存时按声明首个为排序主轴），`Trend / 趋势` 条形列以区间内最繁忙的行为基准对比各行总量。纯 `day` 与 `month` 视图为请求区间内无数据的日期/月份插入零值行；纯 `hour` 视图按本机时区折算小时（与 date 列同一时区语义），任一请求区间都呈现整日 24 小时固定刻度，为无数据小时补零值行，时间轴不留缺口。
 
 ### 可配置查询视图
 
@@ -259,10 +261,10 @@ group_q = "client,model,provider,mpc"  # 按此顺序连续输出多张表
 
 - `query <name> [日期]` 与 `query custom <name> [日期]` 是同一已配置子查询（一张表）或组合查询（按声明顺序多张表）的等价写法：目标与输出一致，并遵循同一套校验规则——名称解析、保留名拒绝、日期校验顺序（日期错误优先于名称/定义错误）、全部失败都发生在打开数据库之前。错误示例各自展示自身命令形态（`token-usage query 20260701` 与 `token-usage query custom 20260701`）。直接名称走根命令的位置参数分派——配置中的名称不会注册为动态子命令。两个位置参数时第一个必须是视图名；数字开头的首参数（如 `token-usage query 20260701 20260702`）会在加载配置前以双语用法错误拒绝，并给出两种可接受形态的示例。
 - 未知名称与保留名在打开数据库之前被拒绝；日期错误优先于名称/定义错误。两种写法边界一致。
-- 子查询从内置维度（`client`/`model`/`provider`/`project`/`day`/`month`）中至少选择 2 个不同维度，声明顺序即列顺序；组合查询从内置视图与已定义子查询中至少选择 2 个不同成员，组合查询不能引用组合查询。
-- 视图名为小写标识符（首字符字母，后续字母、数字、`_`、`-`），不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`day`/`month`/`custom`/`list` 冲突。值按逗号分隔，每段自动去除首尾空格，`"model, provider"` 与 `"model,provider"` 等价。若历史手写的子查询或组合查询名为 `list`，升级前请先重命名：新版二进制会将该名称按保留名拒绝（`query list` 已成为静态发现子命令）。
+- 子查询从内置维度（`client`/`model`/`provider`/`project`/`day`/`month`/`hour`）中至少选择 2 个不同维度，声明顺序即列顺序；组合查询从内置视图与已定义子查询中至少选择 2 个不同成员，组合查询不能引用组合查询。
+- 视图名为小写标识符（首字符字母，后续字母、数字、`_`、`-`），不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`day`/`month`/`hour`/`custom`/`list` 冲突。值按逗号分隔，每段自动去除首尾空格，`"model, provider"` 与 `"model,provider"` 等价。若历史手写的子查询或组合查询名为 `list`，升级前请先重命名：新版二进制会将该名称按保留名拒绝（`query list` 已成为静态发现子命令）。
 - `query.default` 匹配前去除首尾空格，空白等同未设置并回退 client；可引用内置视图、子查询或组合查询，`session` 与 `summary` 不可引用。
-- `query list` 不接受位置参数，单次固定顺序输出：默认行为（`token-usage query -> <name> (<类别>)`）、一次性的调用说明（简写与显式两形态等价）、八个内置命令及其用途，随后把每个已配置子查询/组合查询各渲染为一条今天即可复制执行的完整命令（如 `token-usage query mpc`）附维度或成员 CSV；空分区显示 `None`。它只读取有效配置并解析定义——不打开 `usage.db`、不打印统计信息区、不读取采集异常、不接受日期、不修改任何状态。定义损坏时仍按既有定位错误失败，不会伪装成空列表。
+- `query list` 不接受位置参数，单次固定顺序输出：默认行为（`token-usage query -> <name> (<类别>)`）、一次性的调用说明（简写与显式两形态等价）、九个内置命令及其用途，随后把每个已配置子查询/组合查询各渲染为一条今天即可复制执行的完整命令（如 `token-usage query mpc`）附维度或成员 CSV；空分区显示 `None`。它只读取有效配置并解析定义——不打开 `usage.db`、不打印统计信息区、不读取采集异常、不接受日期、不修改任何状态。定义损坏时仍按既有定位错误失败，不会伪装成空列表。
 
 ### 输出列布局
 
@@ -286,14 +288,14 @@ columns = ["requests", "input", "output", "total", "cache_hit"]
 | `total` | Total / 总计 | 源 total tokens |
 | `cache_hit` | Cache Hit / 缓存命中 | cache_read / (fresh input + cache_read + cache_create) |
 
-- **适用范围**：布局作用于 `query client`、`model`、`provider`、`project`、`day`、`month`、`session`，以及裸 query、具名视图（`query <name>` / `query custom <name>`）与组合查询展开的每张表。`query summary` 不适用——它保持完整纵向摘要（含 Cache Create）；`query list` 不渲染数据表。维度列始终显示在每张表左侧（session 表固定先显示 Client/Project/Title），不参与布局。
+- **适用范围**：布局作用于 `query client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`session`，以及裸 query、具名视图（`query <name>` / `query custom <name>`）与组合查询展开的每张表。`query summary` 不适用——它保持完整纵向摘要（含 Cache Create）；`query list` 不渲染数据表。维度列始终显示在每张表左侧（session 表固定先显示 Client/Project/Title），不参与布局。
 - **默认值**：缺失 `[query.output]` 或缺失 `columns` 时使用 `requests, input, output, cache_read, reasoning, total, cache_hit` 七列，升级后既有配置与输出保持不变。`cache_create` 是首个可选但默认隐藏的指标；它始终计入缓存命中率分母，显示或隐藏都不改变任何统计值、排序与总计。
 - **校验规则**：`query.output` 必须是表且只允许 `columns` 一个子键；数组非空、元素为上表中的字符串、不得重复（元素首尾空格自动去除）。空数组不是「恢复默认」——恢复默认应删除 `query.output`（或 `query.output.columns`）。错误会报出完整配置路径与具体值。`config set` 不支持写入 `query.output.columns`，请使用 TUI 的 Output columns 页或手工编辑 TOML。
-- **错误边界**：无关的视图定义错误（`subqueries`/`groups`/`default`）不阻断七个受布局影响的静态表格命令——合法布局仍生效。`query.output` 自身不合法时，这七个命令在打开数据库前失败。顶层 query 问题（`[query]` 与 `[Query]` 并存、根值非表）下静态表格命令静默回退默认七列，裸 query、具名视图与 `query list` 仍按既有定位错误失败。TUI 保存始终执行完整 query 校验。
+- **错误边界**：无关的视图定义错误（`subqueries`/`groups`/`default`）不阻断八个受布局影响的静态表格命令——合法布局仍生效。`query.output` 自身不合法时，这八个命令在打开数据库前失败。顶层 query 问题（`[query]` 与 `[Query]` 并存、根值非表）下静态表格命令静默回退默认七列，裸 query、具名视图与 `query list` 仍按既有定位错误失败。TUI 保存始终执行完整 query 校验。
 
 `query provider`（以及任何自定义视图中的 provider 维度）优先使用路由归因，其次使用采集器的供应商值；历史空值保持未归因，查询不会依据客户端推断供应商。`provider_aliases` 在组合键形成前生效：相同别名在每个视图中合并为同一行，且不会修改 `usage.db`。
 
-query 配置是纯展示配置。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突、`query = "x"` 根值非表）只会使默认路径（裸 `query` 与 `query <日期>`）、全部具名调用（`query <name>` / `query custom <name>`）、`query list` 与 TUI 保存失败并定位具体配置键；七个受布局影响的静态表格命令（`client`/`model`/`provider`/`project`/`day`/`month`/`session`）在顶层问题态回退默认七列、仅无关视图定义损坏时保持合法布局，`query summary` 不受影响，`collect`、`status`、`start`、守护进程、`config set`、`config show` 不受影响且原样保留问题项。TUI 主菜单按 `v` 进入 **Query** 页，含三个平级入口——**Views / 查询视图**（自定义子查询、组合查询、默认行为）、**Output columns / 输出列**（全局指标布局，`d` 恢复默认）、**Provider aliases / 供应商别名**——各自的部分无法解析时先显示自己的恢复列表。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]`、`[query.output]` 段：旧版本会拒绝任何非空 query 段。
+query 配置是纯展示配置。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突、`query = "x"` 根值非表）只会使默认路径（裸 `query` 与 `query <日期>`）、全部具名调用（`query <name>` / `query custom <name>`）、`query list` 与 TUI 保存失败并定位具体配置键；八个受布局影响的静态表格命令（`client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`session`）在顶层问题态回退默认七列、仅无关视图定义损坏时保持合法布局，`query summary` 不受影响，`collect`、`status`、`start`、守护进程、`config set`、`config show` 不受影响且原样保留问题项。TUI 主菜单按 `v` 进入 **Query** 页，含三个平级入口——**Views / 查询视图**（自定义子查询、组合查询、默认行为）、**Output columns / 输出列**（全局指标布局，`d` 恢复默认）、**Provider aliases / 供应商别名**——各自的部分无法解析时先显示自己的恢复列表。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]`、`[query.output]` 段：旧版本会拒绝任何非空 query 段。
 
 示例：
 
@@ -323,6 +325,7 @@ token-usage export [view] [DATE|DATE-DATE] [--format csv|json]
 | `project` | `project` | 按项目分组（空 project 导出为 `(uncategorized) / (未分类)`，与 query 显示一致） |
 | `day` | `date` | 按天用量，日期升序，无数据日期补零值行 |
 | `month` | `month` | 按月用量，月份升序，无数据月份按月前缀补零值行 |
+| `hour` | `hour` | 按小时用量，本机时区折算，小时升序，整日 24 小时刻度全量呈现，无数据小时补零值行 |
 | `session` | `client`、`project`、`title` | 会话明细，顺序与 `query session` 一致；`project`/`title` 保留源字段原值——空 project 就是空串，与分组视图替换占位文案不同 |
 
 `summary` 与已配置自定义视图（`query.subqueries` / `query.groups`）明确不可导出；未知视图会在加载配置与打开数据库之前按允许集合拒绝。

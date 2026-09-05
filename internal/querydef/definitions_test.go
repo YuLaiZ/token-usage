@@ -528,8 +528,8 @@ func TestIsReservedName(t *testing.T) {
 
 // 保留名错误的双语列表由同一有序来源生成:两张表的 list 拒绝错误都必须
 // 完整列出十个名称(含 day/month 与 list),缺一即文案漂移。
-func TestParse_ReservedNameErrorListsAllTenNames(t *testing.T) {
-	reserved := []string{"client", "model", "provider", "project", "session", "summary", "day", "month", "custom", "list"}
+func TestParse_ReservedNameErrorListsAllReservedNames(t *testing.T) {
+	reserved := []string{"client", "model", "provider", "project", "session", "summary", "day", "month", "hour", "custom", "list"}
 	for _, section := range []struct{ table, path string }{
 		{"subqueries", "query.subqueries.list"},
 		{"groups", "query.groups.list"},
@@ -709,9 +709,9 @@ func TestParse_MonthDefaultIsBuiltinNotFallback(t *testing.T) {
 	}
 }
 
-// BuiltinDimensionNames 返回六元素规范顺序,且为独立副本(修改返回值后再取一次不受影响)。
+// BuiltinDimensionNames 返回七元素规范顺序,且为独立副本(修改返回值后再取一次不受影响)。
 func TestBuiltinDimensionNames(t *testing.T) {
-	want := []string{"client", "model", "provider", "project", "day", "month"}
+	want := []string{"client", "model", "provider", "project", "day", "month", "hour"}
 	got := BuiltinDimensionNames()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("BuiltinDimensionNames() = %v, want %v", got, want)
@@ -719,5 +719,59 @@ func TestBuiltinDimensionNames(t *testing.T) {
 	got[0] = "mutated"
 	if again := BuiltinDimensionNames(); !reflect.DeepEqual(again, want) {
 		t.Errorf("BuiltinDimensionNames 应返回独立副本,二次调用 = %v, want %v", again, want)
+	}
+}
+
+// hour 进入内置维度白名单后:hour,model 子查询合法解析,声明顺序即维度列顺序。
+func TestParse_HourModelSubqueryAccepted(t *testing.T) {
+	defs, err := Parse(Input{RawQuery: map[string]any{
+		"subqueries": map[string]any{"hm": "hour,model"},
+	}})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(defs.Subqueries) != 1 {
+		t.Fatalf("Subqueries 数量 = %d", len(defs.Subqueries))
+	}
+	wantDims := []BuiltinDimension{DimensionHour, DimensionModel}
+	if !reflect.DeepEqual(defs.Subqueries[0].Dimensions, wantDims) {
+		t.Errorf("Dimensions = %v, want %v", defs.Subqueries[0].Dimensions, wantDims)
+	}
+}
+
+// 自定义名 "hour" 与内置视图名冲突,按保留名(KindDefinitionName)拒绝。
+func TestParse_HourDefinitionNameIsReserved(t *testing.T) {
+	_, err := Parse(Input{RawQuery: map[string]any{
+		"subqueries": map[string]any{"hour": "model,provider"},
+	}})
+	if err == nil {
+		t.Fatal("自定义名 hour 应按保留名拒绝")
+	}
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("错误应为 *ValidationError: %T", err)
+	}
+	found := false
+	for _, issue := range ve.Issues {
+		if issue.Path == "query.subqueries.hour" && issue.Kind == KindDefinitionName {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("错误应含 definition_name 保留名诊断: %+v", ve.Issues)
+	}
+}
+
+// query.default = "hour" 解析为内置视图目标,且不标记内置回退。
+func TestParse_HourDefaultIsBuiltinNotFallback(t *testing.T) {
+	defs, err := Parse(Input{RawQuery: map[string]any{"default": "hour"}})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if defs.Default.Name != "hour" || defs.Default.Kind != TargetBuiltin {
+		t.Errorf("Default = %+v, want hour/TargetBuiltin", defs.Default)
+	}
+	if defs.DefaultIsFallback {
+		t.Errorf("显式内置默认 hour 不得标记回退")
 	}
 }

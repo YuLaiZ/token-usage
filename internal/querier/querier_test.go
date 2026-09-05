@@ -1068,17 +1068,17 @@ func TestRunDimensionView_UnknownDimensionMessageListsDayAndMonth(t *testing.T) 
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"(allowed: client, model, provider, project, day, month)",
-		"(允许: client, model, provider, project, day, month)",
+		"(allowed: client, model, provider, project, day, month, hour)",
+		"(允许: client, model, provider, project, day, month, hour)",
 	} {
 		if !strings.Contains(msg, want) {
-			t.Errorf("错误应含含 month 的允许集合 %q:\n%s", want, msg)
+			t.Errorf("错误应含含 hour 的允许集合 %q:\n%s", want, msg)
 		}
 	}
-	// 旧的不含 month 的六维文案不得再出现(以此保证本断言的区分度)。
+	// 旧的不含 hour 的七维文案不得再出现(以此保证本断言的区分度)。
 	for _, legacy := range []string{
-		"(allowed: client, model, provider, project, day)",
-		"(允许: client, model, provider, project, day)",
+		"(allowed: client, model, provider, project, day, month)",
+		"(允许: client, model, provider, project, day, month)",
 	} {
 		if strings.Contains(msg, legacy) {
 			t.Errorf("错误不得再使用不含 month 的旧文案 %q:\n%s", legacy, msg)
@@ -1272,6 +1272,141 @@ func TestRunDimensionView_MonthDayDualTemporalOrdersByDeclaredFirst(t *testing.T
 	for i := range want {
 		if rows[i] != want[i] {
 			t.Errorf("第 %d 行 = %+v, want %+v(主轴 month 升序,同月 total 降序):\n%s", i, rows[i], want[i], out)
+		}
+	}
+}
+
+// hourTS 按本机时区构造毫秒时间戳:hour 维度的 SQL 侧用 strftime 'localtime'
+// 归属小时,与 Go time.Local 同为系统本地时区,期望值在任意时区机器上一致。
+func hourTS(y int, mo time.Month, d, h, mi int) int64 {
+	return time.Date(y, mo, d, h, mi, 0, 0, time.Local).UnixMilli()
+}
+
+// newEmptyQuerier 构造不带预置消息的空内存库:hour 视图的聚合按 ts 折算,
+// setupMessageFixture 预置消息的 ts(1970 年小毫秒值)会随本机时区落入不同
+// 小时行,污染小时归属断言,故 hour 系测试用空库自插消息。
+func newEmptyQuerier(t *testing.T) *Querier {
+	t.Helper()
+	testDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	t.Cleanup(func() { testDB.Close() })
+	return New(testDB)
+}
+
+// 纯 hour 视图:ts 按本机时区折算小时归属,跨日同小时合并;固定补全
+// 00:00..23:00 全部 24 行(与请求日期范围无关),按小时升序,趋势条以最繁忙
+// 小时为基准,总计为独立全量聚合。
+func TestByHour_Fixed24TicksAscendingGapFillAndTrendBars(t *testing.T) {
+	q := newEmptyQuerier(t)
+	msgs := []model.Message{
+		// 07-09 与 07-10 的本地 14 时两条消息合并进 "14:00" 行,total 1500(最大)。
+		{ID: "hour-a", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-09", TS: hourTS(2026, 7, 9, 14, 30), TotalTokens: 1000},
+		{ID: "hour-b", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-10", TS: hourTS(2026, 7, 10, 14, 45), TotalTokens: 500},
+		// 本地 20 时一条小值,total 100 → 趋势条 100*20/1500 向下取整为 1 块。
+		{ID: "hour-c", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-10", TS: hourTS(2026, 7, 10, 20, 0), TotalTokens: 100},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	out, err := q.ByHour(context.Background(), []string{"2026-07-09", "2026-07-10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Usage by hour / 按小时用量") {
+		t.Errorf("输出应含双语标题:\n%s", out)
+	}
+
+	// 逐小时行断言:00:00..23:00 恒为 24 行(22 个缺口小时补零值行,趋势为空)。
+	wantBlocks := map[string]int{"14:00": 20, "20:00": 1}
+	var rowOrder []string
+	for _, ln := range strings.Split(out, "\n") {
+		if !strings.Contains(ln, "│") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(ln, "│"), "│")
+		if len(cells) == 0 {
+			continue
+		}
+		key := strings.TrimSpace(cells[0])
+		if len(key) != 5 || !strings.HasSuffix(key, ":00") {
+			continue
+		}
+		rowOrder = append(rowOrder, key)
+		want := wantBlocks[key]
+		if got := strings.Count(ln, "█"); got != want {
+			t.Errorf("小时 %s 趋势条应 %d 块,实际 %d:\n%s", key, want, got, ln)
+		}
+	}
+	allTicks := hourTicks
+	if len(rowOrder) != len(allTicks) {
+		t.Fatalf("小时行数 = %d, want %d(固定 24 刻度):\n%s", len(rowOrder), len(allTicks), out)
+	}
+	if strings.Join(rowOrder, ",") != strings.Join(allTicks, ",") {
+		t.Errorf("小时行应按 00:00..23:00 升序: got %v", rowOrder)
+	}
+
+	// 总计行:三行 total 聚合 1600,且总计行趋势单元格为空。
+	if !strings.Contains(out, formatTokens(1600)) {
+		t.Errorf("总计行 total 应为聚合值 1600 的换算(%s):\n%s", formatTokens(1600), out)
+	}
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "Total / 总计") && strings.Contains(ln, "█") {
+			t.Errorf("总计行趋势单元格应为空串:\n%s", ln)
+		}
+	}
+}
+
+// hour,model 多维视图:排序主轴取声明首维 hour 升序(显示键字典序即时间序),
+// 同小时内按 total 降序;多维时间视图不做缺口填充,不出现补零行。
+func TestRunDimensionView_HourModelOrdersByHourThenTotal(t *testing.T) {
+	q := newEmptyQuerier(t)
+	msgs := []model.Message{
+		{ID: "hm-a", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-09", TS: hourTS(2026, 7, 9, 9, 10), Model: "model-a", TotalTokens: 300},
+		{ID: "hm-b", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-09", TS: hourTS(2026, 7, 9, 9, 20), Model: "model-b", TotalTokens: 100},
+		{ID: "hm-c", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-10", TS: hourTS(2026, 7, 10, 22, 0), Model: "model-c", TotalTokens: 200},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	out, err := q.RunDimensionView(context.Background(), []string{"2026-07-09", "2026-07-10"}, DimensionView{
+		Dimensions: []string{"hour", "model"},
+		TitleEn:    "Usage by hour and model", TitleZh: "按小时与模型用量",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Trend") || !strings.Contains(out, "趋势") {
+		t.Errorf("含 hour 维度的多维视图应含趋势列:\n%s", out)
+	}
+	type hourRow struct{ hour, modelName string }
+	var rows []hourRow
+	for _, ln := range strings.Split(out, "\n") {
+		if !strings.Contains(ln, "│") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(ln, "│"), "│")
+		if len(cells) < 2 {
+			continue
+		}
+		hour := strings.TrimSpace(cells[0])
+		if len(hour) != 5 || !strings.HasSuffix(hour, ":00") {
+			continue
+		}
+		rows = append(rows, hourRow{hour: hour, modelName: strings.TrimSpace(cells[1])})
+	}
+	want := []hourRow{
+		{"09:00", "model-a"},
+		{"09:00", "model-b"},
+		{"22:00", "model-c"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("数据行数 = %d, want %d(多维不补缺口):\n%s", len(rows), len(want), out)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Errorf("第 %d 行 = %+v, want %+v(主轴 hour 升序,同小时 total 降序):\n%s", i, rows[i], want[i], out)
 		}
 	}
 }

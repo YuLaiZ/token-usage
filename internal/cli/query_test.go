@@ -48,6 +48,7 @@ func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 		"project":  "Group by project / 按项目分组",
 		"day":      "Usage by day / 按天用量",
 		"month":    "Usage by month / 按月用量",
+		"hour":     "Usage by hour / 按小时用量",
 		"session":  "View session details / 查看会话明细",
 		"summary":  "View summary / 查看总览摘要",
 		"custom":   "Run a configured custom or group query / 执行已配置的自定义或组合查询",
@@ -237,6 +238,44 @@ func TestExecuteQuery_ViewMonthDispatch(t *testing.T) {
 	// 非全零区间:数据月行应渲染趋势条 █ 块。
 	if !strings.Contains(out, "█") {
 		t.Errorf("非全零区间应出现趋势条 █:\n%s", out)
+	}
+}
+
+// TestExecuteQuery_ViewHourDispatch 为 viewHour 补执行接线:输出含按小时用量标题,
+// 纯 hour 视图对整日 24 小时固定刻度补零值行(与请求日期范围无关),按本机时区
+// 把消息 ts 折算进对应小时行并渲染趋势条。
+func TestExecuteQuery_ViewHourDispatch(t *testing.T) {
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+	// ts 按本机时区取 09:30(与 SQL 侧 strftime 'localtime' 同一时区语义),
+	// 该消息应落在 "09:00" 数据行,其余 23 个小时为补零行。
+	ts := time.Date(2026, 9, 15, 9, 30, 0, 0, time.Local).UnixMilli()
+	if _, err := db.UpsertMessages(context.Background(), usageDB, []model.Message{{
+		ID: "hour-dispatch", SessionID: "s", Client: "claude",
+		Date: "2026-09-15", TS: ts, TotalTokens: 800,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := &bytes.Buffer{}
+	if err := executeQueryDates(context.Background(), buf, usageDB,
+		[]string{"2026-09-15"}, viewHour); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Usage by hour / 按小时用量") {
+		t.Errorf("viewHour 输出应含按小时用量标题:\n%s", out)
+	}
+	// 固定 24 刻度:首刻度 00:00 与末刻度 23:00 均应出现(无数据小时补零值行)。
+	if !strings.Contains(out, "00:00") || !strings.Contains(out, "23:00") {
+		t.Errorf("viewHour 应补全整日 24 小时刻度:\n%s", out)
+	}
+	// 09:30 的消息按本机时区折入 09:00 行,非全零区间应出现趋势条 █。
+	if !strings.Contains(out, "█") {
+		t.Errorf("数据小时行应渲染趋势条 █:\n%s", out)
 	}
 }
 
@@ -1452,13 +1491,13 @@ func TestRunQuery_StaticRoutingAndTreeStable(t *testing.T) {
 	for _, sub := range root.Commands() {
 		names[sub.Name()] = true
 	}
-	for _, want := range []string{"client", "model", "provider", "project", "day", "month", "session", "summary", "custom", "list"} {
+	for _, want := range []string{"client", "model", "provider", "project", "day", "month", "hour", "session", "summary", "custom", "list"} {
 		if !names[want] {
 			t.Errorf("缺少静态子命令 %q", want)
 		}
 	}
-	if len(root.Commands()) != 10 {
-		t.Errorf("静态命令树应恰为 10 个子命令: %v", root.Commands())
+	if len(root.Commands()) != 11 {
+		t.Errorf("静态命令树应恰为 11 个子命令: %v", root.Commands())
 	}
 
 	// 执行过具名查询后命令树不变:配置中的名称不会注册为动态子命令。

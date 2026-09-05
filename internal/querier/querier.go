@@ -223,6 +223,15 @@ var dimensionOrder = []dimension{
 	// month 取 date 列前 7 位:messages.date 恒为 YYYY-MM-DD,substr 1..7
 	// 即 YYYY-MM;ASCII 定长截取,无 UTF-8 多字节截断问题。
 	{name: "month", selectExpr: "substr(date, 1, 7)", header: ui.HMonth},
+	// hour 取消息时间戳按本机时区折算的小时:ts 为毫秒 Unix 时间,除以 1000
+	// 得秒供 unixepoch 解释,'localtime' 与 date 列(采集时按本机时区归日)
+	// 同一时区语义;strftime '%H' 恒为两位 ASCII 数字,显示键补 ":00" 后缀
+	// 表示该小时起点,字典序仍即时间序。
+	{
+		name:       "hour",
+		selectExpr: `strftime('%H', ts/1000, 'unixepoch', 'localtime')`,
+		header:     ui.HHour,
+	},
 }
 
 // dimensionWhitelist 由 dimensionOrder 派生的按名查找表：有序切片是唯一
@@ -245,11 +254,12 @@ func dimensionNameList() string {
 	return strings.Join(names, ", ")
 }
 
-// isTemporalDimension 报告维度名是否为时间维度:day 与 month 的显示值均为
-// 字典序即时间序(YYYY-MM-DD / YYYY-MM),共用「时间升序优先排序」与「纯单维
-// 视图缺口填充」两条时间轴语义。
+// isTemporalDimension 报告维度名是否为时间维度:day/month/hour 的显示值均为
+// 字典序即时间序(YYYY-MM-DD / YYYY-MM / "00:00".."23:00"),共用「时间升序优先
+// 排序」与「纯单维视图缺口填充」两条时间轴语义;hour 的刻度集固定为每日 24
+// 小时,与请求日期范围无关,缺口填充走固定刻度分支。
 func isTemporalDimension(name string) bool {
-	return name == "day" || name == "month"
+	return name == "day" || name == "month" || name == "hour"
 }
 
 // DimensionView 描述一张分组聚合表的渲染输入(内置单维与自定义多维共用)。
@@ -279,8 +289,16 @@ func (a *GroupAggregate) add(o GroupAggregate) {
 }
 
 // displayKey 把 SQL 返回的原始键值映射为显示键:provider 应用 alias 与未归因,
-// project 应用未分类,client/model 保持源字段空值。
+// project 应用未分类,hour 补 ":00" 后缀表示小时起点,client/model 保持源字段
+// 空值。
 func (d dimension) displayKey(raw string, aliases map[string]string) string {
+	if d.name == "hour" {
+		// strftime '%H' 恒为两位数字,后缀仅作显示;防御非两位形态原样返回。
+		if len(raw) == 2 {
+			return raw + ":00"
+		}
+		return raw
+	}
 	if d.name == "provider" {
 		if alias := strings.TrimSpace(aliases[raw]); alias != "" {
 			return alias
@@ -298,6 +316,17 @@ func (d dimension) displayKey(raw string, aliases map[string]string) string {
 
 // trendBarWidth 是趋势条的最大块数:含 day 维度视图中趋势列的长度上限。
 const trendBarWidth = 20
+
+// hourTicks 是 hour 维度纯单维视图缺口填充的固定刻度(显示形态,即每日 24 个
+// 小时起点):hour 的轴刻度与请求日期范围无关,任一请求区间的时间轴都覆盖
+// 整日 24 小时,缺数据的小时补零值行。
+var hourTicks = func() []string {
+	ticks := make([]string, 24)
+	for i := range ticks {
+		ticks[i] = fmt.Sprintf("%02d:00", i)
+	}
+	return ticks
+}()
 
 // trendBar 按行 totalTokens 相对结果集最大行 totalTokens 的比例生成趋势条:
 // 长度 = 比例 × trendBarWidth(整数除法向下取整),totalTokens>0 但算出 0 块时
@@ -418,25 +447,40 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 	// 保证时间轴连续;多维时间视图(如 day,model / month,model)不做。
 	// day 视图按日期补零(dates 为连续逐日列表);month 视图按月前缀补零:
 	// 从请求 dates 推导去重的有序 YYYY-MM 前缀序列(dates 连续逐日,按遍历
-	// 顺序去重即保序),对没有数据行的月份插入零值行(Keys=[月前缀])。
+	// 顺序去重即保序),对没有数据行的月份插入零值行(Keys=[月前缀]);
+	// hour 视图按固定 24 小时刻度补零,与请求日期范围无关。
 	if len(dims) == 1 && temporalIdx == 0 {
-		// period 把请求日期归一为当前时间维度的轴刻度:day 即日期本身,
-		// month 取 YYYY-MM 前缀(数据行键已是该形态,截取为幂等)。
-		period := func(key string) string { return key }
-		if dims[0].name == "month" {
-			period = func(key string) string { return key[:7] }
-		}
-		seenPeriods := make(map[string]bool, len(rowOrder))
-		for _, r := range rowOrder {
-			seenPeriods[period(r.Keys[0])] = true
-		}
-		for _, date := range dates {
-			p := period(date)
-			if seenPeriods[p] {
-				continue
+		if dims[0].name == "hour" {
+			seenHours := make(map[string]bool, len(rowOrder))
+			for _, r := range rowOrder {
+				seenHours[r.Keys[0]] = true
 			}
-			seenPeriods[p] = true
-			rowOrder = append(rowOrder, DimensionRow{Keys: []string{p}})
+			for _, tick := range hourTicks {
+				if seenHours[tick] {
+					continue
+				}
+				seenHours[tick] = true
+				rowOrder = append(rowOrder, DimensionRow{Keys: []string{tick}})
+			}
+		} else {
+			// period 把请求日期归一为当前时间维度的轴刻度:day 即日期本身,
+			// month 取 YYYY-MM 前缀(数据行键已是该形态,截取为幂等)。
+			period := func(key string) string { return key }
+			if dims[0].name == "month" {
+				period = func(key string) string { return key[:7] }
+			}
+			seenPeriods := make(map[string]bool, len(rowOrder))
+			for _, r := range rowOrder {
+				seenPeriods[period(r.Keys[0])] = true
+			}
+			for _, date := range dates {
+				p := period(date)
+				if seenPeriods[p] {
+					continue
+				}
+				seenPeriods[p] = true
+				rowOrder = append(rowOrder, DimensionRow{Keys: []string{p}})
+			}
 		}
 	}
 
@@ -606,6 +650,15 @@ func (q *Querier) ByMonth(ctx context.Context, dates []string) (string, error) {
 	return q.RunDimensionView(ctx, dates, DimensionView{
 		Dimensions: []string{"month"},
 		TitleEn:    "Usage by month", TitleZh: "按月用量",
+	})
+}
+
+// ByHour 按本机时区的小时分布聚合:纯单维 hour 视图对整日 24 小时固定刻度
+// 补零值行,时间轴与请求日期范围无关(任一区间都呈现完整 24 小时)。
+func (q *Querier) ByHour(ctx context.Context, dates []string) (string, error) {
+	return q.RunDimensionView(ctx, dates, DimensionView{
+		Dimensions: []string{"hour"},
+		TitleEn:    "Usage by hour", TitleZh: "按小时用量",
 	})
 }
 

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -259,7 +260,7 @@ func TestExportUnknownViewRejectedBeforeOpen(t *testing.T) {
 		t.Fatal("未知视图应报错")
 	}
 	msg := err.Error()
-	for _, want := range []string{"client, model, provider, project, day, month, session", "/"} {
+	for _, want := range []string{"client, model, provider, project, day, month, hour, session", "/"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("错误应含允许集合 %q: %q", want, msg)
 		}
@@ -705,5 +706,68 @@ func TestExportJSONMonthViewKeys(t *testing.T) {
 	// 数据月数值锚定。
 	if total, ok := rows[0]["total"].(float64); !ok || total != 1000 {
 		t.Errorf("2026-08 total 应为 number 1000: %v", rows[0])
+	}
+}
+
+// TestExportJSONHourView 导出 hour 视图:固定 24 小时刻度全量补零(与请求日期
+// 范围无关),键列为 hour(显示形态 "HH:00"),数值为 JSON number。
+func TestExportJSONHourView(t *testing.T) {
+	open := func(string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { usageDB.Close() })
+		// ts 按本机时区取 09:30 与 15:00,消息分别折入 "09:00"/"15:00" 行。
+		msgs := []model.Message{
+			{ID: "hour-a", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-01",
+				TS: time.Date(2026, 7, 1, 9, 30, 0, 0, time.Local).UnixMilli(),
+				FreshInputTokens: 1000, TotalTokens: 1000},
+			{ID: "hour-b", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-01",
+				TS: time.Date(2026, 7, 1, 15, 0, 0, 0, time.Local).UnixMilli(),
+				TotalTokens: 5},
+		}
+		if _, err := db.UpsertMessages(context.Background(), usageDB, msgs); err != nil {
+			return nil, err
+		}
+		return usageDB, nil
+	}
+	cmd, out, _ := newExportOutputCmdWithDeps(loadWithRaw(nil, nil), open)
+	cmd.SetArgs([]string{"hour", "20260701", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("export hour json: %v", err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(out.String()), &rows); err != nil {
+		t.Fatalf("输出应为合法 JSON:\n%s", out.String())
+	}
+	if len(rows) != 24 {
+		t.Fatalf("应恰 24 行(整日固定刻度补零),实际 %d:\n%s", len(rows), out.String())
+	}
+	// 行序:00:00..23:00 升序;键列名为 hour。
+	for i, row := range rows {
+		wantHour := fmt.Sprintf("%02d:00", i)
+		got, _ := row["hour"].(string)
+		if got != wantHour {
+			t.Fatalf("第 %d 行 hour = %q, want %q(按小时升序): %v", i, got, wantHour, row)
+		}
+		total, ok := row["total"].(float64)
+		if !ok {
+			t.Fatalf("第 %d 行 total 应为 JSON number: %v", i, row)
+		}
+		switch wantHour {
+		case "09:00":
+			if total != 1000 {
+				t.Errorf("09:00 total 应为 1000,实际 %v", total)
+			}
+		case "15:00":
+			if total != 5 {
+				t.Errorf("15:00 total 应为 5,实际 %v", total)
+			}
+		default:
+			if total != 0 {
+				t.Errorf("无数据小时 %s 的 total 应为 0,实际 %v", wantHour, total)
+			}
+		}
 	}
 }

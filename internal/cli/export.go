@@ -19,7 +19,7 @@ import (
 
 // exportViews 是 export 命令允许的内置视图白名单(有序,声明顺序即错误文案中的
 // 允许集合顺序)。导出面向机器消费,不含 summary 与自定义视图。
-var exportViews = []string{"client", "model", "provider", "project", "day", "month", "session"}
+var exportViews = []string{"client", "model", "provider", "project", "day", "month", "hour", "session"}
 
 // exportMetricColumns 是导出的固定指标列(列名与顺序),与 messages 聚合列的
 // 源顺序一致。导出是固定机器 schema:不应用 [query.output.columns] 输出布局,
