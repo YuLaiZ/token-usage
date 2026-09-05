@@ -24,15 +24,16 @@ const (
 	DimensionDay      BuiltinDimension = "day"
 	DimensionMonth    BuiltinDimension = "month"
 	DimensionHour     BuiltinDimension = "hour"
+	DimensionWeekday  BuiltinDimension = "weekday"
 )
 
 // builtinDimensions 是唯一允许的维度集合(亦用于错误信息中的允许集合)。
 var builtinDimensions = []BuiltinDimension{
-	DimensionClient, DimensionModel, DimensionProvider, DimensionProject, DimensionDay, DimensionMonth, DimensionHour,
+	DimensionClient, DimensionModel, DimensionProvider, DimensionProject, DimensionDay, DimensionMonth, DimensionHour, DimensionWeekday,
 }
 
 // BuiltinDimensionNames 返回内置维度名的规范顺序独立副本(client、model、
-// provider、project、day、month、hour):TUI 候选列表等调用方的唯一名单来源,调用方不得
+// provider、project、day、month、hour、weekday):TUI 候选列表等调用方的唯一名单来源,调用方不得
 // 在别处复制名单;修改返回值不影响内部状态。
 func BuiltinDimensionNames() []string {
 	names := make([]string, len(builtinDimensions))
@@ -65,9 +66,9 @@ func builtinDimensionList() string {
 }
 
 // reservedNameOrder 是保留名的有序切片,也是错误文案中展示顺序的唯一来源:
-// 九个内置视图名与 custom/list 两个固定入口名。
+// 十个内置视图名与 custom/list 两个固定入口名。
 var reservedNameOrder = []string{
-	"client", "model", "provider", "project", "session", "summary", "day", "month", "hour", "custom", "list",
+	"client", "model", "provider", "project", "session", "summary", "day", "month", "hour", "weekday", "custom", "list",
 }
 
 // reservedNames 由 reservedNameOrder 派生的成员集合,供语义判断使用。

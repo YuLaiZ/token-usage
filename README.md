@@ -95,6 +95,7 @@ token-usage query model       # group by model
 token-usage query day         # usage by day
 token-usage query month       # usage by month
 token-usage query hour        # usage by hour
+token-usage query weekday     # usage by weekday
 token-usage query 20260701-20260721
 ```
 
@@ -136,7 +137,7 @@ token-usage query list
 | `collect all` | Collect all history without `collection_log` date deduplication; safe to rerun. |
 | `collect retry` | Retry unresolved collection failures. |
 | `query [date]` | Run the default report. |
-| `query client/model/provider/project/day/month/hour/session/summary [date]` | Run a built-in report. |
+| `query client/model/provider/project/day/month/hour/weekday/session/summary [date]` | Run a built-in report. |
 | `query <name> [date]` | Run a configured view or group. |
 | `query list` | List views without opening the usage database. |
 | `export [view] [date]` | Export usage data as CSV or JSON to stdout. |

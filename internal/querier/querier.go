@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/YuLaiZ/token-usage/internal/db"
@@ -232,6 +233,15 @@ var dimensionOrder = []dimension{
 		selectExpr: `strftime('%H', ts/1000, 'unixepoch', 'localtime')`,
 		header:     ui.HHour,
 	},
+	// weekday 取消息时间戳按本机时区折算的星期,与 date 列同一时区语义;
+	// strftime '%w' 以周日为 0,表达式将其转为 ISO 周序(周一=0..周日=6),
+	// 与 GB/T 7408 / ISO 8601 的周起首一致;原始键 "0".."6" 字典序即周序,
+	// 显示键为双语星期名。
+	{
+		name:       "weekday",
+		selectExpr: `CAST((strftime('%w', ts/1000, 'unixepoch', 'localtime') + 6) % 7 AS TEXT)`,
+		header:     ui.HWeekday,
+	},
 }
 
 // dimensionWhitelist 由 dimensionOrder 派生的按名查找表：有序切片是唯一
@@ -254,12 +264,13 @@ func dimensionNameList() string {
 	return strings.Join(names, ", ")
 }
 
-// isTemporalDimension 报告维度名是否为时间维度:day/month/hour 的显示值均为
-// 字典序即时间序(YYYY-MM-DD / YYYY-MM / "00:00".."23:00"),共用「时间升序优先
-// 排序」与「纯单维视图缺口填充」两条时间轴语义;hour 的刻度集固定为每日 24
-// 小时,与请求日期范围无关,缺口填充走固定刻度分支。
+// isTemporalDimension 报告维度名是否为时间维度:day/month/hour/weekday 的
+// 原始键均为「字典序即时间序」的形态(YYYY-MM-DD / YYYY-MM / "00".."23" /
+// ISO 周序 "0".."6"),共用「时间升序优先排序」与「纯单维视图缺口填充」两条
+// 时间轴语义;day/month 的刻度随请求日期范围生成,hour/weekday 的刻度集固定
+// (每日 24 小时 / 每周 7 天),与请求日期范围无关。
 func isTemporalDimension(name string) bool {
-	return name == "day" || name == "month" || name == "hour"
+	return name == "day" || name == "month" || name == "hour" || name == "weekday"
 }
 
 // DimensionView 描述一张分组聚合表的渲染输入(内置单维与自定义多维共用)。
@@ -289,8 +300,8 @@ func (a *GroupAggregate) add(o GroupAggregate) {
 }
 
 // displayKey 把 SQL 返回的原始键值映射为显示键:provider 应用 alias 与未归因,
-// project 应用未分类,hour 补 ":00" 后缀表示小时起点,client/model 保持源字段
-// 空值。
+// project 应用未分类,hour 补 ":00" 后缀表示小时起点,weekday 映射为双语星期
+// 名,client/model 保持源字段空值。
 func (d dimension) displayKey(raw string, aliases map[string]string) string {
 	if d.name == "hour" {
 		// strftime '%H' 恒为两位数字,后缀仅作显示;防御非两位形态原样返回。
@@ -298,6 +309,9 @@ func (d dimension) displayKey(raw string, aliases map[string]string) string {
 			return raw + ":00"
 		}
 		return raw
+	}
+	if d.name == "weekday" {
+		return weekdayDisplayKey(raw)
 	}
 	if d.name == "provider" {
 		if alias := strings.TrimSpace(aliases[raw]); alias != "" {
@@ -317,16 +331,38 @@ func (d dimension) displayKey(raw string, aliases map[string]string) string {
 // trendBarWidth 是趋势条的最大块数:含 day 维度视图中趋势列的长度上限。
 const trendBarWidth = 20
 
-// hourTicks 是 hour 维度纯单维视图缺口填充的固定刻度(显示形态,即每日 24 个
-// 小时起点):hour 的轴刻度与请求日期范围无关,任一请求区间的时间轴都覆盖
-// 整日 24 小时,缺数据的小时补零值行。
+// hourTicks 是 hour 维度纯单维视图缺口填充的固定原始键刻度(SQL 形态
+// "00".."23",显示形态经 displayKey 补 ":00" 后缀):hour 的轴刻度与请求日期
+// 范围无关,任一请求区间的时间轴都覆盖整日 24 小时,缺数据的小时补零值行。
 var hourTicks = func() []string {
 	ticks := make([]string, 24)
 	for i := range ticks {
-		ticks[i] = fmt.Sprintf("%02d:00", i)
+		ticks[i] = fmt.Sprintf("%02d", i)
 	}
 	return ticks
 }()
+
+// weekdayTicks 是 weekday 维度纯单维视图缺口填充的固定原始键刻度(ISO 周序
+// "0".."6"):weekday 的轴刻度与请求日期范围无关,任一请求区间的时间轴都覆盖
+// 整周 7 天,缺数据的星期补零值行。
+var weekdayTicks = []string{"0", "1", "2", "3", "4", "5", "6"}
+
+// weekdayNames 是 weekday 维度显示名的单一来源,下标即 ISO 周序原始键
+// ("0"=周一 .. "6"=周日),中英文名一一对应。
+var (
+	weekdayNamesEn = []string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}
+	weekdayNamesZh = []string{"周一", "周二", "周三", "周四", "周五", "周六", "周日"}
+)
+
+// weekdayDisplayKey 把 weekday 的 ISO 周序原始键("0".."6")映射为双语星期名;
+// 非法形态原样返回(数据异常时保持可观察而非静默吞掉)。
+func weekdayDisplayKey(raw string) string {
+	i, err := strconv.Atoi(raw)
+	if err != nil || i < 0 || i >= len(weekdayNamesEn) {
+		return raw
+	}
+	return ui.Bi(weekdayNamesEn[i], weekdayNamesZh[i])
+}
 
 // trendBar 按行 totalTokens 相对结果集最大行 totalTokens 的比例生成趋势条:
 // 长度 = 比例 × trendBarWidth(整数除法向下取整),totalTokens>0 但算出 0 块时
@@ -344,9 +380,13 @@ func trendBar(total, maxTotal int64) string {
 }
 
 // DimensionRow 是一张维度视图聚合结果中的一行:显示键序列与该键下的聚合值。
+// rawKeys 是与 Keys 一一对应的 SQL 原始键(未做显示映射),时间维度的排序轴
+// 消费原始键(weekday 的显示名为双语星期名,字典序不是周序,原始键 "0".."6"
+// 才是),缺口填充行同样填原始键形态保持排序统一;非导出仅供聚合核内部使用。
 type DimensionRow struct {
-	Keys []string
-	Agg  GroupAggregate
+	Keys    []string
+	Agg     GroupAggregate
+	rawKeys []string
 }
 
 // AggregateDimensionView 执行维度视图的数据聚合与排序(不含渲染):
@@ -421,6 +461,7 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 		for i, d := range dims {
 			row.Keys[i] = d.displayKey(rawKeys[i], view.Aliases)
 		}
+		row.rawKeys = append(row.rawKeys, rawKeys...)
 		key := strings.Join(row.Keys, "\x00")
 		if idx, ok := rowIndex[key]; ok {
 			rowOrder[idx].Agg.add(row.Agg)
@@ -447,22 +488,42 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 	// 保证时间轴连续;多维时间视图(如 day,model / month,model)不做。
 	// day 视图按日期补零(dates 为连续逐日列表);month 视图按月前缀补零:
 	// 从请求 dates 推导去重的有序 YYYY-MM 前缀序列(dates 连续逐日,按遍历
-	// 顺序去重即保序),对没有数据行的月份插入零值行(Keys=[月前缀]);
-	// hour 视图按固定 24 小时刻度补零,与请求日期范围无关。
+	// 顺序去重即保序),对没有数据行的月份插入零值行;hour/weekday 的刻度集
+	// 固定(整日 24 小时 / 整周 7 天,原始键形态),与请求日期范围无关。
+	// 填充行同时携带显示键与原始键(两者一致或经同一映射),排序轴统一。
 	if len(dims) == 1 && temporalIdx == 0 {
-		if dims[0].name == "hour" {
+		fill := func(rawKey, displayKey string) {
+			rowOrder = append(rowOrder, DimensionRow{
+				Keys:    []string{displayKey},
+				rawKeys: []string{rawKey},
+			})
+		}
+		switch dims[0].name {
+		case "hour":
 			seenHours := make(map[string]bool, len(rowOrder))
 			for _, r := range rowOrder {
-				seenHours[r.Keys[0]] = true
+				seenHours[r.rawKeys[0]] = true
 			}
 			for _, tick := range hourTicks {
 				if seenHours[tick] {
 					continue
 				}
 				seenHours[tick] = true
-				rowOrder = append(rowOrder, DimensionRow{Keys: []string{tick}})
+				fill(tick, tick+":00")
 			}
-		} else {
+		case "weekday":
+			seenWeekdays := make(map[string]bool, len(rowOrder))
+			for _, r := range rowOrder {
+				seenWeekdays[r.rawKeys[0]] = true
+			}
+			for _, tick := range weekdayTicks {
+				if seenWeekdays[tick] {
+					continue
+				}
+				seenWeekdays[tick] = true
+				fill(tick, weekdayDisplayKey(tick))
+			}
+		default:
 			// period 把请求日期归一为当前时间维度的轴刻度:day 即日期本身,
 			// month 取 YYYY-MM 前缀(数据行键已是该形态,截取为幂等)。
 			period := func(key string) string { return key }
@@ -471,7 +532,7 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 			}
 			seenPeriods := make(map[string]bool, len(rowOrder))
 			for _, r := range rowOrder {
-				seenPeriods[period(r.Keys[0])] = true
+				seenPeriods[period(r.rawKeys[0])] = true
 			}
 			for _, date := range dates {
 				p := period(date)
@@ -479,17 +540,17 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 					continue
 				}
 				seenPeriods[p] = true
-				rowOrder = append(rowOrder, DimensionRow{Keys: []string{p}})
+				fill(p, p)
 			}
 		}
 	}
 
-	// 稳定排序:含时间维度时该维度显示值升序优先(YYYY-MM-DD / YYYY-MM
-	// 字典序即时间序),再按 total 降序、完整显示键元组升序(同一有效配置与
-	// 语言下确定)。
+	// 稳定排序:含时间维度时该维度按原始键升序优先(day/month/hour 的原始键
+	// 与显示键同序;weekday 显示名为星期名,原始键 ISO 周序 "0".."6" 才是时间
+	// 序),再按 total 降序、完整显示键元组升序(同一有效配置与语言下确定)。
 	sort.SliceStable(rowOrder, func(i, j int) bool {
-		if temporalIdx >= 0 && rowOrder[i].Keys[temporalIdx] != rowOrder[j].Keys[temporalIdx] {
-			return rowOrder[i].Keys[temporalIdx] < rowOrder[j].Keys[temporalIdx]
+		if temporalIdx >= 0 && rowOrder[i].rawKeys[temporalIdx] != rowOrder[j].rawKeys[temporalIdx] {
+			return rowOrder[i].rawKeys[temporalIdx] < rowOrder[j].rawKeys[temporalIdx]
 		}
 		if rowOrder[i].Agg.TotalTokens != rowOrder[j].Agg.TotalTokens {
 			return rowOrder[i].Agg.TotalTokens > rowOrder[j].Agg.TotalTokens
@@ -659,6 +720,15 @@ func (q *Querier) ByHour(ctx context.Context, dates []string) (string, error) {
 	return q.RunDimensionView(ctx, dates, DimensionView{
 		Dimensions: []string{"hour"},
 		TitleEn:    "Usage by hour", TitleZh: "按小时用量",
+	})
+}
+
+// ByWeekday 按本机时区的星期分布聚合,ISO 周序呈现(周一在首):纯单维
+// weekday 视图对整周 7 天固定刻度补零值行,时间轴与请求日期范围无关。
+func (q *Querier) ByWeekday(ctx context.Context, dates []string) (string, error) {
+	return q.RunDimensionView(ctx, dates, DimensionView{
+		Dimensions: []string{"weekday"},
+		TitleEn:    "Usage by weekday", TitleZh: "按星期用量",
 	})
 }
 

@@ -1068,17 +1068,17 @@ func TestRunDimensionView_UnknownDimensionMessageListsDayAndMonth(t *testing.T) 
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"(allowed: client, model, provider, project, day, month, hour)",
-		"(允许: client, model, provider, project, day, month, hour)",
+		"(allowed: client, model, provider, project, day, month, hour, weekday)",
+		"(允许: client, model, provider, project, day, month, hour, weekday)",
 	} {
 		if !strings.Contains(msg, want) {
-			t.Errorf("错误应含含 hour 的允许集合 %q:\n%s", want, msg)
+			t.Errorf("错误应含含 weekday 的允许集合 %q:\n%s", want, msg)
 		}
 	}
-	// 旧的不含 hour 的七维文案不得再出现(以此保证本断言的区分度)。
+	// 旧的不含 weekday 的八维文案不得再出现(以此保证本断言的区分度)。
 	for _, legacy := range []string{
-		"(allowed: client, model, provider, project, day, month)",
-		"(允许: client, model, provider, project, day, month)",
+		"(allowed: client, model, provider, project, day, month, hour)",
+		"(允许: client, model, provider, project, day, month, hour)",
 	} {
 		if strings.Contains(msg, legacy) {
 			t.Errorf("错误不得再使用不含 month 的旧文案 %q:\n%s", legacy, msg)
@@ -1339,11 +1339,15 @@ func TestByHour_Fixed24TicksAscendingGapFillAndTrendBars(t *testing.T) {
 			t.Errorf("小时 %s 趋势条应 %d 块,实际 %d:\n%s", key, want, got, ln)
 		}
 	}
-	allTicks := hourTicks
-	if len(rowOrder) != len(allTicks) {
-		t.Fatalf("小时行数 = %d, want %d(固定 24 刻度):\n%s", len(rowOrder), len(allTicks), out)
+	// 期望序列按显示形态构造(hourTicks 为原始键形态,显示键补 ":00" 后缀)。
+	wantOrder := make([]string, len(hourTicks))
+	for i, tick := range hourTicks {
+		wantOrder[i] = tick + ":00"
 	}
-	if strings.Join(rowOrder, ",") != strings.Join(allTicks, ",") {
+	if len(rowOrder) != len(wantOrder) {
+		t.Fatalf("小时行数 = %d, want %d(固定 24 刻度):\n%s", len(rowOrder), len(wantOrder), out)
+	}
+	if strings.Join(rowOrder, ",") != strings.Join(wantOrder, ",") {
 		t.Errorf("小时行应按 00:00..23:00 升序: got %v", rowOrder)
 	}
 
@@ -1407,6 +1411,140 @@ func TestRunDimensionView_HourModelOrdersByHourThenTotal(t *testing.T) {
 	for i := range want {
 		if rows[i] != want[i] {
 			t.Errorf("第 %d 行 = %+v, want %+v(主轴 hour 升序,同小时 total 降序):\n%s", i, rows[i], want[i], out)
+		}
+	}
+}
+
+// 纯 weekday 视图:ts 按本机时区折算星期归属,固定补全 ISO 周序 Monday..Sunday
+// 全部 7 行(与请求日期范围无关),按周序升序(而非显示名字典序),趋势条以最
+// 繁忙星期为基准,总计为独立全量聚合。
+func TestByWeekday_Fixed7TicksISOOrderGapFillAndTrendBars(t *testing.T) {
+	q := newEmptyQuerier(t)
+	// 2026-07-06 周一 / 07-08 周三 / 07-12 周日;周二、周四、周五、周六为缺口。
+	msgs := []model.Message{
+		{ID: "wd-mon", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-06", TS: hourTS(2026, 7, 6, 10, 0), TotalTokens: 500},
+		{ID: "wd-wed", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-08", TS: hourTS(2026, 7, 8, 14, 30), TotalTokens: 1000},
+		{ID: "wd-sun", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-12", TS: hourTS(2026, 7, 12, 20, 0), TotalTokens: 100},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	out, err := q.ByWeekday(context.Background(), []string{"2026-07-06", "2026-07-07", "2026-07-08", "2026-07-09", "2026-07-10", "2026-07-11", "2026-07-12"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Usage by weekday / 按星期用量") {
+		t.Errorf("输出应含双语标题:\n%s", out)
+	}
+
+	// 逐星期行断言:ISO 周序 7 行,缺口星期补零值行(趋势为空);
+	// 趋势条 Wednesday 1000→20 块、Monday 500→10 块、Sunday 100→2 块。
+	wantBlocks := map[string]int{
+		"Monday / 周一":    10,
+		"Wednesday / 周三": 20,
+		"Sunday / 周日":    2,
+	}
+	var rowOrder []string
+	for _, ln := range strings.Split(out, "\n") {
+		if !strings.Contains(ln, "│") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(ln, "│"), "│")
+		if len(cells) == 0 {
+			continue
+		}
+		key := strings.TrimSpace(cells[0])
+		day, ok := weekdayRowKey(key)
+		if !ok {
+			continue
+		}
+		rowOrder = append(rowOrder, day)
+		if got := strings.Count(ln, "█"); got != wantBlocks[day] {
+			t.Errorf("星期 %s 趋势条应 %d 块,实际 %d:\n%s", day, wantBlocks[day], got, ln)
+		}
+	}
+	if len(rowOrder) != len(weekdayTicks) {
+		t.Fatalf("星期行数 = %d, want %d(固定 7 刻度):\n%s", len(rowOrder), len(weekdayTicks), out)
+	}
+	// 行序按 ISO 周序:显示名 Friday 字典序在 Monday 之前,若按显示名排序该
+	// 断言即失败,以此锁定排序轴为原始键周序。
+	for i, tick := range weekdayTicks {
+		if rowOrder[i] != weekdayDisplayKey(tick) {
+			t.Errorf("第 %d 行 = %q, want %q(ISO 周序): %v", i, rowOrder[i], weekdayDisplayKey(tick), rowOrder)
+		}
+	}
+
+	// 总计行:三行 total 聚合 1600,且总计行趋势单元格为空。
+	if !strings.Contains(out, formatTokens(1600)) {
+		t.Errorf("总计行 total 应为聚合值 1600 的换算(%s):\n%s", formatTokens(1600), out)
+	}
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "Total / 总计") && strings.Contains(ln, "█") {
+			t.Errorf("总计行趋势单元格应为空串:\n%s", ln)
+		}
+	}
+}
+
+// weekdayRowKey 判定表格行首列是否为星期显示键,是则返回该键。
+func weekdayRowKey(key string) (string, bool) {
+	for _, tick := range weekdayTicks {
+		if name := weekdayDisplayKey(tick); name == key {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// weekday,model 多维视图:排序主轴取声明首维 weekday 的原始键 ISO 周序
+// (Monday 在 Friday 之前,尽管显示名字典序相反),同星期内按 total 降序;
+// 多维时间视图不做缺口填充。
+func TestRunDimensionView_WeekdayModelOrdersByISOWeekdayThenTotal(t *testing.T) {
+	q := newEmptyQuerier(t)
+	msgs := []model.Message{
+		{ID: "wm-a", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-06", TS: hourTS(2026, 7, 6, 9, 0), Model: "model-a", TotalTokens: 300},
+		{ID: "wm-b", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-06", TS: hourTS(2026, 7, 6, 18, 0), Model: "model-b", TotalTokens: 100},
+		{ID: "wm-c", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-10", TS: hourTS(2026, 7, 10, 12, 0), Model: "model-c", TotalTokens: 200},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	out, err := q.RunDimensionView(context.Background(), []string{"2026-07-06", "2026-07-10"}, DimensionView{
+		Dimensions: []string{"weekday", "model"},
+		TitleEn:    "Usage by weekday and model", TitleZh: "按星期与模型用量",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Trend") || !strings.Contains(out, "趋势") {
+		t.Errorf("含 weekday 维度的多维视图应含趋势列:\n%s", out)
+	}
+	type weekdayRow struct{ weekday, modelName string }
+	var rows []weekdayRow
+	for _, ln := range strings.Split(out, "\n") {
+		if !strings.Contains(ln, "│") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(ln, "│"), "│")
+		if len(cells) < 2 {
+			continue
+		}
+		day, ok := weekdayRowKey(strings.TrimSpace(cells[0]))
+		if !ok {
+			continue
+		}
+		rows = append(rows, weekdayRow{weekday: day, modelName: strings.TrimSpace(cells[1])})
+	}
+	want := []weekdayRow{
+		{"Monday / 周一", "model-a"},
+		{"Monday / 周一", "model-b"},
+		{"Friday / 周五", "model-c"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("数据行数 = %d, want %d(多维不补缺口):\n%s", len(rows), len(want), out)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Errorf("第 %d 行 = %+v, want %+v(主轴 ISO 周序,同星期 total 降序):\n%s", i, rows[i], want[i], out)
 		}
 	}
 }

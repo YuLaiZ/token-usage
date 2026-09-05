@@ -49,6 +49,7 @@ func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 		"day":      "Usage by day / 按天用量",
 		"month":    "Usage by month / 按月用量",
 		"hour":     "Usage by hour / 按小时用量",
+		"weekday":  "Usage by weekday / 按星期用量",
 		"session":  "View session details / 查看会话明细",
 		"summary":  "View summary / 查看总览摘要",
 		"custom":   "Run a configured custom or group query / 执行已配置的自定义或组合查询",
@@ -1491,13 +1492,13 @@ func TestRunQuery_StaticRoutingAndTreeStable(t *testing.T) {
 	for _, sub := range root.Commands() {
 		names[sub.Name()] = true
 	}
-	for _, want := range []string{"client", "model", "provider", "project", "day", "month", "hour", "session", "summary", "custom", "list"} {
+	for _, want := range []string{"client", "model", "provider", "project", "day", "month", "hour", "weekday", "session", "summary", "custom", "list"} {
 		if !names[want] {
 			t.Errorf("缺少静态子命令 %q", want)
 		}
 	}
-	if len(root.Commands()) != 11 {
-		t.Errorf("静态命令树应恰为 11 个子命令: %v", root.Commands())
+	if len(root.Commands()) != 12 {
+		t.Errorf("静态命令树应恰为 12 个子命令: %v", root.Commands())
 	}
 
 	// 执行过具名查询后命令树不变:配置中的名称不会注册为动态子命令。
@@ -1934,5 +1935,42 @@ func TestRunQueryList_NeverOpensDB(t *testing.T) {
 		if strings.Contains(out, absent) {
 			t.Errorf("list 输出不应含 %q:\n%s", absent, out)
 		}
+	}
+}
+
+// TestExecuteQuery_ViewWeekdayDispatch 为 viewWeekday 补执行接线:输出含按星期
+// 用量标题,纯 weekday 视图对整周 7 天固定刻度补零值行(与请求日期范围无关),
+// 按本机时区把消息 ts 折算进对应星期行并渲染趋势条。
+func TestExecuteQuery_ViewWeekdayDispatch(t *testing.T) {
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+	// 2026-07-07 为周二:消息应折入 "Tuesday / 周二" 数据行,其余 6 天为补零行。
+	ts := time.Date(2026, 7, 7, 9, 30, 0, 0, time.Local).UnixMilli()
+	if _, err := db.UpsertMessages(context.Background(), usageDB, []model.Message{{
+		ID: "weekday-dispatch", SessionID: "s", Client: "claude",
+		Date: "2026-07-07", TS: ts, TotalTokens: 800,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := &bytes.Buffer{}
+	if err := executeQueryDates(context.Background(), buf, usageDB,
+		[]string{"2026-07-07"}, viewWeekday); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Usage by weekday / 按星期用量") {
+		t.Errorf("viewWeekday 输出应含按星期用量标题:\n%s", out)
+	}
+	// 固定 7 刻度:周一首刻度与周日夜末刻度均应出现(无数据星期补零值行)。
+	if !strings.Contains(out, "Monday / 周一") || !strings.Contains(out, "Sunday / 周日") {
+		t.Errorf("viewWeekday 应补全整周 7 天刻度:\n%s", out)
+	}
+	// 周二有数据,非全零区间应出现趋势条 █。
+	if !strings.Contains(out, "█") {
+		t.Errorf("数据星期行应渲染趋势条 █:\n%s", out)
 	}
 }

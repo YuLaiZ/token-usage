@@ -35,6 +35,7 @@ var (
 	HDate        = HeaderLines("Date", "日期")
 	HMonth       = HeaderLines("Month", "月份")
 	HHour        = HeaderLines("Hour", "小时")
+	HWeekday     = HeaderLines("Weekday", "星期")
 	HTrend       = HeaderLines("Trend", "趋势")
 	HProvider    = HeaderLines("Provider", "供应商")
 	HModel       = HeaderLines("Model", "模型")

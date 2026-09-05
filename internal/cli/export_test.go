@@ -260,7 +260,7 @@ func TestExportUnknownViewRejectedBeforeOpen(t *testing.T) {
 		t.Fatal("未知视图应报错")
 	}
 	msg := err.Error()
-	for _, want := range []string{"client, model, provider, project, day, month, hour, session", "/"} {
+	for _, want := range []string{"client, model, provider, project, day, month, hour, weekday, session", "/"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("错误应含允许集合 %q: %q", want, msg)
 		}
@@ -767,6 +767,69 @@ func TestExportJSONHourView(t *testing.T) {
 		default:
 			if total != 0 {
 				t.Errorf("无数据小时 %s 的 total 应为 0,实际 %v", wantHour, total)
+			}
+		}
+	}
+}
+
+// TestExportJSONWeekdayView 导出 weekday 视图:固定 ISO 周序 7 天刻度全量补零
+// (与请求日期范围无关),键列为 weekday(显示形态为双语星期名),数值为
+// JSON number。
+func TestExportJSONWeekdayView(t *testing.T) {
+	open := func(string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { usageDB.Close() })
+		// 2026-07-06 周一 / 07-08 周三,消息分别折入 Monday/Wednesday 行。
+		msgs := []model.Message{
+			{ID: "wd-a", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-06",
+				TS:               time.Date(2026, 7, 6, 9, 0, 0, 0, time.Local).UnixMilli(),
+				FreshInputTokens: 1000, TotalTokens: 1000},
+			{ID: "wd-b", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-08",
+				TS:          time.Date(2026, 7, 8, 15, 0, 0, 0, time.Local).UnixMilli(),
+				TotalTokens: 5},
+		}
+		if _, err := db.UpsertMessages(context.Background(), usageDB, msgs); err != nil {
+			return nil, err
+		}
+		return usageDB, nil
+	}
+	cmd, out, _ := newExportOutputCmdWithDeps(loadWithRaw(nil, nil), open)
+	cmd.SetArgs([]string{"weekday", "20260706-20260708", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("export weekday json: %v", err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(out.String()), &rows); err != nil {
+		t.Fatalf("输出应为合法 JSON:\n%s", out.String())
+	}
+	if len(rows) != 7 {
+		t.Fatalf("应恰 7 行(整周固定刻度补零),实际 %d:\n%s", len(rows), out.String())
+	}
+	wantKeys := []string{"Monday / 周一", "Tuesday / 周二", "Wednesday / 周三", "Thursday / 周四", "Friday / 周五", "Saturday / 周六", "Sunday / 周日"}
+	for i, row := range rows {
+		got, _ := row["weekday"].(string)
+		if got != wantKeys[i] {
+			t.Fatalf("第 %d 行 weekday = %q, want %q(ISO 周序): %v", i, got, wantKeys[i], row)
+		}
+		total, ok := row["total"].(float64)
+		if !ok {
+			t.Fatalf("第 %d 行 total 应为 JSON number: %v", i, row)
+		}
+		switch got {
+		case "Monday / 周一":
+			if total != 1000 {
+				t.Errorf("Monday total 应为 1000,实际 %v", total)
+			}
+		case "Wednesday / 周三":
+			if total != 5 {
+				t.Errorf("Wednesday total 应为 5,实际 %v", total)
+			}
+		default:
+			if total != 0 {
+				t.Errorf("无数据星期 %s 的 total 应为 0,实际 %v", got, total)
 			}
 		}
 	}
