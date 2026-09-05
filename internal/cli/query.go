@@ -33,6 +33,7 @@ const (
 	viewMonth
 	viewHour
 	viewWeekday
+	viewHeatmap
 	viewSessions
 	viewSummary
 	// viewDefault 表示裸 query:执行 query.default 指向的对象(未配置时等价 client)。
@@ -46,7 +47,7 @@ type queryBuiltinCmd struct {
 	view  queryView
 }
 
-// queryBuiltinCmds 是十个内置查询命令的唯一元数据来源:子命令注册与
+// queryBuiltinCmds 是十一个内置查询命令的唯一元数据来源:子命令注册与
 // query list 内置表渲染共用,避免 Short 与列表文案漂移。
 // custom/list 是固定操作入口而非内置视图,不入此表。
 var queryBuiltinCmds = []queryBuiltinCmd{
@@ -58,6 +59,7 @@ var queryBuiltinCmds = []queryBuiltinCmd{
 	{"month", "Usage by month / 按月用量", viewMonth},
 	{"hour", "Usage by hour / 按小时用量", viewHour},
 	{"weekday", "Usage by weekday / 按星期用量", viewWeekday},
+	{"heatmap", "Weekday x hour heatmap / 星期×小时热力图", viewHeatmap},
 	{"session", "View session details / 查看会话明细", viewSessions},
 	{"summary", "View summary / 查看总览摘要", viewSummary},
 }
@@ -689,6 +691,8 @@ func executeQueryDatesWithAliases(ctx context.Context, out io.Writer, usageDB *d
 		result, err = q.ByHour(ctx, dates)
 	case viewWeekday:
 		result, err = q.ByWeekday(ctx, dates)
+	case viewHeatmap:
+		result, err = q.Heatmap(ctx, dates)
 	case viewSessions:
 		result, err = q.Sessions(ctx, dates)
 	case viewSummary:

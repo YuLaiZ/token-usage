@@ -42,6 +42,7 @@ var (
 	HProject     = HeaderLines("Project", "项目")
 	HTitle       = HeaderLines("Title", "标题")
 	HDuration    = HeaderLines("Duration", "时长")
+	HDayTotal    = HeaderLines("Day Total", "日合计")
 	HRequests    = HeaderLines("Requests", "请求数")
 	HInput       = HeaderLines("Input", "输入")
 	HOutput      = HeaderLines("Output", "输出")

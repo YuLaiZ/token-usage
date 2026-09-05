@@ -1652,3 +1652,93 @@ func TestSessions_DurationColumnReflectsRequestSpan(t *testing.T) {
 		t.Errorf("SessionRows 请求跨度 = %d ms, want %d ms", rows[0].LastTS-rows[0].FirstTS, 61*60*1000)
 	}
 }
+
+// 热力透视表:weekday×hour 交点矩阵,单元格强度字符按全表最大值折算,
+// 尾列为日合计、尾行为小时合计与全表总计;矩阵自算口径与单元格一致。
+func TestHeatmap_MatrixIntensityAndTotals(t *testing.T) {
+	q := newEmptyQuerier(t)
+	if _, err := db.UpsertSessionMeta(context.Background(), q.db, []model.Session{
+		{ID: "sess-hm", Client: model.ClientClaudeCode, Directory: "/w", Project: "proj-A", Title: "hm", FirstTS: 0, LastTS: 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 2026-07-06 周一 14:30 total=1000(全表最大 → 强度 9 级 '@');
+	// 2026-07-12 周日 09:00 total=250(250*9/1000 向下取整 2 级 ':')。
+	msgs := []model.Message{
+		{ID: "hm-a", SessionID: "sess-hm", Client: model.ClientClaudeCode, Date: "2026-07-06", TS: hourTS(2026, 7, 6, 14, 30), TotalTokens: 1000},
+		{ID: "hm-b", SessionID: "sess-hm", Client: model.ClientClaudeCode, Date: "2026-07-12", TS: hourTS(2026, 7, 12, 9, 0), TotalTokens: 250},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	out, err := q.Heatmap(context.Background(), []string{"2026-07-06", "2026-07-12"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 逐行断言:7 行按 ISO 周序;14 列(小时 14 = 下标 14)强度 '@',09 列强度 ':',
+	// 其余为空格;行尾日合计 Monday 1.00 K、Sunday 250。
+	// 表格行以框线 │ 开头,标签在首列,用 Contains 定位。
+	var mondayLine, sundayLine, totalLine string
+	for _, ln := range strings.Split(out, "\n") {
+		switch {
+		case strings.Contains(ln, "Monday / 周一"):
+			mondayLine = ln
+		case strings.Contains(ln, "Sunday / 周日"):
+			sundayLine = ln
+		case strings.Contains(ln, "Total / 总计"):
+			totalLine = ln
+		}
+	}
+
+	// Monday 行:首列是星期标签,小时 h 的单元格在 1+h 下标;14 时强度 '@',
+	// 其余小时为空;行尾日合计 1.00 K。
+	cells := heatmapRowCells(t, mondayLine)
+	if len(cells) != 24+2 { // 标签 + 24 小时格 + 尾列合计
+		t.Fatalf("Monday 行格数 = %d, want 26:\n%s", len(cells), out)
+	}
+	if got := cells[1+14]; got != "@" {
+		t.Errorf("Monday 14 时强度应 '@',实际 %q:\n%s", got, out)
+	}
+	if got := strings.Join(cells[1:15], ""); strings.Contains(got, "@") {
+		t.Errorf("Monday 其余小时不应出现最高强度:\n%s", got)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(cells[25]), "1.00 K") {
+		t.Errorf("Monday 日合计应 1.00 K:\n%s", out)
+	}
+
+	// Sunday 行:09 时强度 ':'(250*9/1000 向下取整 2 级),日合计 250。
+	sunday := heatmapRowCells(t, sundayLine)
+	if got := sunday[1+9]; got != ":" {
+		t.Errorf("Sunday 09 时强度应 ':',实际 %q:\n%s", got, out)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(sunday[25]), "250") {
+		t.Errorf("Sunday 日合计应 250:\n%s", out)
+	}
+
+	// 总计行:14 时列合计 1.00 K、09 时列 250、全表 1.25 K。
+	tc := heatmapRowCells(t, totalLine)
+	if len(tc) != 24+2 {
+		t.Fatalf("Total 行格数 = %d, want 26:\n%s", len(tc), out)
+	}
+	if tc[1+14] != "1.00 K" {
+		t.Errorf("14 时列合计应 1.00 K,实际 %q:\n%s", tc[1+14], out)
+	}
+	if tc[1+9] != "250" {
+		t.Errorf("09 时列合计应 250,实际 %q:\n%s", tc[1+9], out)
+	}
+	if tc[25] != "1.25 K" {
+		t.Errorf("全表总计应 1.25 K,实际 %q:\n%s", tc[25], out)
+	}
+}
+
+// heatmapRowCells 把热力表数据行按框线切分为单元格。
+func heatmapRowCells(t *testing.T, ln string) []string {
+	t.Helper()
+	parts := strings.Split(strings.Trim(ln, " │"), "│")
+	cells := make([]string, 0, len(parts))
+	for _, p := range parts {
+		cells = append(cells, strings.TrimSpace(p))
+	}
+	return cells
+}

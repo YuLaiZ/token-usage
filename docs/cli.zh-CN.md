@@ -23,6 +23,7 @@ token-usage
 │   ├── month [DATE|DATE-DATE]     # 按月用量
 │   ├── hour [DATE|DATE-DATE]      # 按小时用量
 │   ├── weekday [DATE|DATE-DATE]   # 按星期用量
+│   ├── heatmap [DATE|DATE-DATE]   # 星期×小时热力图
 │   ├── session [DATE|DATE-DATE]   # 会话明细
 │   └── summary [DATE|DATE-DATE]   # 总览摘要
 ├── export [view] [DATE|DATE-DATE] # 以 CSV 或 JSON 导出使用数据（--format csv|json）
@@ -216,6 +217,7 @@ token-usage query day [日期]
 token-usage query month [日期]
 token-usage query hour [日期]
 token-usage query weekday [日期]
+token-usage query heatmap [日期]
 token-usage query session [日期]
 token-usage query summary [日期]
 token-usage query <name> [日期]        # 已配置子查询/组合查询的直接简写
@@ -243,9 +245,11 @@ Last successful collection / 最近成功采集: 2026-07-22 08:15:03
 
 缺省日期为今天。若查询的日期区间在 `collection_errors` 中存在未解决记录，结果末尾会附「采集异常」提示并列出条目（组合查询输出多张表时，全部表结束后只提示一次），建议用 `errors` 查看详情、`collect retry` 重试。
 
-所有分组视图（八个内置视图与全部自定义多维表）末行显示 `Total / 总计`，总计与表格使用同一日期范围独立聚合；会话明细与总览摘要不追加该行。
+所有分组视图（九个内置视图与全部自定义多维表）末行显示 `Total / 总计`，总计与表格使用同一日期范围独立聚合；会话明细与总览摘要不追加该行。
 
 `query day`、`query month`、`query hour`、`query weekday` 及任何含 `day`、`month`、`hour` 或 `weekday` 时间维度的视图按时间升序呈现时间轴：行按时间维度升序排列（日 `YYYY-MM-DD`、月 `YYYY-MM`、小时 `00:00`..`23:00` 或 ISO 周序的星期名，而非按总量降序；多个时间维度并存时按声明首个为排序主轴），`Trend / 趋势` 条形列以区间内最繁忙的行为基准对比各行总量。纯 `day` 与 `month` 视图为请求区间内无数据的日期/月份插入零值行；纯 `hour` 与 `weekday` 视图按本机时区折算小时/星期（与 date 列同一时区语义），任一请求区间都呈现整日 24 小时固定刻度与 ISO 周序（周一在首）的整周 7 天固定刻度，为无数据小时/星期补零值行，时间轴不留缺口。
+
+`query heatmap` 渲染星期×小时矩阵：行为 ISO 周序（周一在首）的 7 个星期，列为 `00`..`23` 的 24 个小时（均按本机时区折算，与 date 列同一时区语义）。单元格为该交点 total 相对全表最大值的密度字符（` .:-=+*#%@`，0..9 级），尾列合计各星期，尾行 `Total / 总计` 合计各小时与全表。矩阵不参与 `[query.output.columns]` 布局；`heatmap` 是保留视图名——与 `session`、`summary` 一样，不可被 `query.default`、子查询、组合查询或 `export` 引用。
 
 `query summary` 输出固定的纵向摘要：`Clients / 客户端数`、`Total requests / 请求总数`、`Active days / 活跃天数`（区间内有数据的天数）、每个 token 列一行（`Input` 至 `Total`，恒含 `Cache Create`）；区间内至少有一天有数据时，追加 `Peak day / 单日峰值`（源 total 最高的日期，同分取日期最早者）与 `Daily average / 日均总量`（区间总量除以活跃天数，整数除法向下取整）。区间内无数据时最后两行不渲染。
 
@@ -267,9 +271,9 @@ group_q = "client,model,provider,mpc"  # 按此顺序连续输出多张表
 - `query <name> [日期]` 与 `query custom <name> [日期]` 是同一已配置子查询（一张表）或组合查询（按声明顺序多张表）的等价写法：目标与输出一致，并遵循同一套校验规则——名称解析、保留名拒绝、日期校验顺序（日期错误优先于名称/定义错误）、全部失败都发生在打开数据库之前。错误示例各自展示自身命令形态（`token-usage query 20260701` 与 `token-usage query custom 20260701`）。直接名称走根命令的位置参数分派——配置中的名称不会注册为动态子命令。两个位置参数时第一个必须是视图名；数字开头的首参数（如 `token-usage query 20260701 20260702`）会在加载配置前以双语用法错误拒绝，并给出两种可接受形态的示例。
 - 未知名称与保留名在打开数据库之前被拒绝；日期错误优先于名称/定义错误。两种写法边界一致。
 - 子查询从内置维度（`client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`）中至少选择 2 个不同维度，声明顺序即列顺序；组合查询从内置视图与已定义子查询中至少选择 2 个不同成员，组合查询不能引用组合查询。
-- 视图名为小写标识符（首字符字母，后续字母、数字、`_`、`-`），不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`day`/`month`/`hour`/`weekday`/`custom`/`list` 冲突。值按逗号分隔，每段自动去除首尾空格，`"model, provider"` 与 `"model,provider"` 等价。若历史手写的子查询或组合查询名为 `list`，升级前请先重命名：新版二进制会将该名称按保留名拒绝（`query list` 已成为静态发现子命令）。
+- 视图名为小写标识符（首字符字母，后续字母、数字、`_`、`-`），不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`day`/`month`/`hour`/`weekday`/`heatmap`/`custom`/`list` 冲突。值按逗号分隔，每段自动去除首尾空格，`"model, provider"` 与 `"model,provider"` 等价。若历史手写的子查询或组合查询名为 `list`，升级前请先重命名：新版二进制会将该名称按保留名拒绝（`query list` 已成为静态发现子命令）。
 - `query.default` 匹配前去除首尾空格，空白等同未设置并回退 client；可引用内置视图、子查询或组合查询，`session` 与 `summary` 不可引用。
-- `query list` 不接受位置参数，单次固定顺序输出：默认行为（`token-usage query -> <name> (<类别>)`）、一次性的调用说明（简写与显式两形态等价）、十个内置命令及其用途，随后把每个已配置子查询/组合查询各渲染为一条今天即可复制执行的完整命令（如 `token-usage query mpc`）附维度或成员 CSV；空分区显示 `None`。它只读取有效配置并解析定义——不打开 `usage.db`、不打印统计信息区、不读取采集异常、不接受日期、不修改任何状态。定义损坏时仍按既有定位错误失败，不会伪装成空列表。
+- `query list` 不接受位置参数，单次固定顺序输出：默认行为（`token-usage query -> <name> (<类别>)`）、一次性的调用说明（简写与显式两形态等价）、十一个内置命令及其用途，随后把每个已配置子查询/组合查询各渲染为一条今天即可复制执行的完整命令（如 `token-usage query mpc`）附维度或成员 CSV；空分区显示 `None`。它只读取有效配置并解析定义——不打开 `usage.db`、不打印统计信息区、不读取采集异常、不接受日期、不修改任何状态。定义损坏时仍按既有定位错误失败，不会伪装成空列表。
 
 ### 输出列布局
 

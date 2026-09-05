@@ -137,7 +137,7 @@ token-usage query list
 | `collect all` | 全量采集历史数据，不使用 `collection_log` 日期去重；可安全重复执行。 |
 | `collect retry` | 重试未解决的采集失败。 |
 | `query [date]` | 运行默认报表。 |
-| `query client/model/provider/project/day/month/hour/weekday/session/summary [date]` | 运行内置报表。 |
+| `query client/model/provider/project/day/month/hour/weekday/heatmap/session/summary [date]` | 运行内置报表。 |
 | `query <name> [date]` | 运行已配置视图或报表组合。 |
 | `query list` | 不打开 usage 数据库，列出视图。 |
 | `export [view] [date]` | 将使用数据以 CSV 或 JSON 导出到 stdout。 |

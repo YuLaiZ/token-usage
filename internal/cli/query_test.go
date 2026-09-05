@@ -50,6 +50,7 @@ func TestNewQueryCmd_SubcommandTree(t *testing.T) {
 		"month":    "Usage by month / 按月用量",
 		"hour":     "Usage by hour / 按小时用量",
 		"weekday":  "Usage by weekday / 按星期用量",
+		"heatmap":  "Weekday x hour heatmap / 星期×小时热力图",
 		"session":  "View session details / 查看会话明细",
 		"summary":  "View summary / 查看总览摘要",
 		"custom":   "Run a configured custom or group query / 执行已配置的自定义或组合查询",
@@ -1492,13 +1493,13 @@ func TestRunQuery_StaticRoutingAndTreeStable(t *testing.T) {
 	for _, sub := range root.Commands() {
 		names[sub.Name()] = true
 	}
-	for _, want := range []string{"client", "model", "provider", "project", "day", "month", "hour", "weekday", "session", "summary", "custom", "list"} {
+	for _, want := range []string{"client", "model", "provider", "project", "day", "month", "hour", "weekday", "heatmap", "session", "summary", "custom", "list"} {
 		if !names[want] {
 			t.Errorf("缺少静态子命令 %q", want)
 		}
 	}
-	if len(root.Commands()) != 12 {
-		t.Errorf("静态命令树应恰为 12 个子命令: %v", root.Commands())
+	if len(root.Commands()) != 13 {
+		t.Errorf("静态命令树应恰为 13 个子命令: %v", root.Commands())
 	}
 
 	// 执行过具名查询后命令树不变:配置中的名称不会注册为动态子命令。
@@ -1972,5 +1973,40 @@ func TestExecuteQuery_ViewWeekdayDispatch(t *testing.T) {
 	// 周二有数据,非全零区间应出现趋势条 █。
 	if !strings.Contains(out, "█") {
 		t.Errorf("数据星期行应渲染趋势条 █:\n%s", out)
+	}
+}
+
+// TestExecuteQuery_ViewHeatmapDispatch 为 viewHeatmap 补执行接线:输出含热力图
+// 标题、ISO 周序 7 行星期与 24 小时列,消息按本机时区折入对应交点。
+func TestExecuteQuery_ViewHeatmapDispatch(t *testing.T) {
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+	// 2026-07-07 周二 09:30 的消息折入 Tuesday 行 09 列。
+	ts := time.Date(2026, 7, 7, 9, 30, 0, 0, time.Local).UnixMilli()
+	if _, err := db.UpsertMessages(context.Background(), usageDB, []model.Message{{
+		ID: "hm-dispatch", SessionID: "s", Client: "claude",
+		Date: "2026-07-07", TS: ts, TotalTokens: 800,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := &bytes.Buffer{}
+	if err := executeQueryDates(context.Background(), buf, usageDB,
+		[]string{"2026-07-07"}, viewHeatmap); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Heatmap") || !strings.Contains(out, "热力图") {
+		t.Errorf("viewHeatmap 输出应含热力图标题:\n%s", out)
+	}
+	if !strings.Contains(out, "Tuesday / 周二") || !strings.Contains(out, "Sunday / 周日") {
+		t.Errorf("viewHeatmap 应呈现整周 7 行(ISO 周序):\n%s", out)
+	}
+	// 09:30 的消息折入 09 列:Tuesday 行应出现非零强度字符与行合计 800。
+	if !strings.Contains(out, "800") {
+		t.Errorf("Tuesday 行尾应显示日合计 800:\n%s", out)
 	}
 }

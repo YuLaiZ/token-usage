@@ -515,7 +515,7 @@ func TestParse_EarlierErrorDoesNotPolluteLaterValidGroups(t *testing.T) {
 // 均为保留名;普通合法名称(含以保留名为前缀/后缀的词)不是保留名。
 func TestIsReservedName(t *testing.T) {
 	// 正向:十个内置视图名单独断言;custom/list 是固定入口而非视图,分开列举。
-	for _, name := range []string{"client", "model", "provider", "project", "session", "summary", "day", "month", "hour", "weekday"} {
+	for _, name := range []string{"client", "model", "provider", "project", "session", "summary", "day", "month", "hour", "weekday", "heatmap"} {
 		if !IsReservedName(name) {
 			t.Errorf("IsReservedName(%q) = false, 应为 true(内置视图名)", name)
 		}
@@ -535,7 +535,7 @@ func TestIsReservedName(t *testing.T) {
 // 保留名错误的双语列表由同一有序来源生成:两张表的 list 拒绝错误都必须
 // 完整列出十二个名称(十个内置视图名与 custom/list),缺一即文案漂移。
 func TestParse_ReservedNameErrorListsAllReservedNames(t *testing.T) {
-	reserved := []string{"client", "model", "provider", "project", "session", "summary", "day", "month", "hour", "weekday", "custom", "list"}
+	reserved := []string{"client", "model", "provider", "project", "session", "summary", "day", "month", "hour", "weekday", "heatmap", "custom", "list"}
 	for _, section := range []struct{ table, path string }{
 		{"subqueries", "query.subqueries.list"},
 		{"groups", "query.groups.list"},

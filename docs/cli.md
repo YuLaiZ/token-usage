@@ -23,6 +23,7 @@ token-usage
 │   ├── month [DATE|DATE-DATE]     # usage by month
 │   ├── hour [DATE|DATE-DATE]      # usage by hour
 │   ├── weekday [DATE|DATE-DATE]   # usage by weekday
+│   ├── heatmap [DATE|DATE-DATE]   # weekday x hour heatmap
 │   ├── session [DATE|DATE-DATE]   # session details
 │   └── summary [DATE|DATE-DATE]   # overview summary
 ├── export [view] [DATE|DATE-DATE] # export usage data as CSV or JSON (--format csv|json)
@@ -216,6 +217,7 @@ token-usage query day [date]
 token-usage query month [date]
 token-usage query hour [date]
 token-usage query weekday [date]
+token-usage query heatmap [date]
 token-usage query session [date]
 token-usage query summary [date]
 token-usage query <name> [date]        # direct shorthand for a configured subquery or group
@@ -243,9 +245,11 @@ Last successful collection / 最近成功采集: 2026-07-22 08:15:03
 
 The default date is today. If the queried date range has unresolved entries in `collection_errors`, the results end with a collection-error notice and list the affected entries; when several tables are output (a group), the notice appears once after all of them. Use `errors` for details and `collect retry` to retry them.
 
-Every grouped view (the eight built-in views and every custom multi-dimensional table) ends with a `Total / 总计` row computed from the same date range as the table; session details and the summary do not have this row.
+Every grouped view (the nine built-in views and every custom multi-dimensional table) ends with a `Total / 总计` row computed from the same date range as the table; session details and the summary do not have this row.
 
 `query day`, `query month`, `query hour`, `query weekday`, and every view containing the `day`, `month`, `hour`, or `weekday` dimension present a time-ordered timeline: rows are ordered by the time dimension ascending (`YYYY-MM-DD` days, `YYYY-MM` months, `00:00`..`23:00` hourly ticks, or weekday names in ISO week order, not by total; when several time dimensions coexist, the first declared one is the sort axis), and a `Trend / 趋势` bar column compares each row's total against the busiest row in the range. The pure `day` and `month` views insert a zero-value row for each day or month without data within the requested range, whereas the pure `hour` view always presents the fixed 24 hourly ticks of the day and the pure `weekday` view always presents the fixed 7 weekday ticks in ISO week order (Monday first), each with zero-value rows for hours or weekdays without data, independent of the requested date range (hours and weekdays are folded from message timestamps to local time, the same timezone semantics as the date column), so the timeline has no gaps.
+
+`query heatmap` renders a weekday-by-hour matrix: rows are the seven weekdays in ISO order (Monday first), columns are the 24 hours `00`..`23` (both folded from message timestamps to local time, the same timezone semantics as the date column). Each cell is a density character (` .:-=+*#%@`, 0..9) scaled against the busiest cell of the table, the trailing column totals each day, and the trailing `Total / 总计` row totals each hour plus the whole range. The matrix does not take part in the `[query.output.columns]` layout, and `heatmap` is a reserved view name — like `session` and `summary` it is not referable from `query.default`, subqueries, groups, or `export`.
 
 `query summary` renders a fixed vertical summary: `Clients / 客户端数`, `Total requests / 请求总数`, `Active days / 活跃天数` (days with data inside the range), one line per token column (`Input` through `Total`, always including `Cache Create`), and, when the range contains at least one day with data, `Peak day / 单日峰值` (the date with the highest source total, ties broken by earliest date) and `Daily average / 日均总量` (range total divided by active days, integer division rounded down). Those last two lines are omitted when the range has no data.
 
@@ -267,9 +271,9 @@ group_q = "client,model,provider,mpc"  # several tables in this order
 - `query <name> [date]` and `query custom <name> [date]` are equivalent spellings for the same configured subquery (one table) or group (tables in declared order): same target and same output, validated under the same rules — name resolution, reserved-name rejection, date validation order (date errors take precedence over name/definition errors), and every failure happening before the database opens. Error examples naturally show each spelling's own command form (`token-usage query 20260701` vs `token-usage query custom 20260701`). The direct name is positional argument dispatch on the root `query` command — configured names never become dynamic subcommands. With two positional args the first must be the view name; a digit-leading first arg (`token-usage query 20260701 20260702`) is rejected before the config is loaded with a bilingual usage error naming both accepted forms.
 - Unknown or reserved names are rejected before the database is opened, and date errors take precedence over name/definition errors; both surface in either spelling.
 - A subquery selects at least 2 distinct built-in dimensions (`client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`); the declared order is the column order. A group selects at least 2 distinct items from built-in views plus defined subqueries; groups cannot reference groups.
-- View names are lowercase identifiers (a letter first, then letters, digits, `_`, `-`) and must not collide with `client`/`model`/`provider`/`project`/`session`/`summary`/`day`/`month`/`hour`/`weekday`/`custom`/`list`. Values are comma-separated; every segment is trimmed, so `"model, provider"` equals `"model,provider"`. If a handwritten subquery or group was named `list`, rename it before upgrading: newer binaries reject the name because `query list` became a static discovery command.
+- View names are lowercase identifiers (a letter first, then letters, digits, `_`, `-`) and must not collide with `client`/`model`/`provider`/`project`/`session`/`summary`/`day`/`month`/`hour`/`weekday`/`heatmap`/`custom`/`list`. Values are comma-separated; every segment is trimmed, so `"model, provider"` equals `"model,provider"`. If a handwritten subquery or group was named `list`, rename it before upgrading: newer binaries reject the name because `query list` became a static discovery command.
 - `query.default` is matched after trimming; whitespace means "use client". It may reference a built-in view, a subquery, or a group; `session` and `summary` are not referable.
-- `query list` takes no positional args and prints a fixed structure in one pass: default behavior (`token-usage query -> <name> (<category>)`), one-time invocation hint showing the direct and explicit forms as equivalent, ten built-in commands with their purposes, then every configured subquery and group as a single copy-pasteable command for today (such as `token-usage query mpc`) together with its dimensions or members CSV; empty sections say `None`. It only reads the effective config and parses definitions — it never opens `usage.db`, prints statistics, reads collection errors, accepts a date, or changes any state. Bad definitions still fail there with the same localized errors instead of being hidden behind an empty section.
+- `query list` takes no positional args and prints a fixed structure in one pass: default behavior (`token-usage query -> <name> (<category>)`), one-time invocation hint showing the direct and explicit forms as equivalent, eleven built-in commands with their purposes, then every configured subquery and group as a single copy-pasteable command for today (such as `token-usage query mpc`) together with its dimensions or members CSV; empty sections say `None`. It only reads the effective config and parses definitions — it never opens `usage.db`, prints statistics, reads collection errors, accepts a date, or changes any state. Bad definitions still fail there with the same localized errors instead of being hidden behind an empty section.
 
 ### Output Column Layout
 

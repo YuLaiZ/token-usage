@@ -976,6 +976,113 @@ func FormatTokens(tokens int64) string {
 	return formatTokens(tokens)
 }
 
+// heatLevels 是热力单元格的强度字符序列(下标 0..9):0 级为空格,密度沿
+// . : - = + * # % @ 递增。只用 ASCII 保证任意终端下显示宽度恒为 1,避免块
+// 字符(U+2580 系)在 CJK 环境的 ambiguous width 歧义。
+const heatLevels = " .:-=+*#%@"
+
+// heatCell 按单元格 total 相对全表最大值折算 0..9 强度级并返回对应字符。
+// maxTotal ≤ 0 或该格 total ≤ 0 时为空格。
+func heatCell(total, maxTotal int64) byte {
+	if maxTotal <= 0 || total <= 0 {
+		return heatLevels[0]
+	}
+	var level int64
+	// 先乘后除在 maxTotal 较大时可能溢出,按阈值切换运算顺序。
+	if maxTotal < int64(1<<54) {
+		level = total * 9 / maxTotal
+	} else {
+		level = total / (maxTotal / 9)
+	}
+	if level > 9 {
+		level = 9
+	}
+	return heatLevels[level]
+}
+
+// Heatmap 输出星期×小时热力透视表:行为 ISO 周序(周一在首)的 7 个星期,
+// 列为 00..23 的 24 个小时(均按本机时区折算,与 hour/weekday 维度同一
+// 归属),单元格为该交点的 total 相对全表最大值的强度字符,尾列为各星期
+// 日合计,尾行为各小时合计与全表总计。数据来源与维度视图同一聚合核
+// (weekday,hour 组合),单格无数据即 0 级。
+func (q *Querier) Heatmap(ctx context.Context, dates []string) (string, error) {
+	ctx, err := q.readyContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	// rangeTotals 的范围总计不消费:热力的行列合计由矩阵自算,与单元格口径一致。
+	rows, _, err := q.AggregateDimensionView(ctx, dates, DimensionView{
+		Dimensions: []string{"weekday", "hour"},
+		TitleEn:    "Heatmap", TitleZh: "热力图",
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(dates) == 0 {
+		return ui.Bi("Heatmap - no data", "热力图 - 无数据"), nil
+	}
+
+	// 交点矩阵:raw 键(weekday ISO 周序 "0".."6"、hour "00".."23")定位。
+	type cellKey struct{ weekday, hour string }
+	cell := make(map[cellKey]int64, len(rows))
+	for _, row := range rows {
+		if len(row.rawKeys) != 2 {
+			continue
+		}
+		cell[cellKey{row.rawKeys[0], row.rawKeys[1]}] += row.Agg.TotalTokens
+	}
+
+	var maxCell int64
+	dayTotals := make([]int64, len(weekdayTicks))
+	hourTotals := make([]int64, len(hourTicks))
+	for i, tickW := range weekdayTicks {
+		for j, tickH := range hourTicks {
+			v := cell[cellKey{tickW, tickH}]
+			if v > maxCell {
+				maxCell = v
+			}
+			dayTotals[i] += v
+			hourTotals[j] += v
+		}
+	}
+
+	// 表头:首列为 Weekday/星期,其后 24 个小时列(两位数字),尾列日合计。
+	defs := make([]tableCol, 0, len(hourTicks)+2)
+	defs = append(defs, tableCol{header: ui.HWeekday, align: ui.AlignLeft, limit: 0})
+	for _, tick := range hourTicks {
+		defs = append(defs, tableCol{header: tick, align: ui.AlignLeft, limit: 0})
+	}
+	defs = append(defs, tableCol{header: ui.HDayTotal, align: ui.AlignLeft, limit: 0})
+	t := buildTable(defs)
+
+	for _, tickW := range weekdayTicks {
+		rowCells := []string{weekdayDisplayKey(tickW)}
+		var daySum int64
+		for _, tickH := range hourTicks {
+			v := cell[cellKey{tickW, tickH}]
+			daySum += v
+			rowCells = append(rowCells, string(heatCell(v, maxCell)))
+		}
+		rowCells = append(rowCells, formatTokens(daySum))
+		t.Row(rowCells...)
+	}
+
+	// 总计行:每小时列合计 + 全表总计。
+	totalRow := []string{ui.Bi("Total", "总计")}
+	var grand int64
+	for i := range hourTicks {
+		totalRow = append(totalRow, formatTokens(hourTotals[i]))
+		grand += hourTotals[i]
+	}
+	totalRow = append(totalRow, formatTokens(grand))
+	t.Row(totalRow...)
+
+	var sb strings.Builder
+	sb.WriteString(ui.Bi("Heatmap (weekday x hour, local time)", "热力图(星期×小时,本机时区)") + "\n")
+	sb.WriteString(t.String())
+	return sb.String(), nil
+}
+
 // formatDuration 把会话请求跨度(首末消息毫秒差)渲染为紧凑人类可读时长:
 // 秒级以下归 "<1s",分钟以内保留秒,小时以内保留分钟,跨天保留小时;
 // 负值(数据异常)渲染为占位符保持表格列宽稳定。

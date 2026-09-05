@@ -66,9 +66,10 @@ func builtinDimensionList() string {
 }
 
 // reservedNameOrder 是保留名的有序切片,也是错误文案中展示顺序的唯一来源:
-// 十个内置视图名与 custom/list 两个固定入口名。
+// 十一个内置视图名与 custom/list 两个固定入口名。heatmap 是派生视图而非
+// 聚合维度,只进保留名,不进 builtinDimensions。
 var reservedNameOrder = []string{
-	"client", "model", "provider", "project", "session", "summary", "day", "month", "hour", "weekday", "custom", "list",
+	"client", "model", "provider", "project", "session", "summary", "day", "month", "hour", "weekday", "heatmap", "custom", "list",
 }
 
 // reservedNames 由 reservedNameOrder 派生的成员集合,供语义判断使用。
