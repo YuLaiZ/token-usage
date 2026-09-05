@@ -27,6 +27,7 @@ func TestRootCommand_HasSubcommands(t *testing.T) {
 		"query":      true,
 		"export":     true,
 		"doctor":     true,
+		"forecast":   true,
 		"errors":     true,
 		"start":      true,
 		"status":     true,

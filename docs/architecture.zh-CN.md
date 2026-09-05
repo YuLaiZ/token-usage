@@ -151,7 +151,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 用户执行命令 → 加载配置 → 执行采集/查询/配置编辑 → 输出结果 → 退出
 ```
 
-命令组：`version`（多行详细输出）、Cobra 内置 `completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`session`/`summary`，另加 `custom <name>` 与只读的 `list`）、`export`（聚合视图的 CSV/JSON stdout 导出）、`errors`、`start`、`status`、`stop`、`restart`、`doctor`（只读健康自检），以及 Hidden 内部命令 `_run`。根命令另带 `-v, --version` flag（单行短输出）。
+命令组：`version`（多行详细输出）、Cobra 内置 `completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`session`/`summary`，另加 `custom <name>` 与只读的 `list`）、`export`（聚合视图的 CSV/JSON stdout 导出）、`errors`、`start`、`status`、`stop`、`restart`、`doctor`（只读健康自检）、`forecast`（按近期日均外推用量），以及 Hidden 内部命令 `_run`。根命令另带 `-v, --version` flag（单行短输出）。
 
 直接执行 `token-usage`（不带任何参数）只会打印帮助信息，既不启动 TUI 也不启动守护进程。命令树、参数、标志、退出码与示例的完整参考见 [CLI 参考](cli.zh-CN.md)。
 

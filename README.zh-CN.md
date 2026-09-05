@@ -143,6 +143,7 @@ token-usage query list
 | `export [view] [date]` | 将使用数据以 CSV 或 JSON 导出到 stdout。 |
 | `errors [日期]` | 查看某日期或区间的采集失败。 |
 | `doctor` | 运行只读健康检查。 |
+| `forecast` | 按近期日均外推即将到来的用量。 |
 | `version` / `--version` | 查看多行详细 / 单行简要的版本信息。 |
 | `start` / `status` / `stop` / `restart` | 控制后台守护进程。 |
 | `completion <shell>` | 输出 Bash、Zsh、Fish 或 PowerShell 的补全脚本。 |

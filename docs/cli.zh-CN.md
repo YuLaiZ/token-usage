@@ -28,6 +28,7 @@ token-usage
 ├── export [view] [DATE|DATE-DATE] # 以 CSV 或 JSON 导出使用数据（--format csv|json）
 ├── errors [DATE|DATE-DATE]
 ├── doctor                                # 只读健康自检（配置、数据目录、数据库、客户端、采集、异常）
+├── forecast                              # 按近期日均外推用量
 ├── config                                # 无参数：打开交互式配置 TUI
 │   ├── show                              # 输出完整 effective TOML（只读、纯 TOML）
 │   ├── get <key>
@@ -606,6 +607,18 @@ catch-up 经 analyzer 的串行化锁 Submit（与实时触发同一路径，保
 
 - 父 lease 路径（`start` spawn 的 `_run`）：父进程持进程控制锁并通过 pipe lease 授权 child，child 不抢锁。
 - 独立路径（launchd/注册表直接拉起）：无合法父 lease 时自行获取进程控制锁（15s 超时；超时则成功退出码 0 不进入主循环，避免与正在进行的控制操作冲突，并在 macOS 上避免 launchd KeepAlive 立即重拉）。
+
+## forecast
+
+按近期日均外推即将到来的用量。窗口不含今天（未结束的一天会拉低日均）；今天单独以「至今」累计量呈现。
+
+```text
+token-usage forecast
+```
+
+- `Last 7 days / 最近 7 天` 与 `Last 30 days / 最近 30 天`：显示各窗口总量、日均（窗口总量除以**活跃**天数——有数据的天数，整数除法向下取整）与窗口内活跃天占比。
+- `Next 7 days / 未来 7 天` 与 `Next 30 days / 未来 30 天`：以该日均线性外推未来自然天数，假设未来保持同等活跃强度。窗口内无数据时显示 `no data / 无数据` 并省略对应外推行。
+- 命令只读，K/M/B 缩写口径与 query 一致。
 
 ## update
 

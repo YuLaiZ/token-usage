@@ -143,6 +143,7 @@ token-usage query list
 | `export [view] [date]` | Export usage data as CSV or JSON to stdout. |
 | `errors [date]` | Show collection failures for a date or range. |
 | `doctor` | Run read-only health checks. |
+| `forecast` | Extrapolate upcoming usage from recent daily averages. |
 | `version` / `--version` | Show detailed / one-line version information. |
 | `start` / `status` / `stop` / `restart` | Control the background daemon. |
 | `completion <shell>` | Print a Bash, Zsh, Fish, or PowerShell completion script. |

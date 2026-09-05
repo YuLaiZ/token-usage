@@ -920,6 +920,43 @@ func (q *Querier) Summary(ctx context.Context, dates []string) (string, error) {
 	return sb.String(), nil
 }
 
+// RangeStats 是一段日期区间的全量聚合与活跃天数(区间内实际有数据的天数)。
+type RangeStats struct {
+	ActiveDays int64
+	Total      GroupAggregate
+}
+
+// StatsBetween 统计 [fromDate, toDate] 闭区间的全量聚合。日期为 YYYY-MM-DD
+// 形态,SQL 侧用 BETWEEN 字典序比较(等价时间序),不展开逐日占位符,任意长
+// 区间参数量恒定。区间内无数据时返回零值(ActiveDays=0),不视为错误。
+func (q *Querier) StatsBetween(ctx context.Context, fromDate, toDate string) (RangeStats, error) {
+	ctx, err := q.readyContext(ctx)
+	if err != nil {
+		return RangeStats{}, err
+	}
+	const query = `
+		SELECT COUNT(DISTINCT date),
+		       COALESCE(COUNT(*),0),
+		       COALESCE(SUM(fresh_input_tokens),0),
+		       COALESCE(SUM(output_tokens),0),
+		       COALESCE(SUM(cache_read_tokens),0),
+		       COALESCE(SUM(cache_create_tokens),0),
+		       COALESCE(SUM(reasoning_tokens),0),
+		       COALESCE(SUM(total_tokens),0)
+		FROM messages
+		WHERE date BETWEEN ? AND ?
+	`
+	var s RangeStats
+	err = q.db.QueryRowContext(ctx, query, fromDate, toDate).Scan(
+		&s.ActiveDays,
+		&s.Total.Requests, &s.Total.FreshInput, &s.Total.OutputTokens,
+		&s.Total.CacheRead, &s.Total.CacheCreate, &s.Total.Reasoning, &s.Total.TotalTokens)
+	if err != nil {
+		return RangeStats{}, fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
+	}
+	return s, nil
+}
+
 func formatTokens(tokens int64) string {
 	if tokens >= 1000000000 {
 		return fmt.Sprintf("%.2f B", float64(tokens)/1000000000)
@@ -931,6 +968,12 @@ func formatTokens(tokens int64) string {
 		return fmt.Sprintf("%.2f K", float64(tokens)/1000)
 	}
 	return fmt.Sprintf("%d", tokens)
+}
+
+// FormatTokens 是 formatTokens 的导出别名,供 cli 层 forecast 渲染等包外
+// 消费方与 query 表格使用同一 K/M/B 缩写口径,防止两处格式化漂移。
+func FormatTokens(tokens int64) string {
+	return formatTokens(tokens)
 }
 
 // formatDuration 把会话请求跨度(首末消息毫秒差)渲染为紧凑人类可读时长:

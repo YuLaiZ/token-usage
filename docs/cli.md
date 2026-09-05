@@ -28,6 +28,7 @@ token-usage
 ├── export [view] [DATE|DATE-DATE] # export usage data as CSV or JSON (--format csv|json)
 ├── errors [DATE|DATE-DATE]
 ├── doctor                                # read-only health check (config, data directory, database, clients, collection, errors)
+├── forecast                              # extrapolate usage from recent daily averages
 ├── config                                # no arguments: open the interactive configuration TUI
 │   ├── show                              # output complete effective TOML (read-only, pure TOML)
 │   ├── get <key>
@@ -606,6 +607,18 @@ An internal command started by `start` through detached spawn or directly by lau
 
 - Parent-lease path (`_run` spawned by `start`): the parent holds the process-control lock and authorizes the child through a pipe lease; the child does not acquire the lock.
 - Independent path (started directly by launchd/the Registry): without a valid parent lease, it acquires the process-control lock itself (15-second timeout). On timeout it exits successfully with code 0 rather than entering the main loop, avoiding conflict with an in-progress control operation and preventing launchd KeepAlive from immediately relaunching it on macOS.
+
+## forecast
+
+Extrapolates upcoming usage from recent daily averages. Windows exclude today (an unfinished day would understate the average); today is shown separately as its running total.
+
+```text
+token-usage forecast
+```
+
+- `Last 7 days / 最近 7 天` and `Last 30 days / 最近 30 天` show each window's total, the daily average (window total divided by **active** days — days with data — using integer division), and the active-day fraction of the window.
+- `Next 7 days / 未来 7 天` and `Next 30 days / 未来 30 天` project that average linearly over the coming natural days, assuming activity continues at the same intensity. A window with no data shows `no data / 无数据` and its projection is omitted.
+- The command is read-only and prints the same K/M/B abbreviations as query.
 
 ## update
 
