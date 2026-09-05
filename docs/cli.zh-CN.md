@@ -30,7 +30,7 @@ token-usage
 ├── errors [DATE|DATE-DATE]
 ├── doctor                                # 只读健康自检（配置、数据目录、数据库、客户端、采集、异常）
 ├── forecast                              # 按近期日均外推用量
-├── chart [DATE|DATE-DATE]                # 将按日用量渲染为 SVG 柱状图
+├── chart [DATE|DATE-DATE]                # 将用量渲染为 SVG 图表（--by 维度、--pie）
 ├── watch [DATE|DATE-DATE]                # 以固定间隔刷新实时摘要
 ├── config                                # 无参数：打开交互式配置 TUI
 │   ├── show                              # 输出完整 effective TOML（只读、纯 TOML）
@@ -635,8 +635,10 @@ token-usage chart 20260901-20260930                # SVG 写到标准输出
 token-usage chart 202609 --out september.svg       # 原子写入文件
 ```
 
-- 柱为逐日源 total，按日期升序；无数据日高度为零，每根柱带原生 `<title>` 悬停提示（当日 tokens 与请求数）。
-- 头部显示区间及其 total tokens / 请求数；Y 轴按三条等分网格以 K/M/B 缩写标注。
+- 默认柱为逐日源 total，按日期升序；无数据日高度为零，每根柱带原生 `<title>` 悬停提示（当日 tokens 与请求数）。
+- `--by <维度>` 切换聚合维度（`client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday`）；非时间维度按总量降序。
+- `--pie` 渲染占比饼图而非柱状图，需 `--by` 指定非时间维度（按天切分饼图不可读）；扇区使用固定 10 色取色序列与百分比图例，100% 占比退化为整圆。
+- 头部显示区间及其 total tokens / 请求数；柱状图 Y 轴按三条等分网格以 K/M/B 缩写标注。
 - `--out <文件>` 原子写入（先写临时文件再换名）而非标准输出；日期参数与 `query`/`collect` 同形态。
 
 ## watch

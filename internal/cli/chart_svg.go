@@ -2,9 +2,11 @@ package cli
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/YuLaiZ/token-usage/internal/querier"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // chartCanvas 是 SVG 画布与绘图区几何:总宽高、边距,柱状条绘制在绘图区内。
@@ -154,3 +156,85 @@ func svgEscape(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&apos;")
 	return r.Replace(s)
 }
+
+// piePalette 是饼图扇区的固定取色序列(10 色循环),顺序即维度值的排序位次。
+var piePalette = []string{
+	"#4a90d9", "#e07a5f", "#5faa64", "#b58fd8", "#d9a648",
+	"#4fb0a5", "#d97ba6", "#8a9bab", "#c96f4a", "#7a9e5f",
+}
+
+// chartSlice 是一个饼图扇区:标签、值、悬停提示与取色。
+type chartSlice struct {
+	label string
+	value int64
+	hover string
+	color string
+}
+
+// buildPieSVG 生成占比饼图的独立 SVG 文档:左侧扇区(原生 path 圆弧),
+// 右侧图例(色块+标签+百分比)。slices 为空或总和为 0 时输出无数据文本,
+// 不绘制任何扇区。
+func buildPieSVG(title, subtitle string, slices []chartSlice) string {
+	c := chartCanvas{width: 760, height: 420, left: 24, right: 24, top: 64, bottom: 24}
+	var b strings.Builder
+	fmt.Fprintf(&b, `<?xml version="1.0" encoding="UTF-8"?>`+"\n")
+	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">`+"\n",
+		c.width, c.height, c.width, c.height)
+	fmt.Fprintf(&b, "  <title>%s</title>\n", svgEscape(title))
+	fmt.Fprintf(&b, "  <rect width=\"%d\" height=\"%d\" fill=\"#ffffff\"/>\n", c.width, c.height)
+	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"26\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"16\" fill=\"#222\">%s</text>\n",
+		c.width/2, svgEscape(title))
+	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"48\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"12\" fill=\"#555\">%s</text>\n",
+		c.width/2, svgEscape(subtitle))
+
+	cx, cy, r := 240, 240, 150
+	var total int64
+	for _, sl := range slices {
+		total += sl.value
+	}
+	if total <= 0 {
+		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"14\" fill=\"#666\">%s</text>\n",
+			cx, cy, svgEscape(ui.Bi("no data", "无数据")))
+		b.WriteString("</svg>\n")
+		return b.String()
+	}
+
+	// 扇区累加:起点固定 12 点方向(-90°),顺时针;比例角度,累计到 360° 收口。
+	const twoPi = 2 * 3.141592653589793
+	angle := -twoPi / 4
+	for i, sl := range slices {
+		frac := float64(sl.value) / float64(total)
+		sweep := frac * twoPi
+		if sweep <= 0 {
+			continue
+		}
+		// 单扇区独占全圆(100%)时 path 圆弧退化为零面积,退化为整圆。
+		if sweep >= twoPi-1e-9 {
+			fmt.Fprintf(&b, "  <circle cx=\"%d\" cy=\"%d\" r=\"%d\" fill=\"%s\"><title>%s</title></circle>\n",
+				cx, cy, r, sl.color, svgEscape(sl.hover))
+		} else {
+			x1 := float64(cx) + float64(r)*cos(angle)
+			y1 := float64(cy) + float64(r)*sin(angle)
+			x2 := float64(cx) + float64(r)*cos(angle+sweep)
+			y2 := float64(cy) + float64(r)*sin(angle+sweep)
+			large := 0
+			if sweep > twoPi/2 {
+				large = 1
+			}
+			fmt.Fprintf(&b, "  <path d=\"M %d %d L %.2f %.2f A %d %d 0 %d 1 %.2f %.2f Z\" fill=\"%s\"><title>%s</title></path>\n",
+				cx, cy, x1, y1, r, r, large, x2, y2, sl.color, svgEscape(sl.hover))
+		}
+		// 图例:色块 + 标签 + 百分比。
+		lx, ly := 460, 84+i*26
+		fmt.Fprintf(&b, "  <rect x=\"%d\" y=\"%d\" width=\"12\" height=\"12\" fill=\"%s\"/>\n", lx, ly, sl.color)
+		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" font-family=\"monospace\" font-size=\"12\" fill=\"#333\">%s (%.1f%%)</text>\n",
+			lx+20, ly+10, svgEscape(sl.label), frac*100)
+		angle += sweep
+	}
+	b.WriteString("</svg>\n")
+	return b.String()
+}
+
+// cos/sin 是 math 包的同名包装:集中引入便于一致替换或测试打桩。
+func cos(x float64) float64 { return math.Cos(x) }
+func sin(x float64) float64 { return math.Sin(x) }

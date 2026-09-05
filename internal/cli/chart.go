@@ -10,6 +10,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/fileutil"
 	"github.com/YuLaiZ/token-usage/internal/querier"
+	"github.com/YuLaiZ/token-usage/internal/querydef"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
@@ -20,13 +21,27 @@ func newChartCmd() *cobra.Command {
 func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) (*db.DB, error)) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "chart [DATE|DATE-DATE]",
-		Short: "Render daily usage as an SVG bar chart / 将按日用量渲染为 SVG 柱状图",
+		Short: "Render usage as an SVG chart / 将用量渲染为 SVG 图表",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// 参数解析先于 DB 打开,非法日期在打开库之前即报错;默认今天。
+			// 参数与选项校验先于 DB 打开,非法输入在打开库之前即报错。
 			dates, err := parseDateArgs(args, true, "chart")
 			if err != nil {
 				return err
+			}
+			by, _ := cmd.Flags().GetString("by")
+			pie, _ := cmd.Flags().GetBool("pie")
+			if pie && by == "day" {
+				return fmt.Errorf("%s", ui.Bi(
+					"--pie requires --by with a non-temporal dimension (client/model/provider/project); day splits would be unreadable",
+					"--pie 需要 --by 指定非时间维度（client/model/provider/project）；按天切分饼图不可读",
+				))
+			}
+			if !querydef.IsBuiltinDimension(by) {
+				return fmt.Errorf("%s", ui.Bi(
+					fmt.Sprintf("unknown --by dimension %q (allowed: client, model, provider, project, day, month, hour, weekday)", by),
+					fmt.Sprintf("未知 --by 维度 %q（允许：client, model, provider, project, day, month, hour, weekday）", by),
+				))
 			}
 
 			cfg, err := load()
@@ -40,11 +55,12 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			}
 			defer usageDB.Close()
 
-			// 复用维度聚合核的 day 视图:升序逐日 total,缺口日自动补零,
-			// 与 query day/export day 的行集合完全一致。
+			// 复用维度聚合核:day 视图升序逐日 total 且缺口日自动补零,
+			// 与 query day/export day 的行集合完全一致;其余维度按 total
+			// 降序(非时间维度的既有排序规则)。
 			q := querier.New(usageDB)
 			rows, totals, err := q.AggregateDimensionView(cmdContext(cmd), dates, querier.DimensionView{
-				Dimensions: []string{"day"},
+				Dimensions: []string{by},
 				TitleEn:    "chart", TitleZh: "chart",
 			})
 			if err != nil {
@@ -70,7 +86,23 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			title := "token-usage " + rangeLabel
 			subtitle := fmt.Sprintf("Total %s tokens / %d requests",
 				querier.FormatTokens(totals.TotalTokens), totals.Requests)
-			svg := buildBarSVG(title, subtitle, bars)
+
+			var svg string
+			if pie {
+				slices := make([]chartSlice, 0, len(bars))
+				for i, bar := range bars {
+					if bar.value <= 0 {
+						continue
+					}
+					slices = append(slices, chartSlice{
+						label: bar.label, value: bar.value, hover: bar.hover,
+						color: piePalette[i%len(piePalette)],
+					})
+				}
+				svg = buildPieSVG(title+" by "+by, subtitle, slices)
+			} else {
+				svg = buildBarSVG(title, subtitle, bars)
+			}
 
 			outFlag, _ := cmd.Flags().GetString("out")
 			if outFlag == "" {
@@ -90,5 +122,7 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 	}
 
 	cmd.Flags().String("out", "", ui.Bi("Write SVG to a file instead of stdout", "将 SVG 写入文件而非标准输出"))
+	cmd.Flags().String("by", "day", ui.Bi("Aggregate by dimension: client/model/provider/project/day/month/hour/weekday", "按维度聚合：client/model/provider/project/day/month/hour/weekday"))
+	cmd.Flags().Bool("pie", false, ui.Bi("Render a pie chart instead of a bar chart (requires --by, not day)", "渲染饼图而非柱状图（需 --by 且不为 day）"))
 	return cmd
 }

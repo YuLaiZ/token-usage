@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/db"
 )
 
 // buildBarSVG 合同:合法 XML、标题/副标题转义、柱数与 rect 对应、最高柱触顶、
@@ -56,5 +60,71 @@ func TestBuildBarSVG_EmptyAndEscaping(t *testing.T) {
 	// 转义函数直测。
 	if got := svgEscape(`&<>"'`); got != "&amp;&lt;&gt;&quot;&apos;" {
 		t.Errorf("svgEscape = %q", got)
+	}
+}
+
+// buildPieSVG 合同:扇区 path 数=非零值数、比例角度正确(首扇区自 12 点方向
+// 起)、图例含百分比、全零输出无数据、XML 转义。
+func TestBuildPieSVG(t *testing.T) {
+	slices := []chartSlice{
+		{label: "model-a", value: 750, hover: "model-a: 750 tokens", color: "#4a90d9"},
+		{label: "model-b", value: 250, hover: "model-b: 250 tokens", color: "#e07a5f"},
+	}
+	svg := buildPieSVG("pie test", "Total 1.00 K tokens / 2 requests", slices)
+	if strings.Count(svg, "<path") != 2 {
+		t.Errorf("应恰 2 个扇区 path:\n%s", svg)
+	}
+	if !strings.Contains(svg, "(75.0%)") || !strings.Contains(svg, "(25.0%)") {
+		t.Errorf("图例应含百分比:\n%s", svg)
+	}
+	if !strings.Contains(svg, "#4a90d9") || !strings.Contains(svg, "#e07a5f") {
+		t.Errorf("扇区与图例应使用取色序列:\n%s", svg)
+	}
+
+	// 100% 单扇区:圆弧退化为整圆,应输出 circle 而非 path。
+	one := buildPieSVG("one", "t", []chartSlice{{label: "only", value: 100, color: "#111111"}})
+	if !strings.Contains(one, "<circle") || strings.Contains(one, "<path") {
+		t.Errorf("100%% 占比应退化为整圆:\n%s", one)
+	}
+
+	// 全零:无数据文本,无扇区。
+	zero := buildPieSVG("zero", "t", []chartSlice{{label: "x", value: 0, color: "#111111"}})
+	if strings.Contains(zero, "<path") || !strings.Contains(zero, "no data / 无数据") {
+		t.Errorf("全零应输出无数据文本且无扇区:\n%s", zero)
+	}
+}
+
+// --by 维度校验与 --pie 的 day 拒绝在开库前生效。
+func TestChartCmd_ByDimensionValidation(t *testing.T) {
+	openCalls := 0
+	cmd := newChartCmdWithDeps(
+		func() (*config.Config, error) {
+			return &config.Config{DataDir: t.TempDir()}, nil
+		},
+		func(string) (*db.DB, error) {
+			openCalls++
+			return db.Open(":memory:")
+		},
+	)
+	cmd.SetArgs([]string{"--by", "bogus"})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("未知 --by 维度应报错")
+	}
+	if openCalls != 0 {
+		t.Errorf("校验应在开库前完成,实际 open %d 次", openCalls)
+	}
+
+	cmd2 := newChartCmdWithDeps(
+		func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil },
+		func(string) (*db.DB, error) { return db.Open(":memory:") },
+	)
+	cmd2.SetArgs([]string{"--pie", "--by", "day"})
+	cmd2.SetOut(&buf)
+	cmd2.SetErr(&buf)
+	if err := cmd2.Execute(); err == nil {
+		t.Fatal("--pie --by day 应被拒绝")
 	}
 }
