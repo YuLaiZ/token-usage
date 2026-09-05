@@ -404,6 +404,7 @@ token-usage doctor
 | `Clients / 客户端` | count and names of enabled clients | no client enabled | — |
 | `Last collection / 最近采集` | last successful collection time (local timezone) | no successful collection recorded yet | query failure |
 | `Unresolved errors / 未解决异常` | none | count with pointers to `token-usage errors` and `token-usage collect retry` | query failure |
+| `Query definitions / 查询视图` | configured subqueries/groups/default are semantically valid (also OK when none are configured) | issue count with the first diagnostic path and a pointer to `token-usage query list`; warnings only — broken view definitions never block collection or the static table commands | config failed to load |
 | `Daemon / 守护进程` | informational only: points to `token-usage status`; doctor never probes or controls the daemon (probing would create lock/config-directory files) | | |
 
 - Checks that cannot run because an upstream check failed print `SKIPPED / 跳过` and add no new count (the upstream FAIL already counts): config failure skips every config-dependent check; a missing or broken database skips the collection and error checks.

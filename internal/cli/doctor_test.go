@@ -98,9 +98,10 @@ func TestDoctor_ConfigLoadFailure(t *testing.T) {
 	if !strings.Contains(out, "Config / 配置: FAIL / 失败") || !strings.Contains(out, "boom-config") {
 		t.Errorf("Config 应 FAIL 并携带错误:\n%s", out)
 	}
-	// Data directory / Database / Clients / Last collection / Unresolved errors 共 5 项跳过。
-	if n := strings.Count(out, "SKIPPED / 跳过"); n != 5 {
-		t.Errorf("依赖配置的检查项应恰 5 行 SKIPPED,实际 %d:\n%s", n, out)
+	// Data directory / Database / Clients / Last collection / Unresolved errors /
+	// Query definitions 共 6 项跳过。
+	if n := strings.Count(out, "SKIPPED / 跳过"); n != 6 {
+		t.Errorf("依赖配置的检查项应恰 6 行 SKIPPED,实际 %d:\n%s", n, out)
 	}
 	if !strings.Contains(out, "Daemon / 守护进程: INFO / 提示") {
 		t.Errorf("Daemon 提示行不受配置失败影响:\n%s", out)
@@ -255,5 +256,56 @@ func TestDoctor_RejectsPositionalArgs(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("错误应为双语并含数量 %q: %q", want, msg)
 		}
+	}
+}
+
+// Query definitions 检查项:合法定义 OK;坏定义 WARN 并携带问题计数与首个
+// 诊断路径;仅 WARN 不 FAIL(配置是纯展示态,不阻断采集与其他命令)。
+func TestDoctor_QueryDefinitions(t *testing.T) {
+	// dataDir 用已存在的临时目录:避免目录缺失的 FAIL 干扰「仅 WARN 不 FAIL」断言。
+	dataDir := t.TempDir()
+
+	// 合法定义(一个子查询)。
+	good := func() (*config.Config, error) {
+		cfg := &config.Config{
+			DataDir: dataDir,
+			Clients: map[string]config.Client{},
+			RawQuery: map[string]any{
+				"subqueries": map[string]any{"mp": "model,provider"},
+			},
+		}
+		return cfg, nil
+	}
+	out := runDoctorForTest(t, good, db.Open)
+	if !strings.Contains(out, "Query definitions / 查询视图: OK / 正常") || !strings.Contains(out, "定义合法") {
+		t.Errorf("合法定义应 OK:\n%s", out)
+	}
+
+	// 非法定义(子查询引用未知视图 g)。
+	bad := func() (*config.Config, error) {
+		cfg := &config.Config{
+			DataDir: dataDir,
+			Clients: map[string]config.Client{},
+			RawQuery: map[string]any{
+				"subqueries": map[string]any{"bad": "model,g"},
+			},
+		}
+		return cfg, nil
+	}
+	out = runDoctorForTest(t, bad, db.Open)
+	if !strings.Contains(out, "Query definitions / 查询视图: WARN / 警告") {
+		t.Errorf("坏定义应 WARN:\n%s", out)
+	}
+	if !strings.Contains(out, "1 issue(s) / 项问题") || !strings.Contains(out, "query.subqueries.bad") {
+		t.Errorf("WARN 应含问题计数与首个诊断路径:\n%s", out)
+	}
+	if strings.Contains(out, "problems / 项失败") {
+		t.Errorf("仅 WARN 不应计入失败:\n%s", out)
+	}
+	if !strings.Contains(out, "3 warnings / 3 项警告") {
+		t.Errorf("结果应恰 3 项警告(数据库未创建 + 未启用客户端 + 坏视图定义):\n%s", out)
+	}
+	if !strings.Contains(out, "运行 `token-usage query list` 查看详情") {
+		t.Errorf("WARN 应指向 query list:\n%s", out)
 	}
 }

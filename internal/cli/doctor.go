@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/querier"
+	"github.com/YuLaiZ/token-usage/internal/querydef"
 	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
@@ -30,8 +32,8 @@ func newDoctorCmdWithDeps(load func() (*config.Config, error), open func(string)
 		Use:   "doctor",
 		Short: "Run health checks and report problems / 运行健康检查并报告问题",
 		Long: ui.Bi(
-			"Run read-only health checks and print one line per check (OK/WARN/FAIL) with a final summary. Checks: config, data directory (the writability probe creates exactly one temporary file and removes it immediately), database (SQLite quick_check plus message count), enabled clients, last successful collection, unresolved collection errors, and an informational pointer to `token-usage status` for daemon state. No business data is written: opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own; it never starts, stops, or restarts the daemon, and never modifies configuration. FAIL/WARN are report-only; the exit code is always 0 in v1.",
-			"运行只读健康检查,逐项输出检查结果(OK/WARN/FAIL)并给出汇总。检查项:配置、数据目录(可写探针仅创建一个临时文件并立即删除)、数据库(SQLite quick_check 与消息行数)、已启用客户端、最近成功采集、未解决采集异常,以及指向 `token-usage status` 的守护进程状态提示。不写业务数据:打开数据库的行为(journal 模式设置与 schema 迁移)与其它读取类命令一致,doctor 自身不执行任何特有的写操作;绝不启动/停止/重启守护进程,绝不修改配置。FAIL/WARN 仅体现在输出,v1 退出码恒为 0。",
+			"Run read-only health checks and print one line per check (OK/WARN/FAIL) with a final summary. Checks: config, data directory (the writability probe creates exactly one temporary file and removes it immediately), database (SQLite quick_check plus message count), enabled clients, last successful collection, unresolved collection errors, query view definitions (subqueries/groups/default semantic validity, warnings only), and an informational pointer to `token-usage status` for daemon state. No business data is written: opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own; it never starts, stops, or restarts the daemon, and never modifies configuration. FAIL/WARN are report-only; the exit code is always 0 in v1.",
+			"运行只读健康检查,逐项输出检查结果(OK/WARN/FAIL)并给出汇总。检查项:配置、数据目录(可写探针仅创建一个临时文件并立即删除)、数据库(SQLite quick_check 与消息行数)、已启用客户端、最近成功采集、未解决采集异常、查询视图定义(subqueries/groups/default 的语义合法性,仅警告),以及指向 `token-usage status` 的守护进程状态提示。不写业务数据:打开数据库的行为(journal 模式设置与 schema 迁移)与其它读取类命令一致,doctor 自身不执行任何特有的写操作;绝不启动/停止/重启守护进程,绝不修改配置。FAIL/WARN 仅体现在输出,v1 退出码恒为 0。",
 		),
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
@@ -268,7 +270,30 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 		}
 	}
 
-	// 7. Daemon / 守护进程:固定输出提示行,不计入警告。
+	// 7. Query definitions / 查询视图:主动巡检配置的视图定义语义(default、
+	// subqueries、groups),在使用路径报错之前提前发现坏定义。仅 WARN 不 FAIL:
+	// 配置是纯展示态,坏定义不阻断采集与其他静态命令。
+	switch {
+	case configFailed:
+		doctorLine(out, ui.Bi("Query definitions", "查询视图"), statusSkip, ui.Bi("config failed", "配置加载失败"))
+	default:
+		if _, qdErr := querydef.ParseViews(querydef.Input{RawQuery: cfg.RawQuery}); qdErr != nil {
+			warnings++
+			var ve *querydef.ValidationError
+			desc := qdErr.Error()
+			if errors.As(qdErr, &ve) && len(ve.Issues) > 0 {
+				desc = fmt.Sprintf("%d %s: %s", len(ve.Issues), ui.Bi("issue(s)", "项问题"), ve.Issues[0].Message)
+			}
+			doctorLine(out, ui.Bi("Query definitions", "查询视图"), statusWarn, ui.Bi(
+				fmt.Sprintf("%s; run `token-usage query list` for details", desc),
+				fmt.Sprintf("%s;运行 `token-usage query list` 查看详情", desc),
+			))
+		} else {
+			doctorLine(out, ui.Bi("Query definitions", "查询视图"), statusOK, ui.Bi("definitions valid", "定义合法"))
+		}
+	}
+
+	// 8. Daemon / 守护进程:固定输出提示行,不计入警告。
 	// 取舍:现成的只读判活 helper 复用并不干净——control.NewManager 构造期即
 	// MkdirAll 创建配置目录,daemon.IsDaemonRunning 经 flock TryLock 探测会在
 	// 锁文件不存在时创建它、锁文件不可创建时又保守误判为运行中;两者均违背
