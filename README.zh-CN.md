@@ -11,6 +11,7 @@
 - 支持 Claude Code/Desktop、OpenCode、Codex、WorkBuddy、ZCode 与 Zhipu-AutoClaw。
 - 支持 Claude 系列与 Codex 的 CC-Switch router 归因：通过代理日志回填实际 provider/model。
 - 可单次执行，也可使用实时后台监控守护进程；支持 macOS launchd 与 Windows 注册表自启。
+- 内建可视化分析：按小时/星期分布、星期×小时热力矩阵、SVG 柱状/饼图/热力图、按近期日均外推用量、实时监视模式，以及一键报告包。
 - 纯 Go 单二进制 CLI，支持 macOS 和 Windows。
 
 ## 快速开始

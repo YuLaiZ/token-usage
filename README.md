@@ -11,6 +11,7 @@ A local LLM usage analytics CLI. It collects token usage from the AI clients you
 - Collectors for Claude Code/Desktop, OpenCode, Codex, WorkBuddy, ZCode, and Zhipu-AutoClaw.
 - CC-Switch router attribution for the Claude family and Codex, backfilling the actual provider and model from proxy logs.
 - One-off commands or a real-time background monitoring daemon, with macOS launchd and Windows Registry autostart.
+- **Visual analytics built in.** Hourly and weekday distributions, a weekday-by-hour heat matrix, SVG bar/pie/heat charts, usage forecasts from recent averages, a live watch mode, and a one-shot report bundle.
 - A pure-Go, single-binary CLI for macOS and Windows.
 
 ## Quick Start
