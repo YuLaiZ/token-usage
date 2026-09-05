@@ -144,6 +144,7 @@ token-usage query list
 | `errors [date]` | Show collection failures for a date or range. |
 | `doctor` | Run read-only health checks. |
 | `forecast` | Extrapolate upcoming usage from recent daily averages. |
+| `chart [date]` | Render daily usage as an SVG bar chart (`--out` to save). |
 | `version` / `--version` | Show detailed / one-line version information. |
 | `start` / `status` / `stop` / `restart` | Control the background daemon. |
 | `completion <shell>` | Print a Bash, Zsh, Fish, or PowerShell completion script. |

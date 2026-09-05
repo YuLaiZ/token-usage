@@ -30,6 +30,7 @@ token-usage
 ├── errors [DATE|DATE-DATE]
 ├── doctor                                # read-only health check (config, data directory, database, clients, collection, errors)
 ├── forecast                              # extrapolate usage from recent daily averages
+├── chart [DATE|DATE-DATE]                # render daily usage as an SVG bar chart
 ├── config                                # no arguments: open the interactive configuration TUI
 │   ├── show                              # output complete effective TOML (read-only, pure TOML)
 │   ├── get <key>
@@ -623,6 +624,19 @@ token-usage forecast
 - `Last 7 days / 最近 7 天` and `Last 30 days / 最近 30 天` show each window's total, the daily average (window total divided by **active** days — days with data — using integer division), and the active-day fraction of the window.
 - `Next 7 days / 未来 7 天` and `Next 30 days / 未来 30 天` project that average linearly over the coming natural days, assuming activity continues at the same intensity. A window with no data shows `no data / 无数据` and its projection is omitted.
 - The command is read-only and prints the same K/M/B abbreviations as query.
+
+## chart
+
+Renders daily usage as a standalone SVG bar chart (no external dependencies, opens in any browser or image viewer).
+
+```bash
+token-usage chart 20260901-20260930                # write the SVG to stdout
+token-usage chart 202609 --out september.svg       # atomic write to a file
+```
+
+- Bars are per-day source totals in ascending date order; days without data are zero-height, and each bar carries a native `<title>` hover tooltip with the day's tokens and requests.
+- The header shows the range and its total tokens/requests; the Y axis is labelled with K/M/B abbreviations at three equal gridlines.
+- `--out <file>` writes atomically (temporary file then rename) instead of stdout; the date argument accepts the same forms as `query`/`collect`.
 
 ## update
 

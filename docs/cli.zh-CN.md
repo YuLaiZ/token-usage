@@ -30,6 +30,7 @@ token-usage
 ├── errors [DATE|DATE-DATE]
 ├── doctor                                # 只读健康自检（配置、数据目录、数据库、客户端、采集、异常）
 ├── forecast                              # 按近期日均外推用量
+├── chart [DATE|DATE-DATE]                # 将按日用量渲染为 SVG 柱状图
 ├── config                                # 无参数：打开交互式配置 TUI
 │   ├── show                              # 输出完整 effective TOML（只读、纯 TOML）
 │   ├── get <key>
@@ -623,6 +624,19 @@ token-usage forecast
 - `Last 7 days / 最近 7 天` 与 `Last 30 days / 最近 30 天`：显示各窗口总量、日均（窗口总量除以**活跃**天数——有数据的天数，整数除法向下取整）与窗口内活跃天占比。
 - `Next 7 days / 未来 7 天` 与 `Next 30 days / 未来 30 天`：以该日均线性外推未来自然天数，假设未来保持同等活跃强度。窗口内无数据时显示 `no data / 无数据` 并省略对应外推行。
 - 命令只读，K/M/B 缩写口径与 query 一致。
+
+## chart
+
+将按日用量渲染为独立的 SVG 柱状图（无外部依赖，任意浏览器或图片查看器可打开）。
+
+```bash
+token-usage chart 20260901-20260930                # SVG 写到标准输出
+token-usage chart 202609 --out september.svg       # 原子写入文件
+```
+
+- 柱为逐日源 total，按日期升序；无数据日高度为零，每根柱带原生 `<title>` 悬停提示（当日 tokens 与请求数）。
+- 头部显示区间及其 total tokens / 请求数；Y 轴按三条等分网格以 K/M/B 缩写标注。
+- `--out <文件>` 原子写入（先写临时文件再换名）而非标准输出；日期参数与 `query`/`collect` 同形态。
 
 ## update
 

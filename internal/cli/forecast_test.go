@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -117,5 +119,54 @@ func TestForecastCmd_EndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(out, "Next 30 days / 未来 30 天: 21.00 K (700/day × 30)") {
 		t.Errorf("30 天外推应为 21.00 K:\n%s", out)
+	}
+}
+
+// chart 命令端到端:区间数据渲染为 SVG(有数据日成柱、缺口日零柱),
+// --out 原子写入文件并回执提示。
+func TestChartCmd_EndToEndWithOut(t *testing.T) {
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+
+	today := time.Date(2026, 9, 6, 12, 0, 0, 0, time.Local)
+	d1Date := today.AddDate(0, 0, -1)
+	d2Date := today.AddDate(0, 0, -2)
+	d1, d2 := d1Date.Format("2006-01-02"), d2Date.Format("2006-01-02")
+	// 命令参数用 compact 形态。
+	d1c, d2c := d1Date.Format("20060102"), d2Date.Format("20060102")
+	msgs := []model.Message{
+		{ID: "c-a", SessionID: "s", Client: model.ClientClaudeCode, Date: d1, TS: today.AddDate(0, 0, -1).UnixMilli(), TotalTokens: 1200},
+		{ID: "c-b", SessionID: "s", Client: model.ClientClaudeCode, Date: d2, TS: today.AddDate(0, 0, -2).UnixMilli(), TotalTokens: 300},
+	}
+	if _, err := db.UpsertMessages(context.Background(), usageDB, msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(t.TempDir(), "usage.svg")
+	cfg := &config.Config{DataDir: t.TempDir()}
+	cmd := newChartCmdWithDeps(
+		func() (*config.Config, error) { return cfg, nil },
+		func(string) (*db.DB, error) { return usageDB, nil },
+	)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{d2c + "-" + d1c, "--out", outPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	svg, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("--out 未写入文件: %v", err)
+	}
+	if !strings.Contains(string(svg), d1) {
+		t.Errorf("SVG 应含日期标签 %s:\n%s", d1, svg)
+	}
+	if !strings.Contains(buf.String(), outPath) {
+		t.Errorf("stdout 应回执写入路径:\n%s", buf.String())
 	}
 }
