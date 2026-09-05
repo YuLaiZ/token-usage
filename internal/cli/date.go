@@ -192,45 +192,4 @@ func expansionOverLimitError(raw string, days int, cmdName string) error {
 	))
 }
 
-// parseErrorDateArg 解析 errors 命令的位置日期参数。
-//
-// 只接受 0 或 1 个 YYYYMMDD（8 位），返回单个 YYYY-MM-DD 字符串；无参数返回 ("", nil)。
-// 明确拒绝 YYYY-MM-DD、范围、多余参数（破坏性收窄）。
-func parseErrorDateArg(args []string) (string, error) {
-	if len(args) == 0 {
-		return "", nil
-	}
-	if len(args) > 1 {
-		return "", fmt.Errorf("%s", ui.Bi(
-			fmt.Sprintf("invalid date args: expected 0 or 1 positional arg, got %d. Accepts YYYYMMDD (8 digits) only, e.g. token-usage errors 20260701", len(args)),
-			fmt.Sprintf("无效的日期参数：仅接受 0 或 1 个位置参数，得到 %d 个。只接受 YYYYMMDD（8 位），例如 token-usage errors 20260701", len(args)),
-		))
-	}
-	raw := args[0]
-	// 拒绝范围与含连字符的形式。
-	if strings.Contains(raw, "-") {
-		return "", fmt.Errorf("%s", ui.Bi(
-			fmt.Sprintf("invalid date args %q: accepts YYYYMMDD (8 digits) only, e.g. token-usage errors 20260701", raw),
-			fmt.Sprintf("无效的日期参数 %q：只接受 YYYYMMDD（8 位），例如 token-usage errors 20260701", raw),
-		))
-	}
-	t, err := parseCompactDate(raw)
-	if err != nil {
-		return "", fmt.Errorf("%s", ui.Bi(
-			fmt.Sprintf("invalid date args %q: accepts YYYYMMDD (8 digits) only, e.g. token-usage errors 20260701", raw),
-			fmt.Sprintf("无效的日期参数 %q：只接受 YYYYMMDD（8 位），例如 token-usage errors 20260701", raw),
-		))
-	}
-	return t.Format("2006-01-02"), nil
-}
-
-// parseCompactDate 解析 8 位 YYYYMMDD，要求严格匹配长度与日历。
-func parseCompactDate(s string) (time.Time, error) {
-	if len(s) != 8 {
-		return time.Time{}, fmt.Errorf("%s", ui.Bi(
-			fmt.Sprintf("date must be 8-digit YYYYMMDD: %q", s),
-			fmt.Sprintf("日期长度应为 8 位 YYYYMMDD: %q", s),
-		))
-	}
-	return time.Parse("20060102", s)
-}
+// parseDateEndpoint 把单个日期端点解析为归一化区间 [first, last]：

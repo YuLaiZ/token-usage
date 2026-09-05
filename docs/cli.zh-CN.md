@@ -26,7 +26,7 @@ token-usage
 │   ├── session [DATE|DATE-DATE]   # 会话明细
 │   └── summary [DATE|DATE-DATE]   # 总览摘要
 ├── export [view] [DATE|DATE-DATE] # 以 CSV 或 JSON 导出使用数据（--format csv|json）
-├── errors [YYYYMMDD]
+├── errors [DATE|DATE-DATE]
 ├── doctor                                # 只读健康自检（配置、数据目录、数据库、客户端、采集、异常）
 ├── config                                # 无参数：打开交互式配置 TUI
 │   ├── show                              # 输出完整 effective TOML（只读、纯 TOML）
@@ -364,11 +364,13 @@ token-usage export provider --format json  # provider 视图，JSON 输出到 st
 查看采集异常。
 
 ```text
-token-usage errors [YYYYMMDD]
+token-usage errors [日期|日期-日期]
 ```
 
+日期参数与 `collect`/`query` 同形态：单日 `YYYYMMDD`、月 `YYYYMM`、年 `YYYY` 或 `日期-日期` 区间（逐日展开，与其他日期范围一样最多 366 天）。
+
 - 无日期且无 `--source`：默认只看**未解决**异常。
-- 给出日期或 `--source`：默认看**全部状态**（含已解决）。
+- 给出日期（单日、月、年或区间）或 `--source`：默认看**全部状态**（含已解决）。
 - `--unresolved`：显式只看未解决，始终生效。
 
 标志：
@@ -381,6 +383,7 @@ token-usage errors [YYYYMMDD]
 ```bash
 token-usage errors                     # 未解决异常
 token-usage errors 20260721            # 某日全部异常
+token-usage errors 20260701-20260707   # 区间内全部异常
 token-usage errors --source codex      # 某数据源全部异常
 token-usage errors --unresolved        # 显式只看未解决
 ```

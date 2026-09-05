@@ -26,7 +26,7 @@ token-usage
 │   ├── session [DATE|DATE-DATE]   # session details
 │   └── summary [DATE|DATE-DATE]   # overview summary
 ├── export [view] [DATE|DATE-DATE] # export usage data as CSV or JSON (--format csv|json)
-├── errors [YYYYMMDD]
+├── errors [DATE|DATE-DATE]
 ├── doctor                                # read-only health check (config, data directory, database, clients, collection, errors)
 ├── config                                # no arguments: open the interactive configuration TUI
 │   ├── show                              # output complete effective TOML (read-only, pure TOML)
@@ -364,11 +364,13 @@ token-usage export provider --format json  # provider view as JSON on stdout
 Displays collection errors.
 
 ```text
-token-usage errors [YYYYMMDD]
+token-usage errors [DATE|DATE-DATE]
 ```
 
+The date argument accepts the same forms as `collect`/`query`: a single `YYYYMMDD` day, a `YYYYMM` month, a `YYYY` year, or a `DATE-DATE` range (expanded day-by-day, at most 366 days like every other date range).
+
 - With neither a date nor `--source`, only **unresolved** errors are shown by default.
-- With a date or `--source`, **all states** (including resolved) are shown by default.
+- With a date (single day, month, year, or range) or `--source`, **all states** (including resolved) are shown by default.
 - `--unresolved` explicitly requests unresolved errors only and always takes effect.
 
 Flags:
@@ -381,6 +383,7 @@ Examples:
 ```bash
 token-usage errors                     # unresolved errors
 token-usage errors 20260721            # all errors for one date
+token-usage errors 20260701-20260707   # all errors across a date range
 token-usage errors --source codex      # all errors for one source
 token-usage errors --unresolved        # explicitly unresolved only
 ```

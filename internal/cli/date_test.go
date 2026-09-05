@@ -492,68 +492,56 @@ func TestParseDateArgs_ExtremeRangeExactCount(t *testing.T) {
 	assertDateArgErrorContract(t, msg, "000001-999912", "collect")
 }
 
-// TestParseErrorDateArg_Empty 无参数返回空串。
-func TestParseErrorDateArg_Empty(t *testing.T) {
-	got, err := parseErrorDateArg(nil)
+// TestParseErrorDateArgs_ErrorsSemantics 锁定 errors 的日期参数走 parseDateArgs
+// 且 defaultToday=false:无参数返回 nil(全部未解决语义),单日/月/区间合法展开,
+// ISO 形态与非法值拒绝(与 query/collect 共用同一合同与错误文案)。
+func TestParseErrorDateArgs_ErrorsSemantics(t *testing.T) {
+	if got, err := parseDateArgs(nil, false, "errors"); err != nil || got != nil {
+		t.Fatalf("无参数应返回 (nil, nil),实际 (%v, %v)", got, err)
+	}
+
+	got, err := parseDateArgs([]string{"20260701"}, false, "errors")
 	if err != nil {
-		t.Fatalf("parseErrorDateArg(nil) 出错: %v", err)
+		t.Fatalf("单日解析出错: %v", err)
 	}
-	if got != "" {
-		t.Errorf("无参数应返回空串，实际 %q", got)
+	if len(got) != 1 || got[0] != "2026-07-01" {
+		t.Errorf("单日应展开为 [2026-07-01],实际 %v", got)
 	}
-}
 
-// TestParseErrorDateArg_Single 合法单日。
-func TestParseErrorDateArg_Single(t *testing.T) {
-	got, err := parseErrorDateArg([]string{"20260701"})
+	// 范围被接受:三日区间展开为连续逐日列表。
+	got, err = parseDateArgs([]string{"20260701-20260703"}, false, "errors")
 	if err != nil {
-		t.Fatalf("parseErrorDateArg 出错: %v", err)
+		t.Fatalf("区间解析出错: %v", err)
 	}
-	if got != "2026-07-01" {
-		t.Errorf("期望 2026-07-01，实际 %q", got)
+	if len(got) != 3 || got[0] != "2026-07-01" || got[2] != "2026-07-03" {
+		t.Errorf("区间应展开 3 天,实际 %v", got)
 	}
-}
 
-// TestParseErrorDateArg_RejectsRange 范围被拒绝。
-func TestParseErrorDateArg_RejectsRange(t *testing.T) {
-	if _, err := parseErrorDateArg([]string{"20260701-20260703"}); err == nil {
-		t.Fatal("errors 应拒绝范围日期")
+	// 月粒度展开。
+	got, err = parseDateArgs([]string{"202602"}, false, "errors")
+	if err != nil {
+		t.Fatalf("月解析出错: %v", err)
 	}
-}
-
-// TestParseErrorDateArg_RejectsDashFormat YYYY-MM-DD 被拒绝。
-func TestParseErrorDateArg_RejectsDashFormat(t *testing.T) {
-	if _, err := parseErrorDateArg([]string{"2026-07-01"}); err == nil {
-		t.Fatal("errors 应拒绝 YYYY-MM-DD")
+	if len(got) != 28 || got[0] != "2026-02-01" || got[27] != "2026-02-28" {
+		t.Errorf("202602 应展开 28 天,实际 %d 天 %v..%v", len(got), got[0], got[len(got)-1])
 	}
-}
 
-// TestParseErrorDateArg_RejectsInvalid 非法格式/日历日期被拒绝。
-func TestParseErrorDateArg_RejectsInvalid(t *testing.T) {
-	for _, in := range []string{"not-a-date", "2026", "2026070", "20261301"} {
-		if _, err := parseErrorDateArg([]string{in}); err == nil {
-			t.Errorf("errors 应拒绝非法日期 %q", in)
+	// 拒绝形态:ISO、非法文本、多余参数(错误合同由 parseDateArgs 共同保证)。
+	for _, in := range [][]string{{"2026-07-01"}, {"not-a-date"}, {"2026070"}, {"20261301"}, {"20260701", "20260702"}} {
+		if _, err := parseDateArgs(in, false, "errors"); err == nil {
+			t.Errorf("errors 应拒绝 %v", in)
 		}
 	}
 }
 
-// TestParseErrorDateArg_TooManyArgs 多余参数被拒绝。
-func TestParseErrorDateArg_TooManyArgs(t *testing.T) {
-	if _, err := parseErrorDateArg([]string{"20260701", "20260702"}); err == nil {
-		t.Fatal("errors 多余参数应返回 error")
-	}
-}
-
-// TestParseErrorDateArg_ErrorContainsFormatAndExample 错误文案含格式与示例。
-func TestParseErrorDateArg_ErrorContainsFormatAndExample(t *testing.T) {
-	_, err := parseErrorDateArg([]string{"bad"})
+// TestParseErrorDateArgs_ErrorContainsFormatAndExample 错误文案含格式提示与
+// errors 命令示例(与 query/collect 共用 dateFormatsHint 文案)。
+func TestParseErrorDateArgs_ErrorContainsFormatAndExample(t *testing.T) {
+	_, err := parseDateArgs([]string{"bad"}, false, "errors")
 	if err == nil {
 		t.Fatal("期望 error")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "YYYYMMDD") {
-		t.Errorf("错误应含格式说明，实际 %q", msg)
-	}
 	if !strings.Contains(msg, "token-usage errors") {
 		t.Errorf("错误应含 errors 命令示例，实际 %q", msg)
 	}

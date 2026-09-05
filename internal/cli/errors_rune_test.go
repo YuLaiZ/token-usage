@@ -158,3 +158,33 @@ func TestErrorsRunE_InvalidDateReturnsError(t *testing.T) {
 		t.Errorf("错误信息应含「无效的日期」，实际: %v", err)
 	}
 }
+
+// TestErrorsRunE_FilterByDateRange 位置参数支持区间:20260701-20260702 展开两日,
+// 两天的异常都应出现在输出中(单日过滤行为不变,由 FilterByDate 锁定)。
+func TestErrorsRunE_FilterByDateRange(t *testing.T) {
+	dataDir := setupErrorsEnv(t)
+	usageDB, err := db.Open(filepath.Join(dataDir, "usage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.RecordError(context.Background(), usageDB, "2026-07-01", "claude", "first-day", "")
+	db.RecordError(context.Background(), usageDB, "2026-07-02", "claude", "second-day", "")
+	db.RecordError(context.Background(), usageDB, "2026-07-03", "claude", "out-of-range", "")
+
+	var out bytes.Buffer
+	cmd := newErrorsCmd()
+	cmd.SetArgs([]string{"20260701-20260702"})
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("errors 区间失败: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "first-day") || !strings.Contains(got, "second-day") {
+		t.Errorf("应显示区间内两天的异常，输出: %s", got)
+	}
+	if strings.Contains(got, "out-of-range") {
+		t.Errorf("不应显示区间外 0703 的异常，输出: %s", got)
+	}
+}

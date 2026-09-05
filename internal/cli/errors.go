@@ -17,12 +17,14 @@ import (
 
 func newErrorsCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "errors [YYYYMMDD]",
+		Use:   "errors [DATE|DATE-DATE]",
 		Short: "View collection errors / 查看采集异常",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// 参数解析先于 DB 打开，非法日期在打开库之前即报错。
-			date, err := parseErrorDateArg(args)
+			// 日期形态与 collect/query 一致：单日 YYYYMMDD、月 YYYYMM、年 YYYY
+			// 或区间 DATE-DATE，展开上限与错误文案统一。
+			dates, err := parseDateArgs(args, false, "errors")
 			if err != nil {
 				return err
 			}
@@ -42,7 +44,7 @@ func newErrorsCmd() *cobra.Command {
 			sourceFlag, _ := cmd.Flags().GetString("source")
 			unresolvedFlag, _ := cmd.Flags().GetBool("unresolved")
 
-			filter := buildErrorsFilter(date, sourceFlag, unresolvedFlag)
+			filter := buildErrorsFilter(dates, sourceFlag, unresolvedFlag)
 
 			return runErrorsContext(cmdContext(cmd), usageDB, cmd.OutOrStdout(), filter)
 		},
@@ -57,18 +59,14 @@ func newErrorsCmd() *cobra.Command {
 // buildErrorsFilter 构造 errors 命令的 ErrorFilter。
 //
 // 默认语义（保留）：无日期且无 source 时只看未解决（Unresolved=true）；
-// 一旦给出日期或 source，则默认看全部状态。
+// 一旦给出日期（单日、月、年或区间）或 source，则默认看全部状态。
 // 显式 --unresolved 始终置 Unresolved=true。
-func buildErrorsFilter(date, source string, unresolved bool) db.ErrorFilter {
-	f := db.ErrorFilter{
-		Dates:      nil,
+func buildErrorsFilter(dates []string, source string, unresolved bool) db.ErrorFilter {
+	return db.ErrorFilter{
+		Dates:      dates,
 		Source:     source,
-		Unresolved: unresolved || (date == "" && source == ""),
+		Unresolved: unresolved || (len(dates) == 0 && source == ""),
 	}
-	if date != "" {
-		f.Dates = []string{date}
-	}
-	return f
 }
 
 // runErrors 可测试的 errors 命令核心逻辑

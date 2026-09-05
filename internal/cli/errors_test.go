@@ -15,8 +15,8 @@ import (
 func TestNewErrorsCmd_HasFlags(t *testing.T) {
 	cmd := newErrorsCmd()
 
-	if cmd.Use != "errors [YYYYMMDD]" {
-		t.Errorf("expected Use='errors [YYYYMMDD]', got %q", cmd.Use)
+	if cmd.Use != "errors [DATE|DATE-DATE]" {
+		t.Errorf("expected Use='errors [DATE|DATE-DATE]', got %q", cmd.Use)
 	}
 
 	// --date flag 已移除（日期改为位置参数）。
@@ -214,24 +214,21 @@ func TestTruncateRunes_SmallLimits(t *testing.T) {
 	}
 }
 
-// TestNormalizeErrorDate 旧函数已删除，行为迁移到 parseErrorDateArg（见 date_test.go）。
-// 仅保留对 errors 专用解析的破坏性收窄断言：YYYY-MM-DD 与范围均被拒绝。
-func TestNormalizeErrorDate_MigratedToParseErrorDateArg(t *testing.T) {
-	// 合法 YYYYMMDD
-	got, err := parseErrorDateArg([]string{"20260609"})
-	if err != nil || got != "2026-06-09" {
-		t.Fatalf("parseErrorDateArg([20260609]) = %q, %v", got, err)
+// TestNormalizeErrorDate_MigratedToParseDateArgs 旧函数历经两次迁移，现统一走
+// parseDateArgs(defaultToday=false):范围被接受(见 date_test.go 的 errors 语义
+// 测试),此处保留 ISO 形态与非法格式的拒绝断言。
+func TestNormalizeErrorDate_MigratedToParseDateArgs(t *testing.T) {
+	// 合法 YYYYMMDD 展开单日
+	got, err := parseDateArgs([]string{"20260609"}, false, "errors")
+	if err != nil || len(got) != 1 || got[0] != "2026-06-09" {
+		t.Fatalf("parseDateArgs([20260609]) = %q, %v", got, err)
 	}
-	// YYYY-MM-DD 被拒绝（破坏性收窄）
-	if _, err := parseErrorDateArg([]string{"2026-06-09"}); err == nil {
+	// YYYY-MM-DD 被拒绝
+	if _, err := parseDateArgs([]string{"2026-06-09"}, false, "errors"); err == nil {
 		t.Fatal("YYYY-MM-DD 应被 errors 拒绝")
 	}
-	// 范围被拒绝
-	if _, err := parseErrorDateArg([]string{"20260601-20260603"}); err == nil {
-		t.Fatal("errors 应拒绝范围日期")
-	}
 	// 非法格式
-	if _, err := parseErrorDateArg([]string{"2026/06/09"}); err == nil {
+	if _, err := parseDateArgs([]string{"2026/06/09"}, false, "errors"); err == nil {
 		t.Fatal("invalid date must fail")
 	}
 }
