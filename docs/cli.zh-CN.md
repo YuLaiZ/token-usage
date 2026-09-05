@@ -44,7 +44,7 @@ token-usage
 设计要点：
 
 - 无顶层 `router` 子命令；路由归因通过 `collect all`（隐含）或 `collect router`（仅归因层）触达。
-- 日期是**位置参数**：`DATE` 为日（`YYYYMMDD`）、月（`YYYYMM`）或年（`YYYY`，仅单独使用）；`DATE-DATE` 为闭区间，端点为日或月。任何形态展开上限 366 天。无 `--date` 标志；`errors` 只接受单个 `YYYYMMDD`。
+- 日期是**位置参数**：`DATE` 为日（`YYYYMMDD`）、月（`YYYYMM`）或年（`YYYY`，仅单独使用）；`DATE-DATE` 为闭区间，端点为日或月。任何形态展开上限 366 天。无 `--date` 标志；`errors` 接受相同形态。
 - `query` 没有 `--format`/`--by-*` 标志；视图由子命令选择，输出固定为表格。
 - 直接执行 `token-usage`（不带任何参数）只打印帮助，既不启动 TUI 也不启动守护进程。
 - 根命令带 `-v, --version` flag（单行短输出），同时提供 `version` 子命令（多行详细输出）；二者详见下文「version」。
@@ -58,7 +58,7 @@ token-usage
 | 命令 | 接受形式 | 缺省 |
 |------|----------|------|
 | `collect`、`query`（含子命令）、`export` | `DATE`（日 `YYYYMMDD`、月 `YYYYMM` 或年 `YYYY`，年仅单独使用）或 `DATE-DATE`（日/月端点，闭区间） | 今天 |
-| `errors` | `YYYYMMDD` 单日（不接受区间） | 无日期且无 `--source` 时只看未解决 |
+| `errors` | `DATE` 或 `DATE-DATE`（与 `collect`/`query` 相同形态） | 无日期且无 `--source` 时只看未解决 |
 
 `YYYYMMDD` 为 8 位紧凑格式（如 `20260701`）；`YYYYMM` 表示一个自然月，`YYYY` 表示一个自然年（年形态仅单独使用）。`YYYY-MM-DD`、多余位置参数、年做区间端点、结束早于开始均报错并给出命令示例。单参数或区间统一归一化为逐日列表（含两端），上限 366 天（一个闰年），更长范围请拆分多次执行。
 

@@ -44,7 +44,7 @@ token-usage
 Design points:
 
 - There is no top-level `router` subcommand. Router attribution is reached through `collect all` (included) or `collect router` (attribution layer only).
-- Dates are **positional arguments**: `DATE` is a day (`YYYYMMDD`), month (`YYYYMM`), or year (`YYYY`; single arg only); `DATE-DATE` is an inclusive range whose endpoints are days or months. Any form expands to at most 366 days. There is no `--date` flag. `errors` accepts only a single `YYYYMMDD`.
+- Dates are **positional arguments**: `DATE` is a day (`YYYYMMDD`), month (`YYYYMM`), or year (`YYYY`; single arg only); `DATE-DATE` is an inclusive range whose endpoints are days or months. Any form expands to at most 366 days. There is no `--date` flag. `errors` accepts the same forms.
 - `query` has no `--format` or `--by-*` flag. A subcommand selects the view and output is always a table.
 - Running `token-usage` with no arguments only prints help; it starts neither the TUI nor the daemon.
 - The root command has a `-v, --version` flag for one-line short output and a `version` subcommand for multi-line detailed output; see [version](#version).
@@ -58,7 +58,7 @@ Design points:
 | Command | Accepted form | Default |
 |------|----------|------|
 | `collect`, `query` (with subcommands), and `export` | `DATE` (day `YYYYMMDD`, month `YYYYMM`, or year `YYYY`; year as a single arg only) or `DATE-DATE` (inclusive day/month endpoints) | Today |
-| `errors` | A single `YYYYMMDD` (ranges are not accepted) | With neither a date nor `--source`, only unresolved errors are shown. |
+| `errors` | `DATE` or `DATE-DATE` (same forms as `collect`/`query`) | With neither a date nor `--source`, only unresolved errors are shown. |
 
 `YYYYMMDD` is an eight-digit compact format (for example, `20260701`); `YYYYMM` selects a calendar month and `YYYY` a calendar year (the year form is accepted only as a single arg). `YYYY-MM-DD`, extra positional arguments, a year used as a range endpoint, and an end date before the start date all fail with an error and command examples. A single arg or a range normalizes to an inclusive per-day list capped at 366 days (one leap year); split longer ranges into multiple runs.
 
