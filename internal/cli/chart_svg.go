@@ -251,7 +251,9 @@ var heatFills = []string{
 // 格子取色按交点值相对最大值的 11 级渐变(0 级浅灰为无数据),每格带悬停
 // 提示(星期/小时/tokens)。行列由 weekdays/hours 与 values 回调按下标对应。
 func buildHeatmapSVG(title, subtitle string, weekdays, hours []string, values func(wi, hi int) int64) string {
-	c := chartCanvas{width: 860, height: 360, left: 150, right: 24, top: 64, bottom: 24}
+	// 高度随星期行数动态收紧:头部 + 行数×格高 + 图例区 + 底边距。
+	c := chartCanvas{width: 860, left: 150, right: 24, top: 64, bottom: 24}
+	c.height = c.top + len(weekdays)*26 + 46 + c.bottom
 	var b strings.Builder
 	fmt.Fprintf(&b, `<?xml version="1.0" encoding="UTF-8"?>`+"\n")
 	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">`+"\n",
@@ -315,6 +317,17 @@ func buildHeatmapSVG(title, subtitle string, weekdays, hours []string, values fu
 				svgEscape(wd), svgEscape(h), svgEscape(querier.FormatTokens(v)))
 		}
 	}
+
+	// 图例:色阶条(11 格)与两端标注,读者无需悬停即可理解取色语义。
+	legendY := originY + float64(len(weekdays))*cellH + 20
+	fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" font-family=\"monospace\" font-size=\"10\" fill=\"#666\">0</text>\n", originX, legendY+10)
+	for i := range heatFills {
+		fmt.Fprintf(&b, "  <rect x=\"%.0f\" y=\"%.0f\" width=\"18\" height=\"12\" fill=\"%s\"/>\n",
+			originX+14+float64(i)*20, legendY, heatFills[i])
+	}
+	fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" font-family=\"monospace\" font-size=\"10\" fill=\"#666\">%s</text>\n",
+		originX+14+float64(len(heatFills))*20+6, legendY+10,
+		svgEscape(querier.FormatTokens(maxVal)))
 	b.WriteString("</svg>\n")
 	return b.String()
 }

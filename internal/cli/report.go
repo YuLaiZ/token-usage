@@ -116,7 +116,14 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 	if err != nil {
 		return nil, err
 	}
-	heatmapSVG := buildChartHeatmap(ctx, q, dates)
+	// 副标题与柱状/饼图共用区间汇总口径。
+	rangeStats, err := q.StatsBetween(ctx, dates[0], dates[len(dates)-1])
+	if err != nil {
+		return nil, err
+	}
+	subtitle := fmt.Sprintf("Total %s tokens / %d requests",
+		querier.FormatTokens(rangeStats.Total.TotalTokens), rangeStats.Total.Requests)
+	heatmapSVG := buildChartHeatmap(ctx, q, dates, subtitle)
 
 	files := []reportFile{
 		{name: "summary.txt", summary: true, render: func() (string, error) {

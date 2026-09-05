@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -72,16 +71,24 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			if len(dates) > 1 {
 				rangeLabel = dates[0] + " ~ " + dates[len(dates)-1]
 			}
+			rangeTotals, err := q.StatsBetween(cmdContext(cmd), dates[0], dates[len(dates)-1])
+			if err != nil {
+				return err
+			}
+			totals := rangeTotals.Total
 			title := chartTitleFor(rangeLabel, by)
+			subtitle := fmt.Sprintf("Total %s tokens / %d requests",
+				querier.FormatTokens(totals.TotalTokens), totals.Requests)
 
-			// heatmap 分支直接消费热力矩阵(--by/--pie 与其无关,不浪费聚合)。
+			// heatmap 分支直接消费热力矩阵(--by/--pie 与其无关,不浪费聚合),
+			// 汇总行沿用同一聚合核的范围统计。
 			if heatmap {
-				return writeChartOutput(cmd, outFlag, buildChartHeatmap(cmdContext(cmd), q, dates))
+				return writeChartOutput(cmd, outFlag, buildChartHeatmap(cmdContext(cmd), q, dates, subtitle))
 			}
 
 			// 柱状/饼图:复用维度聚合核,缺口日自动补零(day)或 total 降序
 			// (非时间维度的既有排序规则)。
-			rows, totals, err := q.AggregateDimensionView(cmdContext(cmd), dates, querier.DimensionView{
+			rows, _, err := q.AggregateDimensionView(cmdContext(cmd), dates, querier.DimensionView{
 				Dimensions: []string{by},
 				TitleEn:    "chart", TitleZh: "chart",
 			})
@@ -100,9 +107,6 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 						querier.FormatTokens(row.Agg.TotalTokens), row.Agg.Requests),
 				})
 			}
-			subtitle := fmt.Sprintf("Total %s tokens / %d requests",
-				querier.FormatTokens(totals.TotalTokens), totals.Requests)
-
 			var svg string
 			if pie {
 				slices := make([]chartSlice, 0, len(bars))
@@ -136,7 +140,7 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 // buildChartHeatmap 组装星期×小时热力矩阵 SVG:复用维度聚合核的
 // weekday,hour 组合(矩阵交点缺失即零值),行列标签与终端 heatmap 一致
 // (ISO 周序星期、本机时区小时)。
-func buildChartHeatmap(ctx context.Context, q *querier.Querier, dates []string) string {
+func buildChartHeatmap(ctx context.Context, q *querier.Querier, dates []string, subtitle string) string {
 	// 数据来自 querier.HeatmapMatrix(与终端 heatmap 同一来源,行列与数值
 	// 完全一致);聚合失败时输出空矩阵(全最低级)比静默退出更可观察。
 	m, err := q.HeatmapMatrix(ctx, dates)
@@ -145,7 +149,7 @@ func buildChartHeatmap(ctx context.Context, q *querier.Querier, dates []string) 
 	}
 	return buildHeatmapSVG(
 		"Weekday x hour heatmap / 星期×小时热力图",
-		strings.Join(dates, " ~ "),
+		subtitle,
 		m.Weekdays, m.Hours,
 		func(wi, hi int) int64 {
 			if wi < len(m.Values) && hi < len(m.Values[wi]) {

@@ -138,9 +138,9 @@ func TestBuildHeatmapSVG(t *testing.T) {
 	svg := buildHeatmapSVG("hm", "sub", weekdays, hours,
 		func(wi, hi int) int64 { return values[[2]int{wi, hi}] })
 
-	// 2 行×3 列 = 6 格 + 1 背景 = 7 rect;每格有 hover title。
-	if strings.Count(svg, "<rect") != 7 {
-		t.Errorf("rect 数应 7(背景+6 格),实际 %d", strings.Count(svg, "<rect"))
+	// 2 行×3 列 = 6 格 + 1 背景 + 11 图例色块 = 18 rect;每格有 hover title。
+	if strings.Count(svg, "<rect") != 18 {
+		t.Errorf("rect 数应 18(背景+6 格+11 图例色块),实际 %d", strings.Count(svg, "<rect"))
 	}
 	if !strings.Contains(svg, "Monday / 周一 02:00: 900 tokens") {
 		t.Errorf("最大值格悬停应含星期/小时/数量:\n%s", svg)
