@@ -30,6 +30,7 @@ func TestRootCommand_HasSubcommands(t *testing.T) {
 		"forecast":   true,
 		"chart":      true,
 		"watch":      true,
+		"report":     true,
 		"errors":     true,
 		"start":      true,
 		"status":     true,

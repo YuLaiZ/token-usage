@@ -146,6 +146,7 @@ token-usage query list
 | `forecast` | Extrapolate upcoming usage from recent daily averages. |
 | `chart [date]` | Render usage as an SVG chart (`--by` dimension, `--pie`, `--heatmap`, `--out` to save). |
 | `watch [date]` | Refresh a live summary at a fixed interval (`--once` for a single frame). |
+| `report [date] --out <dir>` | Generate a full usage report bundle (summary + SVG charts). |
 | `version` / `--version` | Show detailed / one-line version information. |
 | `start` / `status` / `stop` / `restart` | Control the background daemon. |
 | `completion <shell>` | Print a Bash, Zsh, Fish, or PowerShell completion script. |

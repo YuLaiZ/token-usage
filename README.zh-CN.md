@@ -146,6 +146,7 @@ token-usage query list
 | `forecast` | 按近期日均外推即将到来的用量。 |
 | `chart [日期]` | 将用量渲染为 SVG 图表（`--by` 维度、`--pie`、`--heatmap`、`--out` 保存）。 |
 | `watch [日期]` | 以固定间隔刷新实时摘要（`--once` 单帧）。 |
+| `report [日期] --out <目录>` | 生成完整用量报告包（摘要 + SVG 图表）。 |
 | `version` / `--version` | 查看多行详细 / 单行简要的版本信息。 |
 | `start` / `status` / `stop` / `restart` | 控制后台守护进程。 |
 | `completion <shell>` | 输出 Bash、Zsh、Fish 或 PowerShell 的补全脚本。 |
