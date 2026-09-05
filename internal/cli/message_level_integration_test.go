@@ -2,10 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -30,9 +32,14 @@ func TestMessageLevel_CollectThenQuery(t *testing.T) {
 	if err := os.MkdirAll(projectsDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	jsonl := `{"type":"assistant","sessionId":"s1","timestamp":"2026-07-08T10:00:00+08:00","entrypoint":"cli","cwd":"/tmp/demo","message":{"id":"msg-001","role":"assistant","model":"claude-sonnet","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":10}}}
-{"type":"assistant","sessionId":"s1","timestamp":"2026-07-08T10:01:00+08:00","entrypoint":"cli","cwd":"/tmp/demo","message":{"id":"msg-002","role":"assistant","model":"claude-sonnet","usage":{"input_tokens":50,"output_tokens":10}}}
-`
+	// 时间戳按测试进程本地时区生成:collector 按本机时区把消息归日,固定
+	// 某一偏移(如 +08:00)的 UTC 时刻在其他时区会漂移到相邻日期,导致期望
+	// 的 2026-07-08 落空。RFC3339 输出携带本地偏移,任意时区下归日一致。
+	ts1 := time.Date(2026, 7, 8, 10, 0, 0, 0, time.Local).Format(time.RFC3339)
+	ts2 := time.Date(2026, 7, 8, 10, 1, 0, 0, time.Local).Format(time.RFC3339)
+	jsonl := fmt.Sprintf(`{"type":"assistant","sessionId":"s1","timestamp":"%s","entrypoint":"cli","cwd":"/tmp/demo","message":{"id":"msg-001","role":"assistant","model":"claude-sonnet","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":10}}}
+{"type":"assistant","sessionId":"s1","timestamp":"%s","entrypoint":"cli","cwd":"/tmp/demo","message":{"id":"msg-002","role":"assistant","model":"claude-sonnet","usage":{"input_tokens":50,"output_tokens":10}}}
+`, ts1, ts2)
 	if err := os.WriteFile(filepath.Join(projectsDir, "sess-001.jsonl"), []byte(jsonl), 0600); err != nil {
 		t.Fatal(err)
 	}
