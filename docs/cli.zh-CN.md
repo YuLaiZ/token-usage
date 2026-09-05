@@ -292,7 +292,7 @@ columns = ["requests", "input", "output", "total", "cache_hit"]
 | `total` | Total / 总计 | 源 total tokens |
 | `cache_hit` | Cache Hit / 缓存命中 | cache_read / (fresh input + cache_read + cache_create) |
 
-- **适用范围**：布局作用于 `query client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday`、`session`，以及裸 query、具名视图（`query <name>` / `query custom <name>`）与组合查询展开的每张表。`query summary` 不适用——它保持完整纵向摘要（含 Cache Create）；`query list` 不渲染数据表。维度列始终显示在每张表左侧（session 表固定先显示 Client/Project/Title），不参与布局。
+- **适用范围**：布局作用于 `query client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday`、`session`，以及裸 query、具名视图（`query <name>` / `query custom <name>`）与组合查询展开的每张表。`query summary` 不适用——它保持完整纵向摘要（含 Cache Create）；`query list` 不渲染数据表。维度列始终显示在每张表左侧（session 表固定先显示 Client/Project/Title/Duration），不参与布局。
 - **默认值**：缺失 `[query.output]` 或缺失 `columns` 时使用 `requests, input, output, cache_read, reasoning, total, cache_hit` 七列，升级后既有配置与输出保持不变。`cache_create` 是首个可选但默认隐藏的指标；它始终计入缓存命中率分母，显示或隐藏都不改变任何统计值、排序与总计。
 - **校验规则**：`query.output` 必须是表且只允许 `columns` 一个子键；数组非空、元素为上表中的字符串、不得重复（元素首尾空格自动去除）。空数组不是「恢复默认」——恢复默认应删除 `query.output`（或 `query.output.columns`）。错误会报出完整配置路径与具体值。`config set` 不支持写入 `query.output.columns`，请使用 TUI 的 Output columns 页或手工编辑 TOML。
 - **错误边界**：无关的视图定义错误（`subqueries`/`groups`/`default`）不阻断九个受布局影响的静态表格命令——合法布局仍生效。`query.output` 自身不合法时，这九个命令在打开数据库前失败。顶层 query 问题（`[query]` 与 `[Query]` 并存、根值非表）下静态表格命令静默回退默认七列，裸 query、具名视图与 `query list` 仍按既有定位错误失败。TUI 保存始终执行完整 query 校验。
@@ -331,7 +331,7 @@ token-usage export [view] [DATE|DATE-DATE] [--format csv|json]
 | `month` | `month` | 按月用量，月份升序，无数据月份按月前缀补零值行 |
 | `hour` | `hour` | 按小时用量，本机时区折算，小时升序，整日 24 小时刻度全量呈现，无数据小时补零值行 |
 | `weekday` | `weekday` | 按星期用量，本机时区折算，ISO 周序（周一在首），整周 7 天刻度全量呈现，无数据星期补零值行 |
-| `session` | `client`、`project`、`title` | 会话明细，顺序与 `query session` 一致；`project`/`title` 保留源字段原值——空 project 就是空串，与分组视图替换占位文案不同 |
+| `session` | `client`、`project`、`title`、`duration_ms` | 会话明细，顺序与 `query session` 一致；`project`/`title` 保留源字段原值——空 project 就是空串，与分组视图替换占位文案不同；`duration_ms` 为该会话的请求跨度（末条减首条消息时间戳，毫秒） |
 
 `summary` 与已配置自定义视图（`query.subqueries` / `query.groups`）明确不可导出；未知视图会在加载配置与打开数据库之前按允许集合拒绝。
 

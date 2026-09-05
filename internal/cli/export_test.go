@@ -125,7 +125,7 @@ func TestExportCSVSessionQuoting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("输出应为合法 CSV:\n%s", got)
 	}
-	wantHeader := []string{"client", "project", "title", "requests", "input", "output", "cache_read", "cache_create", "reasoning", "total"}
+	wantHeader := []string{"client", "project", "title", "duration_ms", "requests", "input", "output", "cache_read", "cache_create", "reasoning", "total"}
 	if len(records) != 2 {
 		t.Fatalf("应恰为表头 + 1 数据行,实际 %d 行:\n%s", len(records), got)
 	}
@@ -142,8 +142,11 @@ func TestExportCSVSessionQuoting(t *testing.T) {
 	if row[2] != wantTitle {
 		t.Errorf("title 转义后应完整 = %q, want %q", row[2], wantTitle)
 	}
-	if row[9] != "42" {
-		t.Errorf("total 应为原始整数 42,实际 %q", row[9])
+	if row[3] != "0" {
+		t.Errorf("duration_ms 应为原始整数 0(夹具单条消息,首末同为 ts=0),实际 %q", row[3])
+	}
+	if row[10] != "42" {
+		t.Errorf("total 应为原始整数 42,实际 %q", row[10])
 	}
 }
 
@@ -522,7 +525,7 @@ func TestExportJSONSessionView(t *testing.T) {
 	}
 	row := rows[0]
 	wantKeys := map[string]bool{
-		"client": true, "project": true, "title": true,
+		"client": true, "project": true, "title": true, "duration_ms": true,
 		"requests": true, "input": true, "output": true, "cache_read": true,
 		"cache_create": true, "reasoning": true, "total": true,
 	}
@@ -533,6 +536,10 @@ func TestExportJSONSessionView(t *testing.T) {
 		if !wantKeys[key] {
 			t.Errorf("出现意外键 %q: %v", key, row)
 		}
+	}
+	// duration_ms 是首末消息毫秒差,夹具单条消息恒为 0 且为 JSON number。
+	if got, ok := row["duration_ms"].(float64); !ok || got != 0 {
+		t.Errorf("duration_ms 应为 JSON number 0: %v", row["duration_ms"])
 	}
 	if row["project"] != "" {
 		t.Errorf("空 project 应保留空串原值,实际 %v", row["project"])

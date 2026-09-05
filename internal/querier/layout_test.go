@@ -214,10 +214,10 @@ func TestLayout_AppliesToAllGroupViewsAndSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	header := headerCellsOf(t, sessions)
-	if len(header) != 6 {
-		t.Fatalf("session 表头列数 = %d, want 6:\n%s", len(header), sessions)
+	if len(header) != 7 {
+		t.Fatalf("session 表头列数 = %d, want 7:\n%s", len(header), sessions)
 	}
-	for i, want := range []string{"Client", "Project", "Title", "Total", "Cache Create", "Cache Hit"} {
+	for i, want := range []string{"Client", "Project", "Title", "Duration", "Total", "Cache Create", "Cache Hit"} {
 		if header[i] != want {
 			t.Errorf("session 表头第 %d 列 = %q, want %q:\n%s", i, header[i], want, sessions)
 		}
@@ -277,11 +277,11 @@ func TestLayout_CacheCreateValuesAndHitRate(t *testing.T) {
 	if len(sessionRows) != 1 {
 		t.Fatalf("session 应恰一行:\n%s", sessions)
 	}
-	// 列: client project title | requests input output cache_read cache_create reasoning total cache_hit
-	if got := sessionRows[0][7]; got != "300" {
+	// 列: client project title duration | requests input output cache_read cache_create reasoning total cache_hit
+	if got := sessionRows[0][8]; got != "300" {
 		t.Errorf("session Cache Create = %q, want 300:\n%s", got, sessions)
 	}
-	if got := sessionRows[0][10]; got != "26.09%" {
+	if got := sessionRows[0][11]; got != "26.09%" {
 		t.Errorf("session Cache Hit = %q, want 26.09%%:\n%s", got, sessions)
 	}
 }

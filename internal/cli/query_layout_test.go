@@ -53,7 +53,7 @@ func TestStaticTableCommands_ApplyOutputLayout(t *testing.T) {
 		header := layoutHeaderCells(t, buf.String())
 		dimCount := 1
 		if view == viewSessions {
-			dimCount = 3 // Client / Project / Title 固定在前
+			dimCount = 4 // Client / Project / Title / Duration 固定在前
 		}
 		if got := strings.Join(header[dimCount:], "|"); got != "Total|Requests" {
 			t.Errorf("静态视图 %d 布局 = %q, want Total|Requests:\n%s", view, got, buf.String())

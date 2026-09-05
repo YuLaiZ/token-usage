@@ -41,6 +41,7 @@ var (
 	HModel       = HeaderLines("Model", "模型")
 	HProject     = HeaderLines("Project", "项目")
 	HTitle       = HeaderLines("Title", "标题")
+	HDuration    = HeaderLines("Duration", "时长")
 	HRequests    = HeaderLines("Requests", "请求数")
 	HInput       = HeaderLines("Input", "输入")
 	HOutput      = HeaderLines("Output", "输出")

@@ -1590,3 +1590,65 @@ func TestSummary_OmitsPeakAndAverageWhenRangeEmpty(t *testing.T) {
 		t.Errorf("空范围不应渲染日均总量行:\n%s", out)
 	}
 }
+
+// formatDuration 时长渲染合同:亚秒归 "<1s",分钟保留秒,小时保留分钟,
+// 跨天保留小时,负值渲染占位符 "-"。
+func TestFormatDuration(t *testing.T) {
+	cases := map[int64]string{
+		0:        "<1s",
+		999:      "<1s",
+		1000:     "1s",
+		59000:    "59s",
+		61000:    "1m 1s",
+		3661000:  "1h 1m",
+		90061000: "1d 1h",
+		-5:       "-",
+	}
+	for ms, want := range cases {
+		if got := formatDuration(ms); got != want {
+			t.Errorf("formatDuration(%d) = %q, want %q", ms, got, want)
+		}
+	}
+}
+
+// Sessions 的 Duration 列反映会话请求跨度(同 session 首末消息毫秒差),
+// SessionRows 的导出字段 FirstTS/LastTS 返回原始毫秒值。
+func TestSessions_DurationColumnReflectsRequestSpan(t *testing.T) {
+	q := newEmptyQuerier(t)
+	// setupMessageFixture 的预置消息 ts 为 1970 年小毫秒值会污染 MIN(ts),
+	// 用空库自建 session 与两条消息:本地 10:00 与 11:01,请求跨度 1h 1m。
+	if _, err := db.UpsertSessionMeta(context.Background(), q.db, []model.Session{
+		{ID: "sess-dur", Client: model.ClientClaudeCode, Directory: "/w", Project: "proj-A", Title: "span", FirstTS: 0, LastTS: 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	msgs := []model.Message{
+		{ID: "dur-a", SessionID: "sess-dur", Client: model.ClientClaudeCode, Date: "2026-07-09", TS: hourTS(2026, 7, 9, 10, 0), TotalTokens: 10},
+		{ID: "dur-b", SessionID: "sess-dur", Client: model.ClientClaudeCode, Date: "2026-07-09", TS: hourTS(2026, 7, 9, 11, 1), TotalTokens: 20},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := q.Sessions(context.Background(), []string{"2026-07-09"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Duration") || !strings.Contains(out, "时长") {
+		t.Errorf("session 表应含 Duration / 时长 列:\n%s", out)
+	}
+	if !strings.Contains(out, "1h 1m") {
+		t.Errorf("session 行应渲染请求跨度 1h 1m:\n%s", out)
+	}
+
+	rows, err := q.SessionRows(context.Background(), []string{"2026-07-09"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) == 0 {
+		t.Fatal("SessionRows 应有数据行")
+	}
+	if rows[0].LastTS-rows[0].FirstTS != 61*60*1000 {
+		t.Errorf("SessionRows 请求跨度 = %d ms, want %d ms", rows[0].LastTS-rows[0].FirstTS, 61*60*1000)
+	}
+}

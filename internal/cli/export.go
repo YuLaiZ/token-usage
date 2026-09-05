@@ -26,8 +26,9 @@ var exportViews = []string{"client", "model", "provider", "project", "day", "mon
 // 值为原始整数(不做 K/M 缩写),不含总计行。
 var exportMetricColumns = []string{"requests", "input", "output", "cache_read", "cache_create", "reasoning", "total"}
 
-// exportSessionColumns 是 session 视图的固定键列。
-var exportSessionColumns = []string{"client", "project", "title"}
+// exportSessionColumns 是 session 视图的固定键列:duration_ms 是会话首末消息
+// 的毫秒差(请求跨度),机器消费方按原始整数读取。
+var exportSessionColumns = []string{"client", "project", "title", "duration_ms"}
 
 // exportKeyColumn 把视图名映射为导出的键列名:day 列在机器 schema 中固定为
 // date,month 等其余视图键列名与视图名一致,走默认分支即可。
@@ -294,7 +295,8 @@ func renderSessionCSV(rows []querier.SessionRow) (string, error) {
 		return "", err
 	}
 	for _, row := range rows {
-		record := exportRecord([]string{row.Client, row.Project, row.Title}, row.Agg)
+		record := exportRecord([]string{row.Client, row.Project, row.Title,
+			strconv.FormatInt(row.LastTS - row.FirstTS, 10)}, row.Agg)
 		if err := w.Write(record); err != nil {
 			return "", err
 		}
@@ -342,9 +344,10 @@ func renderSessionJSON(rows []querier.SessionRow) (string, error) {
 	objects := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		object := map[string]any{
-			"client":  row.Client,
-			"project": row.Project,
-			"title":   row.Title,
+			"client":      row.Client,
+			"project":     row.Project,
+			"title":       row.Title,
+			"duration_ms": row.LastTS - row.FirstTS,
 		}
 		appendExportMetrics(object, row.Agg)
 		objects = append(objects, object)

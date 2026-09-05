@@ -734,10 +734,14 @@ func (q *Querier) ByWeekday(ctx context.Context, dates []string) (string, error)
 }
 
 // SessionRow 是一条会话聚合结果:会话标识字段与该会话在日期范围内的聚合值。
+// FirstTS/LastTS 是范围内该会话首末消息的毫秒时间戳(机器消费方据此计算会话
+// 请求跨度),渲染侧经 formatDuration 显示为人类可读时长。
 type SessionRow struct {
 	Client  string
 	Project string
 	Title   string
+	FirstTS int64
+	LastTS  int64
 	Agg     GroupAggregate
 }
 
@@ -758,6 +762,8 @@ func (q *Querier) SessionRows(ctx context.Context, dates []string) ([]SessionRow
 	// 子查询先出现（内层），主查询 JOIN 的 date IN 后出现（外层）。
 	query := fmt.Sprintf(`
 		SELECT s.client, s.title, s.directory, s.project,
+		       COALESCE(MIN(m.ts),0),
+		       COALESCE(MAX(m.ts),0),
 		       COUNT(m.id),
 		       COALESCE(SUM(m.fresh_input_tokens),0),
 		       COALESCE(SUM(m.output_tokens),0),
@@ -785,6 +791,7 @@ func (q *Querier) SessionRows(ctx context.Context, dates []string) ([]SessionRow
 		var directory string
 		if err := rows.Scan(
 			&row.Client, &row.Title, &directory, &row.Project,
+			&row.FirstTS, &row.LastTS,
 			&row.Agg.Requests, &row.Agg.FreshInput, &row.Agg.OutputTokens,
 			&row.Agg.CacheRead, &row.Agg.CacheCreate, &row.Agg.Reasoning, &row.Agg.TotalTokens,
 		); err != nil {
@@ -819,12 +826,14 @@ func (q *Querier) Sessions(ctx context.Context, dates []string) (string, error) 
 	// 跨日需要日期归属时按日分别查询更直接；会话 ID 是内部标识，标题已足够
 	// 区分常用场景。首条消息日期仍用于 SQL 排序。尾部数值列由全局布局驱动。
 	// Title 是长自由文本（无版本区分价值），上限 30 截断保住表格总宽；
-	// 其余列（项目/客户端等分组键）自适应不截断。
+	// 其余列（项目/客户端等分组键）自适应不截断。Duration 列由首末消息时间戳
+	// 差计算请求跨度，位于标题之后、指标列之前。
 	metrics := q.metricColumns()
 	defs := append([]tableCol{
 		{ui.HClient, ui.AlignLeft, 0},
 		{ui.HProject, ui.AlignLeft, 0},
 		{ui.HTitle, ui.AlignLeft, 30},
+		{ui.HDuration, ui.AlignLeft, 0},
 	}, metricTailCols(metrics)...)
 	t := buildTable(defs)
 
@@ -834,7 +843,8 @@ func (q *Querier) Sessions(ctx context.Context, dates []string) (string, error) 
 		if project == "" {
 			project = ui.Bi("(uncategorized)", "(未分类)")
 		}
-		cells := appendMetricCells([]string{row.Client, project, row.Title}, metrics, row.Agg)
+		cells := append([]string{row.Client, project, row.Title, formatDuration(row.LastTS - row.FirstTS)},
+			appendMetricCells(nil, metrics, row.Agg)...)
 		t.Row(cells...)
 	}
 
@@ -921,4 +931,31 @@ func formatTokens(tokens int64) string {
 		return fmt.Sprintf("%.2f K", float64(tokens)/1000)
 	}
 	return fmt.Sprintf("%d", tokens)
+}
+
+// formatDuration 把会话请求跨度(首末消息毫秒差)渲染为紧凑人类可读时长:
+// 秒级以下归 "<1s",分钟以内保留秒,小时以内保留分钟,跨天保留小时;
+// 负值(数据异常)渲染为占位符保持表格列宽稳定。
+func formatDuration(ms int64) string {
+	if ms < 0 {
+		return "-"
+	}
+	if ms < 1000 {
+		return "<1s"
+	}
+	totalSeconds := ms / 1000
+	days := totalSeconds / 86400
+	hours := (totalSeconds % 86400) / 3600
+	minutes := (totalSeconds % 3600) / 60
+	seconds := totalSeconds % 60
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd %dh", days, hours)
+	case hours > 0:
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	case minutes > 0:
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	default:
+		return fmt.Sprintf("%ds", seconds)
+	}
 }
