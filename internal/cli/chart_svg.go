@@ -92,10 +92,17 @@ func buildBarSVG(title, subtitle string, bars []chartBar) string {
 			fmt.Fprintf(&b, "  <rect x=\"%d\" y=\"%d\" width=\"%d\" height=\"%d\" fill=\"#4a90d9\"><title>%s</title></rect>\n",
 				x, baseY-h, int(barW)+1, h, svgEscape(bar.hover))
 		}
-		// X 轴标签抽样:目标约 8 个,均匀取下标(含首尾)。
+		// X 轴标签抽样:目标约 8 个,均匀取下标(含首尾);中心位置钳制在
+		// 画布内,避免首尾标签以 middle 锚点越出画布边缘被裁剪。
 		labels := xAxisLabels(bars, 8)
 		for _, l := range labels {
 			x := c.left + int(float64(l.index)*slot+slot/2)
+			if x < c.left+34 {
+				x = c.left + 34
+			}
+			if x > c.width-34 {
+				x = c.width - 34
+			}
 			fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"10\" fill=\"#666\">%s</text>\n",
 				x, baseY+14, svgEscape(l.text))
 		}
