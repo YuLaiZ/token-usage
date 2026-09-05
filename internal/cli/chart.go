@@ -29,12 +29,12 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 				return err
 			}
 
-			cfg, err := loadConfig()
+			cfg, err := load()
 			if err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 			}
 
-			usageDB, err := db.Open(filepath.Join(cfg.DataDir, "usage.db"))
+			usageDB, err := open(filepath.Join(cfg.DataDir, "usage.db"))
 			if err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("failed to open database", "打开数据库失败"), err)
 			}

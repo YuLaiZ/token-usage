@@ -54,7 +54,7 @@ func newForecastCmdWithDeps(load func() (*config.Config, error), open func(strin
 				return err
 			}
 
-			return renderForecast(cmd.OutOrStdout(), today,
+			return renderForecast(cmd.OutOrStdout(),
 				forecastWindowStats{today: todayStats, last7: last7, last30: last30})
 		},
 	}
@@ -73,7 +73,7 @@ type forecastWindowStats struct {
 // 未来 7/30 天(假设未来保持同等活跃强度)。窗口内无数据时该行显示无数据、
 // 对应外推行省略。双语只出现在标签位,数值行保持符号化形态避免中英文词序
 // 互相割裂。
-func renderForecast(w io.Writer, now time.Time, s forecastWindowStats) error {
+func renderForecast(w io.Writer, s forecastWindowStats) error {
 	fmt.Fprintln(w, ui.Bi("Forecast", "用量外推"))
 	fmt.Fprintln(w)
 

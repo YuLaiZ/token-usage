@@ -26,9 +26,8 @@ func forecastTestStats() forecastWindowStats {
 
 // 渲染合同:今日至今、窗口行(总量/自然天/活跃天/日均)、外推行(日均×自然天)。
 func TestRenderForecast_WithFullData(t *testing.T) {
-	now := time.Date(2026, 9, 6, 10, 0, 0, 0, time.Local)
 	var buf bytes.Buffer
-	if err := renderForecast(&buf, now, forecastTestStats()); err != nil {
+	if err := renderForecast(&buf, forecastTestStats()); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -54,10 +53,9 @@ func TestRenderForecast_WithFullData(t *testing.T) {
 
 // 窗口无数据:窗口行显示无数据,对应外推行省略,不编造数字。
 func TestRenderForecast_NoData(t *testing.T) {
-	now := time.Date(2026, 9, 6, 10, 0, 0, 0, time.Local)
 	var buf bytes.Buffer
 	empty := forecastWindowStats{}
-	if err := renderForecast(&buf, now, empty); err != nil {
+	if err := renderForecast(&buf, empty); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -167,6 +165,14 @@ func TestChartCmd_EndToEndWithOut(t *testing.T) {
 	if !strings.Contains(string(svg), d1) {
 		t.Errorf("SVG 应含日期标签 %s:\n%s", d1, svg)
 	}
+	// 数值断言(注入数据必须真实进入图表,防止测试打不开注入库的假隔离):
+	// hover 提示含两日的 tokens 缩写,副标题含区间总量与请求数。
+	if !strings.Contains(string(svg), "1.20 K tokens") || !strings.Contains(string(svg), "300 tokens") {
+		t.Errorf("SVG 应含两日的 tokens 悬停值 1.20 K/300:\n%s", svg)
+	}
+	if !strings.Contains(string(svg), "Total 1.50 K tokens / 2 requests") {
+		t.Errorf("SVG 副标题应含区间汇总 1.50 K / 2:\n%s", svg)
+	}
 	if !strings.Contains(buf.String(), outPath) {
 		t.Errorf("stdout 应回执写入路径:\n%s", buf.String())
 	}
@@ -238,5 +244,51 @@ func TestWatchCmd_IntervalTooSmall(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "1 秒") {
 		t.Errorf("过小间隔应报错且含 1 秒,实际: %v", err)
+	}
+}
+
+// watch 循环模式:每帧清屏归位,sleep 以注入间隔推进;用 sentinel panic 在
+// 第 2 次 sleep 处终止循环,断言恰渲染 2 帧。
+func TestWatchCmd_LoopFrames(t *testing.T) {
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+
+	today := time.Date(2026, 9, 6, 8, 0, 0, 0, time.Local)
+	if _, err := db.UpsertMessages(context.Background(), usageDB, []model.Message{{
+		ID: "w-l", SessionID: "s", Client: model.ClientClaudeCode,
+		Date: today.Format("2006-01-02"), TS: today.UnixMilli(), TotalTokens: 50,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{DataDir: t.TempDir()}
+	tick := 0
+	sleep := func(d time.Duration) {
+		tick++
+		if tick >= 2 {
+			panic(watchLoopSentinel)
+		}
+	}
+	defer func() {
+		if r := recover(); r != watchLoopSentinel {
+			t.Fatalf("循环应以 sentinel 终止,实际: %v", r)
+		}
+	}()
+	cmd := newWatchCmdWithDeps(
+		func() (*config.Config, error) { return cfg, nil },
+		func(string) (*db.DB, error) { return usageDB, nil },
+		func() time.Time { return today.Add(time.Duration(tick) * time.Second) },
+		sleep,
+	)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"20260906"})
+	cmd.Execute()
+	if n := strings.Count(buf.String(), "\x1b[2J\x1b[H"); n != 2 {
+		t.Errorf("两帧应各含一次清屏归位序列,实际 %d:\n%s", n, buf.String())
 	}
 }

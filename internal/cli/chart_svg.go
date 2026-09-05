@@ -65,7 +65,8 @@ func buildBarSVG(title, subtitle string, bars []chartBar) string {
 		}
 	}
 	yMax := yScaleMax(maxVal)
-	for i := 1; i <= 3; i++ {
+	// 全零数据时网格会与 X 轴重合且刻度退化为 "0"/"1",跳过网格仅留坐标轴。
+	for i := 1; maxVal > 0 && i <= 3; i++ {
 		v := yMax / 3 * int64(i)
 		y := baseY - int(float64(plotH)*float64(v)/float64(yMax))
 		fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#eee\"/>\n",
@@ -111,6 +112,9 @@ type chartXLabel struct {
 func xAxisLabels(bars []chartBar, max int) []chartXLabel {
 	if len(bars) == 0 {
 		return nil
+	}
+	if max < 2 {
+		return nil // 均匀抽样至少需要两个端点,防御除零
 	}
 	if len(bars) <= max {
 		out := make([]chartXLabel, len(bars))

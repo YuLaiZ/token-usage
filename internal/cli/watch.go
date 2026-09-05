@@ -16,9 +16,9 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
-// frameSeparator 是非 TTY 单帧输出的帧尾分隔:循环模式下每帧之间用清屏
-// 序列切帧,重定向时无法清屏,单帧模式以分隔行显式定界。
-const frameSeparator = "────────────────────────────────────────"
+// watchLoopSentinel 是循环模式测试的终止哨兵:sleep 注入在计数达标后抛出,
+// 外层 recover 断言帧数,避免测试真实死循环。
+var watchLoopSentinel = fmt.Errorf("watch loop sentinel")
 
 func newWatchCmd() *cobra.Command {
 	return newWatchCmdWithDeps(loadConfig, db.Open, time.Now, time.Sleep)
@@ -75,12 +75,11 @@ func newWatchCmdWithDeps(load func() (*config.Config, error), open func(string) 
 				if err != nil {
 					return err
 				}
+				stamp := now().Format("15:04:05")
 				var frame bytes.Buffer
 				frame.WriteString(ui.Bi(
-					fmt.Sprintf("Live watch - refreshed at %s (Ctrl+C to exit)",
-						now().Format("15:04:05")),
-					fmt.Sprintf("实时监视 - 刷新于 %s(Ctrl+C 退出)",
-						now().Format("15:04:05"))))
+					fmt.Sprintf("Live watch - refreshed at %s (Ctrl+C to exit)", stamp),
+					fmt.Sprintf("实时监视 - 刷新于 %s(Ctrl+C 退出)", stamp)))
 				frame.WriteString("\n\n")
 				frame.WriteString(summary)
 				frame.WriteString("\n")

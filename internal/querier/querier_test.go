@@ -1742,3 +1742,17 @@ func heatmapRowCells(t *testing.T, ln string) []string {
 	}
 	return cells
 }
+
+// heatCell 大数值分支:maxTotal ≥ 2^54 时切换为除法防溢出,等级折算结果
+// 与乘法路径一致(相对比例不变);最大值格恒为最高级 '@'。
+func TestHeatCell_LargeValues(t *testing.T) {
+	big := int64(1) << 54
+	if got := heatCell(big, big); got != '@' {
+		t.Errorf("满格应 '@',实际 %q", got)
+	}
+	half := int64(1) << 53
+	// half/big*9 = 4.5 → 除法路径 4 级(heatLevels[4] = '=')。
+	if got := heatCell(half, big); got != '=' {
+		t.Errorf("约半值应 4 级 '=',实际 %q", got)
+	}
+}

@@ -649,7 +649,7 @@ token-usage watch 20260901 --interval 10s
 token-usage watch --once               # render a single frame and exit (pipe-friendly)
 ```
 
-- `--interval` accepts a Go duration and is clamped to a minimum of 1s; shorter values are rejected before the database opens.
+- `--interval` accepts a Go duration with a minimum of 1s; shorter values are rejected before the database opens.
 - Interactive loops clear the screen between frames (Windows consoles get virtual-terminal processing enabled automatically); `--once` renders exactly one frame with no escape sequences, so redirected output stays plain.
 - Strictly read-only: the same opening semantics as every other read command, no daemon interaction, and Ctrl+C leaves no state behind.
 
