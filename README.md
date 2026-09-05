@@ -141,7 +141,7 @@ token-usage query list
 | `query <name> [date]` | Run a configured view or group. |
 | `query list` | List views without opening the usage database. |
 | `export [view] [date]` | Export usage data as CSV or JSON to stdout. |
-| `errors` | Show collection failures. |
+| `errors [date]` | Show collection failures for a date or range. |
 | `doctor` | Run read-only health checks. |
 | `version` / `--version` | Show detailed / one-line version information. |
 | `start` / `status` / `stop` / `restart` | Control the background daemon. |

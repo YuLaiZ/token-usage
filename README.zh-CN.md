@@ -141,7 +141,7 @@ token-usage query list
 | `query <name> [date]` | 运行已配置视图或报表组合。 |
 | `query list` | 不打开 usage 数据库，列出视图。 |
 | `export [view] [date]` | 将使用数据以 CSV 或 JSON 导出到 stdout。 |
-| `errors` | 查看采集失败。 |
+| `errors [日期]` | 查看某日期或区间的采集失败。 |
 | `doctor` | 运行只读健康检查。 |
 | `version` / `--version` | 查看多行详细 / 单行简要的版本信息。 |
 | `start` / `status` / `stop` / `restart` | 控制后台守护进程。 |
