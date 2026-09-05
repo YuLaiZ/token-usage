@@ -31,6 +31,7 @@ token-usage
 ├── doctor                                # read-only health check (config, data directory, database, clients, collection, errors)
 ├── forecast                              # extrapolate usage from recent daily averages
 ├── chart [DATE|DATE-DATE]                # render daily usage as an SVG bar chart
+├── watch [DATE|DATE-DATE]                # refresh a live summary at a fixed interval
 ├── config                                # no arguments: open the interactive configuration TUI
 │   ├── show                              # output complete effective TOML (read-only, pure TOML)
 │   ├── get <key>
@@ -637,6 +638,20 @@ token-usage chart 202609 --out september.svg       # atomic write to a file
 - Bars are per-day source totals in ascending date order; days without data are zero-height, and each bar carries a native `<title>` hover tooltip with the day's tokens and requests.
 - The header shows the range and its total tokens/requests; the Y axis is labelled with K/M/B abbreviations at three equal gridlines.
 - `--out <file>` writes atomically (temporary file then rename) instead of stdout; the date argument accepts the same forms as `query`/`collect`.
+
+## watch
+
+Refreshes a live summary (totals plus a per-model breakdown) at a fixed interval until interrupted with Ctrl+C.
+
+```bash
+token-usage watch                      # today's summary, refreshed every 5s
+token-usage watch 20260901 --interval 10s
+token-usage watch --once               # render a single frame and exit (pipe-friendly)
+```
+
+- `--interval` accepts a Go duration and is clamped to a minimum of 1s; shorter values are rejected before the database opens.
+- Interactive loops clear the screen between frames (Windows consoles get virtual-terminal processing enabled automatically); `--once` renders exactly one frame with no escape sequences, so redirected output stays plain.
+- Strictly read-only: the same opening semantics as every other read command, no daemon interaction, and Ctrl+C leaves no state behind.
 
 ## update
 

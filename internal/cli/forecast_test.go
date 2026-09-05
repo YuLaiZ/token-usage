@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -168,5 +169,74 @@ func TestChartCmd_EndToEndWithOut(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), outPath) {
 		t.Errorf("stdout 应回执写入路径:\n%s", buf.String())
+	}
+}
+
+// watch 单帧渲染:输出实时监视头(刷新时间)、summary 与按模型分组;
+// --once 模式渲染一帧即返回,重定向与管道友好。
+func TestWatchCmd_OnceFrame(t *testing.T) {
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+
+	today := time.Date(2026, 9, 6, 9, 30, 0, 0, time.Local)
+	if _, err := db.UpsertMessages(context.Background(), usageDB, []model.Message{{
+		ID: "w-a", SessionID: "s", Client: model.ClientClaudeCode,
+		Date: today.Format("2006-01-02"), TS: today.UnixMilli(),
+		Model: "model-x", TotalTokens: 800,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{DataDir: t.TempDir()}
+	fixedNow := func() time.Time { return today }
+	cmd := newWatchCmdWithDeps(
+		func() (*config.Config, error) { return cfg, nil },
+		func(string) (*db.DB, error) { return usageDB, nil },
+		fixedNow,
+		func(time.Duration) { t.Fatal("非 once 模式不应 sleep") },
+	)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--once"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Live watch - refreshed at 09:30:00") {
+		t.Errorf("应含实时监视头与刷新时间:\n%s", out)
+	}
+	if !strings.Contains(out, "Total requests / 请求总数: 1") {
+		t.Errorf("帧内应含 summary:\n%s", out)
+	}
+	if !strings.Contains(out, "model-x") {
+		t.Errorf("帧内应含按模型分组:\n%s", out)
+	}
+	if strings.Contains(out, "\x1b[2J") {
+		t.Errorf("once 模式不应输出清屏序列:\n%s", out)
+	}
+}
+
+// 间隔下限校验:小于 1s 的 --interval 在开库前拒绝。
+func TestWatchCmd_IntervalTooSmall(t *testing.T) {
+	cmd := newWatchCmdWithDeps(
+		func() (*config.Config, error) {
+			return &config.Config{DataDir: t.TempDir()}, nil
+		},
+		func(string) (*db.DB, error) { return nil, fmt.Errorf("must not open") },
+		func() time.Time { return time.Unix(0, 0) },
+		func(time.Duration) {},
+	)
+	cmd.SetArgs([]string{"--interval", "500ms", "--once"})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "1 秒") {
+		t.Errorf("过小间隔应报错且含 1 秒,实际: %v", err)
 	}
 }

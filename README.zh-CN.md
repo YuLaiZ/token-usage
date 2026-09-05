@@ -145,6 +145,7 @@ token-usage query list
 | `doctor` | 运行只读健康检查。 |
 | `forecast` | 按近期日均外推即将到来的用量。 |
 | `chart [日期]` | 将按日用量渲染为 SVG 柱状图（`--out` 保存）。 |
+| `watch [日期]` | 以固定间隔刷新实时摘要（`--once` 单帧）。 |
 | `version` / `--version` | 查看多行详细 / 单行简要的版本信息。 |
 | `start` / `status` / `stop` / `restart` | 控制后台守护进程。 |
 | `completion <shell>` | 输出 Bash、Zsh、Fish 或 PowerShell 的补全脚本。 |

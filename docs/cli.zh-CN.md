@@ -31,6 +31,7 @@ token-usage
 ├── doctor                                # 只读健康自检（配置、数据目录、数据库、客户端、采集、异常）
 ├── forecast                              # 按近期日均外推用量
 ├── chart [DATE|DATE-DATE]                # 将按日用量渲染为 SVG 柱状图
+├── watch [DATE|DATE-DATE]                # 以固定间隔刷新实时摘要
 ├── config                                # 无参数：打开交互式配置 TUI
 │   ├── show                              # 输出完整 effective TOML（只读、纯 TOML）
 │   ├── get <key>
@@ -637,6 +638,20 @@ token-usage chart 202609 --out september.svg       # 原子写入文件
 - 柱为逐日源 total，按日期升序；无数据日高度为零，每根柱带原生 `<title>` 悬停提示（当日 tokens 与请求数）。
 - 头部显示区间及其 total tokens / 请求数；Y 轴按三条等分网格以 K/M/B 缩写标注。
 - `--out <文件>` 原子写入（先写临时文件再换名）而非标准输出；日期参数与 `query`/`collect` 同形态。
+
+## watch
+
+以固定间隔刷新实时摘要（总量与按模型分组），直到 Ctrl+C 中断。
+
+```bash
+token-usage watch                      # 今日摘要，每 5 秒刷新
+token-usage watch 20260901 --interval 10s
+token-usage watch --once               # 只渲染一帧后退出（对管道友好）
+```
+
+- `--interval` 接受 Go 时长，下限 1 秒；更小的值在打开数据库之前即被拒绝。
+- 交互式循环在每帧之间清屏（Windows 控制台会自动启用虚拟终端处理）；`--once` 只渲染一帧且不含转义序列，重定向输出保持纯文本。
+- 严格只读：与其他读取类命令相同的开库语义，不与守护进程交互，Ctrl+C 不残留任何状态。
 
 ## update
 

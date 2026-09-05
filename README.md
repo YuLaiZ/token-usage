@@ -145,6 +145,7 @@ token-usage query list
 | `doctor` | Run read-only health checks. |
 | `forecast` | Extrapolate upcoming usage from recent daily averages. |
 | `chart [date]` | Render daily usage as an SVG bar chart (`--out` to save). |
+| `watch [date]` | Refresh a live summary at a fixed interval (`--once` for a single frame). |
 | `version` / `--version` | Show detailed / one-line version information. |
 | `start` / `status` / `stop` / `restart` | Control the background daemon. |
 | `completion <shell>` | Print a Bash, Zsh, Fish, or PowerShell completion script. |
