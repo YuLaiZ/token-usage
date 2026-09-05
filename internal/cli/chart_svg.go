@@ -238,3 +238,89 @@ func buildPieSVG(title, subtitle string, slices []chartSlice) string {
 // cos/sin 是 math 包的同名包装:集中引入便于一致替换或测试打桩。
 func cos(x float64) float64 { return math.Cos(x) }
 func sin(x float64) float64 { return math.Sin(x) }
+
+// heatFills 是 SVG 热力格子的 11 级取色(下标 0..10):0 级为无数据的浅灰,
+// 1..10 级为浅到深的单色渐变,对应 querier 热力的「0 值 + 9 级」且 SVG 侧
+// 有值至少 1 级(浅色可见,与终端空格语义区分)。
+var heatFills = []string{
+	"#f2f4f7", "#e3eaf4", "#d3dfef", "#b9cfe6", "#9cbcd9", "#7ea5cc",
+	"#628fc0", "#4a79b2", "#3963a0", "#2b4f8c", "#1f3d6e",
+}
+
+// chartHeatCell 是热力矩阵的一个交点。
+type chartHeatCell struct {
+	weekday string // 显示标签(双语星期名)
+	hour    string // 两位小时标签("00".."23")
+	value   int64
+}
+
+// buildHeatmapSVG 渲染星期×小时热力矩阵:行=ISO 周序 7 星期,列=24 小时,
+// 格子取色按交点值相对最大值的 10 级渐变,每格带悬停提示;行尾日合计、
+// 尾行小时合计。cells 的行/列定位由 weekday/hour 标签匹配,缺失交点为最低级。
+func buildHeatmapSVG(title, subtitle string, weekdays, hours []string, values func(wi, hi int) int64) string {
+	c := chartCanvas{width: 860, height: 360, left: 150, right: 24, top: 64, bottom: 24}
+	var b strings.Builder
+	fmt.Fprintf(&b, `<?xml version="1.0" encoding="UTF-8"?>`+"\n")
+	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">`+"\n",
+		c.width, c.height, c.width, c.height)
+	fmt.Fprintf(&b, "  <title>%s</title>\n", svgEscape(title))
+	fmt.Fprintf(&b, "  <rect width=\"%d\" height=\"%d\" fill=\"#ffffff\"/>\n", c.width, c.height)
+	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"26\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"16\" fill=\"#222\">%s</text>\n",
+		c.width/2, svgEscape(title))
+	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"48\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"12\" fill=\"#555\">%s</text>\n",
+		c.width/2, svgEscape(subtitle))
+
+	cellW, cellH, gap := 26.0, 26.0, 2.0
+	originX := float64(c.left)
+	originY := float64(c.top)
+
+	// 两遍计算:先求最大值,再渲染(取色需全局最大)。
+	maxVal := int64(0)
+	for wi := range weekdays {
+		for hi := range hours {
+			if v := values(wi, hi); v > maxVal {
+				maxVal = v
+			}
+		}
+	}
+
+	// 列头:每 2 小时标注一次,避免拥挤。
+	fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"10\" fill=\"#666\">%s</text>\n",
+		originX+float64(0)*cellW+cellW/2, originY-6, svgEscape(hours[0]))
+	for hi := 2; hi < len(hours); hi += 2 {
+		fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"10\" fill=\"#666\">%s</text>\n",
+			originX+float64(hi)*cellW+cellW/2, originY-6, svgEscape(hours[hi]))
+	}
+
+	level := func(v int64) int {
+		if maxVal <= 0 || v <= 0 {
+			return 0
+		}
+		var l int64
+		if maxVal < int64(1)<<54 {
+			l = v * 9 / maxVal
+		} else {
+			l = v / (maxVal / 9)
+		}
+		if l > 9 {
+			l = 9
+		}
+		return int(l) + 1 // 0 值恒最低级,有值至少 1 级(与终端版空格语义区分,SVG 用浅色可见)
+	}
+	fill := func(l int) string { return heatFills[l] }
+
+	for wi, wd := range weekdays {
+		y := originY + float64(wi)*cellH
+		fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" text-anchor=\"end\" font-family=\"monospace\" font-size=\"11\" fill=\"#333\">%s</text>\n",
+			originX-8, y+cellH/2+4, svgEscape(wd))
+		for hi, h := range hours {
+			v := values(wi, hi)
+			x := originX + float64(hi)*cellW
+			fmt.Fprintf(&b, "  <rect x=\"%.0f\" y=\"%.0f\" width=\"%.0f\" height=\"%.0f\" fill=\"%s\"><title>%s %s: %s tokens</title></rect>\n",
+				x+gap/2, y+gap/2, cellW-gap, cellH-gap, fill(level(v)),
+				svgEscape(wd), svgEscape(h), svgEscape(querier.FormatTokens(v)))
+		}
+	}
+	b.WriteString("</svg>\n")
+	return b.String()
+}

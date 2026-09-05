@@ -128,3 +128,28 @@ func TestChartCmd_ByDimensionValidation(t *testing.T) {
 		t.Fatal("--pie --by day 应被拒绝")
 	}
 }
+
+// buildHeatmapSVG 合同:格子数=星期×小时、取色经 level 折算(最大值格最高级)、
+// 悬停提示含星期/小时/tokens;values 回调缺失交点返回 0(最低级)。
+func TestBuildHeatmapSVG(t *testing.T) {
+	weekdays := []string{"Monday / 周一", "Tuesday / 周二"}
+	hours := []string{"00:00", "01:00", "02:00"}
+	values := map[[2]int]int64{{0, 2}: 900}
+	svg := buildHeatmapSVG("hm", "sub", weekdays, hours,
+		func(wi, hi int) int64 { return values[[2]int{wi, hi}] })
+
+	// 2 行×3 列 = 6 格 + 1 背景 = 7 rect;每格有 hover title。
+	if strings.Count(svg, "<rect") != 7 {
+		t.Errorf("rect 数应 7(背景+6 格),实际 %d", strings.Count(svg, "<rect"))
+	}
+	if !strings.Contains(svg, "Monday / 周一 02:00: 900 tokens") {
+		t.Errorf("最大值格悬停应含星期/小时/数量:\n%s", svg)
+	}
+	// 缺失交点(周二 00:00)应为最低级取色 heatFills[0]。
+	if !strings.Contains(svg, `fill="`+heatFills[0]+`"`) {
+		t.Errorf("缺失交点应为最低级取色:\n%s", svg)
+	}
+	if !strings.Contains(svg, "900 tokens") {
+		t.Errorf("悬停应含 tokens 数:\n%s", svg)
+	}
+}

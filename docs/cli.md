@@ -30,7 +30,7 @@ token-usage
 ├── errors [DATE|DATE-DATE]
 ├── doctor                                # read-only health check (config, data directory, database, clients, collection, errors)
 ├── forecast                              # extrapolate usage from recent daily averages
-├── chart [DATE|DATE-DATE]                # render usage as an SVG chart (--by dimension, --pie)
+├── chart [DATE|DATE-DATE]                # render usage as an SVG chart (--by dimension, --pie, --heatmap)
 ├── watch [DATE|DATE-DATE]                # refresh a live summary at a fixed interval
 ├── config                                # no arguments: open the interactive configuration TUI
 │   ├── show                              # output complete effective TOML (read-only, pure TOML)
@@ -638,6 +638,7 @@ token-usage chart 202609 --out september.svg       # atomic write to a file
 - By default bars are per-day source totals in ascending date order; days without data are zero-height, and each bar carries a native `<title>` hover tooltip with the day's tokens and requests.
 - `--by <dimension>` switches the aggregation to another built-in dimension (`client`, `model`, `provider`, `project`, `day`, `month`, `hour`, `weekday`); non-temporal dimensions are ordered by total descending.
 - `--pie` renders a share pie instead of a bar chart and requires `--by` with a non-temporal dimension (day splits would be unreadable); slices use a fixed 10-colour palette with a percentage legend, and a 100% share degrades to a full circle.
+- `--heatmap` renders a weekday-by-hour matrix (ISO weekday rows, 24 hour columns, 11-step grey-to-blue fill scaled against the busiest cell, hover tooltips per cell) instead of a bar chart; it shares the same data source as `query heatmap` and is mutually exclusive with `--pie`.
 - The header shows the range and its total tokens/requests; the bar-chart Y axis is labelled with K/M/B abbreviations at three equal gridlines.
 - `--out <file>` writes atomically (temporary file then rename) instead of stdout; the date argument accepts the same forms as `query`/`collect`.
 

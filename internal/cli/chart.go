@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -35,6 +37,13 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 				return fmt.Errorf("%s", ui.Bi(
 					"--pie requires --by with a non-temporal dimension (client/model/provider/project); day splits would be unreadable",
 					"--pie 需要 --by 指定非时间维度（client/model/provider/project）；按天切分饼图不可读",
+				))
+			}
+			heatmap, _ := cmd.Flags().GetBool("heatmap")
+			if pie && heatmap {
+				return fmt.Errorf("%s", ui.Bi(
+					"--pie and --heatmap are mutually exclusive",
+					"--pie 与 --heatmap 互斥",
 				))
 			}
 			if !querydef.IsBuiltinDimension(by) {
@@ -88,7 +97,9 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 				querier.FormatTokens(totals.TotalTokens), totals.Requests)
 
 			var svg string
-			if pie {
+			if heatmap, _ := cmd.Flags().GetBool("heatmap"); heatmap {
+				svg = buildChartHeatmap(cmdContext(cmd), q, dates)
+			} else if pie {
 				slices := make([]chartSlice, 0, len(bars))
 				for i, bar := range bars {
 					if bar.value <= 0 {
@@ -124,5 +135,29 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 	cmd.Flags().String("out", "", ui.Bi("Write SVG to a file instead of stdout", "将 SVG 写入文件而非标准输出"))
 	cmd.Flags().String("by", "day", ui.Bi("Aggregate by dimension: client/model/provider/project/day/month/hour/weekday", "按维度聚合：client/model/provider/project/day/month/hour/weekday"))
 	cmd.Flags().Bool("pie", false, ui.Bi("Render a pie chart instead of a bar chart (requires --by, not day)", "渲染饼图而非柱状图（需 --by 且不为 day）"))
+	cmd.Flags().Bool("heatmap", false, ui.Bi("Render a weekday-by-hour heat matrix instead of a bar chart", "渲染星期×小时热力矩阵而非柱状图"))
 	return cmd
+}
+
+// buildChartHeatmap 组装星期×小时热力矩阵 SVG:复用维度聚合核的
+// weekday,hour 组合(矩阵交点缺失即零值),行列标签与终端 heatmap 一致
+// (ISO 周序星期、本机时区小时)。
+func buildChartHeatmap(ctx context.Context, q *querier.Querier, dates []string) string {
+	// 数据来自 querier.HeatmapMatrix(与终端 heatmap 同一来源,行列与数值
+	// 完全一致);聚合失败时输出空矩阵(全最低级)比静默退出更可观察。
+	m, err := q.HeatmapMatrix(ctx, dates)
+	if err != nil || m == nil {
+		m = &querier.HeatmapMatrix{}
+	}
+	return buildHeatmapSVG(
+		"Weekday x hour heatmap / 星期×小时热力图",
+		strings.Join(dates, " ~ "),
+		m.Weekdays, m.Hours,
+		func(wi, hi int) int64 {
+			if wi < len(m.Values) && hi < len(m.Values[wi]) {
+				return m.Values[wi][hi]
+			}
+			return 0
+		},
+	)
 }

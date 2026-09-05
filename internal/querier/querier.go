@@ -1000,29 +1000,27 @@ func heatCell(total, maxTotal int64) byte {
 	return heatLevels[level]
 }
 
-// Heatmap 输出星期×小时热力透视表:行为 ISO 周序(周一在首)的 7 个星期,
-// 列为 00..23 的 24 个小时(均按本机时区折算,与 hour/weekday 维度同一
-// 归属),单元格为该交点的 total 相对全表最大值的强度字符,尾列为各星期
-// 日合计,尾行为各小时合计与全表总计。数据来源与维度视图同一聚合核
-// (weekday,hour 组合),单格无数据即 0 级。
-func (q *Querier) Heatmap(ctx context.Context, dates []string) (string, error) {
-	ctx, err := q.readyContext(ctx)
-	if err != nil {
-		return "", err
+// HeatmapMatrix 是星期×小时热力矩阵的结构化数据:星期与小时标签为显示形态
+// (双语星期名、HH:00),Values[wi][hi] 为交点 total(缺失交点为 0)。
+type HeatmapMatrix struct {
+	Weekdays []string
+	Hours    []string
+	Values   [][]int64
+}
+
+// HeatmapMatrix 计算星期×小时交点矩阵(本机时区归属),供终端渲染(Heatmap)
+// 与 SVG 导出(chart)两类消费方共用,保证两侧行列与数值完全一致。
+func (q *Querier) HeatmapMatrix(ctx context.Context, dates []string) (*HeatmapMatrix, error) {
+	if _, err := q.readyContext(ctx); err != nil {
+		return nil, err
 	}
-	// rangeTotals 的范围总计不消费:热力的行列合计由矩阵自算,与单元格口径一致。
 	rows, _, err := q.AggregateDimensionView(ctx, dates, DimensionView{
 		Dimensions: []string{"weekday", "hour"},
-		TitleEn:    "Heatmap", TitleZh: "热力图",
+		TitleEn:    "heatmap", TitleZh: "heatmap",
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if len(dates) == 0 {
-		return ui.Bi("Heatmap - no data", "热力图 - 无数据"), nil
-	}
-
-	// 交点矩阵:raw 键(weekday ISO 周序 "0".."6"、hour "00".."23")定位。
 	type cellKey struct{ weekday, hour string }
 	cell := make(map[cellKey]int64, len(rows))
 	for _, row := range rows {
@@ -1032,47 +1030,83 @@ func (q *Querier) Heatmap(ctx context.Context, dates []string) (string, error) {
 		cell[cellKey{row.rawKeys[0], row.rawKeys[1]}] += row.Agg.TotalTokens
 	}
 
+	m := &HeatmapMatrix{
+		Weekdays: make([]string, len(weekdayTicks)),
+		Hours:    hourDisplayLabels(),
+		Values:   make([][]int64, len(weekdayTicks)),
+	}
+	for wi, tickW := range weekdayTicks {
+		m.Weekdays[wi] = weekdayDisplayKey(tickW)
+		m.Values[wi] = make([]int64, len(hourTicks))
+		for hi, tickH := range hourTicks {
+			m.Values[wi][hi] = cell[cellKey{tickW, tickH}]
+		}
+	}
+	return m, nil
+}
+
+// hourDisplayLabels 返回小时列的显示标签("00:00".."23:00")。
+func hourDisplayLabels() []string {
+	labels := make([]string, len(hourTicks))
+	for i, tick := range hourTicks {
+		labels[i] = tick + ":00"
+	}
+	return labels
+}
+
+// Heatmap 输出星期×小时热力透视表:行为 ISO 周序(周一在首)的 7 个星期,
+// 列为 00..23 的 24 个小时,单元格为该交点 total 相对全表最大值的强度字符,
+// 尾列为各星期日合计,尾行为各小时合计与全表总计。矩阵数据来自
+// HeatmapMatrix,与 SVG 导出共用同一来源。
+func (q *Querier) Heatmap(ctx context.Context, dates []string) (string, error) {
+	ctx, err := q.readyContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	m, err := q.HeatmapMatrix(ctx, dates)
+	if err != nil {
+		return "", err
+	}
+	if len(dates) == 0 {
+		return ui.Bi("Heatmap - no data", "热力图 - 无数据"), nil
+	}
+
 	var maxCell int64
-	dayTotals := make([]int64, len(weekdayTicks))
-	hourTotals := make([]int64, len(hourTicks))
-	for i, tickW := range weekdayTicks {
-		for j, tickH := range hourTicks {
-			v := cell[cellKey{tickW, tickH}]
+	dayTotals := make([]int64, len(m.Weekdays))
+	hourTotals := make([]int64, len(m.Hours))
+	for wi := range m.Weekdays {
+		for hi := range m.Hours {
+			v := m.Values[wi][hi]
 			if v > maxCell {
 				maxCell = v
 			}
-			dayTotals[i] += v
-			hourTotals[j] += v
+			dayTotals[wi] += v
+			hourTotals[hi] += v
 		}
 	}
 
-	// 表头:首列为 Weekday/星期,其后 24 个小时列(两位数字),尾列日合计。
-	defs := make([]tableCol, 0, len(hourTicks)+2)
+	defs := make([]tableCol, 0, len(m.Hours)+2)
 	defs = append(defs, tableCol{header: ui.HWeekday, align: ui.AlignLeft, limit: 0})
-	for _, tick := range hourTicks {
-		defs = append(defs, tableCol{header: tick, align: ui.AlignLeft, limit: 0})
+	for _, h := range m.Hours {
+		defs = append(defs, tableCol{header: strings.TrimSuffix(h, ":00"), align: ui.AlignLeft, limit: 0})
 	}
 	defs = append(defs, tableCol{header: ui.HDayTotal, align: ui.AlignLeft, limit: 0})
 	t := buildTable(defs)
 
-	for _, tickW := range weekdayTicks {
-		rowCells := []string{weekdayDisplayKey(tickW)}
-		var daySum int64
-		for _, tickH := range hourTicks {
-			v := cell[cellKey{tickW, tickH}]
-			daySum += v
-			rowCells = append(rowCells, string(heatCell(v, maxCell)))
+	for wi, wd := range m.Weekdays {
+		rowCells := []string{wd}
+		for hi := range m.Hours {
+			rowCells = append(rowCells, string(heatCell(m.Values[wi][hi], maxCell)))
 		}
-		rowCells = append(rowCells, formatTokens(daySum))
+		rowCells = append(rowCells, formatTokens(dayTotals[wi]))
 		t.Row(rowCells...)
 	}
 
-	// 总计行:每小时列合计 + 全表总计。
 	totalRow := []string{ui.Bi("Total", "总计")}
 	var grand int64
-	for i := range hourTicks {
-		totalRow = append(totalRow, formatTokens(hourTotals[i]))
-		grand += hourTotals[i]
+	for hi := range m.Hours {
+		totalRow = append(totalRow, formatTokens(hourTotals[hi]))
+		grand += hourTotals[hi]
 	}
 	totalRow = append(totalRow, formatTokens(grand))
 	t.Row(totalRow...)
