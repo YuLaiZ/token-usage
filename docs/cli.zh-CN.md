@@ -32,7 +32,7 @@ token-usage
 ├── forecast                              # 按近期日均外推用量
 ├── chart [DATE|DATE-DATE]                # 将用量渲染为 SVG 图表（--by 维度、--pie、--heatmap）
 ├── watch [DATE|DATE-DATE]                # 以固定间隔刷新实时摘要
-├── report [DATE|DATE-DATE]               # 生成完整用量报告包
+├── report [DATE|DATE-DATE] --out <dir>   # 生成完整用量报告包
 ├── config                                # 无参数：打开交互式配置 TUI
 │   ├── show                              # 输出完整 effective TOML（只读、纯 TOML）
 │   ├── get <key>
@@ -667,7 +667,7 @@ token-usage report 20260901-20260930 --out september-report
 
 - `--out <目录>` 必填；目录不存在时自动创建，每个文件均为原子写入。
 - 文件：`summary.txt`、`daily.svg`、`hourly.svg`、`weekday.svg`、`monthly.svg`、`by-client.svg`、`by-model.svg`、`by-provider.svg`、`by-project.svg`、`heatmap.svg`。
-- 日期参数与 `query`/`collect` 同形态（默认今天）。除写入报告包外严格只读。
+- 日期参数与 `query`/`collect` 同形态（默认今天）。报告包不含 forecast 外推，请单独执行 `token-usage forecast`。除写入报告包外严格只读。
 
 ## update
 

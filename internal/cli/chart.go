@@ -72,7 +72,7 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			if len(dates) > 1 {
 				rangeLabel = dates[0] + " ~ " + dates[len(dates)-1]
 			}
-			title := "token-usage " + rangeLabel
+			title := chartTitleFor(rangeLabel, by)
 
 			// heatmap 分支直接消费热力矩阵(--by/--pie 与其无关,不浪费聚合)。
 			if heatmap {
@@ -176,3 +176,12 @@ func writeChartOutput(cmd *cobra.Command, outFlag, svg string) error {
 // piePaletteBlockedDimensions 是 --pie 拒绝的维度:时间维度切分的饼图不可读
 // (day 366 扇区、hour 24 项图例溢出画布),只有占比类维度适合饼图。
 var piePaletteBlockedDimensions = map[string]bool{"day": true, "month": true, "hour": true, "weekday": true}
+
+// chartTitleFor 统一柱状图标题:by=day(默认按日柱状)时仅区间,其余维度
+// 追加 " by <维度>" 与 report 包内图表命名一致。
+func chartTitleFor(rangeLabel, by string) string {
+	if by == "day" {
+		return "token-usage " + rangeLabel
+	}
+	return "token-usage " + rangeLabel + " by " + by
+}

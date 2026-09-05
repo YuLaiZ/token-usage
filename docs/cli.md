@@ -32,7 +32,7 @@ token-usage
 ├── forecast                              # extrapolate usage from recent daily averages
 ├── chart [DATE|DATE-DATE]                # render usage as an SVG chart (--by dimension, --pie, --heatmap)
 ├── watch [DATE|DATE-DATE]                # refresh a live summary at a fixed interval
-├── report [DATE|DATE-DATE]               # generate a full usage report bundle
+├── report [DATE|DATE-DATE] --out <dir>   # generate a full usage report bundle
 ├── config                                # no arguments: open the interactive configuration TUI
 │   ├── show                              # output complete effective TOML (read-only, pure TOML)
 │   ├── get <key>
@@ -667,7 +667,7 @@ token-usage report 20260901-20260930 --out september-report
 
 - `--out <dir>` is required; the directory is created when missing and each file is written atomically.
 - Files: `summary.txt`, `daily.svg`, `hourly.svg`, `weekday.svg`, `monthly.svg`, `by-client.svg`, `by-model.svg`, `by-provider.svg`, `by-project.svg`, `heatmap.svg`.
-- The date argument accepts the same forms as `query`/`collect` (defaults to today). Strictly read-only apart from writing the report bundle.
+- The date argument accepts the same forms as `query`/`collect` (defaults to today). The bundle does not include forecast extrapolation — run `token-usage forecast` separately. Strictly read-only apart from writing the report bundle.
 
 ## update
 

@@ -80,7 +80,9 @@ func newReportCmdWithDeps(load func() (*config.Config, error), open func(string)
 			for _, f := range files {
 				data, err := f.render()
 				if err != nil {
-					return err
+					return fmt.Errorf("%s: %w", ui.Bi(
+						fmt.Sprintf("failed to render %s", f.name),
+						fmt.Sprintf("渲染 %s 失败", f.name)), err)
 				}
 				target := filepath.Join(outDir, f.name)
 				if err := fileutil.ReplaceCompleteFile(target, []byte(data), 0o644); err != nil {
@@ -103,8 +105,13 @@ func newReportCmdWithDeps(load func() (*config.Config, error), open func(string)
 // reportFiles 组装报告包的全部文件:文本摘要 + 各维度 SVG 图表 + SVG 热力
 // 矩阵。渲染器与对应的 query/chart 视图共用同一聚合核。
 func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeLabel string) ([]reportFile, error) {
-	title := "token-usage " + rangeLabel
-
+	// summary 文本带上统计范围/数据截至/最近采集三项,与 query summary 的
+	// 终端输出对齐(报告包的主文本文件可自证统计范围)。
+	fresh, err := q.Freshness(ctx, dates)
+	if err != nil {
+		return nil, err
+	}
+	header := queryStatisticsHeader(dates[0], dates[len(dates)-1], fresh)
 	summary, err := q.Summary(ctx, dates)
 	if err != nil {
 		return nil, err
@@ -112,7 +119,9 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 	heatmapSVG := buildChartHeatmap(ctx, q, dates)
 
 	files := []reportFile{
-		{name: "summary.txt", summary: true, render: func() (string, error) { return summary, nil }},
+		{name: "summary.txt", summary: true, render: func() (string, error) {
+			return header + "\n" + summary, nil
+		}},
 		{name: "heatmap.svg", render: func() (string, error) { return heatmapSVG, nil }},
 	}
 	// 单维度图表:柱状(day/hour/weekday/month)+ 饼图(占比类维度)。
@@ -143,6 +152,7 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 				}
 				sub := fmt.Sprintf("Total %s tokens / %d requests",
 					querier.FormatTokens(totals.TotalTokens), totals.Requests)
+				chartTitle := chartTitleFor(rangeLabel, by)
 				if pie {
 					slices := make([]chartSlice, 0, len(rows))
 					colorIdx := 0
@@ -159,7 +169,7 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 						})
 						colorIdx++
 					}
-					return buildPieSVG(title+" by "+by, sub, slices), nil
+					return buildPieSVG(chartTitle, sub, slices), nil
 				}
 				bars := make([]chartBar, 0, len(rows))
 				for _, row := range rows {
@@ -173,7 +183,7 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 							querier.FormatTokens(row.Agg.TotalTokens), row.Agg.Requests),
 					})
 				}
-				return buildBarSVG(title+" by "+by, sub, bars), nil
+				return buildBarSVG(chartTitleFor(rangeLabel, by), sub, bars), nil
 			},
 		})
 	}
