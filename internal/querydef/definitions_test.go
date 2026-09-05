@@ -514,9 +514,15 @@ func TestParse_EarlierErrorDoesNotPolluteLaterValidGroups(t *testing.T) {
 // IsReservedName 是保留名的单一语义来源:十个内置视图名与 custom/list 固定入口
 // 均为保留名;普通合法名称(含以保留名为前缀/后缀的词)不是保留名。
 func TestIsReservedName(t *testing.T) {
-	for _, name := range []string{"client", "model", "provider", "project", "session", "summary", "day", "month", "custom", "list"} {
+	// 正向:十个内置视图名单独断言;custom/list 是固定入口而非视图,分开列举。
+	for _, name := range []string{"client", "model", "provider", "project", "session", "summary", "day", "month", "hour", "weekday"} {
 		if !IsReservedName(name) {
-			t.Errorf("IsReservedName(%q) = false, 应为 true", name)
+			t.Errorf("IsReservedName(%q) = false, 应为 true(内置视图名)", name)
+		}
+	}
+	for _, name := range []string{"custom", "list"} {
+		if !IsReservedName(name) {
+			t.Errorf("IsReservedName(%q) = false, 应为 true(固定入口)", name)
 		}
 	}
 	for _, name := range []string{"mpc", "group_q", "my-custom", "lists", "List", ""} {
