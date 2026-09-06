@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -28,8 +29,8 @@ func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string
 		Use:   "compare <range>",
 		Short: "Compare usage between two periods / 对比两个时间段的用量",
 		Long: ui.Bi(
-			"Compare token usage between two periods. RANGE accepts a day (YYYYMMDD), a month (YYYYMM), a year (YYYY; single arg only), or a day/month range like 20260701-20260710 whose endpoints may mix days and months; dashed ISO forms like 2026-08-01 are rejected. Without --base the baseline window is derived from RANGE's granularity: a day compares with the previous day, a month with the previous calendar month, a year with the previous calendar year, and a range with an equal-length window ending the day before it starts, e.g. token-usage compare 20260701-20260710 compares 2026-06-21..2026-06-30. Pass --base with the same forms to pick the baseline explicitly (it may overlap the current window and is parsed independently of RANGE's granularity), e.g. token-usage compare 202609 --base 202608. Pass --by with a non-temporal dimension (client/model/provider/project) to compare per member of that dimension across the two windows instead of whole-period totals.",
-			"对比两个时间段的 token 用量。RANGE 接受日（YYYYMMDD）、月（YYYYMM）、年（YYYY，仅单独使用）或日/月区间（如 20260701-20260710，端点可日/月混用）；拒绝 2026-08-01 这类 ISO 破折号形态。缺省 --base 时按 RANGE 粒度自动推导基线窗口：单日对比前一天，单月对比上一个日历月，单年对比上一个日历年，区间对比结束于开始日前一天的等长窗口，如 token-usage compare 20260701-20260710 对比 2026-06-21..2026-06-30。可用 --base 以相同形态显式指定基线（允许与当前窗口重叠，且不与 RANGE 粒度耦合），如 token-usage compare 202609 --base 202608。可用 --by 指定非时间维度（client/model/provider/project），按该维度成员对比两期用量而非两期总量。",
+			"Compare token usage between two periods. RANGE accepts a day (YYYYMMDD), a month (YYYYMM), a year (YYYY; single arg only), or a day/month range like 20260701-20260710 whose endpoints may mix days and months; dashed ISO forms like 2026-08-01 are rejected. Without --base the baseline window is derived from RANGE's granularity: a day compares with the previous day, a month with the previous calendar month, a year with the previous calendar year, and a range with an equal-length window ending the day before it starts, e.g. token-usage compare 20260701-20260710 compares 2026-06-21..2026-06-30. Pass --base with the same forms to pick the baseline explicitly (it may overlap the current window and is parsed independently of RANGE's granularity), e.g. token-usage compare 202609 --base 202608. Pass --by with a non-temporal dimension (client/model/provider/project) to compare per member of that dimension across the two windows instead of whole-period totals. --format selects the output format: table (default, the framed comparison table) or json (machine-readable: raw integers, two-space indentation); invalid values are rejected before the database opens.",
+			"对比两个时间段的 token 用量。RANGE 接受日（YYYYMMDD）、月（YYYYMM）、年（YYYY，仅单独使用）或日/月区间（如 20260701-20260710，端点可日/月混用）；拒绝 2026-08-01 这类 ISO 破折号形态。缺省 --base 时按 RANGE 粒度自动推导基线窗口：单日对比前一天，单月对比上一个日历月，单年对比上一个日历年，区间对比结束于开始日前一天的等长窗口，如 token-usage compare 20260701-20260710 对比 2026-06-21..2026-06-30。可用 --base 以相同形态显式指定基线（允许与当前窗口重叠，且不与 RANGE 粒度耦合），如 token-usage compare 202609 --base 202608。可用 --by 指定非时间维度（client/model/provider/project），按该维度成员对比两期用量而非两期总量。--format 选择输出格式：table（默认，框线对比表）或 json（机器可读、原始整数、两空格缩进）；非法值在打开数据库之前即被拒绝。",
 		),
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
@@ -49,6 +50,14 @@ func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string
 			by, _ := cmd.Flags().GetString("by")
 			if err := validateCompareBy(by); err != nil {
 				return err
+			}
+			// --format 白名单同样先于配置加载与数据库打开校验（句式与 export 一致）。
+			format, err := cmd.Flags().GetString("format")
+			if err != nil {
+				return err
+			}
+			if format != "table" && format != "json" {
+				return compareFormatError(format)
 			}
 
 			cfg, err := load()
@@ -83,7 +92,7 @@ func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string
 				if err != nil {
 					return err
 				}
-				return renderCompareBy(cmd.OutOrStdout(), compareByRenderInput{
+				in := compareByRenderInput{
 					curStart:  curDate,
 					curEnd:    curEnd.Format("2006-01-02"),
 					baseStart: baseDate,
@@ -92,7 +101,11 @@ func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string
 					cur:       cur,
 					base:      base,
 					members:   mergeCompareByMembers(curMembers, baseMembers),
-				})
+				}
+				if format == "json" {
+					return renderCompareByJSON(cmd.OutOrStdout(), in)
+				}
+				return renderCompareBy(cmd.OutOrStdout(), in)
 			}
 			cur, err := q.StatsBetween(ctx, curDate, curEnd.Format("2006-01-02"))
 			if err != nil {
@@ -102,14 +115,18 @@ func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string
 			if err != nil {
 				return err
 			}
-			return renderCompare(cmd.OutOrStdout(), compareRenderInput{
+			in := compareRenderInput{
 				curStart:  curDate,
 				curEnd:    curEnd.Format("2006-01-02"),
 				baseStart: baseDate,
 				baseEnd:   baseEnd.Format("2006-01-02"),
 				cur:       cur,
 				base:      base,
-			})
+			}
+			if format == "json" {
+				return renderCompareJSON(cmd.OutOrStdout(), in)
+			}
+			return renderCompare(cmd.OutOrStdout(), in)
 		},
 	}
 	cmd.Flags().String("base", "", ui.Bi(
@@ -119,6 +136,11 @@ func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string
 	cmd.Flags().String("by", "", ui.Bi(
 		"Compare per member of a dimension: client/model/provider/project",
 		"按维度成员对比：client/model/provider/project",
+	))
+	// --format 是本地 flag,缺省 table;取值白名单在配置加载与开库之前校验。
+	cmd.Flags().String("format", "table", ui.Bi(
+		"output format: table or json",
+		"输出格式：table 或 json",
 	))
 	return cmd
 }
@@ -286,17 +308,31 @@ func formatCountChange(diff int64) string {
 	return fmt.Sprintf("%+d", diff)
 }
 
-// formatChangePercent 渲染变化百分比：基线为 0 时百分比无定义，显示 "--"；
-// 正数带 "+" 前缀，负数由 %.1f 自带 "-"，恰好持平为 "0.0%"。
-func formatChangePercent(cur, base int64) string {
+// changePercentValue 计算两期变化的百分比数值：四舍五入到 1 位小数。表格
+// formatChangePercent 与 JSON 的 change_percent 共用该函数，保证两个表面
+// 同一舍入口径。base == 0 时百分比无定义，返回 ok=false（与表格 "--"、
+// JSON null 同语义）。
+func changePercentValue(cur, base int64) (float64, bool) {
 	if base == 0 {
-		return "--"
+		return 0, false
 	}
 	pct := float64(cur-base) / float64(base) * 100
+	return math.Round(pct*10) / 10, true
+}
+
+// formatChangePercent 渲染变化百分比：基线为 0 时百分比无定义，显示 "--"；
+// 数值部分经 changePercentValue 与 JSON 同口径舍入。符号按原始差值判断
+// （base > 0 时与未舍入百分比同号）：极小正百分比舍入后为 0.0 仍保留
+// "+"（+0.0%），负数由 %.1f 自带 "-"，恰好持平为 "0.0%"。
+func formatChangePercent(cur, base int64) string {
+	pct, ok := changePercentValue(cur, base)
+	if !ok {
+		return "--"
+	}
 	switch {
-	case pct > 0:
+	case cur > base:
 		return fmt.Sprintf("+%.1f%%", pct)
-	case pct < 0:
+	case cur < base:
 		return fmt.Sprintf("%.1f%%", pct)
 	default:
 		return "0.0%"
@@ -504,16 +540,7 @@ func renderCompareBy(w io.Writer, in compareByRenderInput) error {
 		ui.HeaderLines("Change %", "变化%"),
 	}, ui.AlignLeft, ui.AlignRight, ui.AlignRight, ui.AlignRight, ui.AlignRight)
 
-	members := make([]compareByMember, len(in.members))
-	copy(members, in.members)
-	sort.SliceStable(members, func(i, j int) bool {
-		ti := members[i].cur.TotalTokens + members[i].base.TotalTokens
-		tj := members[j].cur.TotalTokens + members[j].base.TotalTokens
-		if ti != tj {
-			return ti > tj
-		}
-		return members[i].key < members[j].key
-	})
+	members := sortCompareByMembers(in.members)
 	for _, m := range members {
 		t.Row(m.key,
 			querier.FormatTokens(m.cur.TotalTokens), querier.FormatTokens(m.base.TotalTokens),
@@ -527,4 +554,202 @@ func renderCompareBy(w io.Writer, in compareByRenderInput) error {
 
 	fmt.Fprintln(w, t.String())
 	return nil
+}
+
+// sortCompareByMembers 返回按表格口径排序的成员行独立副本：两期 TotalTokens
+// 之和降序、同值按显示键升序。表格与 JSON 输出共用，保证两表面行序一致。
+func sortCompareByMembers(members []compareByMember) []compareByMember {
+	sorted := make([]compareByMember, len(members))
+	copy(sorted, members)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		ti := sorted[i].cur.TotalTokens + sorted[i].base.TotalTokens
+		tj := sorted[j].cur.TotalTokens + sorted[j].base.TotalTokens
+		if ti != tj {
+			return ti > tj
+		}
+		return sorted[i].key < sorted[j].key
+	})
+	return sorted
+}
+
+// compareFormatError 非法 --format 取值:在加载配置与开库之前拒绝(句式与
+// export 的同名错误一致)。
+func compareFormatError(value string) error {
+	return fmt.Errorf("%s", ui.Bi(
+		fmt.Sprintf("invalid --format %q (allowed: table, json)", value),
+		fmt.Sprintf("无效的 --format %q（允许：table、json）", value),
+	))
+}
+
+// compareJSONWindow 是 JSON 输出中的一个窗口起止（YYYY-MM-DD，与表格
+// Current/Base 行同源）。
+type compareJSONWindow struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// compareJSONWindows 是对比的两个窗口。
+type compareJSONWindows struct {
+	Current compareJSONWindow `json:"current"`
+	Base    compareJSONWindow `json:"base"`
+}
+
+// compareJSONMetric 是总量对比 JSON 中的一行指标：metric 为 ui 输出指标
+// 稳定 ID（active_days 为 compare 特有）；值为原始整数（不做 K/M 缩写）；
+// change_percent 经 changePercentValue 与表格同口径（四舍五入到 1 位小数，
+// base==0 时为 null）。struct 序列化保证字段顺序稳定。
+type compareJSONMetric struct {
+	Metric        string   `json:"metric"`
+	Current       int64    `json:"current"`
+	Base          int64    `json:"base"`
+	Change        int64    `json:"change"`
+	ChangePercent *float64 `json:"change_percent"`
+}
+
+// compareJSONPayload 是 compare 总量模式的 JSON 契约：字段顺序即 struct
+// 声明顺序。
+type compareJSONPayload struct {
+	Windows compareJSONWindows  `json:"windows"`
+	Metrics []compareJSONMetric `json:"metrics"`
+}
+
+// compareJSONMember 是分维度对比 JSON 中的一个成员行：值为两期 TotalTokens
+// 的原始整数，change_percent 语义与总量模式一致。
+type compareJSONMember struct {
+	Key           string   `json:"key"`
+	Current       int64    `json:"current"`
+	Base          int64    `json:"base"`
+	Change        int64    `json:"change"`
+	ChangePercent *float64 `json:"change_percent"`
+}
+
+// compareJSONTotalsSide 是分维度对比 JSON 中一个窗口的总量：字段名与 ui
+// 输出指标稳定 ID 一致，取该窗口 StatsBetween 全量聚合（真相源，不由成员
+// 行累加）。
+type compareJSONTotalsSide struct {
+	Requests    int64 `json:"requests"`
+	Input       int64 `json:"input"`
+	Output      int64 `json:"output"`
+	CacheRead   int64 `json:"cache_read"`
+	CacheCreate int64 `json:"cache_create"`
+	Reasoning   int64 `json:"reasoning"`
+	Total       int64 `json:"total"`
+}
+
+// compareJSONTotals 是分维度对比 JSON 的两期总量。
+type compareJSONTotals struct {
+	Current compareJSONTotalsSide `json:"current"`
+	Base    compareJSONTotalsSide `json:"base"`
+}
+
+// compareJSONByPayload 是 compare --by 分维度模式的 JSON 契约。
+type compareJSONByPayload struct {
+	Windows   compareJSONWindows  `json:"windows"`
+	Dimension string              `json:"dimension"`
+	Members   []compareJSONMember `json:"members"`
+	Totals    compareJSONTotals   `json:"totals"`
+}
+
+// compareChangePercentPtr 把 changePercentValue 的可计算性映射为 JSON 的
+// 可空 change_percent：base == 0 时返回 nil（编码为 null）。
+func compareChangePercentPtr(cur, base int64) *float64 {
+	v, ok := changePercentValue(cur, base)
+	if !ok {
+		return nil
+	}
+	return &v
+}
+
+// compareJSONTotalsSideOf 把一个窗口的全量聚合映射为 JSON 总量（字段名与
+// ui 输出指标稳定 ID 对应，FreshInput 对应 input）。
+func compareJSONTotalsSideOf(a querier.GroupAggregate) compareJSONTotalsSide {
+	return compareJSONTotalsSide{
+		Requests:    a.Requests,
+		Input:       a.FreshInput,
+		Output:      a.OutputTokens,
+		CacheRead:   a.CacheRead,
+		CacheCreate: a.CacheCreate,
+		Reasoning:   a.Reasoning,
+		Total:       a.TotalTokens,
+	}
+}
+
+// writeCompareJSON 序列化 compare 的 JSON 载荷并写入 w：复用 export 的
+// marshalExportJSON（两空格缩进、尾随换行），序列化与写出错误以统一双语
+// 前缀包装。
+func writeCompareJSON(w io.Writer, payload any) error {
+	s, err := marshalExportJSON(payload)
+	if err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("compare failed", "对比失败"), err)
+	}
+	if _, err := fmt.Fprint(w, s); err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("compare failed", "对比失败"), err)
+	}
+	return nil
+}
+
+// compareJSONMetricRow 构造一行指标：change 为原始差值，change_percent 走
+// 共用的可空百分比口径。
+func compareJSONMetricRow(id string, cur, base int64) compareJSONMetric {
+	return compareJSONMetric{
+		Metric:        id,
+		Current:       cur,
+		Base:          base,
+		Change:        cur - base,
+		ChangePercent: compareChangePercentPtr(cur, base),
+	}
+}
+
+// renderCompareJSON 输出总量对比的机器可读 JSON：windows 与表格 Current/Base
+// 行同源；metrics 顺序与表格行一致，metric 标识复用 ui 输出指标稳定 ID
+// （active_days 为 compare 特有、无 ui ID）；整数保持原始值（不做 K/M 缩写），
+// change_percent 与表格同口径（1 位小数舍入、base==0 为 null）。序列化经
+// marshalExportJSON：两空格缩进、尾随换行。
+func renderCompareJSON(w io.Writer, in compareRenderInput) error {
+	payload := compareJSONPayload{
+		Windows: compareJSONWindows{
+			Current: compareJSONWindow{From: in.curStart, To: in.curEnd},
+			Base:    compareJSONWindow{From: in.baseStart, To: in.baseEnd},
+		},
+		Metrics: []compareJSONMetric{
+			// active_days 是 compare 特有指标，表格首行对应。
+			compareJSONMetricRow("active_days", in.cur.ActiveDays, in.base.ActiveDays),
+			compareJSONMetricRow(ui.MetricRequests, in.cur.Total.Requests, in.base.Total.Requests),
+			compareJSONMetricRow(ui.MetricInput, in.cur.Total.FreshInput, in.base.Total.FreshInput),
+			compareJSONMetricRow(ui.MetricOutput, in.cur.Total.OutputTokens, in.base.Total.OutputTokens),
+			compareJSONMetricRow(ui.MetricCacheRead, in.cur.Total.CacheRead, in.base.Total.CacheRead),
+			compareJSONMetricRow(ui.MetricCacheCreate, in.cur.Total.CacheCreate, in.base.Total.CacheCreate),
+			compareJSONMetricRow(ui.MetricReasoning, in.cur.Total.Reasoning, in.base.Total.Reasoning),
+			compareJSONMetricRow(ui.MetricTotal, in.cur.Total.TotalTokens, in.base.Total.TotalTokens),
+		},
+	}
+	return writeCompareJSON(w, payload)
+}
+
+// renderCompareByJSON 输出 --by 分维度对比的机器可读 JSON：members 排序经
+// sortCompareByMembers 与表格一致；totals 取两期 StatsBetween 总量（真相源）。
+// 双窗口均无数据时 members 为空数组照常输出——JSON 不做表格的 no data 早退。
+func renderCompareByJSON(w io.Writer, in compareByRenderInput) error {
+	payload := compareJSONByPayload{
+		Windows: compareJSONWindows{
+			Current: compareJSONWindow{From: in.curStart, To: in.curEnd},
+			Base:    compareJSONWindow{From: in.baseStart, To: in.baseEnd},
+		},
+		Dimension: in.by,
+		Members:   make([]compareJSONMember, 0, len(in.members)),
+		Totals: compareJSONTotals{
+			Current: compareJSONTotalsSideOf(in.cur.Total),
+			Base:    compareJSONTotalsSideOf(in.base.Total),
+		},
+	}
+	for _, m := range sortCompareByMembers(in.members) {
+		payload.Members = append(payload.Members, compareJSONMember{
+			Key:           m.key,
+			Current:       m.cur.TotalTokens,
+			Base:          m.base.TotalTokens,
+			Change:        m.cur.TotalTokens - m.base.TotalTokens,
+			ChangePercent: compareChangePercentPtr(m.cur.TotalTokens, m.base.TotalTokens),
+		})
+	}
+	return writeCompareJSON(w, payload)
 }

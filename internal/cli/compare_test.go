@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -864,5 +866,415 @@ func TestCompareCmd_EndToEnd_ByModelExplicitBase(t *testing.T) {
 	wantTotal := []string{"Total / 总计", "800", "500", "+300", "+60.0%"}
 	if got := tableRowCellsByFirst(t, out, "Total / 总计"); !reflect.DeepEqual(got, wantTotal) {
 		t.Errorf("Total 行 = %v, want %v\n%s", got, wantTotal, out)
+	}
+}
+
+// TestChangePercentValue 表驱动钉住共享纯函数的舍入口径：正、负、零、
+// base==0（ok=false，百分比无定义）、(1000001,1000000) 极小正差舍入到 0.0、
+// (9999999,10000000) 极小负差舍入为负零 -0（数值等价 0 但符号位为 1，
+// JSON 会原样写出 "-0"）、非半途值四舍五入到 1 位小数。wantSignbit 用
+// math.Signbit 逐例钉住符号位，防止负零被改写成正零或反向回归。
+func TestChangePercentValue(t *testing.T) {
+	cases := []struct {
+		name        string
+		cur, base   int64
+		want        float64
+		wantOK      bool
+		wantSignbit bool
+	}{
+		{"positive rounds to 1 decimal", 4, 3, 33.3, true, false},
+		{"negative rounds to 1 decimal", 1, 3, -66.7, true, true},
+		{"exact zero", 5, 5, 0, true, false},
+		{"full loss", 0, 5, -100, true, true},
+		{"base zero not computable", 7, 0, 0, false, false},
+		{"both zero not computable", 0, 0, 0, false, false},
+		{"near-zero positive rounds to 0.0", 1000001, 1000000, 0, true, false},
+		{"near-zero negative rounds to -0", 9999999, 10000000, 0, true, true},
+		{"repeating decimal rounds to 1 decimal", 5, 3, 66.7, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := changePercentValue(tc.cur, tc.base)
+			if ok != tc.wantOK {
+				t.Errorf("changePercentValue(%d, %d) ok = %v, want %v", tc.cur, tc.base, ok, tc.wantOK)
+			}
+			if math.Abs(got-tc.want) > 1e-9 {
+				t.Errorf("changePercentValue(%d, %d) = %v, want %v", tc.cur, tc.base, got, tc.want)
+			}
+			if math.Signbit(got) != tc.wantSignbit {
+				t.Errorf("changePercentValue(%d, %d) = %v 符号位 = %v, want %v", tc.cur, tc.base, got, math.Signbit(got), tc.wantSignbit)
+			}
+		})
+	}
+}
+
+// jsonFloat 断言 JSON 解码值为 float64 并返回；jsonNil 断言值为 nil
+// （JSON null）；jsonMap/jsonArray 做对应的容器类型断言。
+func jsonFloat(t *testing.T, v interface{}) float64 {
+	t.Helper()
+	f, ok := v.(float64)
+	if !ok {
+		t.Fatalf("JSON 值应为 number，实际 %T: %v", v, v)
+	}
+	return f
+}
+
+func jsonNil(t *testing.T, v interface{}) {
+	t.Helper()
+	if v != nil {
+		t.Fatalf("JSON 值应为 null（base==0 时百分比无定义），实际 %T: %v", v, v)
+	}
+}
+
+func jsonMap(t *testing.T, v interface{}) map[string]interface{} {
+	t.Helper()
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		t.Fatalf("JSON 值应为 object，实际 %T: %v", v, v)
+	}
+	return m
+}
+
+func jsonArray(t *testing.T, v interface{}) []interface{} {
+	t.Helper()
+	a, ok := v.([]interface{})
+	if !ok {
+		t.Fatalf("JSON 值应为 array，实际 %T: %v", v, v)
+	}
+	return a
+}
+
+// jsonInt 断言 JSON 数值等于期望整数（int64 原始值经 JSON number 往返，
+// 不做 K/M 缩写——缩写会变成字符串导致此处类型断言失败）。
+func jsonInt(t *testing.T, v interface{}, want int64) {
+	t.Helper()
+	if got := jsonFloat(t, v); got != float64(want) {
+		t.Errorf("JSON 数值 = %v, want %d", got, want)
+	}
+}
+
+// jsonPercent 断言 change_percent：base==0 期望 nil，否则为四舍五入到
+// 1 位小数的数值（与表格 formatChangePercent 同口径）。
+func jsonPercent(t *testing.T, v interface{}, want *float64) {
+	t.Helper()
+	if want == nil {
+		jsonNil(t, v)
+		return
+	}
+	if got := jsonFloat(t, v); math.Abs(got-*want) > 1e-9 {
+		t.Errorf("change_percent = %v, want %v", got, *want)
+	}
+}
+
+// floatPtr 测试辅助：构造 *float64 字面量。
+func floatPtr(f float64) *float64 { return &f }
+
+// assertJSONMemberFieldOrder 截取 JSON 原文中首个成员对象（含 "key" 的扁平
+// 对象）的原文片段，断言字段出现顺序恰为 key→current→base→change→
+// change_percent。encoding/json 反序列化到 map 会丢失成员顺序，字段顺序
+// 契约只能在原文上检查；成员对象为纯标量字段，"key" 前最近的 "{" 即对象
+// 起点，其后最近的 "}" 即终点。
+func assertJSONMemberFieldOrder(t *testing.T, out string) {
+	t.Helper()
+	keyIdx := strings.Index(out, `"key"`)
+	if keyIdx < 0 {
+		t.Fatalf("JSON 输出应含成员对象 key 字段:\n%s", out)
+	}
+	start := strings.LastIndex(out[:keyIdx], "{")
+	endRel := strings.Index(out[keyIdx:], "}")
+	if start < 0 || endRel < 0 {
+		t.Fatalf("无法截取成员对象原文片段:\n%s", out)
+	}
+	frag := out[start : keyIdx+endRel+1]
+	prev := -1
+	for _, field := range []string{`"key"`, `"current"`, `"base"`, `"change"`, `"change_percent"`} {
+		i := strings.Index(frag, field)
+		if i < 0 {
+			t.Fatalf("成员对象片段应含字段 %s:\n%s", field, frag)
+		}
+		if prev >= 0 && i <= prev {
+			t.Errorf("成员对象字段应按 key→current→base→change→change_percent 排序，%s 首现下标 %d 未晚于前一字段 %d:\n%s", field, i, prev, frag)
+		}
+		prev = i
+	}
+}
+
+// TestCompareCmd_EndToEnd_JSON 真实调用链总量模式 --format json：E2E 后
+// json.Unmarshal 到 map，断言 windows 日期与表格 Current/Base 行同源、
+// metrics 顺序（按下标断言稳定 ID）、数值原始性（7000 保持 JSON number，
+// 不做 K/M 缩写）、base==0 → change_percent 为 null、四舍五入 1 位小数、
+// 两空格缩进与尾随换行。
+func TestCompareCmd_EndToEnd_JSON(t *testing.T) {
+	day := func(date string, offsetDays int) time.Time {
+		base, err := time.ParseInLocation("2006-01-02", date, time.Local)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base.AddDate(0, 0, offsetDays).Add(9 * time.Hour)
+	}
+	msgs := []model.Message{
+		{ID: "cmpj-cur-a", SessionID: "s", Client: model.ClientClaudeCode,
+			Date: "2026-09-02", TS: day("2026-09-02", 0).UnixMilli(),
+			FreshInputTokens: 4000, OutputTokens: 1000, CacheReadTokens: 2000, ReasoningTokens: 300, TotalTokens: 600},
+		{ID: "cmpj-cur-b", SessionID: "s", Client: model.ClientClaudeCode,
+			Date: "2026-09-03", TS: day("2026-09-03", 0).UnixMilli(),
+			FreshInputTokens: 3000, OutputTokens: 800, CacheCreateTokens: 100, ReasoningTokens: 200, TotalTokens: 400},
+		{ID: "cmpj-base", SessionID: "s", Client: model.ClientClaudeCode,
+			Date: "2026-08-30", TS: day("2026-08-30", 0).UnixMilli(),
+			FreshInputTokens: 8000, OutputTokens: 600, ReasoningTokens: 100, TotalTokens: 750},
+	}
+	seededOpen := func(string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { usageDB.Close() })
+		if _, err := db.UpsertMessages(context.Background(), usageDB, msgs); err != nil {
+			return nil, err
+		}
+		return usageDB, nil
+	}
+	load := func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil }
+
+	cmd := newCompareCmdWithDeps(load, seededOpen)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"20260901-20260907", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+
+	// 两空格缩进 + 尾随换行（与 export 的机器可读约定一致）。
+	if !strings.HasPrefix(out, "{\n  \"windows\"") {
+		t.Errorf("JSON 应以两空格缩进的 windows 对象开头:\n%q", out)
+	}
+	if !strings.HasSuffix(out, "\n") {
+		t.Errorf("JSON 应以尾随换行结束:\n%q", out)
+	}
+	// 数值原始性佐证：input 当前值 7000 以原始整数写出（无 K/M 缩写）。
+	if !strings.Contains(out, "\"current\": 7000") {
+		t.Errorf("JSON 应含原始整数 \"current\": 7000:\n%s", out)
+	}
+
+	var doc map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("输出应为合法 JSON: %v\n%s", err, out)
+	}
+
+	// windows 与表格 Current/Base 行同源（缺省等长前置基线）。
+	windows := jsonMap(t, doc["windows"])
+	current := jsonMap(t, windows["current"])
+	base := jsonMap(t, windows["base"])
+	if current["from"] != "2026-09-01" || current["to"] != "2026-09-07" {
+		t.Errorf("windows.current = %v/%v, want 2026-09-01/2026-09-07", current["from"], current["to"])
+	}
+	if base["from"] != "2026-08-25" || base["to"] != "2026-08-31" {
+		t.Errorf("windows.base = %v/%v, want 2026-08-25/2026-08-31", base["from"], base["to"])
+	}
+
+	// metrics 顺序与表格行一致：active_days + 七个 ui 稳定 ID，按下标断言。
+	metrics := jsonArray(t, doc["metrics"])
+	wantOrder := []string{"active_days", "requests", "input", "output", "cache_read", "cache_create", "reasoning", "total"}
+	if len(metrics) != len(wantOrder) {
+		t.Fatalf("metrics 应有 %d 行，实际 %d: %v", len(wantOrder), len(metrics), metrics)
+	}
+	for i, want := range wantOrder {
+		row := jsonMap(t, metrics[i])
+		if row["metric"] != want {
+			t.Errorf("metrics[%d].metric = %v, want %q（顺序与表格行一致）", i, row["metric"], want)
+		}
+	}
+
+	// 逐行数值断言（按下标，同时钉住顺序）：active_days 2/1、input 原始
+	// 整数 7000/8000、cache_read base==0 → null、total 四舍五入 33.3。
+	type wantRow struct {
+		cur, bas, change int64
+		pct              *float64
+	}
+	wantRows := map[int]wantRow{
+		0: {2, 1, 1, floatPtr(100)},             // active_days
+		1: {2, 1, 1, floatPtr(100)},             // requests
+		2: {7000, 8000, -1000, floatPtr(-12.5)}, // input：原始整数，无缩写
+		3: {1800, 600, 1200, floatPtr(200)},     // output
+		4: {2000, 0, 2000, nil},                 // cache_read：base==0 → null
+		5: {100, 0, 100, nil},                   // cache_create：base==0 → null
+		6: {500, 100, 400, floatPtr(400)},       // reasoning
+		7: {1000, 750, 250, floatPtr(33.3)},     // total：+33.333.. → 33.3
+	}
+	for i, want := range wantRows {
+		row := jsonMap(t, metrics[i])
+		// 字段存在性：change_percent 无论是否为 null 都必须出现在对象里，
+		// 区分"字段缺失"与"字段为 null"两种不同语义。
+		if _, ok := row["change_percent"]; !ok {
+			t.Errorf("metrics[%d] 应存在 change_percent 字段（缺失与 null 语义不同）", i)
+		}
+		jsonInt(t, row["current"], want.cur)
+		jsonInt(t, row["base"], want.bas)
+		jsonInt(t, row["change"], want.change)
+		jsonPercent(t, row["change_percent"], want.pct)
+	}
+}
+
+// TestCompareCmd_EndToEnd_JSON_ByModel 真实调用链分维度模式 --format json：
+// members 顺序与表格一致（两期之和降序）、缺基线侧 change_percent 为 null、
+// dimension 字段、成员对象字段顺序恰为 key→current→base→change→change_percent、
+// totals 字段名与 ui 稳定 ID 齐全且取 StatsBetween 真相源。
+func TestCompareCmd_EndToEnd_JSON_ByModel(t *testing.T) {
+	day := func(date string, offsetDays int) time.Time {
+		base, err := time.ParseInLocation("2006-01-02", date, time.Local)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base.AddDate(0, 0, offsetDays).Add(9 * time.Hour)
+	}
+	msgs := []model.Message{
+		{ID: "cmpjby-cur-a", SessionID: "s", Client: model.ClientClaudeCode, Model: "model-a",
+			Date: "2026-09-02", TS: day("2026-09-02", 0).UnixMilli(), TotalTokens: 600},
+		{ID: "cmpjby-cur-c", SessionID: "s", Client: model.ClientClaudeCode, Model: "model-c",
+			Date: "2026-09-03", TS: day("2026-09-03", 0).UnixMilli(), TotalTokens: 400},
+		{ID: "cmpjby-base-b", SessionID: "s", Client: model.ClientClaudeCode, Model: "model-b",
+			Date: "2026-08-30", TS: day("2026-08-30", 0).UnixMilli(), TotalTokens: 750},
+		{ID: "cmpjby-base-c", SessionID: "s", Client: model.ClientClaudeCode, Model: "model-c",
+			Date: "2026-08-29", TS: day("2026-08-29", 0).UnixMilli(), TotalTokens: 250},
+	}
+	seededOpen := func(string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { usageDB.Close() })
+		if _, err := db.UpsertMessages(context.Background(), usageDB, msgs); err != nil {
+			return nil, err
+		}
+		return usageDB, nil
+	}
+	load := func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil }
+
+	cmd := newCompareCmdWithDeps(load, seededOpen)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"20260901-20260907", "--by", "model", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	var doc map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("输出应为合法 JSON: %v\n%s", err, out)
+	}
+
+	// 成员对象字段顺序契约：struct 字段序即序列化顺序，第一个成员对象的
+	// 原文片段应按 key→current→base→change→change_percent 排列。截取首个
+	// 含 "key" 的扁平对象片段，按片段内首次出现下标断言严格递增；搜索键
+	// 均带闭合引号，"change" 不会误匹配 "change_percent"（map 反序列化会
+	// 丢顺序，必须在原文上检查）。
+	assertJSONMemberFieldOrder(t, out)
+
+	if doc["dimension"] != "model" {
+		t.Errorf("dimension = %v, want \"model\"", doc["dimension"])
+	}
+
+	// members 顺序与表格一致：两期之和降序 model-b(750) > model-c(650) > model-a(600)。
+	members := jsonArray(t, doc["members"])
+	if len(members) != 3 {
+		t.Fatalf("members 应有 3 项，实际 %d: %v", len(members), members)
+	}
+	wantKeys := []string{"model-b", "model-c", "model-a"}
+	wantRows := []struct {
+		cur, bas, change int64
+		pct              *float64
+	}{
+		{0, 750, -750, floatPtr(-100)}, // model-b 只在基线期：全部流失
+		{400, 250, 150, floatPtr(60)},  // model-c 两期都有
+		{600, 0, 600, nil},             // model-a 只在当前期：base==0 → null
+	}
+	for i, want := range wantRows {
+		row := jsonMap(t, members[i])
+		if row["key"] != wantKeys[i] {
+			t.Errorf("members[%d].key = %v, want %q（顺序与表格一致）", i, row["key"], wantKeys[i])
+		}
+		jsonInt(t, row["current"], want.cur)
+		jsonInt(t, row["base"], want.bas)
+		jsonInt(t, row["change"], want.change)
+		jsonPercent(t, row["change_percent"], want.pct)
+	}
+
+	// totals 字段名与 ui 稳定 ID 齐全，值为两期 StatsBetween 真相源
+	// （当前 2 请求 1000 tokens、基线 2 请求 1000 tokens）。
+	wantFields := []string{"requests", "input", "output", "cache_read", "cache_create", "reasoning", "total"}
+	totals := jsonMap(t, doc["totals"])
+	for _, side := range []string{"current", "base"} {
+		m := jsonMap(t, totals[side])
+		for _, f := range wantFields {
+			if _, ok := m[f]; !ok {
+				t.Errorf("totals.%s 缺少字段 %q", side, f)
+			}
+		}
+	}
+	curTotals := jsonMap(t, totals["current"])
+	baseTotals := jsonMap(t, totals["base"])
+	jsonInt(t, curTotals["requests"], 2)
+	jsonInt(t, curTotals["total"], 1000)
+	jsonInt(t, baseTotals["requests"], 2)
+	jsonInt(t, baseTotals["total"], 1000)
+}
+
+// TestCompareCmd_EndToEnd_JSON_NoData 分维度模式双窗口无数据：JSON 不做
+// 表格的 no data 早退，members 为空数组、totals 两侧字段照常输出。
+func TestCompareCmd_EndToEnd_JSON_NoData(t *testing.T) {
+	seededOpen := func(string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { usageDB.Close() })
+		return usageDB, nil
+	}
+	load := func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil }
+
+	cmd := newCompareCmdWithDeps(load, seededOpen)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"20260901-20260907", "--by", "model", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatalf("输出应为合法 JSON: %v\n%s", err, buf.String())
+	}
+	if members := jsonArray(t, doc["members"]); len(members) != 0 {
+		t.Errorf("无数据时 members 应为空数组，实际 %v", members)
+	}
+	totals := jsonMap(t, doc["totals"])
+	for _, side := range []string{"current", "base"} {
+		jsonInt(t, jsonMap(t, totals[side])["total"], 0)
+	}
+}
+
+// TestCompareCmd_RejectsFormat --format 取值不在 table|json 白名单时双语
+// 报错，且先于配置加载与数据库打开。
+func TestCompareCmd_RejectsFormat(t *testing.T) {
+	cmd := newCompareCmdWithDeps(
+		func() (*config.Config, error) { t.Fatal("--format 校验失败不应加载配置"); return nil, nil },
+		func(string) (*db.DB, error) { t.Fatal("--format 校验失败不应打开数据库"); return nil, nil },
+	)
+	cmd.SetArgs([]string{"20260901-20260907", "--format", "yaml"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("--format yaml 应返回 error")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		`invalid --format "yaml" (allowed: table, json)`,
+		`无效的 --format "yaml"（允许：table、json）`,
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("错误应含 %q，实际 %q", want, msg)
+		}
 	}
 }

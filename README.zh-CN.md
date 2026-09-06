@@ -145,7 +145,7 @@ token-usage query list
 | `errors [日期]` | 查看某日期或区间的采集失败。 |
 | `doctor` | 运行只读健康检查。 |
 | `forecast` | 按近期日均外推即将到来的用量。 |
-| `compare <range>` | 对比两个时间段的用量（缺省自动取等长前置窗口，`--base` 显式指定基线，`--by` 按维度成员对比）。 |
+| `compare <range>` | 对比两个时间段的用量（缺省自动取等长前置窗口，`--base` 显式指定基线，`--by` 按维度成员对比，`--format json` 输出机器可读结果）。 |
 | `chart [日期]` | 将用量渲染为 SVG 图表（`--by` 维度、`--pie`、`--line` 趋势线、`--heatmap`、`--out` 保存）。 |
 | `watch [日期]` | 以固定间隔刷新实时摘要（`--once` 单帧）。 |
 | `report [日期] --out <目录>` | 生成完整用量报告包（摘要 + SVG 图表）。 |

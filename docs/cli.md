@@ -631,13 +631,14 @@ token-usage forecast
 
 ## compare
 
-Compares token usage between two periods: a five-column framed table (Metric / Current / Base / Change / Change %) over active days, requests, and every token metric.
+Compares token usage between two periods: a five-column framed table (Metric / Current / Base / Change / Change %) over active days, requests, and every token metric. `--format json` switches to machine-readable JSON output.
 
 ```text
-token-usage compare <range> [--base <range>]
+token-usage compare <range> [--base <range>] [--format table|json]
 token-usage compare 20260901-20260907
 token-usage compare 202609 --base 202608
 token-usage compare 20260901-20260907 --by model
+token-usage compare 20260901-20260907 --format json
 ```
 
 | `<range>` / `--base` form | Meaning |
@@ -654,6 +655,7 @@ Behavior:
 - There is no 366-day cap (unlike `query`/`collect`): without `--by`, the command does not expand days — each window is read with a single `BETWEEN` aggregate, so multi-year ranges work.
 - Rows: active days and requests show signed integer changes (`%+d`); token rows reuse the K/M/B abbreviations with `+`/`-` signed changes; `Change %` shows `--` when the base value is 0. Headers avoid ambiguous-width characters (such as Δ) to preserve table borders under CJK terminals.
 - `--by <dimension>` compares per member of a non-temporal dimension (`client`, `model`, `provider`, `project`) across the two windows instead of whole-period totals: one row per member, members seen in only one period compared against 0, sorted by the sum of both periods' total tokens descending (ties broken by display key), ending with a `Total / 总计` row taken from each window's whole-range aggregates (the source of truth, not the sum of member rows). `Change %` shows `--` when the baseline member total is 0. Temporal dimensions (`day`, `month`, `hour`, `weekday`) and unknown values are rejected before the database opens — trends belong in `token-usage chart --line`, and plain two-period totals are compared without `--by`. When both windows have no members and zero totals, only a `no data / 无数据` line is printed. The `provider` dimension applies the `[provider_aliases]` config (same as `query`/`export`). Long ranges are queried internally in 366-day chunks merged across chunks — transparent to the output, and there is still no 366-day cap.
+- `--format` selects `table` (default, unchanged) or `json`; invalid values are rejected before the configuration is loaded and the database is opened. The JSON contract aligns with `export --format json`: raw integers without K/M abbreviation, two-space indentation with a trailing newline, and structs serialized in a stable field order. The top level carries `windows` (`current` and `base`, each with `from`/`to` matching the table's Current/Base lines). Without `--by`, it also carries `metrics`: one object per table row in table order, with `metric` set to `active_days` (compare-specific) and the stable output-metric IDs `requests`, `input`, `output`, `cache_read`, `cache_create`, `reasoning`, `total`; each row holds raw-integer `current`/`base`/`change` and `change_percent` rounded to 1 decimal place — `null` when the base value is 0, the same semantics as the table's `--`. A near-zero negative percentage may serialize as `-0` (numerically equal to zero). With `--by`, it instead carries `dimension`, `members` (one object per member in the same order as the table: `key` plus the same raw-integer fields and `change_percent` semantics) and `totals` whose `current`/`base` sides expose the stable-ID fields `requests`, `input`, `output`, `cache_read`, `cache_create`, `reasoning`, `total`, taken from each window's whole-range aggregates (the source of truth). JSON output has no `no data` early exit: members are an empty array and totals are still emitted.
 - Strictly read-only: it never touches the daemon.
 
 ## chart
