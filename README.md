@@ -148,7 +148,7 @@ token-usage query list
 | `compare <range>` | Compare usage between two periods (`--base` overrides the auto previous equal-length window, `--by` splits per dimension member, `--format json` emits machine-readable output). |
 | `top [date]` | Show the heaviest sessions by total tokens (`--limit`, default 10). |
 | `chart [date]` | Render usage as an SVG chart (`--by` dimension, `--pie`, `--line` for trend lines, `--heatmap`, `--out` to save). |
-| `watch [date]` | Refresh a live summary at a fixed interval (`--once` for a single frame). |
+| `watch [date]` | Refresh a live summary at a fixed interval (`--once` for a single frame, `--by` grouping dimension with `model` as the default). |
 | `report [date] --out <dir>` | Generate a full usage report bundle (summary, comparison, SVG charts). |
 | `version` / `--version` | Show detailed / one-line version information. |
 | `start` / `status` / `stop` / `restart` | Control the background daemon. |

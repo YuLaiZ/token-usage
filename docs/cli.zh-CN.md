@@ -33,7 +33,7 @@ token-usage
 ├── compare <range>                       # 对比两个时间段的用量（--base 显式指定基线，--by 按维度成员对比）
 ├── top [DATE|DATE-DATE]                  # 显示总用量最重的会话排行（--limit，默认 10）
 ├── chart [DATE|DATE-DATE]                # 将用量渲染为 SVG 图表（--by 维度、--pie、--line、--heatmap）
-├── watch [DATE|DATE-DATE]                # 以固定间隔刷新实时摘要
+├── watch [DATE|DATE-DATE]                # 以固定间隔刷新实时摘要（--by 分组维度，默认 model）
 ├── report [DATE|DATE-DATE] --out <dir>   # 生成完整用量报告包
 ├── config                                # 无参数：打开交互式配置 TUI
 │   ├── show                              # 输出完整 effective TOML（只读、纯 TOML）
@@ -715,7 +715,7 @@ token-usage chart 20260901-20260930 --line         # 日趋势折线图（默认
 
 ## watch
 
-以固定间隔刷新实时摘要（总量与按模型分组），直到 Ctrl+C 中断。
+以固定间隔刷新实时摘要（总量与帧内分组表，默认维度 `--by model`），直到 Ctrl+C 中断。
 
 ```bash
 token-usage watch                      # 今日摘要，每 5 秒刷新
@@ -723,6 +723,7 @@ token-usage watch 20260901 --interval 10s
 token-usage watch --once               # 只渲染一帧后退出（对管道友好）
 ```
 
+- `--by <维度>` 切换帧内分组表的维度（`client`、`model`、`provider`、`project`；默认 `model`）；`provider` 应用配置中 `[provider_aliases]` 的显示别名。
 - `--interval` 接受 Go 时长，下限 1 秒；更小的值在打开数据库之前即被拒绝。
 - 交互式循环在每帧之间清屏（Windows 控制台会自动启用虚拟终端处理）；`--once` 只渲染一帧且不含转义序列，重定向输出保持纯文本。
 - 严格只读：与其他读取类命令相同的开库语义，不与守护进程交互，Ctrl+C 不残留任何状态。

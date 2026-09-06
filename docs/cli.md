@@ -33,7 +33,7 @@ token-usage
 ├── compare <range>                       # compare usage between two periods (--base overrides the baseline, --by per member)
 ├── top [DATE|DATE-DATE]                  # heaviest sessions by total tokens (--limit, default 10)
 ├── chart [DATE|DATE-DATE]                # render usage as an SVG chart (--by dimension, --pie, --line, --heatmap)
-├── watch [DATE|DATE-DATE]                # refresh a live summary at a fixed interval
+├── watch [DATE|DATE-DATE]                # refresh a live summary at a fixed interval (--by grouping dimension, default model)
 ├── report [DATE|DATE-DATE] --out <dir>   # generate a full usage report bundle
 ├── config                                # no arguments: open the interactive configuration TUI
 │   ├── show                              # output complete effective TOML (read-only, pure TOML)
@@ -715,7 +715,7 @@ token-usage chart 20260901-20260930 --line         # daily trend as a line chart
 
 ## watch
 
-Refreshes a live summary (totals plus a per-model breakdown) at a fixed interval until interrupted with Ctrl+C.
+Refreshes a live summary (totals plus a frame grouping table, `--by model` by default) at a fixed interval until interrupted with Ctrl+C.
 
 ```bash
 token-usage watch                      # today's summary, refreshed every 5s
@@ -723,6 +723,7 @@ token-usage watch 20260901 --interval 10s
 token-usage watch --once               # render a single frame and exit (pipe-friendly)
 ```
 
+- `--by <dimension>` switches the grouping table of each frame (`client`, `model`, `provider`, `project`; default `model`); `provider` applies the display aliases from `[provider_aliases]` in the config.
 - `--interval` accepts a Go duration with a minimum of 1s; shorter values are rejected before the database opens.
 - Interactive loops clear the screen between frames (Windows consoles get virtual-terminal processing enabled automatically); `--once` renders exactly one frame with no escape sequences, so redirected output stays plain.
 - Strictly read-only: the same opening semantics as every other read command, no daemon interaction, and Ctrl+C leaves no state behind.

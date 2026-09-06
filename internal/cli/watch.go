@@ -55,6 +55,20 @@ func newWatchCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			}
 			once, _ := cmd.Flags().GetBool("once")
 
+			// --by 校验先于配置加载与开库:非法维度不必触碰任何 I/O。
+			by, err := cmd.Flags().GetString("by")
+			if err != nil {
+				return err
+			}
+			switch by {
+			case "client", "model", "provider", "project":
+			default:
+				return fmt.Errorf("%s", ui.Bi(
+					fmt.Sprintf("unknown --by dimension %q (allowed: client, model, provider, project)", by),
+					fmt.Sprintf("未知 --by 维度 %q（允许：client, model, provider, project）", by),
+				))
+			}
+
 			cfg, err := load()
 			if err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
@@ -79,7 +93,18 @@ func newWatchCmdWithDeps(load func() (*config.Config, error), open func(string) 
 				if err != nil {
 					return err
 				}
-				dayView, err := q.ByModel(ctx, dates)
+				// 帧内分组表按 --by 维度切换;provider 应用配置别名合并显示。
+				var dayView string
+				switch by {
+				case "client":
+					dayView, err = q.ByClient(ctx, dates)
+				case "provider":
+					dayView, err = q.ByProvider(ctx, dates, cfg.ProviderAliases)
+				case "project":
+					dayView, err = q.ByProject(ctx, dates)
+				default: // model
+					dayView, err = q.ByModel(ctx, dates)
+				}
 				if err != nil {
 					return err
 				}
@@ -115,5 +140,6 @@ func newWatchCmdWithDeps(load func() (*config.Config, error), open func(string) 
 
 	cmd.Flags().Duration("interval", 5*time.Second, ui.Bi("Refresh interval (minimum 1s)", "刷新间隔(至少 1 秒)"))
 	cmd.Flags().Bool("once", false, ui.Bi("Render a single frame and exit", "只渲染一帧后退出"))
+	cmd.Flags().String("by", "model", ui.Bi("Grouping dimension for the frame table: client/model/provider/project", "帧内分组表的维度：client/model/provider/project"))
 	return cmd
 }
