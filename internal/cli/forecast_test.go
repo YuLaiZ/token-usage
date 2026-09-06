@@ -219,6 +219,13 @@ func TestChartCmd_PieEndToEnd(t *testing.T) {
 	if !strings.Contains(string(svg), "model-x (75.0%)") || !strings.Contains(string(svg), "model-y (25.0%)") {
 		t.Errorf("图例应含两模型的占比:\n%s", svg)
 	}
+	// 标题由 chartTitleFor 生成,恰含一个 " by model" 后缀(不双拼)。
+	if !strings.Contains(string(svg), "<title>token-usage 2026-09-06 by model</title>") {
+		t.Errorf("SVG 主标题应为 token-usage 2026-09-06 by model:\n%s", svg)
+	}
+	if strings.Contains(string(svg), "by model by model") {
+		t.Errorf("SVG 标题不应重复拼接 by 后缀:\n%s", svg)
+	}
 
 	// --pie --by month(时间维度)同 day 一样被拒绝。
 	cmd2 := newChartCmdWithDeps(

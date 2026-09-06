@@ -137,7 +137,7 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 					})
 					colorIdx++
 				}
-				svg = buildPieSVG(title+" by "+by, subtitle, slices)
+				svg = buildPieSVG(title, subtitle, slices)
 			} else {
 				svg = buildBarSVG(title, subtitle, bars)
 			}
@@ -202,8 +202,8 @@ var piePaletteBlockedDimensions = map[string]bool{"day": true, "month": true, "h
 // (client/model/provider/project)用线段连接会产生误导性趋势。
 var lineTemporalDimensions = map[string]bool{"day": true, "month": true, "hour": true, "weekday": true}
 
-// chartTitleFor 统一柱状图标题:by=day(默认按日柱状)时仅区间,其余维度
-// 追加 " by <维度>" 与 report 包内图表命名一致。
+// chartTitleFor 统一柱状/折线/饼图标题:by=day(默认按日柱状)时仅区间,
+// 其余维度追加 " by <维度>" 与 report 包内图表命名一致。
 func chartTitleFor(rangeLabel, by string) string {
 	if by == "day" {
 		return "token-usage " + rangeLabel
