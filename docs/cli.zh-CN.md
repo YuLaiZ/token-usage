@@ -692,14 +692,14 @@ token-usage watch --once               # 只渲染一帧后退出（对管道友
 
 ## report
 
-将完整用量报告包生成到目录：文本摘要、各维度 SVG 图表（日/小时/星期/月柱状图，客户端/模型/供应商/项目占比饼图）以及星期×小时 SVG 热力矩阵。所有图表与对应的 `query`/`chart` 视图共用同一聚合核。
+将完整用量报告包生成到目录：文本摘要、与紧邻等长前置窗口的用量对比（`compare.txt`，缺省基线规则与 `compare` 命令一致）、各维度 SVG 图表（日/小时/星期/月柱状图，客户端/模型/供应商/项目占比饼图）以及星期×小时 SVG 热力矩阵。所有图表与对应的 `query`/`chart` 视图共用同一聚合核。
 
 ```bash
 token-usage report 20260901-20260930 --out september-report
 ```
 
 - `--out <目录>` 必填；目录不存在时自动创建，每个文件均为原子写入。
-- 文件：`summary.txt`、`daily.svg`、`hourly.svg`、`weekday.svg`、`monthly.svg`、`by-client.svg`、`by-model.svg`、`by-provider.svg`、`by-project.svg`、`heatmap.svg`。
+- 文件：`summary.txt`、`compare.txt`、`daily.svg`、`hourly.svg`、`weekday.svg`、`monthly.svg`、`by-client.svg`、`by-model.svg`、`by-provider.svg`、`by-project.svg`、`heatmap.svg`。
 - 日期参数与 `query`/`collect` 同形态（默认今天）。报告包不含 forecast 外推，请单独执行 `token-usage forecast`。除写入报告包外严格只读。
 
 ## update

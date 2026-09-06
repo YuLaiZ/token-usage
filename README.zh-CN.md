@@ -148,7 +148,7 @@ token-usage query list
 | `compare <range>` | 对比两个时间段的用量（缺省自动取等长前置窗口，`--base` 显式指定基线，`--by` 按维度成员对比，`--format json` 输出机器可读结果）。 |
 | `chart [日期]` | 将用量渲染为 SVG 图表（`--by` 维度、`--pie`、`--line` 趋势线、`--heatmap`、`--out` 保存）。 |
 | `watch [日期]` | 以固定间隔刷新实时摘要（`--once` 单帧）。 |
-| `report [日期] --out <目录>` | 生成完整用量报告包（摘要 + SVG 图表）。 |
+| `report [日期] --out <目录>` | 生成完整用量报告包（摘要、对比 + SVG 图表）。 |
 | `version` / `--version` | 查看多行详细 / 单行简要的版本信息。 |
 | `start` / `status` / `stop` / `restart` | 控制后台守护进程。 |
 | `completion <shell>` | 输出 Bash、Zsh、Fish 或 PowerShell 的补全脚本。 |

@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -102,8 +104,9 @@ func newReportCmdWithDeps(load func() (*config.Config, error), open func(string)
 	return cmd
 }
 
-// reportFiles 组装报告包的全部文件:文本摘要 + 各维度 SVG 图表 + SVG 热力
-// 矩阵。渲染器与对应的 query/chart 视图共用同一聚合核。
+// reportFiles 组装报告包的全部文件:文本摘要 + 两期用量对比文本 + 各维度
+// SVG 图表 + SVG 热力矩阵。渲染器与对应的 query/chart/compare 视图共用同一
+// 聚合核。
 func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeLabel string) ([]reportFile, error) {
 	// summary 文本带上统计范围/数据截至/最近采集三项,与 query summary 的
 	// 终端输出对齐(报告包的主文本文件可自证统计范围)。
@@ -125,9 +128,44 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 		querier.FormatTokens(rangeStats.Total.TotalTokens), rangeStats.Total.Requests)
 	heatmapSVG := buildChartHeatmap(ctx, q, dates, subtitle)
 
+	// compare.txt:本期与紧邻的等长前置窗口的用量对比。缺省基线规则与
+	// compare 命令一致(defaultCompareBase 的区间分支:结束于开始日前一天
+	// 的等长窗口,天数用纯 AddDate 循环推导),单日报告自然退化为前一天。
+	// 当前窗口总量复用上方的 rangeStats(同一查询,不重复聚合),基线窗口
+	// 单独查一次;渲染复用 compare 的 renderCompare,用 bytes.Buffer 承接。
+	curStartT, err := time.Parse("2006-01-02", dates[0])
+	if err != nil {
+		return nil, err
+	}
+	curEndT, err := time.Parse("2006-01-02", dates[len(dates)-1])
+	if err != nil {
+		return nil, err
+	}
+	baseStartT, baseEndT := defaultCompareBase(curStartT, curEndT, 0)
+	baseStats, err := q.StatsBetween(ctx, baseStartT.Format("2006-01-02"), baseEndT.Format("2006-01-02"))
+	if err != nil {
+		return nil, err
+	}
+	var compareBuf bytes.Buffer
+	if err := renderCompare(&compareBuf, compareRenderInput{
+		curStart:  dates[0],
+		curEnd:    dates[len(dates)-1],
+		baseStart: baseStartT.Format("2006-01-02"),
+		baseEnd:   baseEndT.Format("2006-01-02"),
+		cur:       rangeStats,
+		base:      baseStats,
+	}); err != nil {
+		return nil, err
+	}
+
+	// compare.txt 紧随 summary.txt,作为报告包的第二个文本文件;summary
+	// 标记沿「true=纯文本」语义(写盘流程不消费该字段,仅作类型标注)。
 	files := []reportFile{
 		{name: "summary.txt", summary: true, render: func() (string, error) {
 			return header + "\n" + summary, nil
+		}},
+		{name: "compare.txt", summary: true, render: func() (string, error) {
+			return compareBuf.String(), nil
 		}},
 		{name: "heatmap.svg", render: func() (string, error) { return heatmapSVG, nil }},
 	}
