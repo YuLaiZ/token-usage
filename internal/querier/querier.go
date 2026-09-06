@@ -1150,3 +1150,9 @@ func formatDuration(ms int64) string {
 		return fmt.Sprintf("%ds", seconds)
 	}
 }
+
+// FormatDuration 是 formatDuration 的导出别名,供 cli 层 top 排行渲染等包外
+// 消费方与 query session 表格使用同一时长口径,防止两处格式化漂移。
+func FormatDuration(ms int64) string {
+	return formatDuration(ms)
+}

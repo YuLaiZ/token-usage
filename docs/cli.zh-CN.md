@@ -31,6 +31,7 @@ token-usage
 ├── doctor                                # 只读健康自检（配置、数据目录、数据库、客户端、采集、异常）
 ├── forecast                              # 按近期日均外推用量
 ├── compare <range>                       # 对比两个时间段的用量（--base 显式指定基线，--by 按维度成员对比）
+├── top [DATE|DATE-DATE]                  # 显示总用量最重的会话排行（--limit，默认 10）
 ├── chart [DATE|DATE-DATE]                # 将用量渲染为 SVG 图表（--by 维度、--pie、--line、--heatmap）
 ├── watch [DATE|DATE-DATE]                # 以固定间隔刷新实时摘要
 ├── report [DATE|DATE-DATE] --out <dir>   # 生成完整用量报告包
@@ -671,6 +672,27 @@ token-usage compare 20260901-20260907 --format json
 - 行文案：活跃天与请求数显示带符号整数变化（`%+d`）；token 行沿用 K/M/B 缩写并带 `+`/`-` 符号；基线值为 0 时变化% 显示 `--`。表头不使用 Δ 等 ambiguous 宽度字符，保证 CJK 终端下框线对齐。
 - `--by <维度>` 按非时间维度（`client`、`model`、`provider`、`project`）的成员对比两期用量而非两期总量：每个成员一行，只在一期出现的成员与 0 对比；行按两期 total tokens 之和降序（同值按显示键升序）；末行 `Total / 总计` 取各窗口的全量聚合（真相源，不由成员行累加）。基线成员总量为 0 时变化% 显示 `--`。时间维度（`day`、`month`、`hour`、`weekday`）与未知值在打开数据库之前即被拒绝——趋势图请用 `token-usage chart --line`，两期总量对比用不带 `--by` 的 compare。双窗口均无成员且两期总量均为 0 时只输出 `no data / 无数据` 一行。provider 维度应用 `[provider_aliases]` 配置（与 `query`/`export` 一致）。超长区间内部分 366 天块查询后跨块合并——对输出透明，仍然没有 366 天上限。
 - `--format` 选择 `table`（默认，行为不变）或 `json`；非法值在加载配置与打开数据库之前即被拒绝。JSON 契约与 `export --format json` 对齐：原始整数（不做 K/M 缩写）、两空格缩进加尾随换行、struct 序列化保证字段顺序稳定。顶层为 `windows`（`current` 与 `base`，各自的 `from`/`to` 与表格 Current/Base 行同源）。不带 `--by` 时另有 `metrics`：与表格行同序、每行一个对象，`metric` 取 `active_days`（compare 特有）与稳定输出指标 ID `requests`、`input`、`output`、`cache_read`、`cache_create`、`reasoning`、`total`；每行含原始整数 `current`/`base`/`change` 与四舍五入到 1 位小数的 `change_percent`——基线值为 0 时为 `null`，与表格 `--` 同语义。近零负百分比可能序列化为 `-0`（数值等价于 0）。带 `--by` 时改为输出 `dimension`、`members`（与表格同序、每成员一个对象：`key` 加同样的原始整数字段与 `change_percent` 语义）与 `totals`（`current`/`base` 两侧暴露稳定 ID 字段 `requests`、`input`、`output`、`cache_read`、`cache_create`、`reasoning`、`total`，取各窗口的全量聚合真相源）。JSON 输出没有 no data 早退：members 为空数组、totals 照常输出。
+- 严格只读：不触碰守护进程。
+
+## top
+
+显示总用量最重的会话排行：输出一张框线表，按名次列出会话的标题、客户端、项目、时长、请求数与总量。
+
+```text
+token-usage top [DATE|DATE-DATE] [--limit N]
+token-usage top
+token-usage top 20260901-20260907
+token-usage top 202609 --limit 20
+```
+
+行为要点：
+
+- 日期参数与 `query` 同形态（日 `YYYYMMDD`、月 `YYYYMM`、年 `YYYY`（仅单独使用）或日/月闭区间），缺省时默认今天；与 `query` 一样展开上限 366 天。
+- 会话按 TotalTokens 降序排列；同值按 Client 升序、再按 Title 升序决序，全并列时按会话首条消息时间戳升序，与数据库返回行序无关，排名确定。
+- `--limit` 为显示的会话数量，默认 10，无上限；小于 1 的取值在加载配置与打开数据库之前即被拒绝。
+- Duration 是会话的请求跨度——区间内末条与首条消息时间戳之差——渲染口径与 `query session` 表格一致（`<1s`、`5m 0s`、`1h 1m`、`2d 3h`）。
+- 空 Project 显示为 `(uncategorized) / (未分类)`；Total 沿用与 query 相同的 K/M/B 缩写；Title 列与 `query session` 同款按 30 显示宽上限截断。
+- 无数据时只输出 `Top sessions / 会话排行` 标题行与 `no data / 无数据` 一行。
 - 严格只读：不触碰守护进程。
 
 ## chart

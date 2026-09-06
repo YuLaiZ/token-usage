@@ -11,8 +11,8 @@ import (
 )
 
 // TestRootCommand_HasSubcommands 收口：root 必须列出且仅列出
-// collect/config/doctor/errors/export/query/restart/start/status/stop/update/version/help/completion/forecast/compare/chart/watch/report
-// 十九个用户可见子命令。
+// collect/config/doctor/errors/export/query/restart/start/status/stop/update/version/help/completion/forecast/compare/top/chart/watch/report
+// 二十个用户可见子命令。
 //
 // 这是 strict 集合断言：多余或缺失任一项均失败。newRootCmd 现在显式
 // InitDefaultHelpCmd/InitDefaultCompletionCmd（为改写双语 Short），因此
@@ -29,6 +29,7 @@ func TestRootCommand_HasSubcommands(t *testing.T) {
 		"doctor":     true,
 		"forecast":   true,
 		"compare":    true,
+		"top":        true,
 		"chart":      true,
 		"watch":      true,
 		"report":     true,
@@ -59,7 +60,7 @@ func TestRootCommand_HasSubcommands(t *testing.T) {
 	}
 	for name := range got {
 		if !want[name] {
-			t.Errorf("unexpected user-visible subcommand %q at root (收口集合为 config/collect/query/export/doctor/forecast/compare/chart/watch/report/errors/start/status/stop/restart/update/version/help/completion)", name)
+			t.Errorf("unexpected user-visible subcommand %q at root (收口集合为 config/collect/query/export/doctor/forecast/compare/top/chart/watch/report/errors/start/status/stop/restart/update/version/help/completion)", name)
 		}
 	}
 }

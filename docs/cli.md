@@ -31,6 +31,7 @@ token-usage
 ├── doctor                                # read-only health check (config, data directory, database, clients, collection, errors)
 ├── forecast                              # extrapolate usage from recent daily averages
 ├── compare <range>                       # compare usage between two periods (--base overrides the baseline, --by per member)
+├── top [DATE|DATE-DATE]                  # heaviest sessions by total tokens (--limit, default 10)
 ├── chart [DATE|DATE-DATE]                # render usage as an SVG chart (--by dimension, --pie, --line, --heatmap)
 ├── watch [DATE|DATE-DATE]                # refresh a live summary at a fixed interval
 ├── report [DATE|DATE-DATE] --out <dir>   # generate a full usage report bundle
@@ -671,6 +672,27 @@ Behavior:
 - Rows: active days and requests show signed integer changes (`%+d`); token rows reuse the K/M/B abbreviations with `+`/`-` signed changes; `Change %` shows `--` when the base value is 0. Headers avoid ambiguous-width characters (such as Δ) to preserve table borders under CJK terminals.
 - `--by <dimension>` compares per member of a non-temporal dimension (`client`, `model`, `provider`, `project`) across the two windows instead of whole-period totals: one row per member, members seen in only one period compared against 0, sorted by the sum of both periods' total tokens descending (ties broken by display key), ending with a `Total / 总计` row taken from each window's whole-range aggregates (the source of truth, not the sum of member rows). `Change %` shows `--` when the baseline member total is 0. Temporal dimensions (`day`, `month`, `hour`, `weekday`) and unknown values are rejected before the database opens — trends belong in `token-usage chart --line`, and plain two-period totals are compared without `--by`. When both windows have no members and zero totals, only a `no data / 无数据` line is printed. The `provider` dimension applies the `[provider_aliases]` config (same as `query`/`export`). Long ranges are queried internally in 366-day chunks merged across chunks — transparent to the output, and there is still no 366-day cap.
 - `--format` selects `table` (default, unchanged) or `json`; invalid values are rejected before the configuration is loaded and the database is opened. The JSON contract aligns with `export --format json`: raw integers without K/M abbreviation, two-space indentation with a trailing newline, and structs serialized in a stable field order. The top level carries `windows` (`current` and `base`, each with `from`/`to` matching the table's Current/Base lines). Without `--by`, it also carries `metrics`: one object per table row in table order, with `metric` set to `active_days` (compare-specific) and the stable output-metric IDs `requests`, `input`, `output`, `cache_read`, `cache_create`, `reasoning`, `total`; each row holds raw-integer `current`/`base`/`change` and `change_percent` rounded to 1 decimal place — `null` when the base value is 0, the same semantics as the table's `--`. A near-zero negative percentage may serialize as `-0` (numerically equal to zero). With `--by`, it instead carries `dimension`, `members` (one object per member in the same order as the table: `key` plus the same raw-integer fields and `change_percent` semantics) and `totals` whose `current`/`base` sides expose the stable-ID fields `requests`, `input`, `output`, `cache_read`, `cache_create`, `reasoning`, `total`, taken from each window's whole-range aggregates (the source of truth). JSON output has no `no data` early exit: members are an empty array and totals are still emitted.
+- Strictly read-only: it never touches the daemon.
+
+## top
+
+Shows the heaviest sessions by total tokens: one framed table ranking sessions with rank number, Title, Client, Project, Duration, Requests, and Total.
+
+```text
+token-usage top [DATE|DATE-DATE] [--limit N]
+token-usage top
+token-usage top 20260901-20260907
+token-usage top 202609 --limit 20
+```
+
+Behavior:
+
+- The date argument accepts the same forms as `query` (a day `YYYYMMDD`, a month `YYYYMM`, a year `YYYY` as a single arg, or an inclusive day/month range) and defaults to today; like `query`, the expansion is capped at 366 days.
+- Sessions are ranked by TotalTokens descending; ties are broken by Client ascending, then Title ascending, and full ties are ordered by the session's first message timestamp ascending, so the order is deterministic regardless of the order the database returns rows in.
+- `--limit` is the number of sessions to show, default 10, with no upper bound; values below 1 are rejected before the configuration is loaded and the database is opened.
+- Duration is the session's request span — the difference between the last and first message timestamps within the range — rendered in the same format as the `query session` table (`<1s`, `5m 0s`, `1h 1m`, `2d 3h`).
+- An empty Project is displayed as `(uncategorized) / (未分类)`; Total reuses the same K/M/B abbreviations as query; the Title column is truncated at a 30 display-width cap like `query session`.
+- When there is no data, only the `Top sessions / 会话排行` title line and a `no data / 无数据` line are printed.
 - Strictly read-only: it never touches the daemon.
 
 ## chart
