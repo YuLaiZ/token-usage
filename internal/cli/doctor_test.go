@@ -55,6 +55,18 @@ func insertCollectionLogAge(t *testing.T, usageDB *db.DB, date, source string, a
 	insertCollectionLogAt(t, usageDB, date, source, collectedAtUTC)
 }
 
+// insertOneMessageAt 向内存库插入一条指定 ts(Unix 毫秒)的最小消息记录;
+// date 由调用方显式给出,便于 doctor 日期一致性检查构造「date 与 ts 同日一致」
+// 与「刻意错位」两种种子。其余列与 insertOneMessage 同口径(不动其 ts=0 语义,
+// 避免影响 query 分发测试)。
+func insertOneMessageAt(usageDB *db.DB, date, client string, ts int64) error {
+	_, err := usageDB.ExecContext(context.Background(), `
+INSERT INTO messages (id, session_id, client, date, ts, model, total_tokens)
+VALUES (?, ?, ?, ?, ?, ?, 0)`,
+		client+"-"+date, "sess-"+date, client, date, ts, "test-model")
+	return err
+}
+
 // 全绿场景:有效配置 + 目录存在可写 + 已建库(含一条消息与一条采集记录)
 // + 一个启用客户端 + 无未解决异常 → 各行 OK、结果 OK / 一切正常。
 func TestDoctor_AllGreen(t *testing.T) {
@@ -64,7 +76,9 @@ func TestDoctor_AllGreen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := insertOneMessage(usageDB, "2026-09-01", "claude"); err != nil {
+	// 种子的 date 与 ts 同日(当地正午,任何时区都不会跨日),满足日期一致性 OK。
+	if err := insertOneMessageAt(usageDB, "2026-09-01", "claude",
+		time.Date(2026, 9, 1, 12, 0, 0, 0, time.Local).UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	insertCollectionLogAge(t, usageDB, "2026-09-01", "claude", 2*time.Hour)
@@ -81,6 +95,7 @@ func TestDoctor_AllGreen(t *testing.T) {
 		"Clients / 客户端: OK / 正常 1 (claude)",
 		"Last collection / 最近采集: OK / 正常 ",
 		"Data freshness / 数据新鲜度: OK / 正常 2 h ago / 2 小时前",
+		"Date consistency / 日期一致性: OK / 正常 1 messages consistent / 1 条消息日期一致",
 		"Unresolved errors / 未解决异常: OK / 正常 none / 无",
 		"Daemon / 守护进程: INFO / 提示 ",
 		"Result / 结果: OK / 一切正常",
@@ -111,9 +126,9 @@ func TestDoctor_ConfigLoadFailure(t *testing.T) {
 		t.Errorf("Config 应 FAIL 并携带错误:\n%s", out)
 	}
 	// Data directory / Database / Clients / Last collection / Data freshness /
-	// Unresolved errors / Query definitions 共 7 项跳过。
-	if n := strings.Count(out, "SKIPPED / 跳过"); n != 7 {
-		t.Errorf("依赖配置的检查项应恰 7 行 SKIPPED,实际 %d:\n%s", n, out)
+	// Date consistency / Unresolved errors / Query definitions 共 8 项跳过。
+	if n := strings.Count(out, "SKIPPED / 跳过"); n != 8 {
+		t.Errorf("依赖配置的检查项应恰 8 行 SKIPPED,实际 %d:\n%s", n, out)
 	}
 	if !strings.Contains(out, "Daemon / 守护进程: INFO / 提示") {
 		t.Errorf("Daemon 提示行不受配置失败影响:\n%s", out)
@@ -124,7 +139,8 @@ func TestDoctor_ConfigLoadFailure(t *testing.T) {
 }
 
 // 数据目录不存在:目录 FAIL;数据库按「文件不存在」记 WARN(尚未创建);
-// 依赖数据库的三项(最近采集/数据新鲜度/未解决异常)SKIPPED;结果为 1 项失败。
+// 依赖数据库的四项(最近采集/数据新鲜度/日期一致性/未解决异常)SKIPPED;
+// 结果为 1 项失败。
 func TestDoctor_DataDirMissingFails(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "not-exist")
 	out := runDoctorForTest(t, doctorLoad(missing, map[string]bool{"claude": true}), db.Open)
@@ -137,8 +153,8 @@ func TestDoctor_DataDirMissingFails(t *testing.T) {
 		!strings.Contains(out, "尚未创建") {
 		t.Errorf("数据库不存在应 WARN 尚未创建:\n%s", out)
 	}
-	if strings.Count(out, "SKIPPED / 跳过") != 3 {
-		t.Errorf("依赖数据库的三项应 SKIPPED:\n%s", out)
+	if strings.Count(out, "SKIPPED / 跳过") != 4 {
+		t.Errorf("依赖数据库的四项应 SKIPPED:\n%s", out)
 	}
 	if !strings.Contains(out, "Result / 结果: 1 problems / 1 项失败") {
 		t.Errorf("结果应为 1 项失败:\n%s", out)
@@ -207,8 +223,9 @@ func TestDoctor_EmptyDbFileNotInitialized(t *testing.T) {
 		!strings.Contains(out, "empty database file") || !strings.Contains(out, "空数据库文件") {
 		t.Errorf("空数据库文件应 WARN 且提示初始化:\n%s", out)
 	}
-	if strings.Count(out, "SKIPPED / 跳过") != 3 {
-		t.Errorf("依赖数据库的三项应 SKIPPED:\n%s", out)
+	// 依赖数据库的四项(最近采集/数据新鲜度/日期一致性/未解决异常)SKIPPED。
+	if strings.Count(out, "SKIPPED / 跳过") != 4 {
+		t.Errorf("依赖数据库的四项应 SKIPPED:\n%s", out)
 	}
 	// 区分度锚点:doctor 不得初始化空库文件,大小必须仍为 0。
 	info, err := os.Stat(dbPath)
@@ -331,7 +348,9 @@ func TestDoctor_DataFreshness_Stale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := insertOneMessage(usageDB, "2026-09-01", "claude"); err != nil {
+	// 种子的 date 与 ts 同日,隔离出仅数据新鲜度一项告警(日期一致性 OK)。
+	if err := insertOneMessageAt(usageDB, "2026-09-01", "claude",
+		time.Date(2026, 9, 1, 12, 0, 0, 0, time.Local).UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	insertCollectionLogAge(t, usageDB, "2026-09-01", "claude", 8*24*time.Hour)
@@ -359,7 +378,9 @@ func TestDoctor_DataFreshness_NoCollection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := insertOneMessage(usageDB, "2026-09-01", "claude"); err != nil {
+	// 种子的 date 与 ts 同日,隔离出仅 Last collection 一项告警(日期一致性 OK)。
+	if err := insertOneMessageAt(usageDB, "2026-09-01", "claude",
+		time.Date(2026, 9, 1, 12, 0, 0, 0, time.Local).UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	usageDB.Close()
@@ -413,5 +434,68 @@ func TestDoctorFreshnessDesc_Table(t *testing.T) {
 		if got := doctorFreshnessDesc(tc.age); got != tc.want {
 			t.Errorf("doctorFreshnessDesc(%v) = %q, want %q", tc.age, got, tc.want)
 		}
+	}
+}
+
+// 日期一致性 WARN 分支:一条 date 与按 ts 重算日期错位的消息 → WARN 含双语
+// 关键片段,warnings 恰增 1(一致种子 + 新鲜采集记录保证其余项全绿)。
+func TestDoctor_DateConsistency_MismatchWarn(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "usage.db")
+	usageDB, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 一致种子:2026-09-06 当地正午。
+	if err := insertOneMessageAt(usageDB, "2026-09-06", "claude",
+		time.Date(2026, 9, 6, 12, 0, 0, 0, time.Local).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	// 错位种子:date 标 2026-01-01,ts 落在 2026-09-06 当日。
+	if err := insertOneMessageAt(usageDB, "2026-01-01", "codex",
+		time.Date(2026, 9, 6, 9, 30, 0, 0, time.Local).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	insertCollectionLogAge(t, usageDB, "2026-09-06", "claude", 2*time.Hour)
+	usageDB.Close()
+
+	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
+	if !strings.Contains(out, "Date consistency / 日期一致性: WARN / 警告") {
+		t.Errorf("日期错位应 WARN:\n%s", out)
+	}
+	for _, want := range []string{
+		"1 条消息日期与时间戳不一致",
+		"check whether the system timezone changed or data was modified directly",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("WARN 应含 %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "Result / 结果: 1 warnings / 1 项警告") {
+		t.Errorf("结果应恰 1 项警告(仅日期一致性):\n%s", out)
+	}
+}
+
+// ts=0(epoch)与 date=1970-01-01 视为一致:unixepoch 0 经 localtime 重算
+// 应回到 1970-01-01(UTC 负偏移时区为 1969-12-31,该用例仅在前者下验证)。
+func TestDoctor_DateConsistency_EpochTs(t *testing.T) {
+	if local := time.Unix(0, 0).Format("2006-01-02"); local != "1970-01-01" {
+		t.Skipf("本地时区下 epoch 0 为 %s,1970-01-01 一致性用例不适用", local)
+	}
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "usage.db")
+	usageDB, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := insertOneMessageAt(usageDB, "1970-01-01", "claude", 0); err != nil {
+		t.Fatal(err)
+	}
+	insertCollectionLogAge(t, usageDB, "2026-09-06", "claude", 2*time.Hour)
+	usageDB.Close()
+
+	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
+	if !strings.Contains(out, "Date consistency / 日期一致性: OK / 正常 1 messages consistent / 1 条消息日期一致") {
+		t.Errorf("ts=0 与 date=1970-01-01 应视为一致:\n%s", out)
 	}
 }

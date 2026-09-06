@@ -429,11 +429,12 @@ token-usage doctor
 | `Clients / 客户端` | count and names of enabled clients | no client enabled | — |
 | `Last collection / 最近采集` | last successful collection time (local timezone) | no successful collection recorded yet | query failure |
 | `Data freshness / 数据新鲜度` | humanized time since the last collection (`just now`, `N h ago`, or `N d ago`); OK within 7 days | last collection more than 7 days ago (7 days covers weekends and short holidays); suggests running `token-usage collect` to refresh; warnings only | — |
+| `Date consistency / 日期一致性` | every stored local date matches the local date recomputed from its millisecond timestamp; prints the total message count | N messages with date inconsistent with timestamp; check whether the system timezone changed or data was modified directly; warnings only — no auto-fix | query failure |
 | `Unresolved errors / 未解决异常` | none | count with pointers to `token-usage errors` and `token-usage collect retry` | query failure |
 | `Query definitions / 查询视图` | configured subqueries/groups/default are semantically valid (also OK when none are configured) | issue count with the first diagnostic path and a pointer to `token-usage query list`; warnings only — broken view definitions never block collection or the static table commands | config failed to load |
 | `Daemon / 守护进程` | informational only: points to `token-usage status`; doctor never probes or controls the daemon (probing would create lock/config-directory files) | | |
 
-- Checks that cannot run because an upstream check failed print `SKIPPED / 跳过` and add no new count (the upstream FAIL already counts): config failure skips every config-dependent check; a missing or broken database skips the collection, freshness, and error checks; when the last-collection query fails, data freshness is skipped as `unavailable / 无法获取` because last collection already FAILs; with no collection recorded at all, data freshness is skipped because last collection already warns.
+- Checks that cannot run because an upstream check failed print `SKIPPED / 跳过` and add no new count (the upstream FAIL already counts): config failure skips every config-dependent check; a missing or broken database skips the collection, freshness, date-consistency, and error checks; when the last-collection query fails, data freshness is skipped as `unavailable / 无法获取` because last collection already FAILs; with no collection recorded at all, data freshness is skipped because last collection already warns.
 - The summary line (`Result / 结果`) is `OK / 一切正常`, `N warnings / N 项警告`, or `N problems / N 项失败` (FAIL takes precedence over WARN).
 - The exit code is always 0 in v1: FAIL/WARN are report-only.
 

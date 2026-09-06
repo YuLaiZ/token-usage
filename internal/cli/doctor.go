@@ -32,8 +32,8 @@ func newDoctorCmdWithDeps(load func() (*config.Config, error), open func(string)
 		Use:   "doctor",
 		Short: "Run health checks and report problems / 运行健康检查并报告问题",
 		Long: ui.Bi(
-			"Run read-only health checks and print one line per check (OK/WARN/FAIL) with a final summary. Checks: config, data directory (the writability probe creates exactly one temporary file and removes it immediately), database (SQLite quick_check plus message count), enabled clients, last successful collection, data freshness (WARN when the last collection is more than seven days old), unresolved collection errors, query view definitions (subqueries/groups/default semantic validity, warnings only), and an informational pointer to `token-usage status` for daemon state. No business data is written: opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own; it never starts, stops, or restarts the daemon, and never modifies configuration. FAIL/WARN are report-only; the exit code is always 0 in v1.",
-			"运行只读健康检查,逐项输出检查结果(OK/WARN/FAIL)并给出汇总。检查项:配置、数据目录(可写探针仅创建一个临时文件并立即删除)、数据库(SQLite quick_check 与消息行数)、已启用客户端、最近成功采集、数据新鲜度(最近采集距今超过七天告警)、未解决采集异常、查询视图定义(subqueries/groups/default 的语义合法性,仅警告),以及指向 `token-usage status` 的守护进程状态提示。不写业务数据:打开数据库的行为(journal 模式设置与 schema 迁移)与其它读取类命令一致,doctor 自身不执行任何特有的写操作;绝不启动/停止/重启守护进程,绝不修改配置。FAIL/WARN 仅体现在输出,v1 退出码恒为 0。",
+			"Run read-only health checks and print one line per check (OK/WARN/FAIL) with a final summary. Checks: config, data directory (the writability probe creates exactly one temporary file and removes it immediately), database (SQLite quick_check plus message count), enabled clients, last successful collection, data freshness (WARN when the last collection is more than seven days old), date consistency (WARN when stored dates disagree with the local dates recomputed from message timestamps; report-only, no auto-fix), unresolved collection errors, query view definitions (subqueries/groups/default semantic validity, warnings only), and an informational pointer to `token-usage status` for daemon state. No business data is written: opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own; it never starts, stops, or restarts the daemon, and never modifies configuration. FAIL/WARN are report-only; the exit code is always 0 in v1.",
+			"运行只读健康检查,逐项输出检查结果(OK/WARN/FAIL)并给出汇总。检查项:配置、数据目录(可写探针仅创建一个临时文件并立即删除)、数据库(SQLite quick_check 与消息行数)、已启用客户端、最近成功采集、数据新鲜度(最近采集距今超过七天告警)、日期一致性(date 列与按 ts 毫秒重算的本地日期不一致时告警,仅报告不自动修复)、未解决采集异常、查询视图定义(subqueries/groups/default 的语义合法性,仅警告),以及指向 `token-usage status` 的守护进程状态提示。不写业务数据:打开数据库的行为(journal 模式设置与 schema 迁移)与其它读取类命令一致,doctor 自身不执行任何特有的写操作;绝不启动/停止/重启守护进程,绝不修改配置。FAIL/WARN 仅体现在输出,v1 退出码恒为 0。",
 		),
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
@@ -146,6 +146,10 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	// 3. Database / 数据库
 	var usageDB *db.DB
 	dbState := dbStateSkipped
+	// messages 提到外层声明:检查 7「日期一致性」的 OK 描述复用同一份消息
+	// 计数,避免重复查询;仅在 dbState 达到 OK 时被赋值,后续检查读它前已按
+	// dbState 分派,不会读到零值假象。
+	var messages int64
 	if configFailed {
 		doctorLine(out, ui.Bi("Database", "数据库"), statusSkip, ui.Bi("config failed", "配置加载失败"))
 	} else {
@@ -186,7 +190,6 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 					doctorLine(out, ui.Bi("Database", "数据库"), statusFail,
 						ui.Bi("quick_check failed", "quick_check 未通过")+": "+quick)
 				default:
-					var messages int64
 					if countErr := usageDB.QueryRowContext(ctx,
 						"SELECT COUNT(*) FROM messages").Scan(&messages); countErr != nil {
 						failures++
@@ -285,7 +288,40 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 			doctorFreshnessDesc(time.Since(fresh.LastCollection)))
 	}
 
-	// 7. Unresolved errors / 未解决异常
+	// 7. Date consistency / 日期一致性:messages.date 是采集时按本地时区归属
+	// 写入的 YYYY-MM-DD,应与按 ts 毫秒重算的本地日期一致;不一致说明存在时区
+	// 变更、时钟异常或数据被直接修改,按日统计的归属会失真。仅 WARN 不自动
+	// 修复(修复需重写业务数据,违背 doctor 只读铁律);消息总数复用检查 3
+	// 的查询结果,单行只读计数仿检查 3 的写法。
+	switch {
+	case configFailed:
+		doctorLine(out, ui.Bi("Date consistency", "日期一致性"), statusSkip, ui.Bi("config failed", "配置加载失败"))
+	case dbState != dbStateOK:
+		// 上游数据库项已计 WARN/FAIL,此处跳过不重复计数。
+		doctorLine(out, ui.Bi("Date consistency", "日期一致性"), statusSkip, ui.Bi("database unavailable", "数据库不可用"))
+	default:
+		var mismatched int64
+		if scanErr := usageDB.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM messages WHERE date != strftime('%Y-%m-%d', ts/1000, 'unixepoch', 'localtime')",
+		).Scan(&mismatched); scanErr != nil {
+			failures++
+			doctorLine(out, ui.Bi("Date consistency", "日期一致性"), statusFail, scanErr.Error())
+		} else if mismatched == 0 {
+			// 总数分别内嵌进双语半句:若只在句首加 %d,中文半句会缺数字。
+			doctorLine(out, ui.Bi("Date consistency", "日期一致性"), statusOK, ui.Bi(
+				fmt.Sprintf("%d messages consistent", messages),
+				fmt.Sprintf("%d 条消息日期一致", messages),
+			))
+		} else {
+			warnings++
+			doctorLine(out, ui.Bi("Date consistency", "日期一致性"), statusWarn, ui.Bi(
+				fmt.Sprintf("%d messages with date inconsistent with timestamp; check whether the system timezone changed or data was modified directly", mismatched),
+				fmt.Sprintf("%d 条消息日期与时间戳不一致；请检查系统时区是否变更或数据是否被直接修改", mismatched),
+			))
+		}
+	}
+
+	// 8. Unresolved errors / 未解决异常
 	switch {
 	case configFailed:
 		doctorLine(out, ui.Bi("Unresolved errors", "未解决异常"), statusSkip, ui.Bi("config failed", "配置加载失败"))
@@ -307,7 +343,7 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 		}
 	}
 
-	// 8. Query definitions / 查询视图:主动巡检配置的视图定义语义(default、
+	// 9. Query definitions / 查询视图:主动巡检配置的视图定义语义(default、
 	// subqueries、groups),在使用路径报错之前提前发现坏定义。仅 WARN 不 FAIL:
 	// 配置是纯展示态,坏定义不阻断采集与其他静态命令。
 	switch {
@@ -330,7 +366,7 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 		}
 	}
 
-	// 9. Daemon / 守护进程:固定输出提示行,不计入警告。
+	// 10. Daemon / 守护进程:固定输出提示行,不计入警告。
 	// 取舍:现成的只读判活 helper 复用并不干净——control.NewManager 构造期即
 	// MkdirAll 创建配置目录,daemon.IsDaemonRunning 经 flock TryLock 探测会在
 	// 锁文件不存在时创建它、锁文件不可创建时又保守误判为运行中;两者均违背
