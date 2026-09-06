@@ -145,7 +145,7 @@ token-usage query list
 | `errors [date]` | Show collection failures for a date or range. |
 | `doctor` | Run read-only health checks. |
 | `forecast` | Extrapolate upcoming usage from recent daily averages. |
-| `compare <range>` | Compare usage between two periods (`--base` overrides the auto previous equal-length window). |
+| `compare <range>` | Compare usage between two periods (`--base` overrides the auto previous equal-length window, `--by` splits per dimension member). |
 | `chart [date]` | Render usage as an SVG chart (`--by` dimension, `--pie`, `--line` for trend lines, `--heatmap`, `--out` to save). |
 | `watch [date]` | Refresh a live summary at a fixed interval (`--once` for a single frame). |
 | `report [date] --out <dir>` | Generate a full usage report bundle (summary + SVG charts). |

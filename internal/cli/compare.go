@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,8 +28,8 @@ func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string
 		Use:   "compare <range>",
 		Short: "Compare usage between two periods / 对比两个时间段的用量",
 		Long: ui.Bi(
-			"Compare token usage between two periods. RANGE accepts a day (YYYYMMDD), a month (YYYYMM), a year (YYYY; single arg only), or a day/month range like 20260701-20260710 whose endpoints may mix days and months; dashed ISO forms like 2026-08-01 are rejected. Without --base the baseline window is derived from RANGE's granularity: a day compares with the previous day, a month with the previous calendar month, a year with the previous calendar year, and a range with an equal-length window ending the day before it starts, e.g. token-usage compare 20260701-20260710 compares 2026-06-21..2026-06-30. Pass --base with the same forms to pick the baseline explicitly (it may overlap the current window and is parsed independently of RANGE's granularity), e.g. token-usage compare 202609 --base 202608.",
-			"对比两个时间段的 token 用量。RANGE 接受日（YYYYMMDD）、月（YYYYMM）、年（YYYY，仅单独使用）或日/月区间（如 20260701-20260710，端点可日/月混用）；拒绝 2026-08-01 这类 ISO 破折号形态。缺省 --base 时按 RANGE 粒度自动推导基线窗口：单日对比前一天，单月对比上一个日历月，单年对比上一个日历年，区间对比结束于开始日前一天的等长窗口，如 token-usage compare 20260701-20260710 对比 2026-06-21..2026-06-30。可用 --base 以相同形态显式指定基线（允许与当前窗口重叠，且不与 RANGE 粒度耦合），如 token-usage compare 202609 --base 202608。",
+			"Compare token usage between two periods. RANGE accepts a day (YYYYMMDD), a month (YYYYMM), a year (YYYY; single arg only), or a day/month range like 20260701-20260710 whose endpoints may mix days and months; dashed ISO forms like 2026-08-01 are rejected. Without --base the baseline window is derived from RANGE's granularity: a day compares with the previous day, a month with the previous calendar month, a year with the previous calendar year, and a range with an equal-length window ending the day before it starts, e.g. token-usage compare 20260701-20260710 compares 2026-06-21..2026-06-30. Pass --base with the same forms to pick the baseline explicitly (it may overlap the current window and is parsed independently of RANGE's granularity), e.g. token-usage compare 202609 --base 202608. Pass --by with a non-temporal dimension (client/model/provider/project) to compare per member of that dimension across the two windows instead of whole-period totals.",
+			"对比两个时间段的 token 用量。RANGE 接受日（YYYYMMDD）、月（YYYYMM）、年（YYYY，仅单独使用）或日/月区间（如 20260701-20260710，端点可日/月混用）；拒绝 2026-08-01 这类 ISO 破折号形态。缺省 --base 时按 RANGE 粒度自动推导基线窗口：单日对比前一天，单月对比上一个日历月，单年对比上一个日历年，区间对比结束于开始日前一天的等长窗口，如 token-usage compare 20260701-20260710 对比 2026-06-21..2026-06-30。可用 --base 以相同形态显式指定基线（允许与当前窗口重叠，且不与 RANGE 粒度耦合），如 token-usage compare 202609 --base 202608。可用 --by 指定非时间维度（client/model/provider/project），按该维度成员对比两期用量而非两期总量。",
 		),
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
@@ -39,9 +41,13 @@ func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// 参数解析先于配置与数据库打开，非法区间即时报错、不占运行时资源。
+			// 参数解析与 --by 校验先于配置与数据库打开，非法输入即时报错、不占运行时资源。
 			curStart, curEnd, baseStart, baseEnd, err := parseCompareArgs(args[0], cmd.Flag("base").Value.String())
 			if err != nil {
+				return err
+			}
+			by, _ := cmd.Flags().GetString("by")
+			if err := validateCompareBy(by); err != nil {
 				return err
 			}
 
@@ -57,18 +63,49 @@ func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string
 
 			q := querier.New(usageDB)
 			ctx := cmdContext(cmd)
-			cur, err := q.StatsBetween(ctx, curStart.Format("2006-01-02"), curEnd.Format("2006-01-02"))
+			curDate, baseDate := curStart.Format("2006-01-02"), baseStart.Format("2006-01-02")
+			if by != "" {
+				// 分维度模式：两期总量（总计行真相源）与两期成员聚合分别查询。
+				cur, err := q.StatsBetween(ctx, curDate, curEnd.Format("2006-01-02"))
+				if err != nil {
+					return err
+				}
+				base, err := q.StatsBetween(ctx, baseDate, baseEnd.Format("2006-01-02"))
+				if err != nil {
+					return err
+				}
+				aliases := compareDimensionAliases(by, cfg.ProviderAliases)
+				curMembers, err := aggregateDimensionChunked(ctx, q, curStart, curEnd, by, aliases)
+				if err != nil {
+					return err
+				}
+				baseMembers, err := aggregateDimensionChunked(ctx, q, baseStart, baseEnd, by, aliases)
+				if err != nil {
+					return err
+				}
+				return renderCompareBy(cmd.OutOrStdout(), compareByRenderInput{
+					curStart:  curDate,
+					curEnd:    curEnd.Format("2006-01-02"),
+					baseStart: baseDate,
+					baseEnd:   baseEnd.Format("2006-01-02"),
+					by:        by,
+					cur:       cur,
+					base:      base,
+					members:   mergeCompareByMembers(curMembers, baseMembers),
+				})
+			}
+			cur, err := q.StatsBetween(ctx, curDate, curEnd.Format("2006-01-02"))
 			if err != nil {
 				return err
 			}
-			base, err := q.StatsBetween(ctx, baseStart.Format("2006-01-02"), baseEnd.Format("2006-01-02"))
+			base, err := q.StatsBetween(ctx, baseDate, baseEnd.Format("2006-01-02"))
 			if err != nil {
 				return err
 			}
 			return renderCompare(cmd.OutOrStdout(), compareRenderInput{
-				curStart:  curStart.Format("2006-01-02"),
+				curStart:  curDate,
 				curEnd:    curEnd.Format("2006-01-02"),
-				baseStart: baseStart.Format("2006-01-02"),
+				baseStart: baseDate,
 				baseEnd:   baseEnd.Format("2006-01-02"),
 				cur:       cur,
 				base:      base,
@@ -78,6 +115,10 @@ func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string
 	cmd.Flags().String("base", "", ui.Bi(
 		"base period range (same forms as RANGE); overrides the auto-derived previous equal-length window",
 		"基线时间段（与 RANGE 同形态）；缺省时自动取前置等长窗口",
+	))
+	cmd.Flags().String("by", "", ui.Bi(
+		"Compare per member of a dimension: client/model/provider/project",
+		"按维度成员对比：client/model/provider/project",
 	))
 	return cmd
 }
@@ -260,4 +301,230 @@ func formatChangePercent(cur, base int64) string {
 	default:
 		return "0.0%"
 	}
+}
+
+// compareByDimensions 是 compare --by 的允许集：仅非时间维度，与 querier
+// 聚合核 dimensionOrder 中的非时间成员一致（顺序即错误文案的允许集展示顺序）。
+var compareByDimensions = []string{"client", "model", "provider", "project"}
+
+// validateCompareBy 校验 compare --by 的取值：空串表示总量对比，放行。时间
+// 维度（day/month/hour/weekday）与未知值统一拒绝并指路——趋势图用
+// token-usage chart --line，两期总量对比用不带 --by 的 compare。
+func validateCompareBy(by string) error {
+	if by == "" {
+		return nil
+	}
+	for _, d := range compareByDimensions {
+		if by == d {
+			return nil
+		}
+	}
+	var reasonEn, reasonZh string
+	if by == "day" || by == "month" || by == "hour" || by == "weekday" {
+		reasonEn = fmt.Sprintf("--by does not accept temporal dimensions, got %q", by)
+		reasonZh = fmt.Sprintf("--by 不接受时间维度，当前 %q", by)
+	} else {
+		reasonEn = fmt.Sprintf("unknown --by dimension %q", by)
+		reasonZh = fmt.Sprintf("未知 --by 维度 %q", by)
+	}
+	return fmt.Errorf("%s", ui.Bi(
+		fmt.Sprintf("%s (allowed: %s); trends are charted by token-usage chart --line, and whole-period totals are compared by compare without --by",
+			reasonEn, strings.Join(compareByDimensions, ", ")),
+		fmt.Sprintf("%s（允许：%s）；趋势图请用 token-usage chart --line，两期总量对比用不带 --by 的 compare",
+			reasonZh, strings.Join(compareByDimensions, ", ")),
+	))
+}
+
+// expandRangeDays 把闭区间 [start, end] 逐日展开为 YYYY-MM-DD 字符串切片；
+// end 早于 start 时返回空切片。
+func expandRangeDays(start, end time.Time) []string {
+	days := make([]string, 0, 8)
+	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
+		days = append(days, d.Format("2006-01-02"))
+	}
+	return days
+}
+
+// chunkDays 把闭区间 [start, end] 按 size 天一块切分为连续子区间并逐块展开
+// 为 YYYY-MM-DD 切片：块内日期连续、跨块无缝不重；size<=0 视为整段一块。
+// compare 总量路径无 366 天上限（StatsBetween 直接 BETWEEN），但分维度路径
+// 消费 AggregateDimensionView 的逐日 IN 占位符，超长区间会触碰 SQLite 变量
+// 上限，因此按块查询后跨块累加——求和可结合，与整段聚合等价。
+func chunkDays(start, end time.Time, size int) [][]string {
+	if size <= 0 {
+		if days := expandRangeDays(start, end); len(days) > 0 {
+			return [][]string{days}
+		}
+		return nil
+	}
+	var chunks [][]string
+	for cur := start; !cur.After(end); {
+		chunkEnd := cur.AddDate(0, 0, size-1)
+		if chunkEnd.After(end) {
+			chunkEnd = end
+		}
+		chunks = append(chunks, expandRangeDays(cur, chunkEnd))
+		cur = chunkEnd.AddDate(0, 0, 1)
+	}
+	return chunks
+}
+
+// compareChunkSize 是 compare --by 分块查询的块大小（天）：与 query/collect
+// 的 366 天上限一致，单块占位符数恒在 SQLite 默认变量上限（999）之内。
+const compareChunkSize = 366
+
+// compareDimensionAliases 返回分维度聚合应应用的 provider 显示别名：仅
+// provider 维度消费别名（聚合核 displayKey 的语义），与 query/export 同源取
+// cfg.ProviderAliases；其余维度传 nil，保持各自维度语义不变。
+func compareDimensionAliases(by string, aliases map[string]string) map[string]string {
+	if by == "provider" {
+		return aliases
+	}
+	return nil
+}
+
+// aggregateDimensionChunked 聚合一个窗口内按维度成员的用量：区间经 chunkDays
+// 分块，每块调用一次 AggregateDimensionView（内部完成 alias 合并与显示键
+// 映射），跨块按显示键 Keys[0] 累加 GroupAggregate——求和可结合，与整段
+// 聚合等价；非时间维度无缺口填充，块切分不会引入伪成员。
+func aggregateDimensionChunked(ctx context.Context, q *querier.Querier, start, end time.Time, by string, aliases map[string]string) (map[string]querier.GroupAggregate, error) {
+	merged := make(map[string]querier.GroupAggregate)
+	for _, days := range chunkDays(start, end, compareChunkSize) {
+		rows, _, err := q.AggregateDimensionView(ctx, days, querier.DimensionView{
+			Dimensions: []string{by},
+			Aliases:    aliases,
+			TitleEn:    "compare", TitleZh: "compare",
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if len(row.Keys) == 0 {
+				continue
+			}
+			key := row.Keys[0]
+			agg := merged[key]
+			addGroupAggregate(&agg, row.Agg)
+			merged[key] = agg
+		}
+	}
+	return merged, nil
+}
+
+// addGroupAggregate 逐字段累加两个聚合。querier.GroupAggregate 的 add 为包内
+// 私有，compare 的跨块合并在消费侧等价实现。
+func addGroupAggregate(a *querier.GroupAggregate, o querier.GroupAggregate) {
+	a.Requests += o.Requests
+	a.FreshInput += o.FreshInput
+	a.OutputTokens += o.OutputTokens
+	a.CacheRead += o.CacheRead
+	a.CacheCreate += o.CacheCreate
+	a.Reasoning += o.Reasoning
+	a.TotalTokens += o.TotalTokens
+}
+
+// compareByMember 是分维度对比中的一个成员行：显示键与两期聚合（只在一期
+// 出现的成员缺失侧为零值）。
+type compareByMember struct {
+	key  string
+	cur  querier.GroupAggregate
+	base querier.GroupAggregate
+}
+
+// mergeCompareByMembers 合并两期成员集：任一期出现的成员都保留，同一显示键
+// 归并为一行；返回顺序不定，排序由渲染侧统一决定。
+func mergeCompareByMembers(cur, base map[string]querier.GroupAggregate) []compareByMember {
+	members := make([]compareByMember, 0, len(cur)+len(base))
+	index := make(map[string]int, len(cur)+len(base))
+	for k, agg := range cur {
+		index[k] = len(members)
+		members = append(members, compareByMember{key: k, cur: agg})
+	}
+	for k, agg := range base {
+		if i, ok := index[k]; ok {
+			members[i].base = agg
+			continue
+		}
+		members = append(members, compareByMember{key: k, base: agg})
+	}
+	return members
+}
+
+// compareByRenderInput 是 renderCompareBy 的渲染输入：两个窗口起止日期
+// （YYYY-MM-DD 字符串）、维度名、两期 StatsBetween 总量（总计行真相源，不
+// 从成员行累加）与合并后的成员行。
+type compareByRenderInput struct {
+	curStart, curEnd   string
+	baseStart, baseEnd string
+	by                 string
+	cur, base          querier.RangeStats
+	members            []compareByMember
+}
+
+// compareByHeader 返回维度名对应的表格首列两行表头；调用前 by 已通过
+// validateCompareBy 校验，default 分支仅为未知值兜底。
+func compareByHeader(by string) string {
+	switch by {
+	case "client":
+		return ui.HClient
+	case "model":
+		return ui.HModel
+	case "provider":
+		return ui.HProvider
+	case "project":
+		return ui.HProject
+	default:
+		return ui.HeaderLines("Member", "成员")
+	}
+}
+
+// renderCompareBy 输出两期窗口内按维度成员的用量对比：窗口头两行与总量
+// 对比一致（Current/Base 各一行）；双窗口成员集为空且两期总计均为 0 时只
+// 输出无数据行，否则渲染 5 列框线表（成员/当前/基线/变化/变化%）。成员按
+// 两期 TotalTokens 之和降序、同值按显示键升序；缺失侧按 0 参与对比，基线
+// 为 0 时变化% 显示 "--"。末行总计取两期 StatsBetween 总量（成员行经 alias
+// 合并应与总计一致，但以 StatsBetween 为真相源），列头与对齐口径同总量表。
+func renderCompareBy(w io.Writer, in compareByRenderInput) error {
+	fmt.Fprintln(w, ui.Bi("Compare", "用量对比"))
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "%s: %s .. %s\n", ui.Bi("Current", "当前"), in.curStart, in.curEnd)
+	fmt.Fprintf(w, "%s: %s .. %s\n", ui.Bi("Base", "基线"), in.baseStart, in.baseEnd)
+	fmt.Fprintln(w)
+
+	if len(in.members) == 0 && in.cur.Total.TotalTokens == 0 && in.base.Total.TotalTokens == 0 {
+		fmt.Fprintln(w, ui.Bi("no data", "无数据"))
+		return nil
+	}
+
+	t := ui.NewTable([]string{
+		compareByHeader(in.by),
+		ui.HeaderLines("Current", "当前"),
+		ui.HeaderLines("Base", "基线"),
+		ui.HeaderLines("Change", "变化"),
+		ui.HeaderLines("Change %", "变化%"),
+	}, ui.AlignLeft, ui.AlignRight, ui.AlignRight, ui.AlignRight, ui.AlignRight)
+
+	members := make([]compareByMember, len(in.members))
+	copy(members, in.members)
+	sort.SliceStable(members, func(i, j int) bool {
+		ti := members[i].cur.TotalTokens + members[i].base.TotalTokens
+		tj := members[j].cur.TotalTokens + members[j].base.TotalTokens
+		if ti != tj {
+			return ti > tj
+		}
+		return members[i].key < members[j].key
+	})
+	for _, m := range members {
+		t.Row(m.key,
+			querier.FormatTokens(m.cur.TotalTokens), querier.FormatTokens(m.base.TotalTokens),
+			formatSignedTokens(m.cur.TotalTokens-m.base.TotalTokens),
+			formatChangePercent(m.cur.TotalTokens, m.base.TotalTokens))
+	}
+	t.Row(ui.ColTotal,
+		querier.FormatTokens(in.cur.Total.TotalTokens), querier.FormatTokens(in.base.Total.TotalTokens),
+		formatSignedTokens(in.cur.Total.TotalTokens-in.base.Total.TotalTokens),
+		formatChangePercent(in.cur.Total.TotalTokens, in.base.Total.TotalTokens))
+
+	fmt.Fprintln(w, t.String())
+	return nil
 }

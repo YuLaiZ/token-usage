@@ -30,7 +30,7 @@ token-usage
 ├── errors [DATE|DATE-DATE]
 ├── doctor                                # read-only health check (config, data directory, database, clients, collection, errors)
 ├── forecast                              # extrapolate usage from recent daily averages
-├── compare <range>                       # compare usage between two periods (--base overrides the baseline)
+├── compare <range>                       # compare usage between two periods (--base overrides the baseline, --by per member)
 ├── chart [DATE|DATE-DATE]                # render usage as an SVG chart (--by dimension, --pie, --line, --heatmap)
 ├── watch [DATE|DATE-DATE]                # refresh a live summary at a fixed interval
 ├── report [DATE|DATE-DATE] --out <dir>   # generate a full usage report bundle
@@ -637,6 +637,7 @@ Compares token usage between two periods: a five-column framed table (Metric / C
 token-usage compare <range> [--base <range>]
 token-usage compare 20260901-20260907
 token-usage compare 202609 --base 202608
+token-usage compare 20260901-20260907 --by model
 ```
 
 | `<range>` / `--base` form | Meaning |
@@ -650,8 +651,9 @@ Behavior:
 
 - Without `--base`, the baseline window is derived from the current window's granularity as listed above (leap months handled; e.g. `20260701-20260710` compares `2026-06-21..2026-06-30`).
 - `--base <range>` accepts the same forms and is parsed independently of the current window's granularity; it may overlap the current window. Dashed ISO forms such as `2026-08-01` and an end date before the start date are rejected.
-- There is no 366-day cap (unlike `query`/`collect`): the command does not expand days — each window is read with a single `BETWEEN` aggregate, so multi-year ranges work.
+- There is no 366-day cap (unlike `query`/`collect`): without `--by`, the command does not expand days — each window is read with a single `BETWEEN` aggregate, so multi-year ranges work.
 - Rows: active days and requests show signed integer changes (`%+d`); token rows reuse the K/M/B abbreviations with `+`/`-` signed changes; `Change %` shows `--` when the base value is 0. Headers avoid ambiguous-width characters (such as Δ) to preserve table borders under CJK terminals.
+- `--by <dimension>` compares per member of a non-temporal dimension (`client`, `model`, `provider`, `project`) across the two windows instead of whole-period totals: one row per member, members seen in only one period compared against 0, sorted by the sum of both periods' total tokens descending (ties broken by display key), ending with a `Total / 总计` row taken from each window's whole-range aggregates (the source of truth, not the sum of member rows). `Change %` shows `--` when the baseline member total is 0. Temporal dimensions (`day`, `month`, `hour`, `weekday`) and unknown values are rejected before the database opens — trends belong in `token-usage chart --line`, and plain two-period totals are compared without `--by`. When both windows have no members and zero totals, only a `no data / 无数据` line is printed. The `provider` dimension applies the `[provider_aliases]` config (same as `query`/`export`). Long ranges are queried internally in 366-day chunks merged across chunks — transparent to the output, and there is still no 366-day cap.
 - Strictly read-only: it never touches the daemon.
 
 ## chart

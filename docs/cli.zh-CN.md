@@ -30,7 +30,7 @@ token-usage
 ├── errors [DATE|DATE-DATE]
 ├── doctor                                # 只读健康自检（配置、数据目录、数据库、客户端、采集、异常）
 ├── forecast                              # 按近期日均外推用量
-├── compare <range>                       # 对比两个时间段的用量（--base 显式指定基线）
+├── compare <range>                       # 对比两个时间段的用量（--base 显式指定基线，--by 按维度成员对比）
 ├── chart [DATE|DATE-DATE]                # 将用量渲染为 SVG 图表（--by 维度、--pie、--line、--heatmap）
 ├── watch [DATE|DATE-DATE]                # 以固定间隔刷新实时摘要
 ├── report [DATE|DATE-DATE] --out <dir>   # 生成完整用量报告包
@@ -637,6 +637,7 @@ token-usage forecast
 token-usage compare <range> [--base <range>]
 token-usage compare 20260901-20260907
 token-usage compare 202609 --base 202608
+token-usage compare 20260901-20260907 --by model
 ```
 
 | `<range>` / `--base` 形态 | 含义 |
@@ -650,8 +651,9 @@ token-usage compare 202609 --base 202608
 
 - 缺省 `--base` 时按上表粒度自动推导基线（含闰月；如 `20260701-20260710` 对比 `2026-06-21..2026-06-30`）。
 - `--base <range>` 接受相同形态，与当前窗口的粒度解耦解析，允许与当前窗口重叠。拒绝 `2026-08-01` 这类 ISO 破折号形态；结束早于开始也报错。
-- 不设 366 天上限（与 `query`/`collect` 不同）：本命令不做逐日展开——每个窗口用一条 `BETWEEN` 聚合读取，跨多年区间同样可用。
+- 不设 366 天上限（与 `query`/`collect` 不同）：不带 `--by` 时本命令不做逐日展开——每个窗口用一条 `BETWEEN` 聚合读取，跨多年区间同样可用。
 - 行文案：活跃天与请求数显示带符号整数变化（`%+d`）；token 行沿用 K/M/B 缩写并带 `+`/`-` 符号；基线值为 0 时变化% 显示 `--`。表头不使用 Δ 等 ambiguous 宽度字符，保证 CJK 终端下框线对齐。
+- `--by <维度>` 按非时间维度（`client`、`model`、`provider`、`project`）的成员对比两期用量而非两期总量：每个成员一行，只在一期出现的成员与 0 对比；行按两期 total tokens 之和降序（同值按显示键升序）；末行 `Total / 总计` 取各窗口的全量聚合（真相源，不由成员行累加）。基线成员总量为 0 时变化% 显示 `--`。时间维度（`day`、`month`、`hour`、`weekday`）与未知值在打开数据库之前即被拒绝——趋势图请用 `token-usage chart --line`，两期总量对比用不带 `--by` 的 compare。双窗口均无成员且两期总量均为 0 时只输出 `no data / 无数据` 一行。provider 维度应用 `[provider_aliases]` 配置（与 `query`/`export` 一致）。超长区间内部分 366 天块查询后跨块合并——对输出透明，仍然没有 366 天上限。
 - 严格只读：不触碰守护进程。
 
 ## chart
