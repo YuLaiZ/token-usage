@@ -206,7 +206,8 @@ func TestChartCmd_PieEndToEnd(t *testing.T) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"--pie", "--by", "model", "--out", outPath})
+	// 显式传日期:缺省日期取真实时钟,测试不应随系统日期跨天而失效。
+	cmd.SetArgs([]string{"20260906", "--pie", "--by", "model", "--out", outPath})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +225,7 @@ func TestChartCmd_PieEndToEnd(t *testing.T) {
 		func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil },
 		func(string) (*db.DB, error) { return usageDB, nil },
 	)
-	cmd2.SetArgs([]string{"--pie", "--by", "month"})
+	cmd2.SetArgs([]string{"20260906", "--pie", "--by", "month"})
 	cmd2.SetOut(&buf)
 	cmd2.SetErr(&buf)
 	if err := cmd2.Execute(); err == nil {

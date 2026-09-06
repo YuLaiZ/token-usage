@@ -31,9 +31,17 @@ func newWatchCmdWithDeps(load func() (*config.Config, error), open func(string) 
 		Short: "Refresh a live summary at a fixed interval / 以固定间隔刷新实时摘要",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dates, err := parseDateArgs(args, true, "watch")
-			if err != nil {
-				return err
+			// 缺省日期与刷新时间戳同源,都取注入时钟:watch 的 now 是完整
+			// 语义注入,缺省"今天"若绕开它读真实时钟,测试注入即失效。
+			var dates []string
+			var err error
+			if len(args) == 0 {
+				dates = []string{now().Format("2006-01-02")}
+			} else {
+				dates, err = parseDateArgs(args, false, "watch")
+				if err != nil {
+					return err
+				}
 			}
 			interval, err := cmd.Flags().GetDuration("interval")
 			if err != nil {
