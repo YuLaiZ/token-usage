@@ -26,7 +26,7 @@
 |------|------|
 | `cmd/token-usage/` | 程序入口（`main.go`，仅装配 root cmd 并 `Execute`；error → 退出码 1） |
 | `internal/buildinfo/` | 规范化版本与构建元数据（`Current()`/`Info.Short()`/`Info.Detail()`，供 `version` 命令与 `--version` flag 复用同一份快照） |
-| `internal/cli/` | Cobra 命令组装配（config/collect/query/errors/export/chart/forecast/compare/watch/doctor/start/status/stop/restart/version、内置 completion + Hidden `_run`） |
+| `internal/cli/` | Cobra 命令组装配（config/collect/query/errors/export/top/chart/forecast/compare/watch/report/update/doctor/start/status/stop/restart/version、内置 help/completion + Hidden `_run`/`_update-helper`/`_update-cleanup`） |
 | `internal/configapp/` | 配置应用层：`ApplyConfig` 在 control lock 内原子编排（revision 保护、写盘、自启同步、动作建议）；`AnalyzeConfigEffects` 影响矩阵 |
 | `internal/runtimecfg/` | 配置解析边界：`LoadEffectiveConfig`（展开 `~`、补默认值、补 registry 默认路径）、`ValidateUserConfig`、用户层 snapshot |
 | `internal/config/` | 用户配置读写、dotted key get/set、默认模板。`[query]` 段以 raw 载体原样保留（`RawQuery` 与互斥的 `RawQueryTopLevelIssues`），全局加载链不做 query 语义校验 |
@@ -151,7 +151,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 用户执行命令 → 加载配置 → 执行采集/查询/配置编辑 → 输出结果 → 退出
 ```
 
-命令组：`version`（多行详细输出）、Cobra 内置 `completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`heatmap`/`session`/`summary`，另加 `custom <name>` 与只读的 `list`）、`export`（聚合视图的 CSV/JSON stdout 导出）、`errors`、`start`、`status`、`stop`、`restart`、`doctor`（只读健康自检）、`forecast`（按近期日均外推用量）、`compare`（对比两个时间段的用量）、`chart`（按日用量 SVG 柱状图）、`watch`（定间隔刷新的实时摘要）、`report`（生成到目录的完整用量报告包），以及 Hidden 内部命令 `_run`。根命令另带 `-v, --version` flag（单行短输出）。
+命令组：`version`（多行详细输出）、Cobra 内置 `help`/`completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`heatmap`/`session`/`summary`，另加 `custom <name>` 与只读的 `list`）、`export`（聚合视图的 CSV/JSON stdout 导出）、`errors`、`start`、`status`、`stop`、`restart`、`doctor`（只读健康自检）、`forecast`（按近期日均外推用量）、`compare`（对比两个时间段的用量）、`top`（总用量最重的会话排行）、`chart`（按日用量 SVG 柱状图）、`watch`（定间隔刷新的实时摘要）、`report`（生成到目录的完整用量报告包）、`update`（自更新到最新或指定版本），以及 Hidden 内部命令 `_run`/`_update-helper`/`_update-cleanup`。根命令另带 `-v, --version` flag（单行短输出）。
 
 直接执行 `token-usage`（不带任何参数）只会打印帮助信息，既不启动 TUI 也不启动守护进程。命令树、参数、标志、退出码与示例的完整参考见 [CLI 参考](cli.zh-CN.md)。
 

@@ -433,7 +433,7 @@ token-usage doctor
 | `Query definitions / 查询视图` | configured subqueries/groups/default are semantically valid (also OK when none are configured) | issue count with the first diagnostic path and a pointer to `token-usage query list`; warnings only — broken view definitions never block collection or the static table commands | config failed to load |
 | `Daemon / 守护进程` | informational only: points to `token-usage status`; doctor never probes or controls the daemon (probing would create lock/config-directory files) | | |
 
-- Checks that cannot run because an upstream check failed print `SKIPPED / 跳过` and add no new count (the upstream FAIL already counts): config failure skips every config-dependent check; a missing or broken database skips the collection, freshness, and error checks; with no collection recorded at all, data freshness is skipped because last collection already warns.
+- Checks that cannot run because an upstream check failed print `SKIPPED / 跳过` and add no new count (the upstream FAIL already counts): config failure skips every config-dependent check; a missing or broken database skips the collection, freshness, and error checks; when the last-collection query fails, data freshness is skipped as `unavailable / 无法获取` because last collection already FAILs; with no collection recorded at all, data freshness is skipped because last collection already warns.
 - The summary line (`Result / 结果`) is `OK / 一切正常`, `N warnings / N 项警告`, or `N problems / N 项失败` (FAIL takes precedence over WARN).
 - The exit code is always 0 in v1: FAIL/WARN are report-only.
 
@@ -723,7 +723,7 @@ token-usage watch 20260901 --interval 10s
 token-usage watch --once               # render a single frame and exit (pipe-friendly)
 ```
 
-- `--by <dimension>` switches the grouping table of each frame (`client`, `model`, `provider`, `project`; default `model`); `provider` applies the display aliases from `[provider_aliases]` in the config.
+- `--by <dimension>` switches the grouping table of each frame (`client`, `model`, `provider`, `project`; default `model`); `provider` applies the display aliases from `[provider_aliases]` in the config. Unknown values, including the temporal dimensions, are rejected before the database opens; the error points to `token-usage chart --line` for temporal trends.
 - `--interval` accepts a Go duration with a minimum of 1s; shorter values are rejected before the database opens.
 - Interactive loops clear the screen between frames (Windows consoles get virtual-terminal processing enabled automatically); `--once` renders exactly one frame with no escape sequences, so redirected output stays plain.
 - Strictly read-only: the same opening semantics as every other read command, no daemon interaction, and Ctrl+C leaves no state behind.

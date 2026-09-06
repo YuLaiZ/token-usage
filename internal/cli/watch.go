@@ -64,8 +64,8 @@ func newWatchCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			case "client", "model", "provider", "project":
 			default:
 				return fmt.Errorf("%s", ui.Bi(
-					fmt.Sprintf("unknown --by dimension %q (allowed: client, model, provider, project)", by),
-					fmt.Sprintf("未知 --by 维度 %q（允许：client, model, provider, project）", by),
+					fmt.Sprintf("unknown --by dimension %q (allowed: client, model, provider, project); for temporal trends use `token-usage chart --line`", by),
+					fmt.Sprintf("未知 --by 维度 %q（允许：client, model, provider, project）；时间趋势请用 `token-usage chart --line`", by),
 				))
 			}
 

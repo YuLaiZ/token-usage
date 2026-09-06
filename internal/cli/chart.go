@@ -148,7 +148,7 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 
 	cmd.Flags().String("out", "", ui.Bi("Write SVG to a file instead of stdout", "将 SVG 写入文件而非标准输出"))
 	cmd.Flags().String("by", "day", ui.Bi("Aggregate by dimension: client/model/provider/project/day/month/hour/weekday", "按维度聚合：client/model/provider/project/day/month/hour/weekday"))
-	cmd.Flags().Bool("pie", false, ui.Bi("Render a pie chart instead of a bar chart (requires --by, not day)", "渲染饼图而非柱状图（需 --by 且不为 day）"))
+	cmd.Flags().Bool("pie", false, ui.Bi("Render a pie chart instead of a bar chart (requires a non-temporal --by: client/model/provider/project)", "渲染饼图而非柱状图（需 --by 且为非时间维度：client/model/provider/project）"))
 	cmd.Flags().Bool("line", false, ui.Bi("Render a line chart instead of a bar chart (requires a temporal --by: day/month/hour/weekday)", "渲染折线图而非柱状图（--by 须为时间维度：day/month/hour/weekday）"))
 	cmd.Flags().Bool("heatmap", false, ui.Bi("Render a weekday-by-hour heat matrix instead of a bar chart", "渲染星期×小时热力矩阵而非柱状图"))
 	return cmd

@@ -112,8 +112,8 @@ func TestWatchCmd_ByInvalidDimension(t *testing.T) {
 			t.Fatalf("--by %s 应被拒绝", by)
 		}
 		for _, want := range []string{
-			fmt.Sprintf("unknown --by dimension %q (allowed: client, model, provider, project)", by),
-			fmt.Sprintf("未知 --by 维度 %q（允许：client, model, provider, project）", by),
+			fmt.Sprintf("unknown --by dimension %q (allowed: client, model, provider, project); for temporal trends use `token-usage chart --line`", by),
+			fmt.Sprintf("未知 --by 维度 %q（允许：client, model, provider, project）；时间趋势请用 `token-usage chart --line`", by),
 		} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("--by %s 报错应含 %q,实际: %v", by, want, err)

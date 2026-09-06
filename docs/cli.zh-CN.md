@@ -433,7 +433,7 @@ token-usage doctor
 | `Query definitions / 查询视图` | 已配置的子查询/组合查询/默认行为语义合法（未配置时同样 OK） | 问题计数、首个诊断路径并指向 `token-usage query list`；仅警告——坏视图定义不会阻断采集与静态表格命令 | 配置加载失败 |
 | `Daemon / 守护进程` | 纯提示：指向 `token-usage status`;doctor 绝不探测或操作守护进程（探测会创建锁文件/配置目录） | | |
 
-- 因上游检查失败而无法执行的检查项输出 `SKIPPED / 跳过`，不重复计数（上游 FAIL 已计数）：配置失败跳过全部依赖配置的检查项；数据库缺失或损坏跳过采集、数据新鲜度与异常三项；完全无采集记录时数据新鲜度跳过（最近采集一项已告警）。
+- 因上游检查失败而无法执行的检查项输出 `SKIPPED / 跳过`，不重复计数（上游 FAIL 已计数）：配置失败跳过全部依赖配置的检查项；数据库缺失或损坏跳过采集、数据新鲜度与异常三项；最近采集查询失败时数据新鲜度以「无法获取」跳过（最近采集一项已失败）；完全无采集记录时数据新鲜度跳过（最近采集一项已告警）。
 - 汇总行（`Result / 结果`）为 `OK / 一切正常`、`N warnings / N 项警告` 或 `N problems / N 项失败`（FAIL 优先于 WARN）。
 - v1 退出码恒为 0：FAIL/WARN 仅体现在报告。
 
@@ -723,7 +723,7 @@ token-usage watch 20260901 --interval 10s
 token-usage watch --once               # 只渲染一帧后退出（对管道友好）
 ```
 
-- `--by <维度>` 切换帧内分组表的维度（`client`、`model`、`provider`、`project`；默认 `model`）；`provider` 应用配置中 `[provider_aliases]` 的显示别名。
+- `--by <维度>` 切换帧内分组表的维度（`client`、`model`、`provider`、`project`；默认 `model`）；`provider` 应用配置中 `[provider_aliases]` 的显示别名。非法值（含时间维度）在打开数据库之前即被拒绝，报错提示时间趋势请用 `token-usage chart --line`。
 - `--interval` 接受 Go 时长，下限 1 秒；更小的值在打开数据库之前即被拒绝。
 - 交互式循环在每帧之间清屏（Windows 控制台会自动启用虚拟终端处理）；`--once` 只渲染一帧且不含转义序列，重定向输出保持纯文本。
 - 严格只读：与其他读取类命令相同的开库语义，不与守护进程交互，Ctrl+C 不残留任何状态。
