@@ -142,7 +142,7 @@ token-usage query list
 | `query <name> [date]` | Run a configured view or group. |
 | `query list` | List views without opening the usage database. |
 | `export [view] [date]` | Export usage data as CSV or JSON to stdout. |
-| `errors [date]` | Show collection failures for a date or range. |
+| `errors [date]` | Show collection failures for a date or range (`--format json` emits machine-readable output). |
 | `doctor` | Run read-only health checks. |
 | `forecast` | Extrapolate upcoming usage from recent daily averages. |
 | `compare <range>` | Compare usage between two periods (`--base` overrides the auto previous equal-length window, `--by` splits per dimension member, `--format json` emits machine-readable output). |

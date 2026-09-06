@@ -386,6 +386,20 @@ token-usage errors [DATE|DATE-DATE]
 
 - `--source <name>`：按数据源过滤（`claude`/`opencode`/`codex`/`workbuddy`/`zcode`/`autoclaw`）。
 - `--unresolved`：只看未解决。
+- `--format <fmt>`：输出格式，`table`（默认，框线表加重试提示）或 `json`；非法值在打开数据库之前即被拒绝。
+
+`--format json` 时 stdout 为纯数据——错误记录 JSON 数组，无统计头、无「暂无异常记录」、无重试提示行（错误照常走 stderr 并返回非零）。每条记录只投影 `table` 各列可见的字段：
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `id` | 数字 | 记录 ID |
+| `date` | 字符串 | 日期（`YYYY-MM-DD`） |
+| `source` | 字符串 | 数据源 |
+| `message` | 字符串 | 错误信息 |
+| `retry_count` | 数字 | 已重试次数 |
+| `resolved` | 布尔 | 是否已解决 |
+
+两种格式的过滤与记录顺序（最新在前，与 `table` 一致）完全相同。空结果输出 `[]`。两空格缩进，尾随换行。
 
 示例：
 
@@ -395,6 +409,7 @@ token-usage errors 20260721            # 某日全部异常
 token-usage errors 20260701-20260707   # 区间内全部异常
 token-usage errors --source codex      # 某数据源全部异常
 token-usage errors --unresolved        # 显式只看未解决
+token-usage errors --format json | jq .  # 机器可读记录
 ```
 
 ## doctor

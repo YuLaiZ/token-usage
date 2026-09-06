@@ -11,11 +11,19 @@ import (
 	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 
+	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
+	"github.com/YuLaiZ/token-usage/internal/model"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 func newErrorsCmd() *cobra.Command {
+	return newErrorsCmdWithDeps(loadConfig, db.Open)
+}
+
+// newErrorsCmdWithDeps 构造 errors 命令；load/open 可注入供包内测试走真实
+// 调用链或在开库前断言拒绝（与 compare/chart 同模式）。
+func newErrorsCmdWithDeps(load func() (*config.Config, error), open func(string) (*db.DB, error)) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "errors [DATE|DATE-DATE]",
 		Short: "View collection errors / 查看采集异常",
@@ -29,13 +37,22 @@ func newErrorsCmd() *cobra.Command {
 				return err
 			}
 
-			cfg, err := loadConfig()
+			// --format 白名单同样先于配置加载与数据库打开校验（句式与 compare 一致）。
+			format, err := cmd.Flags().GetString("format")
+			if err != nil {
+				return err
+			}
+			if format != "table" && format != "json" {
+				return errorsFormatError(format)
+			}
+
+			cfg, err := load()
 			if err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 			}
 
 			dbPath := filepath.Join(cfg.DataDir, "usage.db")
-			usageDB, err := db.Open(dbPath)
+			usageDB, err := open(dbPath)
 			if err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("failed to open database", "打开数据库失败"), err)
 			}
@@ -46,12 +63,13 @@ func newErrorsCmd() *cobra.Command {
 
 			filter := buildErrorsFilter(dates, sourceFlag, unresolvedFlag)
 
-			return runErrorsContext(cmdContext(cmd), usageDB, cmd.OutOrStdout(), filter)
+			return runErrorsContext(cmdContext(cmd), usageDB, cmd.OutOrStdout(), filter, format)
 		},
 	}
 
 	cmd.Flags().String("source", "", ui.Bi("Filter by client (claude/opencode/codex/workbuddy/zcode/autoclaw)", "指定数据源 (claude/opencode/codex/workbuddy/zcode/autoclaw)"))
 	cmd.Flags().Bool("unresolved", false, ui.Bi("Show unresolved errors only", "只看未解决的异常"))
+	cmd.Flags().String("format", "table", ui.Bi("output format: table or json", "输出格式：table 或 json"))
 
 	return cmd
 }
@@ -69,15 +87,19 @@ func buildErrorsFilter(dates []string, source string, unresolved bool) db.ErrorF
 	}
 }
 
-// runErrors 可测试的 errors 命令核心逻辑
+// runErrors 可测试的 errors 命令核心逻辑（table 输出）
 func runErrors(usageDB *db.DB, out io.Writer, filter db.ErrorFilter) error {
-	return runErrorsContext(context.Background(), usageDB, out, filter)
+	return runErrorsContext(context.Background(), usageDB, out, filter, "table")
 }
 
-func runErrorsContext(ctx context.Context, usageDB *db.DB, out io.Writer, filter db.ErrorFilter) error {
+func runErrorsContext(ctx context.Context, usageDB *db.DB, out io.Writer, filter db.ErrorFilter, format string) error {
 	errs, err := db.GetErrorsContext(ctx, usageDB, filter)
 	if err != nil {
 		return fmt.Errorf("%s: %w", ui.Bi("failed to query errors", "查询异常失败"), err)
+	}
+
+	if format == "json" {
+		return renderErrorsJSON(errs, out)
 	}
 
 	if len(errs) == 0 {
@@ -128,6 +150,51 @@ func runErrorsContext(ctx context.Context, usageDB *db.DB, out io.Writer, filter
 	))
 
 	return nil
+}
+
+// errorsJSONRecord 是 errors --format json 的单条记录投影，字段与 table 可见列
+// 一一对应（ID/日期/客户端/错误信息/重试次数/状态），定义顺序即 JSON 键顺序。
+// error_type/detail/created_at/updated_at 不在表格可见语义内，不导出。
+type errorsJSONRecord struct {
+	ID         int    `json:"id"`
+	Date       string `json:"date"`
+	Source     string `json:"source"`
+	Message    string `json:"message"`
+	RetryCount int    `json:"retry_count"`
+	Resolved   bool   `json:"resolved"`
+}
+
+// renderErrorsJSON 把错误记录渲染为机器可读 JSON：stdout 纯数据，无统计头与
+// 重试提示行；空记录初始化为空切片以输出 [] 而非 null；两空格缩进与尾随换行
+// 复用 marshalExportJSON（与 export/compare 的机器输出约定一致）；记录的过滤
+// 与排序和 table 模式同源（同一 GetErrorsContext 结果）。
+func renderErrorsJSON(errs []model.CollectionError, out io.Writer) error {
+	records := make([]errorsJSONRecord, 0, len(errs))
+	for _, e := range errs {
+		records = append(records, errorsJSONRecord{
+			ID:         e.ID,
+			Date:       e.Date,
+			Source:     e.Source,
+			Message:    e.Message,
+			RetryCount: e.RetryCount,
+			Resolved:   e.Resolved,
+		})
+	}
+	s, err := marshalExportJSON(records)
+	if err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("failed to encode errors as JSON", "错误记录 JSON 编码失败"), err)
+	}
+	_, err = io.WriteString(out, s)
+	return err
+}
+
+// errorsFormatError 非法 --format 取值:在加载配置与开库之前拒绝(句式与
+// compare 的同名错误一致)。
+func errorsFormatError(value string) error {
+	return fmt.Errorf("%s", ui.Bi(
+		fmt.Sprintf("invalid --format %q (allowed: table, json)", value),
+		fmt.Sprintf("无效的 --format %q（允许：table、json）", value),
+	))
 }
 
 // errors 表格列宽（显示宽度，含双语表头与状态值），补齐与截断统一走 runewidth。

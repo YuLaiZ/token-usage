@@ -386,6 +386,20 @@ Flags:
 
 - `--source <name>`: filters by data source (`claude`, `opencode`, `codex`, `workbuddy`, `zcode`, or `autoclaw`).
 - `--unresolved`: shows unresolved errors only.
+- `--format <fmt>`: output format, `table` (default, the framed table with the retry hint) or `json`. Invalid values are rejected before the database opens.
+
+With `--format json`, stdout is pure data — a JSON array of error records with no statistics header, no "no error records" line, and no retry hint (errors still go to stderr with a nonzero exit). Each record projects exactly the fields visible in the `table` columns:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | number | Record ID |
+| `date` | string | Date (`YYYY-MM-DD`) |
+| `source` | string | Data source |
+| `message` | string | Error message |
+| `retry_count` | number | Retry attempts so far |
+| `resolved` | boolean | Whether the error has been resolved |
+
+Filtering and record order (latest first, same as the `table`) are identical in both formats. An empty result prints `[]`. Output uses two-space indentation with a trailing newline.
 
 Examples:
 
@@ -395,6 +409,7 @@ token-usage errors 20260721            # all errors for one date
 token-usage errors 20260701-20260707   # all errors across a date range
 token-usage errors --source codex      # all errors for one source
 token-usage errors --unresolved        # explicitly unresolved only
+token-usage errors --format json | jq .  # machine-readable records
 ```
 
 ## doctor

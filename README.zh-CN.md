@@ -142,7 +142,7 @@ token-usage query list
 | `query <name> [date]` | 运行已配置视图或报表组合。 |
 | `query list` | 不打开 usage 数据库，列出视图。 |
 | `export [view] [date]` | 将使用数据以 CSV 或 JSON 导出到 stdout。 |
-| `errors [日期]` | 查看某日期或区间的采集失败。 |
+| `errors [日期]` | 查看某日期或区间的采集失败（`--format json` 输出机器可读结果）。 |
 | `doctor` | 运行只读健康检查。 |
 | `forecast` | 按近期日均外推即将到来的用量。 |
 | `compare <range>` | 对比两个时间段的用量（缺省自动取等长前置窗口，`--base` 显式指定基线，`--by` 按维度成员对比，`--format json` 输出机器可读结果）。 |
