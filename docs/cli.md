@@ -30,6 +30,7 @@ token-usage
 ├── errors [DATE|DATE-DATE]
 ├── doctor                                # read-only health check (config, data directory, database, clients, collection, errors)
 ├── forecast                              # extrapolate usage from recent daily averages
+├── compare <range>                       # compare usage between two periods (--base overrides the baseline)
 ├── chart [DATE|DATE-DATE]                # render usage as an SVG chart (--by dimension, --pie, --heatmap)
 ├── watch [DATE|DATE-DATE]                # refresh a live summary at a fixed interval
 ├── report [DATE|DATE-DATE] --out <dir>   # generate a full usage report bundle
@@ -626,6 +627,31 @@ token-usage forecast
 - `Last 7 days / 最近 7 天` and `Last 30 days / 最近 30 天` show each window's total, the daily average (window total divided by **active** days — days with data — using integer division), and the active-day fraction of the window.
 - `Next 7 days / 未来 7 天` and `Next 30 days / 未来 30 天` project that average linearly over the coming natural days, assuming activity continues at the same intensity. A window with no data shows `no data / 无数据` and its projection is omitted.
 - The command is read-only and prints the same K/M/B abbreviations as query.
+
+## compare
+
+Compares token usage between two periods: a five-column framed table (Metric / Current / Base / Change / Change %) over active days, requests, and every token metric.
+
+```text
+token-usage compare <range> [--base <range>]
+token-usage compare 20260901-20260907
+token-usage compare 202609 --base 202608
+```
+
+| `<range>` / `--base` form | Meaning |
+|------|---------|
+| `YYYYMMDD` | A single day; the auto base is the previous day. |
+| `YYYYMM` | A calendar month; the auto base is the previous calendar month. |
+| `YYYY` | A calendar year (single arg only); the auto base is the previous calendar year. |
+| `A-B` | Inclusive range whose endpoints are days or months (they may be mixed); the auto base is an equal-length window ending the day before A. |
+
+Behavior:
+
+- Without `--base`, the baseline window is derived from the current window's granularity as listed above (leap months handled; e.g. `20260701-20260710` compares `2026-06-21..2026-06-30`).
+- `--base <range>` accepts the same forms and is parsed independently of the current window's granularity; it may overlap the current window. Dashed ISO forms such as `2026-08-01` and an end date before the start date are rejected.
+- There is no 366-day cap (unlike `query`/`collect`): the command does not expand days — each window is read with a single `BETWEEN` aggregate, so multi-year ranges work.
+- Rows: active days and requests show signed integer changes (`%+d`); token rows reuse the K/M/B abbreviations with `+`/`-` signed changes; `Change %` shows `--` when the base value is 0. Headers avoid ambiguous-width characters (such as Δ) to preserve table borders under CJK terminals.
+- Strictly read-only: it never touches the daemon.
 
 ## chart
 

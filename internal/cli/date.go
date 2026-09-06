@@ -72,10 +72,7 @@ func parseDateArgs(args []string, defaultToday bool, cmdName string) ([]string, 
 		}
 		start, end = startFirst, endLast
 		if end.Before(start) {
-			return nil, fmt.Errorf("%s", ui.Bi(
-				fmt.Sprintf("invalid date args %q: end date must not be earlier than start date. Accepts %s, e.g. token-usage %s 20260701", raw, dateFormatsHintEN, cmdName),
-				fmt.Sprintf("无效的日期参数 %q：结束日期不能早于开始日期。%s，例如 token-usage %s 20260701", raw, dateFormatsHintZH, cmdName),
-			))
+			return nil, rangeEndBeforeStartError(raw, cmdName)
 		}
 	} else {
 		// 单参数允许 4/6/8 位（年/月/日粒度）；年只在此路径合法。
@@ -181,6 +178,14 @@ func rangeEndpointCalendarError(which, raw, cmdName string) error {
 	return fmt.Errorf("%s", ui.Bi(
 		fmt.Sprintf("invalid date args %q: %s date is not a valid date. Accepts %s, e.g. token-usage %s 20260701", raw, which, dateFormatsHintEN, cmdName),
 		fmt.Sprintf("无效的日期参数 %q：%s日期不合法。%s，例如 token-usage %s 20260701", raw, whichZH, dateFormatsHintZH, cmdName),
+	))
+}
+
+// rangeEndBeforeStartError 区间结束日期早于开始日期。
+func rangeEndBeforeStartError(raw, cmdName string) error {
+	return fmt.Errorf("%s", ui.Bi(
+		fmt.Sprintf("invalid date args %q: end date must not be earlier than start date. Accepts %s, e.g. token-usage %s 20260701", raw, dateFormatsHintEN, cmdName),
+		fmt.Sprintf("无效的日期参数 %q：结束日期不能早于开始日期。%s，例如 token-usage %s 20260701", raw, dateFormatsHintZH, cmdName),
 	))
 }
 
