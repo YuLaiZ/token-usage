@@ -31,7 +31,7 @@ token-usage
 ├── doctor                                # 只读健康自检（配置、数据目录、数据库、客户端、采集、异常）
 ├── forecast                              # 按近期日均外推用量
 ├── compare <range>                       # 对比两个时间段的用量（--base 显式指定基线）
-├── chart [DATE|DATE-DATE]                # 将用量渲染为 SVG 图表（--by 维度、--pie、--heatmap）
+├── chart [DATE|DATE-DATE]                # 将用量渲染为 SVG 图表（--by 维度、--pie、--line、--heatmap）
 ├── watch [DATE|DATE-DATE]                # 以固定间隔刷新实时摘要
 ├── report [DATE|DATE-DATE] --out <dir>   # 生成完整用量报告包
 ├── config                                # 无参数：打开交互式配置 TUI
@@ -660,12 +660,14 @@ token-usage compare 202609 --base 202608
 ```bash
 token-usage chart 20260901-20260930                # SVG 写到标准输出
 token-usage chart 202609 --out september.svg       # 原子写入文件
+token-usage chart 20260901-20260930 --line         # 日趋势折线图（默认 --by day）
 ```
 
 - 默认柱为逐日源 total，按日期升序；无数据日高度为零，每根柱带原生 `<title>` 悬停提示（当日 tokens 与请求数）。
 - `--by <维度>` 切换聚合维度（`client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday`）；非时间维度按总量降序。
 - `--pie` 渲染占比饼图而非柱状图，需 `--by` 指定非时间维度（按天切分饼图不可读）；扇区使用固定 10 色取色序列与百分比图例，100% 占比退化为整圆。
-- `--heatmap` 渲染星期×小时热力矩阵（ISO 周序 7 行、24 小时列、11 级灰蓝取色按最繁忙交点缩放、每格悬停提示）而非柱状图；数据源与 `query heatmap` 相同，与 `--pie` 互斥。
+- `--heatmap` 渲染星期×小时热力矩阵（ISO 周序 7 行、24 小时列、11 级灰蓝取色按最繁忙交点缩放、每格悬停提示）而非柱状图；数据源与 `query heatmap` 相同，与 `--pie`、`--line` 互斥。
+- `--line` 渲染 tokens 趋势折线而非柱状图，需 `--by` 指定时间维度（`day`、`month`、`hour`、`weekday`）；把无关类别用线段连接会产生误导性趋势。点数不超过 60 时逐点带悬停提示，更密的序列只画折线；与 `--pie`、`--heatmap` 互斥。
 - 头部显示区间及其 total tokens / 请求数；柱状图 Y 轴按三条等分网格以 K/M/B 缩写标注。
 - `--out <文件>` 原子写入（先写临时文件再换名）而非标准输出；日期参数与 `query`/`collect` 同形态。
 

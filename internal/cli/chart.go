@@ -33,6 +33,7 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			by, _ := cmd.Flags().GetString("by")
 			pie, _ := cmd.Flags().GetBool("pie")
 			heatmap, _ := cmd.Flags().GetBool("heatmap")
+			line, _ := cmd.Flags().GetBool("line")
 			if pie && piePaletteBlockedDimensions[by] {
 				return fmt.Errorf("%s", ui.Bi(
 					"--pie requires --by with a non-temporal dimension (client/model/provider/project); temporal splits produce unreadable pie charts",
@@ -49,6 +50,18 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 				return fmt.Errorf("%s", ui.Bi(
 					fmt.Sprintf("unknown --by dimension %q (allowed: client, model, provider, project, day, month, hour, weekday)", by),
 					fmt.Sprintf("未知 --by 维度 %q（允许：client, model, provider, project, day, month, hour, weekday）", by),
+				))
+			}
+			if line && (pie || heatmap) {
+				return fmt.Errorf("%s", ui.Bi(
+					"--line, --pie and --heatmap are mutually exclusive",
+					"--line、--pie 与 --heatmap 互斥",
+				))
+			}
+			if line && !lineTemporalDimensions[by] {
+				return fmt.Errorf("%s", ui.Bi(
+					"--line requires --by with a temporal dimension (day/month/hour/weekday); connecting unrelated categories implies a misleading trend",
+					"--line 需要 --by 指定时间维度（day/month/hour/weekday）；把无关类别用线段连接会产生误导性趋势",
 				))
 			}
 
@@ -80,13 +93,13 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			subtitle := fmt.Sprintf("Total %s tokens / %d requests",
 				querier.FormatTokens(totals.TotalTokens), totals.Requests)
 
-			// heatmap 分支直接消费热力矩阵(--by/--pie 与其无关,不浪费聚合),
+			// heatmap 分支直接消费热力矩阵(--by/--pie/--line 与其无关,不浪费聚合),
 			// 汇总行沿用同一聚合核的范围统计。
 			if heatmap {
 				return writeChartOutput(cmd, outFlag, buildChartHeatmap(cmdContext(cmd), q, dates, subtitle))
 			}
 
-			// 柱状/饼图:复用维度聚合核,缺口日自动补零(day)或 total 降序
+			// 柱状/折线/饼图:复用维度聚合核,缺口日自动补零(day)或 total 降序
 			// (非时间维度的既有排序规则)。
 			rows, _, err := q.AggregateDimensionView(cmdContext(cmd), dates, querier.DimensionView{
 				Dimensions: []string{by},
@@ -108,7 +121,10 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 				})
 			}
 			var svg string
-			if pie {
+			if line {
+				// 折线是时间轴趋势,标题与柱状图同形态(chartTitleFor 已含 by)。
+				svg = buildLineSVG(title, subtitle, bars)
+			} else if pie {
 				slices := make([]chartSlice, 0, len(bars))
 				colorIdx := 0
 				for _, bar := range bars {
@@ -133,6 +149,7 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 	cmd.Flags().String("out", "", ui.Bi("Write SVG to a file instead of stdout", "将 SVG 写入文件而非标准输出"))
 	cmd.Flags().String("by", "day", ui.Bi("Aggregate by dimension: client/model/provider/project/day/month/hour/weekday", "按维度聚合：client/model/provider/project/day/month/hour/weekday"))
 	cmd.Flags().Bool("pie", false, ui.Bi("Render a pie chart instead of a bar chart (requires --by, not day)", "渲染饼图而非柱状图（需 --by 且不为 day）"))
+	cmd.Flags().Bool("line", false, ui.Bi("Render a line chart instead of a bar chart (requires a temporal --by: day/month/hour/weekday)", "渲染折线图而非柱状图（--by 须为时间维度：day/month/hour/weekday）"))
 	cmd.Flags().Bool("heatmap", false, ui.Bi("Render a weekday-by-hour heat matrix instead of a bar chart", "渲染星期×小时热力矩阵而非柱状图"))
 	return cmd
 }
@@ -180,6 +197,10 @@ func writeChartOutput(cmd *cobra.Command, outFlag, svg string) error {
 // piePaletteBlockedDimensions 是 --pie 拒绝的维度:时间维度切分的饼图不可读
 // (day 366 扇区、hour 24 项图例溢出画布),只有占比类维度适合饼图。
 var piePaletteBlockedDimensions = map[string]bool{"day": true, "month": true, "hour": true, "weekday": true}
+
+// lineTemporalDimensions 是 --line 允许的维度:折线表达时间趋势,把无关类别
+// (client/model/provider/project)用线段连接会产生误导性趋势。
+var lineTemporalDimensions = map[string]bool{"day": true, "month": true, "hour": true, "weekday": true}
 
 // chartTitleFor 统一柱状图标题:by=day(默认按日柱状)时仅区间,其余维度
 // 追加 " by <维度>" 与 report 包内图表命名一致。

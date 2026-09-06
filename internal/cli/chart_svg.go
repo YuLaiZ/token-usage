@@ -111,6 +111,91 @@ func buildBarSVG(title, subtitle string, bars []chartBar) string {
 	return b.String()
 }
 
+// buildLineSVG 生成时间趋势折线图的独立 SVG 文档:画布、坐标轴、Y 轴网格刻度
+// 与抽样 X 轴标签同柱状图(同一比例映射);数据点以 polyline 连续连线,零值点
+// 仍参与连线保证折线连续,点数不超过 60 时逐点绘制带 <title> 悬停提示的圆点,
+// 更密的序列只画折线避免杂乱。全零数据折线贴 X 轴并跳过网格;points 为空时
+// 绘制空坐标轴。
+func buildLineSVG(title, subtitle string, points []chartBar) string {
+	c := defaultChartCanvas()
+	var b strings.Builder
+	fmt.Fprintf(&b, `<?xml version="1.0" encoding="UTF-8"?>`+"\n")
+	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">`+"\n",
+		c.width, c.height, c.width, c.height)
+	fmt.Fprintf(&b, "  <title>%s</title>\n", svgEscape(title))
+	fmt.Fprintf(&b, "  <rect width=\"%d\" height=\"%d\" fill=\"#ffffff\"/>\n", c.width, c.height)
+	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"26\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"16\" fill=\"#222\">%s</text>\n",
+		c.width/2, svgEscape(title))
+	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"48\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"12\" fill=\"#555\">%s</text>\n",
+		c.width/2, svgEscape(subtitle))
+
+	plotW, plotH := c.plotWidth(), c.plotHeight()
+	baseY := c.plotBottomY()
+	// 坐标轴。
+	fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#999\"/>\n",
+		c.left, baseY-plotH, c.left, baseY)
+	fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#999\"/>\n",
+		c.left, baseY, c.left+plotW, baseY)
+
+	// Y 轴最大值与三条等分网格:同柱状图取 max 向上取整到「1/3 最大值」的
+	// 整数倍;全零数据网格与 X 轴重合,跳过仅留坐标轴。
+	var maxVal int64
+	for _, p := range points {
+		if p.value > maxVal {
+			maxVal = p.value
+		}
+	}
+	yMax := yScaleMax(maxVal)
+	for i := 1; maxVal > 0 && i <= 3; i++ {
+		v := yMax / 3 * int64(i)
+		y := baseY - int(float64(plotH)*float64(v)/float64(yMax))
+		fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#eee\"/>\n",
+			c.left, y, c.left+plotW, y)
+		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"end\" font-family=\"monospace\" font-size=\"11\" fill=\"#666\">%s</text>\n",
+			c.left-6, y+4, querier.FormatTokens(v))
+	}
+
+	if len(points) > 0 {
+		slot := float64(plotW) / float64(len(points))
+		// 折线坐标:与柱状图同一比例,x 取槽位中点,y 按 yMax 归一(yMax 为 0
+		// 的防御分支全部落回基线);零值点同样产出坐标,保证折线连续。
+		coords := make([]string, 0, len(points))
+		for i, p := range points {
+			x := float64(c.left) + float64(i)*slot + slot/2
+			y := float64(baseY)
+			if yMax > 0 {
+				y -= float64(plotH) * float64(p.value) / float64(yMax)
+			}
+			coords = append(coords, fmt.Sprintf("%.1f,%.1f", x, y))
+		}
+		fmt.Fprintf(&b, "  <polyline fill=\"none\" stroke=\"#4a90d9\" stroke-width=\"2\" points=\"%s\"/>\n",
+			strings.Join(coords, " "))
+		// 逐点悬停圆点:超过 60 点时只画折线,密集圆点会杂乱难读。
+		if len(points) <= 60 {
+			for i, p := range points {
+				cx, cy, _ := strings.Cut(coords[i], ",")
+				fmt.Fprintf(&b, "  <circle cx=\"%s\" cy=\"%s\" r=\"2.5\" fill=\"#4a90d9\"><title>%s</title></circle>\n",
+					cx, cy, svgEscape(p.hover))
+			}
+		}
+		// X 轴标签抽样与钳制:同柱状图,首尾标签不越出画布边缘。
+		labels := xAxisLabels(points, 8)
+		for _, l := range labels {
+			x := c.left + int(float64(l.index)*slot+slot/2)
+			if x < c.left+34 {
+				x = c.left + 34
+			}
+			if x > c.width-34 {
+				x = c.width - 34
+			}
+			fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"10\" fill=\"#666\">%s</text>\n",
+				x, baseY+14, svgEscape(l.text))
+		}
+	}
+	b.WriteString("</svg>\n")
+	return b.String()
+}
+
 // chartXLabel 是一个抽样 X 轴标签:柱下标与展示文本。
 type chartXLabel struct {
 	index int

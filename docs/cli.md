@@ -31,7 +31,7 @@ token-usage
 ├── doctor                                # read-only health check (config, data directory, database, clients, collection, errors)
 ├── forecast                              # extrapolate usage from recent daily averages
 ├── compare <range>                       # compare usage between two periods (--base overrides the baseline)
-├── chart [DATE|DATE-DATE]                # render usage as an SVG chart (--by dimension, --pie, --heatmap)
+├── chart [DATE|DATE-DATE]                # render usage as an SVG chart (--by dimension, --pie, --line, --heatmap)
 ├── watch [DATE|DATE-DATE]                # refresh a live summary at a fixed interval
 ├── report [DATE|DATE-DATE] --out <dir>   # generate a full usage report bundle
 ├── config                                # no arguments: open the interactive configuration TUI
@@ -660,12 +660,14 @@ Renders daily usage as a standalone SVG bar chart (no external dependencies, ope
 ```bash
 token-usage chart 20260901-20260930                # write the SVG to stdout
 token-usage chart 202609 --out september.svg       # atomic write to a file
+token-usage chart 20260901-20260930 --line         # daily trend as a line chart (default --by day)
 ```
 
 - By default bars are per-day source totals in ascending date order; days without data are zero-height, and each bar carries a native `<title>` hover tooltip with the day's tokens and requests.
 - `--by <dimension>` switches the aggregation to another built-in dimension (`client`, `model`, `provider`, `project`, `day`, `month`, `hour`, `weekday`); non-temporal dimensions are ordered by total descending.
 - `--pie` renders a share pie instead of a bar chart and requires `--by` with a non-temporal dimension (day splits would be unreadable); slices use a fixed 10-colour palette with a percentage legend, and a 100% share degrades to a full circle.
-- `--heatmap` renders a weekday-by-hour matrix (ISO weekday rows, 24 hour columns, 11-step grey-to-blue fill scaled against the busiest cell, hover tooltips per cell) instead of a bar chart; it shares the same data source as `query heatmap` and is mutually exclusive with `--pie`.
+- `--heatmap` renders a weekday-by-hour matrix (ISO weekday rows, 24 hour columns, 11-step grey-to-blue fill scaled against the busiest cell, hover tooltips per cell) instead of a bar chart; it shares the same data source as `query heatmap` and is mutually exclusive with `--pie` and `--line`.
+- `--line` renders a token trend line instead of a bar chart and requires `--by` with a temporal dimension (`day`, `month`, `hour`, `weekday`); connecting unrelated categories would imply a misleading trend. Points carry hover tooltips for up to 60 points, denser series draw the line only; mutually exclusive with `--pie` and `--heatmap`.
 - The header shows the range and its total tokens/requests; the bar-chart Y axis is labelled with K/M/B abbreviations at three equal gridlines.
 - `--out <file>` writes atomically (temporary file then rename) instead of stdout; the date argument accepts the same forms as `query`/`collect`.
 

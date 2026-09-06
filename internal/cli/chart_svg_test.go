@@ -2,11 +2,18 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
+	"github.com/YuLaiZ/token-usage/internal/model"
 )
 
 // buildBarSVG 合同:合法 XML、标题/副标题转义、柱数与 rect 对应、最高柱触顶、
@@ -151,5 +158,241 @@ func TestBuildHeatmapSVG(t *testing.T) {
 	}
 	if !strings.Contains(svg, "900 tokens") {
 		t.Errorf("悬停应含 tokens 数:\n%s", svg)
+	}
+}
+
+// polylinePoints 提取 SVG 中折线 polyline 的 points 坐标串(空格分隔的 x,y 对)。
+func polylinePoints(t *testing.T, svg string) []string {
+	t.Helper()
+	const marker = `stroke-width="2" points="`
+	i := strings.Index(svg, marker)
+	if i < 0 {
+		t.Fatalf("SVG 应含 polyline points:\n%s", svg)
+	}
+	rest := svg[i+len(marker):]
+	j := strings.Index(rest, `"`)
+	if j < 0 {
+		t.Fatalf("polyline points 属性未闭合:\n%s", svg)
+	}
+	return strings.Fields(rest[:j])
+}
+
+// pointXY 解析 "x,y" 坐标对为浮点数。
+func pointXY(t *testing.T, pair string) (float64, float64) {
+	t.Helper()
+	xs, ys, ok := strings.Cut(pair, ",")
+	if !ok {
+		t.Fatalf("坐标对应为 x,y 形式: %q", pair)
+	}
+	x, err := strconv.ParseFloat(xs, 64)
+	if err != nil {
+		t.Fatalf("坐标 x 应为数字: %q: %v", pair, err)
+	}
+	y, err := strconv.ParseFloat(ys, 64)
+	if err != nil {
+		t.Fatalf("坐标 y 应为数字: %q: %v", pair, err)
+	}
+	return x, y
+}
+
+// buildLineSVG 合同:合法 XML、标题/副标题转义、折线坐标串与点数对应、
+// 首末点 x 落在绘图区内、y 按 baseY-plotH*V/yMax 映射(最高点近顶、零值贴
+// 基线)、≤60 点时逐点悬停圆点。
+func TestBuildLineSVG(t *testing.T) {
+	points := []chartBar{
+		{label: "2026-09-05", value: 1200, hover: "2026-09-05: 1.20 K tokens, 1 requests"},
+		{label: "2026-09-06", value: 0, hover: "2026-09-06: 0 tokens, 0 requests"},
+		{label: "2026-09-07", value: 300, hover: "2026-09-07: 300 tokens, 1 requests"},
+	}
+	svg := buildLineSVG("a<b>&c", "s\"d'", points)
+	if !strings.HasPrefix(svg, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>") {
+		t.Errorf("SVG 应以 XML 声明开头:\n%s", svg)
+	}
+	if !strings.Contains(svg, "a&lt;b&gt;&amp;c") {
+		t.Errorf("标题应转义:\n%s", svg)
+	}
+	if !strings.Contains(svg, `s&quot;d&apos;`) {
+		t.Errorf("副标题应转义:\n%s", svg)
+	}
+
+	pts := polylinePoints(t, svg)
+	if len(pts) != 3 {
+		t.Fatalf("折线应含 3 个坐标点,实际 %d:\n%s", len(pts), svg)
+	}
+	c := defaultChartCanvas()
+	firstX, _ := pointXY(t, pts[0])
+	lastX, _ := pointXY(t, pts[len(pts)-1])
+	if firstX < float64(c.left) || lastX > float64(c.left+c.plotWidth()) {
+		t.Errorf("首末点 x 应在绘图区内: first=%v last=%v", firstX, lastX)
+	}
+
+	// y 映射几何:与实现同一比例(yMax 由 yScaleMax(maxVal) 推得),最高点
+	// (值 1200)的 y 应接近 baseY-plotH*1200/yMax(±2 容忍坐标输出取整),
+	// 零值点(值 0)的 y 应恰为基线 plotBottomY。
+	yMax := yScaleMax(1200)
+	baseY := c.plotBottomY()
+	wantTopY := float64(baseY) - float64(c.plotHeight())*float64(1200)/float64(yMax)
+	_, topY := pointXY(t, pts[0])
+	if topY < wantTopY-2 || topY > wantTopY+2 {
+		t.Errorf("最高点 y 应接近 %.1f(baseY-plotH*V/yMax),实际 %v", wantTopY, topY)
+	}
+	_, zeroY := pointXY(t, pts[1])
+	if zeroY != float64(baseY) {
+		t.Errorf("零值点 y 应等于基线 %d,实际 %v", baseY, zeroY)
+	}
+
+	// ≤60 点:每点一个悬停圆点,提示进入 <title>。
+	if n := strings.Count(svg, "<circle"); n != 3 {
+		t.Errorf("圆点数应与点数一致(3),实际 %d:\n%s", n, svg)
+	}
+	if !strings.Contains(svg, "2026-09-05: 1.20 K tokens, 1 requests") {
+		t.Errorf("圆点应带 <title> 悬停提示:\n%s", svg)
+	}
+}
+
+// buildLineSVG 边界:全零数据折线贴基线且跳过网格、恰 60 点仍逐点圆点、
+// >60 点只画折线不画圆点、空输入画空坐标轴。
+func TestBuildLineSVG_ZeroDenseAndEmpty(t *testing.T) {
+	// 全零数据:折线贴基线(所有 y = plotBottomY),网格退化为与 X 轴重合,跳过。
+	zeros := []chartBar{
+		{label: "d1", value: 0, hover: "d1: 0 tokens"},
+		{label: "d2", value: 0, hover: "d2: 0 tokens"},
+	}
+	zero := buildLineSVG("z", "t", zeros)
+	baseY := defaultChartCanvas().plotBottomY()
+	for _, p := range polylinePoints(t, zero) {
+		if _, y := pointXY(t, p); y != float64(baseY) {
+			t.Errorf("全零数据折线应贴基线 %d,实际 %v", baseY, y)
+		}
+	}
+	if strings.Contains(zero, `stroke="#eee"`) {
+		t.Errorf("全零数据应跳过网格:\n%s", zero)
+	}
+
+	// >60 点:只画折线不画圆点,坐标点数仍与点数一致。
+	dense := make([]chartBar, 0, 61)
+	for i := 0; i < 61; i++ {
+		dense = append(dense, chartBar{label: fmt.Sprintf("p%02d", i), value: int64(i + 1), hover: "h"})
+	}
+	denseSVG := buildLineSVG("d", "t", dense)
+	if strings.Contains(denseSVG, "<circle") {
+		t.Errorf(">60 点不应绘制圆点:\n%s", denseSVG)
+	}
+	if n := len(polylinePoints(t, denseSVG)); n != 61 {
+		t.Errorf("密集折线应含 61 个坐标点,实际 %d", n)
+	}
+
+	// 恰 60 点:处于逐点圆点的上边界内(≤60),圆点数与坐标点数均应为 60。
+	boundary := make([]chartBar, 0, 60)
+	for i := 0; i < 60; i++ {
+		boundary = append(boundary, chartBar{label: fmt.Sprintf("b%02d", i), value: int64(i + 1), hover: "h"})
+	}
+	boundarySVG := buildLineSVG("b", "t", boundary)
+	if n := strings.Count(boundarySVG, "<circle"); n != 60 {
+		t.Errorf("恰 60 点应绘制 60 个圆点(≤60 边界),实际 %d", n)
+	}
+	if n := len(polylinePoints(t, boundarySVG)); n != 60 {
+		t.Errorf("边界折线应含 60 个坐标点,实际 %d", n)
+	}
+
+	// 空输入:只画两条坐标轴,无折线无圆点无网格。
+	empty := buildLineSVG("e", "t", nil)
+	if strings.Contains(empty, "<polyline") || strings.Contains(empty, "<circle") {
+		t.Errorf("空输入不应有折线与圆点:\n%s", empty)
+	}
+	if strings.Count(empty, `stroke="#999"`) != 2 {
+		t.Errorf("空输入应画两条坐标轴:\n%s", empty)
+	}
+}
+
+// --line 互斥与时间维度校验在开库前生效:非法输入不触达数据库,且报错文案
+// 命中对应双语关键片段。
+func TestChartCmd_LineValidation(t *testing.T) {
+	// want/alt 为错误文案关键片段(输出为「English / 中文」双语,命中其一即可)。
+	cases := []struct {
+		name string
+		args []string
+		want string
+		alt  string
+	}{
+		{"line+pie 互斥", []string{"--line", "--pie", "--by", "model"}, "mutually exclusive", "互斥"},
+		{"line+heatmap 互斥", []string{"--line", "--heatmap"}, "mutually exclusive", "互斥"},
+		{"line+非时间维度", []string{"--line", "--by", "client"}, "temporal", "时间维度"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			openCalls := 0
+			cmd := newChartCmdWithDeps(
+				func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil },
+				func(string) (*db.DB, error) {
+					openCalls++
+					return db.Open(":memory:")
+				},
+			)
+			cmd.SetArgs(tc.args)
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
+			execErr := cmd.Execute()
+			if execErr == nil {
+				t.Fatalf("%s 应报错", tc.name)
+			}
+			if msg := execErr.Error(); !strings.Contains(msg, tc.want) && !strings.Contains(msg, tc.alt) {
+				t.Errorf("%s 错误文案应含 %q 或 %q,实际 %q", tc.name, tc.want, tc.alt, msg)
+			}
+			if openCalls != 0 {
+				t.Errorf("校验应在开库前完成,实际 open %d 次", openCalls)
+			}
+		})
+	}
+}
+
+// chart --line 合法路径端到端:显式传日期区间(不依赖真实时钟,缺省日期取
+// 系统时间会随跨天失效),折线与逐点悬停进入 --out 写出的 SVG 文件。
+func TestChartCmd_LineEndToEnd(t *testing.T) {
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+
+	d1 := time.Date(2026, 9, 5, 12, 0, 0, 0, time.Local)
+	d2 := time.Date(2026, 9, 6, 12, 0, 0, 0, time.Local)
+	msgs := []model.Message{
+		{ID: "l-a", SessionID: "s", Client: model.ClientClaudeCode,
+			Date: d1.Format("2006-01-02"), TS: d1.UnixMilli(), Model: "model-x", TotalTokens: 1200},
+		{ID: "l-b", SessionID: "s", Client: model.ClientClaudeCode,
+			Date: d2.Format("2006-01-02"), TS: d2.UnixMilli(), Model: "model-x", TotalTokens: 300},
+	}
+	if _, err := db.UpsertMessages(context.Background(), usageDB, msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(t.TempDir(), "line.svg")
+	cmd := newChartCmdWithDeps(
+		func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil },
+		func(string) (*db.DB, error) { return usageDB, nil },
+	)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"20260905-20260906", "--line", "--out", outPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	svg, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("--out 未写入文件: %v", err)
+	}
+	if n := len(polylinePoints(t, string(svg))); n != 2 {
+		t.Errorf("两日数据应产出 2 个折线点,实际 %d:\n%s", n, svg)
+	}
+	// 逐点悬停圆点带 tokens 数(与维度聚合核同一 hover 文案)。
+	if !strings.Contains(string(svg), "<circle") || !strings.Contains(string(svg), "1.20 K tokens") {
+		t.Errorf("折线圆点应带悬停提示(1.20 K tokens):\n%s", svg)
+	}
+	if !strings.Contains(buf.String(), outPath) {
+		t.Errorf("stdout 应回执写入路径:\n%s", buf.String())
 	}
 }
