@@ -32,8 +32,8 @@ func newDoctorCmdWithDeps(load func() (*config.Config, error), open func(string)
 		Use:   "doctor",
 		Short: "Run health checks and report problems / 运行健康检查并报告问题",
 		Long: ui.Bi(
-			"Run read-only health checks and print one line per check (OK/WARN/FAIL) with a final summary. Checks: config, data directory (the writability probe creates exactly one temporary file and removes it immediately), database (SQLite quick_check plus message count), enabled clients, last successful collection, unresolved collection errors, query view definitions (subqueries/groups/default semantic validity, warnings only), and an informational pointer to `token-usage status` for daemon state. No business data is written: opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own; it never starts, stops, or restarts the daemon, and never modifies configuration. FAIL/WARN are report-only; the exit code is always 0 in v1.",
-			"运行只读健康检查,逐项输出检查结果(OK/WARN/FAIL)并给出汇总。检查项:配置、数据目录(可写探针仅创建一个临时文件并立即删除)、数据库(SQLite quick_check 与消息行数)、已启用客户端、最近成功采集、未解决采集异常、查询视图定义(subqueries/groups/default 的语义合法性,仅警告),以及指向 `token-usage status` 的守护进程状态提示。不写业务数据:打开数据库的行为(journal 模式设置与 schema 迁移)与其它读取类命令一致,doctor 自身不执行任何特有的写操作;绝不启动/停止/重启守护进程,绝不修改配置。FAIL/WARN 仅体现在输出,v1 退出码恒为 0。",
+			"Run read-only health checks and print one line per check (OK/WARN/FAIL) with a final summary. Checks: config, data directory (the writability probe creates exactly one temporary file and removes it immediately), database (SQLite quick_check plus message count), enabled clients, last successful collection, data freshness (WARN when the last collection is more than seven days old), unresolved collection errors, query view definitions (subqueries/groups/default semantic validity, warnings only), and an informational pointer to `token-usage status` for daemon state. No business data is written: opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own; it never starts, stops, or restarts the daemon, and never modifies configuration. FAIL/WARN are report-only; the exit code is always 0 in v1.",
+			"运行只读健康检查,逐项输出检查结果(OK/WARN/FAIL)并给出汇总。检查项:配置、数据目录(可写探针仅创建一个临时文件并立即删除)、数据库(SQLite quick_check 与消息行数)、已启用客户端、最近成功采集、数据新鲜度(最近采集距今超过七天告警)、未解决采集异常、查询视图定义(subqueries/groups/default 的语义合法性,仅警告),以及指向 `token-usage status` 的守护进程状态提示。不写业务数据:打开数据库的行为(journal 模式设置与 schema 迁移)与其它读取类命令一致,doctor 自身不执行任何特有的写操作;绝不启动/停止/重启守护进程,绝不修改配置。FAIL/WARN 仅体现在输出,v1 退出码恒为 0。",
 		),
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
@@ -225,6 +225,12 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	}
 
 	// 5. Last collection / 最近采集
+	// fresh 提到 switch 之外声明,供下一项「数据新鲜度」复用同一份查询结果,
+	// 避免对 collection_log 重复查询;freshKnown 区分「查询失败」与「查询成功
+	// 但无记录」两种零值形态,下一项按各自语义跳过(查询失败时上游已计 FAIL,
+	// 不重复计数)。
+	var fresh querier.Freshness
+	freshKnown := false
 	switch {
 	case configFailed:
 		doctorLine(out, ui.Bi("Last collection", "最近采集"), statusSkip, ui.Bi("config failed", "配置加载失败"))
@@ -234,21 +240,52 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	default:
 		// 复用 querier.Freshness 的最近成功采集查询(dates 为空即只查
 		// collection_log 全库口径),时区语义与 query 统计信息区一致。
-		fresh, err := querier.New(usageDB).Freshness(ctx, nil)
+		f, err := querier.New(usageDB).Freshness(ctx, nil)
 		if err != nil {
 			failures++
 			doctorLine(out, ui.Bi("Last collection", "最近采集"), statusFail, err.Error())
-		} else if fresh.LastCollection.IsZero() {
-			warnings++
-			doctorLine(out, ui.Bi("Last collection", "最近采集"), statusWarn,
-				ui.Bi("no successful collection recorded yet", "尚无成功采集记录"))
 		} else {
-			doctorLine(out, ui.Bi("Last collection", "最近采集"), statusOK,
-				fresh.LastCollection.Format(time.DateTime))
+			fresh = f
+			freshKnown = true
+			if fresh.LastCollection.IsZero() {
+				warnings++
+				doctorLine(out, ui.Bi("Last collection", "最近采集"), statusWarn,
+					ui.Bi("no successful collection recorded yet", "尚无成功采集记录"))
+			} else {
+				doctorLine(out, ui.Bi("Last collection", "最近采集"), statusOK,
+					fresh.LastCollection.Format(time.DateTime))
+			}
 		}
 	}
 
-	// 6. Unresolved errors / 未解决异常
+	// 6. Data freshness / 数据新鲜度:复用上一项取出的 fresh,判断最近采集
+	// 是否超过陈旧阈值(阈值取舍见 doctorStaleThreshold)。
+	switch {
+	case configFailed:
+		doctorLine(out, ui.Bi("Data freshness", "数据新鲜度"), statusSkip, ui.Bi("config failed", "配置加载失败"))
+	case dbState != dbStateOK:
+		// 上游数据库项已计 WARN/FAIL,此处跳过不重复计数。
+		doctorLine(out, ui.Bi("Data freshness", "数据新鲜度"), statusSkip, ui.Bi("database unavailable", "数据库不可用"))
+	case !freshKnown:
+		// Freshness 查询失败:上一项 Last collection 已 FAIL,此处按
+		// 「无法获取」跳过,不误报为无采集记录,也不重复计数。
+		doctorLine(out, ui.Bi("Data freshness", "数据新鲜度"), statusSkip, ui.Bi("unavailable", "无法获取"))
+	case fresh.LastCollection.IsZero():
+		// 无采集记录:上一项 Last collection 已 WARN,此处跳过不重复计数。
+		doctorLine(out, ui.Bi("Data freshness", "数据新鲜度"), statusSkip, ui.Bi("no collection recorded", "无采集记录"))
+	case doctorFreshnessStale(time.Since(fresh.LastCollection)):
+		warnings++
+		days := int(time.Since(fresh.LastCollection).Hours() / 24)
+		doctorLine(out, ui.Bi("Data freshness", "数据新鲜度"), statusWarn, ui.Bi(
+			fmt.Sprintf("last collection %d d ago; run `token-usage collect` to refresh", days),
+			fmt.Sprintf("最近采集距今 %d 天；运行 `token-usage collect` 刷新", days),
+		))
+	default:
+		doctorLine(out, ui.Bi("Data freshness", "数据新鲜度"), statusOK,
+			doctorFreshnessDesc(time.Since(fresh.LastCollection)))
+	}
+
+	// 7. Unresolved errors / 未解决异常
 	switch {
 	case configFailed:
 		doctorLine(out, ui.Bi("Unresolved errors", "未解决异常"), statusSkip, ui.Bi("config failed", "配置加载失败"))
@@ -270,7 +307,7 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 		}
 	}
 
-	// 7. Query definitions / 查询视图:主动巡检配置的视图定义语义(default、
+	// 8. Query definitions / 查询视图:主动巡检配置的视图定义语义(default、
 	// subqueries、groups),在使用路径报错之前提前发现坏定义。仅 WARN 不 FAIL:
 	// 配置是纯展示态,坏定义不阻断采集与其他静态命令。
 	switch {
@@ -293,7 +330,7 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 		}
 	}
 
-	// 8. Daemon / 守护进程:固定输出提示行,不计入警告。
+	// 9. Daemon / 守护进程:固定输出提示行,不计入警告。
 	// 取舍:现成的只读判活 helper 复用并不干净——control.NewManager 构造期即
 	// MkdirAll 创建配置目录,daemon.IsDaemonRunning 经 flock TryLock 探测会在
 	// 锁文件不存在时创建它、锁文件不可创建时又保守误判为运行中;两者均违背
@@ -316,6 +353,35 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 		fmt.Fprintln(out, ui.Bi("OK", "一切正常"))
 	}
 	return nil
+}
+
+// doctorStaleThreshold 是「数据新鲜度」检查项的陈旧阈值:最近成功采集距今
+// 超过该时长即 WARN。取舍:7 天覆盖周末与短假,避免日常停用(如整周末开机的
+// 设备)触发误报;WARN 仅提醒不 FAIL,是否补采由用户自行决定。
+const doctorStaleThreshold = 7 * 24 * time.Hour
+
+// doctorFreshnessStale 判断距最近采集的时长 age 是否陈旧(超过阈值)。
+// 独立成纯函数,便于对边界(恰等于阈值不陈旧、阈值再多 1ns 即陈旧)直接单测;
+// time.Since 在命令路径中不可注入,陈旧分支的集成测试改以回填旧采集记录实现。
+func doctorFreshnessStale(age time.Duration) bool {
+	return age > doctorStaleThreshold
+}
+
+// doctorFreshnessDesc 把距最近采集的时长渲染为人性化描述:
+// 小于 1 小时为 "just now / 刚刚"(避免 "0 h ago" 的怪异观感);1 小时至不足
+// 24 小时为 "X h ago / X 小时前";满 24 小时起为 "X d ago / X 天前"。
+// X 一律向下取整(age 恒为正,int 截断即向下)。
+func doctorFreshnessDesc(age time.Duration) string {
+	switch {
+	case age < time.Hour:
+		return ui.Bi("just now", "刚刚")
+	case age < 24*time.Hour:
+		hours := int(age.Hours())
+		return ui.Bi(fmt.Sprintf("%d h ago", hours), fmt.Sprintf("%d 小时前", hours))
+	default:
+		days := int(age.Hours() / 24)
+		return ui.Bi(fmt.Sprintf("%d d ago", days), fmt.Sprintf("%d 天前", days))
+	}
 }
 
 // probeDataDirWritable 对数据目录做可写探针:创建随机名临时文件即建即删。

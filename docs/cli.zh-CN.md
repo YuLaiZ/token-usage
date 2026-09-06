@@ -412,11 +412,12 @@ token-usage doctor
 | `Database / 数据库` | 可打开且 `PRAGMA quick_check` 通过，显示路径与消息行数 | 文件尚未创建（运行 `collect` 后生成） | 打开失败或 quick_check 未通过 |
 | `Clients / 客户端` | 已启用客户端数量与名字 | 未启用任何客户端 | — |
 | `Last collection / 最近采集` | 最近成功采集时间（本机时区） | 尚无成功采集记录 | 查询失败 |
+| `Data freshness / 数据新鲜度` | 距最近成功采集的人性化时长（`刚刚`、`N 小时前` 或 `N 天前`）；7 天内 OK | 最近采集超过 7 天（7 天覆盖周末与短假）；提示运行 `token-usage collect` 刷新；仅警告不失败 | — |
 | `Unresolved errors / 未解决异常` | 无 | 数量，并提示 `token-usage errors` 与 `token-usage collect retry` | 查询失败 |
 | `Query definitions / 查询视图` | 已配置的子查询/组合查询/默认行为语义合法（未配置时同样 OK） | 问题计数、首个诊断路径并指向 `token-usage query list`；仅警告——坏视图定义不会阻断采集与静态表格命令 | 配置加载失败 |
 | `Daemon / 守护进程` | 纯提示：指向 `token-usage status`;doctor 绝不探测或操作守护进程（探测会创建锁文件/配置目录） | | |
 
-- 因上游检查失败而无法执行的检查项输出 `SKIPPED / 跳过`，不重复计数（上游 FAIL 已计数）：配置失败跳过全部依赖配置的检查项；数据库缺失或损坏跳过采集与异常两项。
+- 因上游检查失败而无法执行的检查项输出 `SKIPPED / 跳过`，不重复计数（上游 FAIL 已计数）：配置失败跳过全部依赖配置的检查项；数据库缺失或损坏跳过采集、数据新鲜度与异常三项；完全无采集记录时数据新鲜度跳过（最近采集一项已告警）。
 - 汇总行（`Result / 结果`）为 `OK / 一切正常`、`N warnings / N 项警告` 或 `N problems / N 项失败`（FAIL 优先于 WARN）。
 - v1 退出码恒为 0：FAIL/WARN 仅体现在报告。
 

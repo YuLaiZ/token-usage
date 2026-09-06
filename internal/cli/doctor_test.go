@@ -9,6 +9,7 @@ import (
 	goruntime "runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
@@ -44,6 +45,16 @@ func runDoctorForTest(t *testing.T, load func() (*config.Config, error), open fu
 	return out
 }
 
+// insertCollectionLogAge 以「距今 age」的时刻写入 collection_log:数据新鲜度
+// 检查项按 time.Since 实时计算,固定日期会随运行日期漂移误判陈旧,故以相对
+// 时间注入。写入前统一转 UTC 秒级文本,与 querier.Freshness 的解析口径一致
+// (亚秒截断只会让 age 略增,不影响向下取整结果)。
+func insertCollectionLogAge(t *testing.T, usageDB *db.DB, date, source string, age time.Duration) {
+	t.Helper()
+	collectedAtUTC := time.Now().UTC().Add(-age).Format(time.DateTime)
+	insertCollectionLogAt(t, usageDB, date, source, collectedAtUTC)
+}
+
 // 全绿场景:有效配置 + 目录存在可写 + 已建库(含一条消息与一条采集记录)
 // + 一个启用客户端 + 无未解决异常 → 各行 OK、结果 OK / 一切正常。
 func TestDoctor_AllGreen(t *testing.T) {
@@ -56,7 +67,7 @@ func TestDoctor_AllGreen(t *testing.T) {
 	if err := insertOneMessage(usageDB, "2026-09-01", "claude"); err != nil {
 		t.Fatal(err)
 	}
-	insertCollectionLogAt(t, usageDB, "2026-09-01", "claude", "2026-09-01 12:00:00")
+	insertCollectionLogAge(t, usageDB, "2026-09-01", "claude", 2*time.Hour)
 	// doctor 将自行打开,先关闭测试连接。
 	usageDB.Close()
 
@@ -69,6 +80,7 @@ func TestDoctor_AllGreen(t *testing.T) {
 		"quick_check: ok",
 		"Clients / 客户端: OK / 正常 1 (claude)",
 		"Last collection / 最近采集: OK / 正常 ",
+		"Data freshness / 数据新鲜度: OK / 正常 2 h ago / 2 小时前",
 		"Unresolved errors / 未解决异常: OK / 正常 none / 无",
 		"Daemon / 守护进程: INFO / 提示 ",
 		"Result / 结果: OK / 一切正常",
@@ -98,10 +110,10 @@ func TestDoctor_ConfigLoadFailure(t *testing.T) {
 	if !strings.Contains(out, "Config / 配置: FAIL / 失败") || !strings.Contains(out, "boom-config") {
 		t.Errorf("Config 应 FAIL 并携带错误:\n%s", out)
 	}
-	// Data directory / Database / Clients / Last collection / Unresolved errors /
-	// Query definitions 共 6 项跳过。
-	if n := strings.Count(out, "SKIPPED / 跳过"); n != 6 {
-		t.Errorf("依赖配置的检查项应恰 6 行 SKIPPED,实际 %d:\n%s", n, out)
+	// Data directory / Database / Clients / Last collection / Data freshness /
+	// Unresolved errors / Query definitions 共 7 项跳过。
+	if n := strings.Count(out, "SKIPPED / 跳过"); n != 7 {
+		t.Errorf("依赖配置的检查项应恰 7 行 SKIPPED,实际 %d:\n%s", n, out)
 	}
 	if !strings.Contains(out, "Daemon / 守护进程: INFO / 提示") {
 		t.Errorf("Daemon 提示行不受配置失败影响:\n%s", out)
@@ -112,7 +124,7 @@ func TestDoctor_ConfigLoadFailure(t *testing.T) {
 }
 
 // 数据目录不存在:目录 FAIL;数据库按「文件不存在」记 WARN(尚未创建);
-// 依赖数据库的两项 SKIPPED;结果为 1 项失败。
+// 依赖数据库的三项(最近采集/数据新鲜度/未解决异常)SKIPPED;结果为 1 项失败。
 func TestDoctor_DataDirMissingFails(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "not-exist")
 	out := runDoctorForTest(t, doctorLoad(missing, map[string]bool{"claude": true}), db.Open)
@@ -125,8 +137,8 @@ func TestDoctor_DataDirMissingFails(t *testing.T) {
 		!strings.Contains(out, "尚未创建") {
 		t.Errorf("数据库不存在应 WARN 尚未创建:\n%s", out)
 	}
-	if strings.Count(out, "SKIPPED / 跳过") != 2 {
-		t.Errorf("依赖数据库的两项应 SKIPPED:\n%s", out)
+	if strings.Count(out, "SKIPPED / 跳过") != 3 {
+		t.Errorf("依赖数据库的三项应 SKIPPED:\n%s", out)
 	}
 	if !strings.Contains(out, "Result / 结果: 1 problems / 1 项失败") {
 		t.Errorf("结果应为 1 项失败:\n%s", out)
@@ -163,7 +175,7 @@ func TestDoctor_UnresolvedErrorsWarn(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 补一条采集记录,使 Last collection 为 OK,隔离出仅 Unresolved 一项警告。
-	insertCollectionLogAt(t, usageDB, "2026-09-01", "claude", "2026-09-01 12:00:00")
+	insertCollectionLogAge(t, usageDB, "2026-09-01", "claude", 2*time.Hour)
 	usageDB.Close()
 
 	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
@@ -182,7 +194,7 @@ func TestDoctor_UnresolvedErrorsWarn(t *testing.T) {
 
 // 0 字节 usage.db 是「文件已建但从未初始化」的形态:与不存在同路径记 WARN,
 // 且 doctor 不得打开它——断言文件仍为 0 字节即证明 doctor 未触发 schema 迁移
-// (这是本测试的区分度锚点);依赖数据库的两项 SKIPPED。
+// (这是本测试的区分度锚点);依赖数据库的三项 SKIPPED。
 func TestDoctor_EmptyDbFileNotInitialized(t *testing.T) {
 	dataDir := t.TempDir()
 	dbPath := filepath.Join(dataDir, "usage.db")
@@ -195,8 +207,8 @@ func TestDoctor_EmptyDbFileNotInitialized(t *testing.T) {
 		!strings.Contains(out, "empty database file") || !strings.Contains(out, "空数据库文件") {
 		t.Errorf("空数据库文件应 WARN 且提示初始化:\n%s", out)
 	}
-	if strings.Count(out, "SKIPPED / 跳过") != 2 {
-		t.Errorf("依赖数据库的两项应 SKIPPED:\n%s", out)
+	if strings.Count(out, "SKIPPED / 跳过") != 3 {
+		t.Errorf("依赖数据库的三项应 SKIPPED:\n%s", out)
 	}
 	// 区分度锚点:doctor 不得初始化空库文件,大小必须仍为 0。
 	info, err := os.Stat(dbPath)
@@ -307,5 +319,99 @@ func TestDoctor_QueryDefinitions(t *testing.T) {
 	}
 	if !strings.Contains(out, "运行 `token-usage query list` 查看详情") {
 		t.Errorf("WARN 应指向 query list:\n%s", out)
+	}
+}
+
+// 数据新鲜度陈旧分支:time.Since 不可注入,以 8 天前的采集记录触发
+// (距阈值 7 天有整日余量,秒级截断误差不影响判定)。
+func TestDoctor_DataFreshness_Stale(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "usage.db")
+	usageDB, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := insertOneMessage(usageDB, "2026-09-01", "claude"); err != nil {
+		t.Fatal(err)
+	}
+	insertCollectionLogAge(t, usageDB, "2026-09-01", "claude", 8*24*time.Hour)
+	usageDB.Close()
+
+	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
+	if !strings.Contains(out, "Data freshness / 数据新鲜度: WARN / 警告") {
+		t.Errorf("距最近采集超过 7 天应 WARN:\n%s", out)
+	}
+	for _, want := range []string{"8 d ago", "collect"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("WARN 应含 %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "Result / 结果: 1 warnings / 1 项警告") {
+		t.Errorf("结果应恰 1 项警告(仅数据新鲜度):\n%s", out)
+	}
+}
+
+// 无采集记录:数据新鲜度 SKIPPED(上一项 Last collection 已 WARN,不重复计数)。
+func TestDoctor_DataFreshness_NoCollection(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "usage.db")
+	usageDB, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := insertOneMessage(usageDB, "2026-09-01", "claude"); err != nil {
+		t.Fatal(err)
+	}
+	usageDB.Close()
+
+	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
+	if !strings.Contains(out, "Data freshness / 数据新鲜度: SKIPPED / 跳过") ||
+		!strings.Contains(out, "no collection recorded / 无采集记录") {
+		t.Errorf("无采集记录应 SKIPPED:\n%s", out)
+	}
+	if !strings.Contains(out, "Result / 结果: 1 warnings / 1 项警告") {
+		t.Errorf("结果应恰 1 项警告(仅 Last collection):\n%s", out)
+	}
+}
+
+// 阈值判断边界(直接单测阈值函数,不经过整条 doctor):恰 7 天不算陈旧,
+// 7 天+1ns 即陈旧。
+func TestDoctorFreshnessStale_Threshold(t *testing.T) {
+	cases := []struct {
+		age  time.Duration
+		want bool
+	}{
+		{0, false},
+		{6*24*time.Hour + 23*time.Hour + 59*time.Minute, false},
+		{7 * 24 * time.Hour, false},
+		{7*24*time.Hour + time.Nanosecond, true},
+		{8 * 24 * time.Hour, true},
+	}
+	for _, tc := range cases {
+		if got := doctorFreshnessStale(tc.age); got != tc.want {
+			t.Errorf("doctorFreshnessStale(%v) = %v, want %v", tc.age, got, tc.want)
+		}
+	}
+}
+
+// 人性化时长三段与边界:<1h 刚刚;1h–<24h 小时;≥24h 天(X 向下取整)。
+func TestDoctorFreshnessDesc_Table(t *testing.T) {
+	cases := []struct {
+		age  time.Duration
+		want string
+	}{
+		{0, "just now / 刚刚"},
+		{59 * time.Minute, "just now / 刚刚"},
+		{59*time.Minute + 59*time.Second, "just now / 刚刚"},
+		{time.Hour, "1 h ago / 1 小时前"},
+		{23*time.Hour + 59*time.Minute, "23 h ago / 23 小时前"},
+		{24 * time.Hour, "1 d ago / 1 天前"},
+		{47*time.Hour + 59*time.Minute, "1 d ago / 1 天前"},
+		{8 * 24 * time.Hour, "8 d ago / 8 天前"},
+	}
+	for _, tc := range cases {
+		if got := doctorFreshnessDesc(tc.age); got != tc.want {
+			t.Errorf("doctorFreshnessDesc(%v) = %q, want %q", tc.age, got, tc.want)
+		}
 	}
 }
