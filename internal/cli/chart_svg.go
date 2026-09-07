@@ -358,7 +358,7 @@ func buildHeatmapSVG(title, subtitle string, weekdays, hours []string, values fu
 		c.width/2, svgEscape(subtitle))
 
 	if len(hours) == 0 || len(weekdays) == 0 {
-		// 空矩阵(无数据/聚合失败兜底):只输出标题,不绘制网格。
+		// 空矩阵(无数据):只输出标题,不绘制网格。
 		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"14\" fill=\"#666\">%s</text>\n",
 			c.width/2, c.height/2, svgEscape(ui.Bi("no data", "无数据")))
 		b.WriteString("</svg>\n")

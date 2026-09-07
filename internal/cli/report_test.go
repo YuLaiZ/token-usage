@@ -160,6 +160,34 @@ func TestReportCmd_MonthYearBaseline(t *testing.T) {
 	}
 }
 
+// report 查询失败时不产出报告包:取消上下文使命令在首个查询即报错,
+// --out 目录不得创建(半成品报告比无报告更误导)。
+func TestReportCmd_QueryErrorNoBundle(t *testing.T) {
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outDir := filepath.Join(t.TempDir(), "report")
+	cmd := newReportCmdWithDeps(
+		func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil },
+		func(string) (*db.DB, error) { return usageDB, nil },
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"20260901", "--out", outDir})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("查询失败时命令应报错")
+	}
+	if _, err := os.Stat(outDir); !os.IsNotExist(err) {
+		t.Errorf("查询失败不应创建报告目录: %v", err)
+	}
+}
+
 // report 包 compare.txt:直接验证窗口推导与渲染内容。基线为结束于当前窗口
 // 开始日前一天的等长窗口(缺省规则与 compare 命令一致),覆盖跨月、跨年与
 // 单日边界;当前窗口行、基线窗口行与 Total 行逐项断言。

@@ -14,6 +14,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/model"
+	"github.com/YuLaiZ/token-usage/internal/querier"
 )
 
 // buildBarSVG 合同:合法 XML、标题/副标题转义、柱数与 rect 对应、最高柱触顶、
@@ -133,6 +134,52 @@ func TestChartCmd_ByDimensionValidation(t *testing.T) {
 	cmd2.SetErr(&buf)
 	if err := cmd2.Execute(); err == nil {
 		t.Fatal("--pie --by day 应被拒绝")
+	}
+}
+
+// buildChartHeatmap 的查询错误必须传播:取消上下文等失败若被吞掉,
+// chart --heatmap 与报告包会写出误导性的「无数据」SVG;有效空数据本身
+// 返回完整零矩阵,无需降级兜底。
+func TestBuildChartHeatmap_QueryErrorPropagates(t *testing.T) {
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+
+	q := querier.New(usageDB)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := buildChartHeatmap(ctx, q, []string{"2026-09-01"}, "sub"); err == nil {
+		t.Fatal("查询失败应返回错误,不得降级为空矩阵 SVG")
+	}
+}
+
+// chart --heatmap 查询失败时不产出成功产物:取消上下文使命令报错,
+// --out 目标文件不得写出。
+func TestChartCmd_HeatmapQueryErrorNoOutput(t *testing.T) {
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(t.TempDir(), "heatmap.svg")
+	cmd := newChartCmdWithDeps(
+		func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil },
+		func(string) (*db.DB, error) { return usageDB, nil },
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{"20260901", "--heatmap", "--out", outPath})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("查询失败时命令应报错")
+	}
+	if _, err := os.Stat(outPath); !os.IsNotExist(err) {
+		t.Errorf("查询失败不应写出图表文件: %v", err)
 	}
 }
 

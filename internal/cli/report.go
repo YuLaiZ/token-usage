@@ -148,7 +148,10 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 	}
 	subtitle := fmt.Sprintf("Total %s tokens / %d requests",
 		querier.FormatTokens(rangeStats.Total.TotalTokens), rangeStats.Total.Requests)
-	heatmapSVG := buildChartHeatmap(ctx, q, dates, subtitle)
+	heatmapSVG, err := buildChartHeatmap(ctx, q, dates, subtitle)
+	if err != nil {
+		return nil, err
+	}
 
 	// compare.txt:本期与缺省基线窗口的用量对比。缺省基线规则与 compare 命令
 	// 完全一致(defaultCompareBase 按原始参数粒度分派:单日取前一天、单月取

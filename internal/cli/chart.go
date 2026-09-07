@@ -96,7 +96,11 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			// heatmap 分支直接消费热力矩阵(--by/--pie/--line 与其无关,不浪费聚合),
 			// 汇总行沿用同一聚合核的范围统计。
 			if heatmap {
-				return writeChartOutput(cmd, outFlag, buildChartHeatmap(cmdContext(cmd), q, dates, subtitle))
+				svg, err := buildChartHeatmap(cmdContext(cmd), q, dates, subtitle)
+				if err != nil {
+					return err
+				}
+				return writeChartOutput(cmd, outFlag, svg)
 			}
 
 			// 柱状/折线/饼图:复用维度聚合核,缺口日自动补零(day)或 total 降序
@@ -156,13 +160,12 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 
 // buildChartHeatmap 组装星期×小时热力矩阵 SVG:复用维度聚合核的
 // weekday,hour 组合(矩阵交点缺失即零值),行列标签与终端 heatmap 一致
-// (ISO 周序星期、本机时区小时)。
-func buildChartHeatmap(ctx context.Context, q *querier.Querier, dates []string, subtitle string) string {
-	// 数据来自 querier.HeatmapMatrix(与终端 heatmap 同一来源,行列与数值
-	// 完全一致);聚合失败时输出空矩阵(全最低级)比静默退出更可观察。
+// (ISO 周序星期、本机时区小时)。查询失败时返回错误——有效空数据本身
+// 返回完整零矩阵,吞错降级为空图会把查询错误伪装成无数据。
+func buildChartHeatmap(ctx context.Context, q *querier.Querier, dates []string, subtitle string) (string, error) {
 	m, err := q.HeatmapMatrix(ctx, dates)
-	if err != nil || m == nil {
-		m = &querier.HeatmapMatrix{}
+	if err != nil {
+		return "", err
 	}
 	return buildHeatmapSVG(
 		"Weekday x hour heatmap / 星期×小时热力图",
@@ -174,7 +177,7 @@ func buildChartHeatmap(ctx context.Context, q *querier.Querier, dates []string, 
 			}
 			return 0
 		},
-	)
+	), nil
 }
 
 // writeChartOutput 输出 SVG:未指定 --out 时写 stdout,指定时原子写入文件
