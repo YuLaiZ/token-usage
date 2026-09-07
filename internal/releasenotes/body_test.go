@@ -45,6 +45,32 @@ func TestBuildBody(t *testing.T) {
 			},
 		},
 		{
+			name: "两个语言块标题后各有一行语言导航锚点",
+			opts: Options{Tag: "v0.1.0", ContentEN: "EN", ContentZH: "ZH"},
+			checks: func(t *testing.T, body string) {
+				sep := strings.Index(body, "\n---\n")
+				if sep < 0 {
+					t.Fatalf("缺少分隔行, got:\n%s", body)
+				}
+				// 英文块的锚 release-notes-en 在分隔前、携带导航链接;中文块的
+				// 锚 release-notes-zh 在分隔后;锚点用 GitHub 文档规定的 name 语法。
+				enNav := strings.Index(body, `<a name="release-notes-en"></a>[English](#release-notes-en) | [中文](#release-notes-zh)`)
+				zhNav := strings.Index(body, `<a name="release-notes-zh"></a>[English](#release-notes-en) | [中文](#release-notes-zh)`)
+				if !(enNav >= 0 && enNav < sep && sep < zhNav) {
+					t.Fatalf("语言导航行缺失或错位: enNav=%d zhNav=%d sep=%d, got:\n%s", enNav, zhNav, sep, body)
+				}
+				// 导航行紧跟各自语言块的标题(标题与导航之间为 Join 的一个空行)。
+				enTitle := strings.Index(body, "## token-usage v0.1.0\n")
+				zhTitle := strings.Index(body, "## token-usage v0.1.0（中文说明）\n")
+				if enTitle >= 0 && enNav != enTitle+len("## token-usage v0.1.0\n")+1 {
+					t.Errorf("英文导航行应紧跟标题行: titleEnd=%d nav=%d", enTitle+len("## token-usage v0.1.0\n"), enNav)
+				}
+				if zhTitle >= 0 && zhNav != zhTitle+len("## token-usage v0.1.0（中文说明）\n")+1 {
+					t.Errorf("中文导航行应紧跟标题行: titleEnd=%d nav=%d", zhTitle+len("## token-usage v0.1.0（中文说明）\n"), zhNav)
+				}
+			},
+		},
+		{
 			name: "英文段在 --- 之前，中文段在之后",
 			opts: Options{Tag: "v0.1.0-rc.1", ContentEN: "### New\n- ENONLY", ContentZH: "### 新功能\n- ZHONLY"},
 			checks: func(t *testing.T, body string) {

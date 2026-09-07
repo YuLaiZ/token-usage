@@ -4,8 +4,9 @@
 // 与「IO（credits.go：调 gh 提取贡献者）」两层。纯逻辑层可被表驱动测试充分覆盖，
 // 所有动态输入（tag、手写中英内容、致谢）经 Options 显式传入。
 //
-// body 结构为：英文段（版本标题 + 版本性质 + 内容 + 致谢 + 资产 + 校验）在前，
-// 独占一行的 --- 在中，中文段在后。致谢段在外部贡献为空时整体省略（含标题）。
+// body 结构为：英文段（版本标题 + 语言导航 + 版本性质 + 内容 + 致谢 + 资产 + 校验）在前，
+// 独占一行的 --- 在中，中文段在后。两个语言块标题后各有一行指向中英锚点的语言导航。
+// 致谢段在外部贡献为空时整体省略（含标题）。
 package releasenotes
 
 import (
@@ -40,6 +41,13 @@ const (
 	zhMarker = "<!-- zh -->"
 )
 
+// langNavLine 是每个语言块标题之后的一行语言导航:自定义锚点用 GitHub
+// 文档规定的 <a name> 语法并带 release-notes- 前缀的唯一名称,两个链接
+// 分别指向中英两块的锚。
+func langNavLine(anchor string) string {
+	return fmt.Sprintf("<a name=\"release-notes-%s\"></a>[English](#release-notes-en) | [中文](#release-notes-zh)", anchor)
+}
+
 // assetsSectionEN 是英文资产列表段（二进制资产名与正式分发产物逐字一致）。
 const assetsSectionEN = "### Assets\n" +
 	"- `token-usage-darwin-arm64` — macOS (Apple Silicon)\n" +
@@ -72,10 +80,11 @@ func BuildBody(opts Options) string {
 	return en + "\n\n---\n\n" + zh + "\n"
 }
 
-// enBlockParts 组装英文段的所有子块，顺序：标题、性质、内容、致谢、资产、校验。
+// enBlockParts 组装英文段的所有子块，顺序：标题、语言导航、性质、内容、致谢、资产、校验。
 func enBlockParts(opts Options) []string {
 	parts := []string{
 		fmt.Sprintf("## token-usage %s", opts.Tag),
+		langNavLine("en"),
 		NatureEN(opts.Tag),
 	}
 	parts = appendNonEmpty(parts, opts.ContentEN)
@@ -88,6 +97,7 @@ func enBlockParts(opts Options) []string {
 func zhBlockParts(opts Options) []string {
 	parts := []string{
 		fmt.Sprintf("## token-usage %s（中文说明）", opts.Tag),
+		langNavLine("zh"),
 		NatureZH(opts.Tag),
 	}
 	parts = appendNonEmpty(parts, opts.ContentZH)
