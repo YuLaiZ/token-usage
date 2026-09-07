@@ -130,8 +130,8 @@ func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string
 		},
 	}
 	cmd.Flags().String("base", "", ui.Bi(
-		"base period range (same forms as RANGE); overrides the auto-derived previous equal-length window",
-		"基线时间段（与 RANGE 同形态）；缺省时自动取前置等长窗口",
+		"base period range (same forms as RANGE); overrides the granularity-derived baseline (previous day/month/year for a single day/month/year RANGE, equal-length window ending the day before a range starts)",
+		"基线时间段（与 RANGE 同形态）；缺省基线按 RANGE 粒度推导：单日/单月/单年对前一天/上一个日历月/上一个日历年，区间对结束于开始日前一天的等长窗口",
 	))
 	cmd.Flags().String("by", "", ui.Bi(
 		"Compare per member of a dimension: client/model/provider/project",

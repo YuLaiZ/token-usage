@@ -698,7 +698,7 @@ Behavior:
 
 ## chart
 
-Renders daily usage as a standalone SVG bar chart (no external dependencies, opens in any browser or image viewer).
+Renders usage as standalone SVG charts — bars by default (per-day or per `--by` dimension), plus trend lines, share pies, and the weekday-by-hour heatmap (no external dependencies, opens in any browser or image viewer).
 
 ```bash
 token-usage chart 20260901-20260930                # write the SVG to stdout

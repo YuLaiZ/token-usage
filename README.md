@@ -145,7 +145,7 @@ token-usage query list
 | `errors [date]` | Show collection failures for a date or range (`--format json` emits machine-readable output). |
 | `doctor` | Run read-only health checks. |
 | `forecast` | Extrapolate upcoming usage from recent daily averages. |
-| `compare <range>` | Compare usage between two periods (`--base` overrides the auto previous equal-length window, `--by` splits per dimension member, `--format json` emits machine-readable output). |
+| `compare <range>` | Compare usage between two periods (`--base` overrides the granularity-derived baseline: previous day for a day, previous calendar month for a month, previous calendar year for a year, equal-length preceding window for a range; `--by` splits per dimension member, `--format json` emits machine-readable output). |
 | `top [date]` | Show the heaviest sessions by total tokens (`--limit`, default 10). |
 | `chart [date]` | Render usage as an SVG chart (`--by` dimension, `--pie`, `--line` for trend lines, `--heatmap`, `--out` to save). |
 | `watch [date]` | Refresh a live summary at a fixed interval (`--once` for a single frame, `--by` grouping dimension with `model` as the default). |
