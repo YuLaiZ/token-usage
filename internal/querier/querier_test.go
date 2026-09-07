@@ -1914,15 +1914,65 @@ func TestBucketKeyOfDSTBoundaries(t *testing.T) {
 	defer func() { time.Local = origLocal }()
 
 	q := setupMessageFixture(t)
-	// 跳变边界取整点 Unix 秒(春跳 2026-03-08 07:00 UTC,秋跳 2026-11-01
-	// 06:00 UTC),前后各 3 小时逐小时+半小时+边界秒。
+
+	// Go 侧 DST 边界 golden:固定时刻的已知正确桶键(由 tzdata 规则推算:
+	// 2026 春跳 2026-03-08 07:00:00Z=1772953200(NY 02:00 EST→03:00 EDT,
+	// 02:00-02:59 不存在);秋跳 2026-11-01 06:00:00Z=1793512800(NY 02:00
+	// EDT→01:00 EST,01:00-01:59 出现两次)。跳变前后各取整点与边界秒。
+	golden := []struct {
+		ms            int64
+		hour, weekday string
+		note          string
+	}{
+		{1772953199000, "01", "6", "春跳前最后秒: 01:59:59 EST(周日)"},
+		{1772953200000, "03", "6", "春跳点: 03:00:00 EDT,墙上 02 点不存在"},
+		{1772955000000, "03", "6", "春跳后: 03:30 EDT"},
+		{1772956800000, "04", "6", "春跳后: 04:00 EDT"},
+		{1793512799000, "01", "6", "秋跳前最后秒: 01:59:59 EDT(周日)"},
+		{1793512800000, "01", "6", "秋跳点: 回退后 01:00:00 EST,第二次 01 点"},
+		{1793516400000, "02", "6", "回退后: 02:00 EST"},
+		{1793519999000, "02", "6", "回退后: 02:59:59 EST"},
+		{1793520000000, "03", "6", "回退后: 03:00 EST"},
+	}
+	for _, g := range golden {
+		if got := bucketKeyOf("hour", g.ms); got != g.hour {
+			t.Errorf("hour golden 不符: go=%s want=%s (%s, ts=%d)", got, g.hour, g.note, g.ms)
+		}
+		if got := bucketKeyOf("weekday", g.ms); got != g.weekday {
+			t.Errorf("weekday golden 不符: go=%s want=%s (%s, ts=%d)", got, g.weekday, g.note, g.ms)
+		}
+	}
+
+	// 双实现等价断言:仅当 SQLite 'localtime' 跟随运行期 TZ 时执行。平台
+	// 行为差异实测存在——部分平台(Linux CI runner)的 SQLite 本地时区在
+	// 进程早期固定、不响应运行期 Setenv(macOS 上每次求值读 TZ);生产路径
+	// 的 CLI/daemon 进程 TZ 恒定、两侧同源时区,等价性由本机时区的时刻级/
+	// 聚合级测试与冻结库逐字节验收锚定,此处对不可跟随的平台降级为 Skip。
+	if !sqliteLocaltimeUsesTestTZ(t, q) {
+		t.Skip("SQLite 'localtime' 未采用本测试设置的时区(进程早期已固定本地时区),双实现等价断言降级")
+	}
 	var moments []time.Time
-	for _, boundary := range []int64{1772996400, 1791162000} {
+	for _, boundary := range []int64{1772953200, 1793512800} {
 		for _, off := range []int64{-10800, -7200, -3600, -1800, -1, 0, 1, 1800, 3600, 7200, 10800} {
 			moments = append(moments, time.Unix(boundary+off, 0))
 		}
 	}
 	assertBucketEquivalence(t, q, moments)
+}
+
+// sqliteLocaltimeUsesTestTZ 探测 SQLite 'localtime' 是否采用本测试设置的
+// 时区(TZ=America/New_York):探针时刻 1772640000=2026-03-04T16:00Z 在纽约
+// 为 11:00 EST,折算恰为 "11" 才证明采用;仅判断「不同于 UTC」不足以排除
+// 进程初始时区被固定为其他非 UTC 时区的 runner。
+func sqliteLocaltimeUsesTestTZ(t *testing.T, q *Querier) bool {
+	t.Helper()
+	const probeTS = 1772640000
+	var localHour string
+	if err := q.db.QueryRow(
+		"SELECT strftime('%H', ?, 'unixepoch', 'localtime')", probeTS).Scan(&localHour); err != nil {
+		t.Fatalf("TZ 探测查询失败: %v", err)
+	}
+	return localHour == "11"
 }
 
 // 聚合级等价:同一 fixture 上,Go 分桶聚合路径与 SQL 'localtime' 旧表达式
