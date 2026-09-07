@@ -394,11 +394,16 @@ func buildHeatmapSVG(title, subtitle string, weekdays, hours []string, values fu
 	}
 
 	// 级数折算复用 querier.HeatLevel(0..9):0 值(缺失交点)取 heatFills[0]
-	// 最浅灰,有值交点取 2..11 档(与终端空格语义区分,SVG 用浅色可见)。
+	// 最浅灰,有值交点取 2..11 档(与终端空格语义区分,SVG 用浅色可见);
+	// 相对占比再小的正值也至少取最低正值档 heatFills[2],不得折算回
+	// 无数据灰。
 	fill := func(v int64) string {
-		l := querier.HeatLevel(v, maxVal)
-		if l == 0 {
+		if v == 0 {
 			return heatFills[0]
+		}
+		l := querier.HeatLevel(v, maxVal)
+		if l < 1 {
+			l = 1
 		}
 		return heatFills[l+1]
 	}

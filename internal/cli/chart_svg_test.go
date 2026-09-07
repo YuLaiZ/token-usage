@@ -303,6 +303,23 @@ func TestBuildHeatmapSVG(t *testing.T) {
 	}
 }
 
+// buildHeatmapSVG 取色合同:零值(无数据)用最浅灰 heatFills[0];较小的
+// 非零值不得折算回无数据色——正值至少使用最低正值色阶 heatFills[2],
+// 否则低用量活动被伪装成无数据。
+func TestBuildHeatmapSVG_LowNonzeroUsesLowestPositiveFill(t *testing.T) {
+	svg := buildHeatmapSVG("t", "s", []string{"Monday / 周一"}, []string{"00:00", "01:00", "02:00"},
+		func(w, h int) int64 { return []int64{0, 1, 100}[h] })
+	for _, line := range strings.Split(svg, "\n") {
+		if strings.Contains(line, "01:00: 1 tokens") && strings.Contains(line, `fill="`+heatFills[0]+`"`) {
+			t.Fatalf("非零用量不应使用无数据颜色: %s", line)
+		}
+	}
+	// 正低值格应至少取最低正值色阶 heatFills[2]。
+	if !strings.Contains(svg, `fill="`+heatFills[2]+`"`) {
+		t.Errorf("值 1(相对 max 100 量化为 0 级)应钳制到最低正值色阶:\n%s", svg)
+	}
+}
+
 // polylinePoints 提取 SVG 中折线 polyline 的 points 坐标串(空格分隔的 x,y 对)。
 func polylinePoints(t *testing.T, svg string) []string {
 	t.Helper()

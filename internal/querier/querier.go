@@ -980,10 +980,18 @@ func FormatTokens(tokens int64) string {
 // 字符(U+2580 系)在 CJK 环境的 ambiguous width 歧义。
 const heatLevels = " .:-=+*#%@"
 
-// heatCell 按单元格 total 相对全表最大值折算 0..9 强度级并返回对应字符。
-// maxTotal ≤ 0 或该格 total ≤ 0 时为空格。
+// heatCell 按单元格 total 相对全表最大值折算强度字符。total ≤ 0(无数据)
+// 或 maxTotal ≤ 0(全表无正格)为空格;正值经 HeatLevel 量化后至少取最低
+// 强度 heatLevels[1]——相对占比再小也是真实活动,不得折算回无数据空格。
 func heatCell(total, maxTotal int64) byte {
-	return heatLevels[HeatLevel(total, maxTotal)]
+	if total <= 0 || maxTotal <= 0 {
+		return heatLevels[0]
+	}
+	l := HeatLevel(total, maxTotal)
+	if l < 1 {
+		l = 1
+	}
+	return heatLevels[l]
 }
 
 // HeatLevel 把 v 相对 max 的占比折算为 0..9 强度级(终端字符下标);SVG 侧

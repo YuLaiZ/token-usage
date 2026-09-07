@@ -1781,3 +1781,20 @@ func TestHeatCell_LargeValues(t *testing.T) {
 		t.Errorf("约半值应 4 级 '=',实际 %q", got)
 	}
 }
+
+// heatCell 取色合同:零值(无数据)为空格;较小的非零值不得折算回空格——
+// 正值至少取最低强度 heatLevels[1],否则低用量活动被伪装成无数据。
+func TestHeatCell_LowNonzeroUsesLowestPositiveLevel(t *testing.T) {
+	if got := heatCell(0, 100); got != ' ' {
+		t.Errorf("零值应为空格,实际 %q", got)
+	}
+	if got := heatCell(1, 100); got != heatLevels[1] {
+		t.Errorf("正低值应钳制到最低强度 %q,实际 %q", heatLevels[1], got)
+	}
+	if got := heatCell(100, 100); got != heatLevels[9] {
+		t.Errorf("满值应为最高强度 %q,实际 %q", heatLevels[9], got)
+	}
+	if got := heatCell(50, 0); got != ' ' {
+		t.Errorf("maxTotal 非正时全表视为无数据,应为空格,实际 %q", got)
+	}
+}
