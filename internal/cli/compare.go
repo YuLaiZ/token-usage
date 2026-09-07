@@ -83,7 +83,7 @@ func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string
 				if err != nil {
 					return err
 				}
-				aliases := compareDimensionAliases(by, cfg.ProviderAliases)
+				aliases := dimensionAliases(by, cfg.ProviderAliases)
 				curMembers, err := aggregateDimensionChunked(ctx, q, curStart, curEnd, by, aliases)
 				if err != nil {
 					return err
@@ -409,10 +409,11 @@ func chunkDays(start, end time.Time, size int) [][]string {
 // 的 366 天上限一致，单块占位符数恒在 SQLite 默认变量上限（999）之内。
 const compareChunkSize = 366
 
-// compareDimensionAliases 返回分维度聚合应应用的 provider 显示别名：仅
-// provider 维度消费别名（聚合核 displayKey 的语义），与 query/export 同源取
-// cfg.ProviderAliases；其余维度传 nil，保持各自维度语义不变。
-func compareDimensionAliases(by string, aliases map[string]string) map[string]string {
+// dimensionAliases 返回按维度聚合应应用的 provider 显示别名：仅 provider
+// 维度消费别名（聚合核 displayKey 的语义），与 query/export 入口同源取
+// cfg.ProviderAliases；其余维度传 nil，保持各自维度语义不变。compare/chart/
+// report 的分维度聚合共用本函数，保证各入口分组口径一致。
+func dimensionAliases(by string, aliases map[string]string) map[string]string {
 	if by == "provider" {
 		return aliases
 	}

@@ -72,7 +72,7 @@ func newReportCmdWithDeps(load func() (*config.Config, error), open func(string)
 			if err != nil {
 				return err
 			}
-			files, err := reportFiles(ctx, q, dates, rangeLabel, singleLen)
+			files, err := reportFiles(ctx, q, dates, rangeLabel, singleLen, cfg.ProviderAliases)
 			if err != nil {
 				return err
 			}
@@ -128,8 +128,10 @@ func reportDateGranularity(args []string) (int, error) {
 
 // reportFiles 组装报告包的全部文件:文本摘要 + 两期用量对比文本 + 各维度
 // SVG 图表 + SVG 热力矩阵。渲染器与对应的 query/chart/compare 视图共用同一
-// 聚合核。singleLen 是原始日期参数的粒度(8/6/4=单日/单月/单年,0=区间)。
-func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeLabel string, singleLen int) ([]reportFile, error) {
+// 聚合核。singleLen 是原始日期参数的粒度(8/6/4=单日/单月/单年,0=区间);
+// providerAliases 为 [provider_aliases] 配置,饼图 by-provider 与其他入口
+// 同口径合并供应商显示键。
+func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeLabel string, singleLen int, providerAliases map[string]string) ([]reportFile, error) {
 	// summary 文本带上统计范围/数据截至/最近采集三项,与 query summary 的
 	// 终端输出对齐(报告包的主文本文件可自证统计范围)。
 	fresh, err := q.Freshness(ctx, dates)
@@ -211,11 +213,13 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 	}
 	for _, dc := range dimensionCharts {
 		by, pie, file := dc.by, dc.pie, dc.file
+		aliases := dimensionAliases(by, providerAliases)
 		files = append(files, reportFile{
 			name: file,
 			render: func() (string, error) {
 				rows, totals, err := q.AggregateDimensionView(ctx, dates, querier.DimensionView{
 					Dimensions: []string{by},
+					Aliases:    aliases,
 					TitleEn:    "chart", TitleZh: "chart",
 				})
 				if err != nil {

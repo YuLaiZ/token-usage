@@ -104,9 +104,11 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			}
 
 			// 柱状/折线/饼图:复用维度聚合核,缺口日自动补零(day)或 total 降序
-			// (非时间维度的既有排序规则)。
+			// (非时间维度的既有排序规则);provider 维度应用配置别名,与
+			// query/export/compare 的分组口径一致。
 			rows, _, err := q.AggregateDimensionView(cmdContext(cmd), dates, querier.DimensionView{
 				Dimensions: []string{by},
+				Aliases:    dimensionAliases(by, cfg.ProviderAliases),
 				TitleEn:    "chart", TitleZh: "chart",
 			})
 			if err != nil {

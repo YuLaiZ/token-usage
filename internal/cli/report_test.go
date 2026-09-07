@@ -221,7 +221,7 @@ func TestReportFiles_CompareTxt(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			label := tc.dates[0] + " ~ " + tc.dates[len(tc.dates)-1]
-			files, err := reportFiles(context.Background(), q, tc.dates, label, tc.singleLen)
+			files, err := reportFiles(context.Background(), q, tc.dates, label, tc.singleLen, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

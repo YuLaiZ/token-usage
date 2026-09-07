@@ -136,6 +136,67 @@ func TestBuildPieSVG_HighCardinalityLegend(t *testing.T) {
 	}
 }
 
+// chart 与 report 的维度聚合须应用 [provider_aliases]:两个供应商别名合并
+// 后,饼图/报告包只应出现合并显示键,分组与占比与 query/export 入口一致。
+func TestChartCmd_ProviderAliasesApplied(t *testing.T) {
+	cfg := &config.Config{
+		DataDir:        t.TempDir(),
+		ProviderAliases: map[string]string{"vendor-a": "merged-vendor", "vendor-b": "merged-vendor"},
+	}
+	stamp := time.Date(2026, 9, 1, 12, 0, 0, 0, time.Local)
+	// chart 与 report 各用独立内存库:命令 RunE 会关闭注入的 DB,共享实例
+	// 会被首个命令关闭。
+	mkDB := func() *db.DB {
+		d, err := db.Open(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		msgs := []model.Message{
+			{ID: "pa-a", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-09-01", TS: stamp.UnixMilli(), Provider: "vendor-a", TotalTokens: 100},
+			{ID: "pa-b", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-09-01", TS: stamp.UnixMilli(), Provider: "vendor-b", TotalTokens: 200},
+		}
+		if _, err := db.UpsertMessages(context.Background(), d, msgs); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	usageDB := mkDB()
+	load := func() (*config.Config, error) { return cfg, nil }
+	open := func(string) (*db.DB, error) { return usageDB, nil }
+
+	// chart --pie --by provider:扇区图例只有合并显示键。
+	var out bytes.Buffer
+	chartCmd := newChartCmdWithDeps(load, open)
+	chartCmd.SetOut(&out)
+	chartCmd.SetErr(&out)
+	chartCmd.SetArgs([]string{"20260901", "--by", "provider", "--pie"})
+	if err := chartCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	svg := out.String()
+	if !strings.Contains(svg, "merged-vendor") || strings.Contains(svg, "vendor-a") || strings.Contains(svg, "vendor-b") {
+		t.Errorf("chart 饼图应合并供应商别名:\n%s", svg)
+	}
+
+	// report 包 by-provider.svg:同口径。
+	usageDB = mkDB()
+	outDir := filepath.Join(t.TempDir(), "report")
+	reportCmd := newReportCmdWithDeps(load, open)
+	reportCmd.SetOut(&out)
+	reportCmd.SetErr(&out)
+	reportCmd.SetArgs([]string{"20260901", "--out", outDir})
+	if err := reportCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(outDir, "by-provider.svg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "merged-vendor") || strings.Contains(string(data), "vendor-a") {
+		t.Errorf("报告包饼图应合并供应商别名:\n%s", data)
+	}
+}
+
 // --by 维度校验与 --pie 的 day 拒绝在开库前生效。
 func TestChartCmd_ByDimensionValidation(t *testing.T) {
 	openCalls := 0
