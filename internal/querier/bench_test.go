@@ -65,26 +65,32 @@ func BenchmarkDimensionViews(b *testing.B) {
 
 	benchmarks := []struct {
 		name string
-		run  func() (string, error)
+		run  func() error
 	}{
-		{"ByClient", func() (string, error) { return q.ByClient(ctx, dates) }},
-		{"ByDay", func() (string, error) { return q.ByDay(ctx, dates) }},
-		{"ByMonth", func() (string, error) { return q.ByMonth(ctx, dates) }},
-		{"ByHour", func() (string, error) { return q.ByHour(ctx, dates) }},
-		{"ByWeekday", func() (string, error) { return q.ByWeekday(ctx, dates) }},
-		{"Sessions", func() (string, error) { return q.Sessions(ctx, dates) }},
-		{"HourModel", func() (string, error) {
-			return q.RunDimensionView(ctx, dates, DimensionView{
+		{"ByClient", func() error { _, err := q.ByClient(ctx, dates); return err }},
+		{"ByDay", func() error { _, err := q.ByDay(ctx, dates); return err }},
+		{"ByMonth", func() error { _, err := q.ByMonth(ctx, dates); return err }},
+		{"ByHour", func() error { _, err := q.ByHour(ctx, dates); return err }},
+		{"ByWeekday", func() error { _, err := q.ByWeekday(ctx, dates); return err }},
+		{"Sessions", func() error { _, err := q.Sessions(ctx, dates); return err }},
+		{"HourModel", func() error {
+			_, err := q.RunDimensionView(ctx, dates, DimensionView{
 				Dimensions: []string{"hour", "model"},
 				TitleEn:    "bench", TitleZh: "bench",
 			})
+			return err
+		}},
+		// weekday×hour 双时间戳维度(heatmap 数据源),Go 分桶路径的双维场景。
+		{"HeatmapMatrix", func() error {
+			_, err := q.HeatmapMatrix(ctx, dates)
+			return err
 		}},
 	}
 	for _, bm := range benchmarks {
 		b.Run(bm.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				if _, err := bm.run(); err != nil {
+				if err := bm.run(); err != nil {
 					b.Fatal(err)
 				}
 			}

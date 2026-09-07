@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/ui"
@@ -78,6 +79,20 @@ const groupSelectColumns = `COUNT(*),
        COALESCE(SUM(cache_create_tokens),0),
        COALESCE(SUM(reasoning_tokens),0),
        COALESCE(SUM(total_tokens),0)`
+
+// rawValueColumns 是 Go 侧累加路径(含时间戳维度的聚合)拉取的 token 源列,
+// 与 groupSelectColumns 的聚合列一一对应(列序即 GroupAggregate 字段序);
+// messages 列恒 NOT NULL,逐行累加与 COUNT(*)/COALESCE(SUM()) 严格等价。
+const rawValueColumns = `fresh_input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, reasoning_tokens, total_tokens`
+
+// absorbMemoKey 是聚合行显示键映射的 memo 键:维度下标 + 该维度的原始键
+// (时间戳维度为已折算的时间桶键)。memo 落在低基数层(桶键 hour 24 个/
+// weekday 7 个,模型/客户端等文本键为 distinct 值),按行重复拼接显示键是
+// 大额分配来源;桶键折算本身走预生成查表,无需 memo。
+type absorbMemoKey struct {
+	dim int
+	raw string
+}
 
 // newGroupTable 构造分组聚合表（client/model/project 共用）：key 列左对齐，
 // 数字列右对齐；列名统一引用 internal/ui 常量（A4b 术语统一）。分组键
@@ -243,6 +258,28 @@ var dimensionOrder = []dimension{
 		selectExpr: `CAST((strftime('%w', ts/1000, 'unixepoch', 'localtime') + 6) % 7 AS TEXT)`,
 		header:     ui.HWeekday,
 	},
+}
+
+// hourBucketTable/weekdayBucketTable 是时间桶键的预生成表(零分配查表):
+// hour "00".."23",weekday ISO 周序 "0".."6"(周一=0)。
+var hourBucketTable = [24]string{
+	"00", "01", "02", "03", "04", "05", "06", "07", "08", "09",
+	"10", "11", "12", "13", "14", "15", "16", "17", "18", "19",
+	"20", "21", "22", "23",
+}
+
+var weekdayBucketTable = [7]string{"0", "1", "2", "3", "4", "5", "6"}
+
+// bucketKeyOf 把消息时间戳(毫秒)折算为本机时区的时间桶键,与 SQL
+// strftime(..., 'unixepoch', 'localtime') 逐时刻等价(含 DST:两者均按
+// 各时刻生效偏移折算,时区规则同源于系统时区库/TZ 环境);ms/1000 整数
+// 除法与 SQL 侧同为向零截断。
+func bucketKeyOf(dimName string, ms int64) string {
+	t := time.Unix(ms/1000, 0)
+	if dimName == "hour" {
+		return hourBucketTable[t.Hour()]
+	}
+	return weekdayBucketTable[(int(t.Weekday())+6)%7]
 }
 
 // dimensionWhitelist 由 dimensionOrder 派生的按名查找表：有序切片是唯一
@@ -427,17 +464,50 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 	}
 
 	// raw 聚合:GROUP BY 各维度原始表达式(SQL 无序,排序统一在 Go 侧保证稳定)。
-	selectExprs := make([]string, len(dims))
-	groupExprs := make([]string, len(dims))
-	for i, d := range dims {
-		selectExprs[i] = d.selectExpr
-		groupExprs[i] = d.selectExpr
+	// 时间戳维度(hour/weekday)的分组键在此细化为裸 ts,桶键改由 Go 侧逐时刻
+	// 折算(bucketKeyOf):SQLite 纯 Go 实现对每行求值 'localtime' 无
+	// 缓存,是 hour/weekday 聚合数倍耗时与海量分配的来源。其余维度维持
+	// SQL 折算不变。
+	tsBucketed := false
+	for _, d := range dims {
+		if d.name == "hour" || d.name == "weekday" {
+			tsBucketed = true
+		}
 	}
 	placeholders, args := buildPlaceholders(dates)
-	query := fmt.Sprintf(
-		"SELECT %s, %s FROM messages WHERE date IN (%s) GROUP BY %s",
-		strings.Join(selectExprs, ", "), groupSelectColumns, placeholders, strings.Join(groupExprs, ", "),
-	)
+	var query string
+	if tsBucketed {
+		// 裸列形态:非时间戳维度键 + ts + token 源列,无 GROUP BY,聚合在
+		// Go 侧逐行累加(与 SQL 聚合列严格等价,见 rawValueColumns)。SQLite
+		// 每行求值 'localtime' 无缓存、GROUP BY ts 的临时结构均是数倍开销
+		// 来源(7.3 万行对照:GROUP BY 形态 SQL 138ms vs 裸列 48ms),时间
+		// 戳→桶键折算移到 Go 侧查表(bucketKeyOf,与 'localtime' 逐时刻
+		// 等价含 DST)。
+		dimExprs := make([]string, 0, len(dims))
+		for _, d := range dims {
+			if d.name != "hour" && d.name != "weekday" {
+				dimExprs = append(dimExprs, d.selectExpr)
+			}
+		}
+		if len(dimExprs) == 0 {
+			query = fmt.Sprintf(
+				"SELECT ts, %s FROM messages WHERE date IN (%s)",
+				rawValueColumns, placeholders)
+		} else {
+			query = fmt.Sprintf(
+				"SELECT %s, ts, %s FROM messages WHERE date IN (%s)",
+				strings.Join(dimExprs, ", "), rawValueColumns, placeholders)
+		}
+	} else {
+		selectExprs := make([]string, len(dims))
+		for i, d := range dims {
+			selectExprs[i] = d.selectExpr
+		}
+		query = fmt.Sprintf(
+			"SELECT %s, %s FROM messages WHERE date IN (%s) GROUP BY %s",
+			strings.Join(selectExprs, ", "), groupSelectColumns, placeholders, strings.Join(selectExprs, ", "),
+		)
+	}
 	// 同一读事务内完成分组聚合与总计聚合:WAL 下事务内的两次读取共享
 	// 同一快照,daemon 并发写入不再造成分组合计与总计漂移;deferred
 	// BEGIN 的只读事务不阻塞写者,错误路径由 defer 回滚收尾。
@@ -454,33 +524,111 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 
 	rowOrder := make([]DimensionRow, 0, 8)
 	rowIndex := map[string]int{}
-	for rows.Next() {
-		rawKeys := make([]string, len(dims))
-		scanArgs := make([]any, len(dims))
-		for i := range rawKeys {
-			scanArgs[i] = &rawKeys[i]
+	if tsBucketed {
+		// 裸列行循环:行数=消息数,Scan 参数与行缓冲循环外构造一次复用
+		// (指针装箱进 any 不逃逸分配);桶键查表折算零分配,显示键 memo
+		// 落在低基数层(桶键 hour 24/weekday 7 个、文本维度 distinct 键),
+		// 单维视图免 join 直接以唯一键比较。
+		var ts, freshIn, output, cacheRead, cacheCreate, reasoning, total int64
+		keyBuf := make([]string, len(dims))
+		keyCols := 0
+		scanArgs := make([]any, 0, len(dims)+6)
+		for _, d := range dims {
+			if d.name == "hour" || d.name == "weekday" {
+				continue
+			}
+			scanArgs = append(scanArgs, &keyBuf[keyCols])
+			keyCols++
 		}
+		scanArgs = append(scanArgs, &ts, &freshIn, &output, &cacheRead, &cacheCreate, &reasoning, &total)
+		rawKeys := make([]string, len(dims))
+		keys := make([]string, 0, len(dims))
+		displays := make(map[absorbMemoKey]string)
+		for rows.Next() {
+			if err := rows.Scan(scanArgs...); err != nil {
+				return nil, GroupAggregate{}, fmt.Errorf("%s: %w", ui.Bi("scan aggregate rows failed", "扫描聚合结果失败"), err)
+			}
+			keys = keys[:0]
+			ki := 0
+			for i, d := range dims {
+				var raw string
+				if d.name == "hour" || d.name == "weekday" {
+					raw = bucketKeyOf(d.name, ts)
+				} else {
+					raw = keyBuf[ki]
+					ki++
+				}
+				rawKeys[i] = raw
+				mk := absorbMemoKey{dim: i, raw: raw}
+				disp, ok := displays[mk]
+				if !ok {
+					disp = d.displayKey(raw, view.Aliases)
+					displays[mk] = disp
+				}
+				keys = append(keys, disp)
+			}
+			agg := GroupAggregate{
+				Requests: 1, FreshInput: freshIn, OutputTokens: output,
+				CacheRead: cacheRead, CacheCreate: cacheCreate,
+				Reasoning: reasoning, TotalTokens: total,
+			}
+			key := keys[0]
+			if len(keys) > 1 {
+				key = strings.Join(keys, "\x00")
+			}
+			if idx, ok := rowIndex[key]; ok {
+				rowOrder[idx].Agg.add(agg)
+				continue
+			}
+			rowIndex[key] = len(rowOrder)
+			// rawKeys/keys 为复用缓冲,新建行时拷贝。
+			stored := DimensionRow{
+				Keys:    append([]string(nil), keys...),
+				rawKeys: append([]string(nil), rawKeys...),
+			}
+			stored.Agg = agg
+			rowOrder = append(rowOrder, stored)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, GroupAggregate{}, fmt.Errorf("%s: %w", ui.Bi("iterate aggregate rows failed", "遍历聚合结果失败"), err)
+		}
+	} else {
+		// Scan 参数与行缓冲在循环外构造一次复用;组数=distinct 键组合数,
+		// 行处理逐维显示键映射后按显示键元组累加或新建行。
 		var row DimensionRow
+		rawKeys := make([]string, len(dims))
+		scanArgs := make([]any, 0, len(dims)+7)
+		for i := range rawKeys {
+			scanArgs = append(scanArgs, &rawKeys[i])
+		}
 		scanArgs = append(scanArgs, &row.Agg.Requests, &row.Agg.FreshInput, &row.Agg.OutputTokens,
 			&row.Agg.CacheRead, &row.Agg.CacheCreate, &row.Agg.Reasoning, &row.Agg.TotalTokens)
-		if err := rows.Scan(scanArgs...); err != nil {
-			return nil, GroupAggregate{}, fmt.Errorf("%s: %w", ui.Bi("scan aggregate rows failed", "扫描聚合结果失败"), err)
+		for rows.Next() {
+			if err := rows.Scan(scanArgs...); err != nil {
+				return nil, GroupAggregate{}, fmt.Errorf("%s: %w", ui.Bi("scan aggregate rows failed", "扫描聚合结果失败"), err)
+			}
+			row.Keys = row.Keys[:0]
+			for _, d := range dims {
+				row.Keys = append(row.Keys, d.displayKey(rawKeys[len(row.Keys)], view.Aliases))
+			}
+			key := strings.Join(row.Keys, "\x00")
+			if idx, ok := rowIndex[key]; ok {
+				rowOrder[idx].Agg.add(row.Agg)
+				continue
+			}
+			rowIndex[key] = len(rowOrder)
+			// Keys/rawKeys 必须拷贝:row.Keys 与 rawKeys 是循环复用缓冲,直接引用
+			// 会被后续行覆写。
+			stored := DimensionRow{
+				Keys:    append([]string(nil), row.Keys...),
+				rawKeys: append([]string(nil), rawKeys...),
+			}
+			stored.Agg = row.Agg
+			rowOrder = append(rowOrder, stored)
 		}
-		row.Keys = make([]string, len(dims))
-		for i, d := range dims {
-			row.Keys[i] = d.displayKey(rawKeys[i], view.Aliases)
+		if err := rows.Err(); err != nil {
+			return nil, GroupAggregate{}, fmt.Errorf("%s: %w", ui.Bi("iterate aggregate rows failed", "遍历聚合结果失败"), err)
 		}
-		row.rawKeys = append(row.rawKeys, rawKeys...)
-		key := strings.Join(row.Keys, "\x00")
-		if idx, ok := rowIndex[key]; ok {
-			rowOrder[idx].Agg.add(row.Agg)
-			continue
-		}
-		rowIndex[key] = len(rowOrder)
-		rowOrder = append(rowOrder, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, GroupAggregate{}, fmt.Errorf("%s: %w", ui.Bi("iterate aggregate rows failed", "遍历聚合结果失败"), err)
 	}
 
 	// 时间维度(day/month)在本次维度列表中的下标(-1 表示不含时间维度);

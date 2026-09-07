@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1846,6 +1847,148 @@ func TestAggregateDimensionView_GroupsAndTotalsShareSnapshot(t *testing.T) {
 		}
 		if sum != totals.TotalTokens {
 			t.Fatalf("分组与总计不一致: 分组合计=%d 总计=%d (iteration=%d)", sum, totals.TotalTokens, i)
+		}
+	}
+}
+
+// sqlLocaltimeBuckets 返回 SQL 侧 strftime('localtime') 对给定毫秒时间戳的
+// hour/weekday 桶键,作为 Go 侧折算(bucketKeyOf)的等价性对照实现。
+func sqlLocaltimeBuckets(t *testing.T, q *Querier, ms int64) (hour, weekday string) {
+	t.Helper()
+	row := q.db.QueryRow(
+		`SELECT strftime('%H', ?/1000, 'unixepoch', 'localtime'),
+		        CAST((strftime('%w', ?/1000, 'unixepoch', 'localtime')+6)%7 AS TEXT)`,
+		ms, ms)
+	if err := row.Scan(&hour, &weekday); err != nil {
+		t.Fatalf("SQL localtime 对照查询失败: %v", err)
+	}
+	return hour, weekday
+}
+
+// assertBucketEquivalence 断言 Go 折算与 SQL localtime 对全部毫秒时刻逐时刻
+// 等价(含 ts=0 边界)。
+func assertBucketEquivalence(t *testing.T, q *Querier, moments []time.Time) {
+	t.Helper()
+	for _, m := range moments {
+		ms := m.UnixMilli()
+		sqlHour, sqlWeekday := sqlLocaltimeBuckets(t, q, ms)
+		if got := bucketKeyOf("hour", ms); got != sqlHour {
+			t.Errorf("hour 桶键不等: go=%s sql=%s (ts=%d %s)", got, sqlHour, ms, m.Format(time.RFC3339Nano))
+		}
+		if got := bucketKeyOf("weekday", ms); got != sqlWeekday {
+			t.Errorf("weekday 桶键不等: go=%s sql=%s (ts=%d %s)", got, sqlWeekday, ms, m.Format(time.RFC3339Nano))
+		}
+	}
+}
+
+// Go 侧时间桶折算与 SQL strftime('localtime') 在本机时区下逐时刻等价:
+// 覆盖整点/半点/毫秒尾、闰日、年末跨年与 ts=0 边界。
+func TestBucketKeyOfMatchesSQLiteLocaltime(t *testing.T) {
+	q := setupMessageFixture(t)
+	moments := []time.Time{
+		time.Unix(0, 0),
+		time.UnixMilli(-1), // 负毫秒:ts/1000 向零截断两侧一致(业务上 ts 恒非负,防御锚定)
+		time.UnixMilli(-1001),
+		time.Date(2024, 2, 28, 23, 59, 59, 999, time.Local),
+		time.Date(2024, 2, 29, 0, 0, 0, 0, time.Local),
+		time.Date(2024, 3, 1, 12, 30, 45, 123, time.Local),
+		time.Date(2026, 12, 31, 23, 59, 59, 999, time.Local),
+		time.Date(2027, 1, 1, 0, 0, 0, 1, time.Local),
+		time.Date(2026, 9, 7, 9, 15, 30, 500, time.Local),
+	}
+	assertBucketEquivalence(t, q, moments)
+}
+
+// DST 边界等价:双设 TZ 环境与 time.Local(SQLite 'localtime' 每次求值读
+// TZ 环境,已实测跟随;Go 侧经显式 Location),在 America/New_York 的 2026
+// 春跳(03-08 02:00→03:00)与秋跳(11-01 02:00→01:00)前后各 3 小时逐时刻
+// 对照,保证桶键折算保留 DST 语义。测试串行(time.Local 是全局)。
+func TestBucketKeyOfDSTBoundaries(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("时区库缺少 America/New_York: %v", err)
+	}
+	t.Setenv("TZ", "America/New_York")
+	origLocal := time.Local
+	time.Local = loc
+	defer func() { time.Local = origLocal }()
+
+	q := setupMessageFixture(t)
+	// 跳变边界取整点 Unix 秒(春跳 2026-03-08 07:00 UTC,秋跳 2026-11-01
+	// 06:00 UTC),前后各 3 小时逐小时+半小时+边界秒。
+	var moments []time.Time
+	for _, boundary := range []int64{1772996400, 1791162000} {
+		for _, off := range []int64{-10800, -7200, -3600, -1800, -1, 0, 1, 1800, 3600, 7200, 10800} {
+			moments = append(moments, time.Unix(boundary+off, 0))
+		}
+	}
+	assertBucketEquivalence(t, q, moments)
+}
+
+// 聚合级等价:同一 fixture 上,Go 分桶聚合路径与 SQL 'localtime' 旧表达式
+// 直接聚合的分组结果逐键相等(行数、桶键与各聚合列),锚定改造前后行为
+// 等价;既有 ByHour/ByWeekday/Heatmap 用例的期望值同为此锚定服务。
+func TestHourWeekdayAggregationEquivalentToSQLLocaltime(t *testing.T) {
+	q := setupMessageFixture(t)
+	msgs := []model.Message{
+		{ID: "eq-a", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-09-01",
+			TS: time.Date(2026, 9, 1, 8, 30, 0, 0, time.Local).UnixMilli(), TotalTokens: 100, FreshInputTokens: 60},
+		{ID: "eq-b", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-09-01",
+			TS: time.Date(2026, 9, 1, 8, 45, 0, 0, time.Local).UnixMilli(), TotalTokens: 40, FreshInputTokens: 10},
+		{ID: "eq-c", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-09-02",
+			TS: time.Date(2026, 9, 2, 21, 5, 0, 0, time.Local).UnixMilli(), TotalTokens: 7},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, dim := range []string{"hour", "weekday"} {
+		rows, _, err := q.AggregateDimensionView(context.Background(), []string{"2026-09-01", "2026-09-02"}, DimensionView{
+			Dimensions: []string{dim},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// SQL 旧表达式直接聚合。
+		sqlexpr := fmt.Sprintf("strftime('%%H', ts/1000, 'unixepoch', 'localtime')")
+		if dim == "weekday" {
+			sqlexpr = `CAST((strftime('%w', ts/1000, 'unixepoch', 'localtime')+6)%7 AS TEXT)`
+		}
+		srows, err := q.db.Query(fmt.Sprintf(
+			"SELECT %s, COUNT(*), SUM(total_tokens) FROM messages WHERE date IN ('2026-09-01','2026-09-02') GROUP BY 1", sqlexpr))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := map[string][2]int64{}
+		for srows.Next() {
+			var k string
+			var cnt, total int64
+			if err := srows.Scan(&k, &cnt, &total); err != nil {
+				t.Fatal(err)
+			}
+			want[k] = [2]int64{cnt, total}
+		}
+		srows.Close()
+
+		// hour/weekday 单维视图带刻度缺口填充(无数据刻度为零值行),等价性
+		// 只对照有数据的行。
+		dataRows := 0
+		for _, r := range rows {
+			if r.Agg.Requests == 0 {
+				continue
+			}
+			dataRows++
+			w, ok := want[r.rawKeys[0]]
+			if !ok {
+				t.Fatalf("%s go 桶键 %q 在 SQL 结果中缺失", dim, r.rawKeys[0])
+			}
+			if r.Agg.Requests != w[0] || r.Agg.TotalTokens != w[1] {
+				t.Errorf("%s 桶 %q 聚合不等: go=(%d,%d) sql=(%d,%d)",
+					dim, r.rawKeys[0], r.Agg.Requests, r.Agg.TotalTokens, w[0], w[1])
+			}
+		}
+		if dataRows != len(want) {
+			t.Errorf("%s 有数据桶数不等: go=%d sql=%d(SQL 桶在 go 侧有缺失)", dim, dataRows, len(want))
 		}
 	}
 }
