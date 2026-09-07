@@ -438,7 +438,15 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 		"SELECT %s, %s FROM messages WHERE date IN (%s) GROUP BY %s",
 		strings.Join(selectExprs, ", "), groupSelectColumns, placeholders, strings.Join(groupExprs, ", "),
 	)
-	rows, err := q.db.QueryContext(ctx, query, args...)
+	// 同一读事务内完成分组聚合与总计聚合:WAL 下事务内的两次读取共享
+	// 同一快照,daemon 并发写入不再造成分组合计与总计漂移;deferred
+	// BEGIN 的只读事务不阻塞写者,错误路径由 defer 回滚收尾。
+	tx, err := q.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, GroupAggregate{}, fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, GroupAggregate{}, fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
 	}
@@ -564,10 +572,13 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 		return false
 	})
 
-	// 总计:同一日期范围的独立全量聚合。
-	totals, err := q.rangeTotals(ctx, dates)
+	// 总计:同一日期范围的独立全量聚合,与分组查询同处上面的读事务。
+	totals, err := rangeTotals(ctx, tx, dates)
 	if err != nil {
 		return nil, GroupAggregate{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, GroupAggregate{}, fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
 	}
 	return rowOrder, totals, nil
 }
@@ -651,15 +662,16 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 	return sb.String(), nil
 }
 
-// rangeTotals 返回日期范围的全量聚合(总计行数据源,独立于分组结果)。
-func (q *Querier) rangeTotals(ctx context.Context, dates []string) (GroupAggregate, error) {
+// rangeTotals 返回日期范围的全量聚合(总计行数据源,独立于分组结果);
+// 与分组查询同处调用方开启的读事务,保证并发写入下两者看到同一快照。
+func rangeTotals(ctx context.Context, tx *sql.Tx, dates []string) (GroupAggregate, error) {
 	placeholders, args := buildPlaceholders(dates)
 	query := fmt.Sprintf(
 		"SELECT %s FROM messages WHERE date IN (%s)",
 		groupSelectColumns, placeholders,
 	)
 	var totals GroupAggregate
-	err := q.db.QueryRowContext(ctx, query, args...).Scan(
+	err := tx.QueryRowContext(ctx, query, args...).Scan(
 		&totals.Requests, &totals.FreshInput, &totals.OutputTokens,
 		&totals.CacheRead, &totals.CacheCreate, &totals.Reasoning, &totals.TotalTokens)
 	if err != nil {

@@ -4,10 +4,12 @@ import (
 	"context"
 
 	"errors"
-	"github.com/mattn/go-runewidth"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mattn/go-runewidth"
 
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/model"
@@ -1796,5 +1798,54 @@ func TestHeatCell_LowNonzeroUsesLowestPositiveLevel(t *testing.T) {
 	}
 	if got := heatCell(50, 0); got != ' ' {
 		t.Errorf("maxTotal 非正时全表视为无数据,应为空格,实际 %q", got)
+	}
+}
+
+// 并发写入下分组与总计必须一致:分组查询与总计聚合若不共享读快照,
+// daemon 采集期间的写入会让「各行合计」与「总计行」漂移(如分组合计 200、
+// 总计 100)。文件库才启用 WAL 并发读,:memory: 单连接无法复现。
+func TestAggregateDimensionView_GroupsAndTotalsShareSnapshot(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "usage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err := db.UpsertMessages(context.Background(), d, []model.Message{
+		{ID: "snap-a", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-09-01", TotalTokens: 100},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 后台持续翻转 total_tokens(100↔200):任何读快照不一致都会暴露。
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	defer func() { close(stop); <-done }()
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = d.Exec("UPDATE messages SET total_tokens=300-total_tokens")
+		}
+	}()
+
+	q := New(d)
+	for i := 0; i < 200; i++ {
+		rows, totals, err := q.AggregateDimensionView(context.Background(), []string{"2026-09-01"}, DimensionView{
+			Dimensions: []string{"client"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sum int64
+		for _, r := range rows {
+			sum += r.Agg.TotalTokens
+		}
+		if sum != totals.TotalTokens {
+			t.Fatalf("分组与总计不一致: 分组合计=%d 总计=%d (iteration=%d)", sum, totals.TotalTokens, i)
+		}
 	}
 }
