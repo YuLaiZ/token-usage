@@ -126,41 +126,22 @@ func reportDateGranularity(args []string) (int, error) {
 	return singleLen, nil
 }
 
+// reportDimChart 是一张单维度图表的已取齐数据:分组行与区间汇总(副标题
+// 数据源),渲染阶段不再触达数据库。
+type reportDimChart struct {
+	rows   []querier.DimensionRow
+	totals querier.GroupAggregate
+}
+
 // reportFiles 组装报告包的全部文件:文本摘要 + 两期用量对比文本 + 各维度
 // SVG 图表 + SVG 热力矩阵。渲染器与对应的 query/chart/compare 视图共用同一
-// 聚合核。singleLen 是原始日期参数的粒度(8/6/4=单日/单月/单年,0=区间);
+// 聚合核。全部数据库读取在同一个读事务快照内完成(经 querier 的 ReadTx:并发
+// 采集写入下,summary/compare/各图的总量与明细互相一致),渲染闭包为纯内存
+// 构建。singleLen 是原始日期参数的粒度(8/6/4=单日/单月/单年,0=区间);
 // providerAliases 为 [provider_aliases] 配置,饼图 by-provider 与其他入口
 // 同口径合并供应商显示键。
 func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeLabel string, singleLen int, providerAliases map[string]string) ([]reportFile, error) {
-	// summary 文本带上统计范围/数据截至/最近采集三项,与 query summary 的
-	// 终端输出对齐(报告包的主文本文件可自证统计范围)。
-	fresh, err := q.Freshness(ctx, dates)
-	if err != nil {
-		return nil, err
-	}
-	header := queryStatisticsHeader(dates[0], dates[len(dates)-1], fresh)
-	summary, err := q.Summary(ctx, dates)
-	if err != nil {
-		return nil, err
-	}
-	// 副标题与柱状/饼图共用区间汇总口径。
-	rangeStats, err := q.StatsBetween(ctx, dates[0], dates[len(dates)-1])
-	if err != nil {
-		return nil, err
-	}
-	subtitle := fmt.Sprintf("Total %s tokens / %d requests",
-		querier.FormatTokens(rangeStats.Total.TotalTokens), rangeStats.Total.Requests)
-	heatmapSVG, err := buildChartHeatmap(ctx, q, dates, subtitle)
-	if err != nil {
-		return nil, err
-	}
-
-	// compare.txt:本期与缺省基线窗口的用量对比。缺省基线规则与 compare 命令
-	// 完全一致(defaultCompareBase 按原始参数粒度分派:单日取前一天、单月取
-	// 上一个日历月、单年取上一个日历年、区间取结束于开始日前一天的等长窗口,
-	// 天数用纯 AddDate 循环推导)。当前窗口总量复用上方的 rangeStats(同一
-	// 查询,不重复聚合),基线窗口单独查一次;渲染复用 compare 的 renderCompare,
-	// 用 bytes.Buffer 承接。
+	// compare 基线窗口只依赖 dates 与粒度,事务外推导即可。
 	curStartT, err := time.Parse("2006-01-02", dates[0])
 	if err != nil {
 		return nil, err
@@ -170,10 +151,72 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 		return nil, err
 	}
 	baseStartT, baseEndT := defaultCompareBase(curStartT, curEndT, singleLen)
-	baseStats, err := q.StatsBetween(ctx, baseStartT.Format("2006-01-02"), baseEndT.Format("2006-01-02"))
+
+	// 单维度图表:柱状(day/hour/weekday/month)+ 饼图(占比类维度)。
+	dimensionCharts := []struct {
+		file, by string
+		pie      bool
+	}{
+		{"daily.svg", "day", false},
+		{"hourly.svg", "hour", false},
+		{"weekday.svg", "weekday", false},
+		{"monthly.svg", "month", false},
+		{"by-client.svg", "client", true},
+		{"by-model.svg", "model", true},
+		{"by-provider.svg", "provider", true},
+		{"by-project.svg", "project", true},
+	}
+
+	// 同一读事务内取齐全部数据:数据截至/摘要/区间总量/热力矩阵/compare
+	// 基线与 8 张维度图表的聚合。
+	var fresh querier.Freshness
+	var summary string
+	var rangeStats, baseStats querier.RangeStats
+	var heatmapSVG string
+	dimCharts := make(map[string]reportDimChart, len(dimensionCharts))
+	err = q.ReadTx(ctx, func(tq *querier.Querier) error {
+		var err error
+		// summary 文本带上统计范围/数据截至/最近采集三项,与 query summary 的
+		// 终端输出对齐(报告包的主文本文件可自证统计范围)。
+		if fresh, err = tq.Freshness(ctx, dates); err != nil {
+			return err
+		}
+		if summary, err = tq.Summary(ctx, dates); err != nil {
+			return err
+		}
+		// 副标题与柱状/饼图共用区间汇总口径。
+		if rangeStats, err = tq.StatsBetween(ctx, dates[0], dates[len(dates)-1]); err != nil {
+			return err
+		}
+		subtitle := fmt.Sprintf("Total %s tokens / %d requests",
+			querier.FormatTokens(rangeStats.Total.TotalTokens), rangeStats.Total.Requests)
+		if heatmapSVG, err = buildChartHeatmap(ctx, tq, dates, subtitle); err != nil {
+			return err
+		}
+		// compare.txt 的基线窗口聚合(缺省基线规则与 compare 命令完全一致,
+		// 窗口推导见上方 defaultCompareBase);当前窗口总量复用 rangeStats。
+		if baseStats, err = tq.StatsBetween(ctx, baseStartT.Format("2006-01-02"), baseEndT.Format("2006-01-02")); err != nil {
+			return err
+		}
+		for _, dc := range dimensionCharts {
+			rows, totals, err := tq.AggregateDimensionView(ctx, dates, querier.DimensionView{
+				Dimensions: []string{dc.by},
+				Aliases:    dimensionAliases(dc.by, providerAliases),
+				TitleEn:    "chart", TitleZh: "chart",
+			})
+			if err != nil {
+				return err
+			}
+			dimCharts[dc.by] = reportDimChart{rows: rows, totals: totals}
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
+
+	// 以下渲染均为纯内存构建。
+	header := queryStatisticsHeader(dates[0], dates[len(dates)-1], fresh)
 	var compareBuf bytes.Buffer
 	if err := renderCompare(&compareBuf, compareRenderInput{
 		curStart:  dates[0],
@@ -197,69 +240,48 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 		}},
 		{name: "heatmap.svg", render: func() (string, error) { return heatmapSVG, nil }},
 	}
-	// 单维度图表:柱状(day/hour/weekday/month)+ 饼图(占比类维度)。
-	dimensionCharts := []struct {
-		file, by string
-		pie      bool
-	}{
-		{"daily.svg", "day", false},
-		{"hourly.svg", "hour", false},
-		{"weekday.svg", "weekday", false},
-		{"monthly.svg", "month", false},
-		{"by-client.svg", "client", true},
-		{"by-model.svg", "model", true},
-		{"by-provider.svg", "provider", true},
-		{"by-project.svg", "project", true},
-	}
 	for _, dc := range dimensionCharts {
 		by, pie, file := dc.by, dc.pie, dc.file
-		aliases := dimensionAliases(by, providerAliases)
-		files = append(files, reportFile{
-			name: file,
-			render: func() (string, error) {
-				rows, totals, err := q.AggregateDimensionView(ctx, dates, querier.DimensionView{
-					Dimensions: []string{by},
-					Aliases:    aliases,
-					TitleEn:    "chart", TitleZh: "chart",
+		data := dimCharts[by]
+		sub := fmt.Sprintf("Total %s tokens / %d requests",
+			querier.FormatTokens(data.totals.TotalTokens), data.totals.Requests)
+		chartTitle := chartTitleFor(rangeLabel, by)
+		var svg string
+		if pie {
+			slices := make([]chartSlice, 0, len(data.rows))
+			colorIdx := 0
+			for _, row := range data.rows {
+				if row.Agg.TotalTokens <= 0 {
+					continue
+				}
+				label := row.Keys[0]
+				slices = append(slices, chartSlice{
+					label: label, value: row.Agg.TotalTokens,
+					hover: fmt.Sprintf("%s: %s tokens, %d requests", label,
+						querier.FormatTokens(row.Agg.TotalTokens), row.Agg.Requests),
+					color: piePalette[colorIdx%len(piePalette)],
 				})
-				if err != nil {
-					return "", err
+				colorIdx++
+			}
+			svg = buildPieSVG(chartTitle, sub, slices)
+		} else {
+			bars := make([]chartBar, 0, len(data.rows))
+			for _, row := range data.rows {
+				if len(row.Keys) != 1 {
+					continue
 				}
-				sub := fmt.Sprintf("Total %s tokens / %d requests",
-					querier.FormatTokens(totals.TotalTokens), totals.Requests)
-				chartTitle := chartTitleFor(rangeLabel, by)
-				if pie {
-					slices := make([]chartSlice, 0, len(rows))
-					colorIdx := 0
-					for _, row := range rows {
-						if row.Agg.TotalTokens <= 0 {
-							continue
-						}
-						label := row.Keys[0]
-						slices = append(slices, chartSlice{
-							label: label, value: row.Agg.TotalTokens,
-							hover: fmt.Sprintf("%s: %s tokens, %d requests", label,
-								querier.FormatTokens(row.Agg.TotalTokens), row.Agg.Requests),
-							color: piePalette[colorIdx%len(piePalette)],
-						})
-						colorIdx++
-					}
-					return buildPieSVG(chartTitle, sub, slices), nil
-				}
-				bars := make([]chartBar, 0, len(rows))
-				for _, row := range rows {
-					if len(row.Keys) != 1 {
-						continue
-					}
-					bars = append(bars, chartBar{
-						label: row.Keys[0],
-						value: row.Agg.TotalTokens,
-						hover: fmt.Sprintf("%s: %s tokens, %d requests", row.Keys[0],
-							querier.FormatTokens(row.Agg.TotalTokens), row.Agg.Requests),
-					})
-				}
-				return buildBarSVG(chartTitleFor(rangeLabel, by), sub, bars), nil
-			},
+				bars = append(bars, chartBar{
+					label: row.Keys[0],
+					value: row.Agg.TotalTokens,
+					hover: fmt.Sprintf("%s: %s tokens, %d requests", row.Keys[0],
+						querier.FormatTokens(row.Agg.TotalTokens), row.Agg.Requests),
+				})
+			}
+			svg = buildBarSVG(chartTitle, sub, bars)
+		}
+		files = append(files, reportFile{
+			name:   file,
+			render: func() (string, error) { return svg, nil },
 		})
 	}
 	return files, nil

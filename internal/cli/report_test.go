@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -245,5 +246,82 @@ func TestReportFiles_CompareTxt(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// reportTotalOf 从渲染产物中提取区间总量口径:SVG 副标题 "Total X tokens"
+// 与 summary 的 Total 行 "Total / 总计: X" 同用 FormatTokens 缩写。
+func reportTotalOf(t *testing.T, name, content string) string {
+	t.Helper()
+	if strings.HasSuffix(name, ".svg") {
+		m := regexp.MustCompile(`Total (\S+) tokens`).FindStringSubmatch(content)
+		if m == nil {
+			t.Fatalf("%s 应含副标题总量:\n%s", name, content)
+		}
+		return m[1]
+	}
+	m := regexp.MustCompile(`Total / 总计: (\S+)`).FindStringSubmatch(content)
+	if m == nil {
+		t.Fatalf("%s 应含 Total 行:\n%s", name, content)
+	}
+	return m[1]
+}
+
+// 报告包整体数据一致性:并发写入(翻转 UPDATE)下,summary 总量与全部图表
+// 副标题必须来自同一读快照——各查询独立快照时副标题会在 100/200 间漂移。
+// 文件库才启用 WAL 并发读。
+func TestReportFiles_SingleSnapshotUnderConcurrency(t *testing.T) {
+	usageDB, err := db.Open(filepath.Join(t.TempDir(), "usage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+	if _, err := db.UpsertMessages(context.Background(), usageDB, []model.Message{{
+		ID: "snap-a", SessionID: "s", Client: model.ClientClaudeCode,
+		Date: "2026-09-01", TS: time.Date(2026, 9, 1, 12, 0, 0, 0, time.Local).UnixMilli(),
+		Model: "model-x", TotalTokens: 100,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	defer func() { close(stop); <-done }()
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = usageDB.Exec("UPDATE messages SET total_tokens=300-total_tokens")
+		}
+	}()
+
+	q := querier.New(usageDB)
+	for i := 0; i < 50; i++ {
+		files, err := reportFiles(context.Background(), q, []string{"2026-09-01"}, "2026-09-01", 8, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := ""
+		for _, f := range files {
+			content, err := f.render()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.name == "compare.txt" {
+				continue // 基线窗口(前一天)无数据恒零,不参与口径比对
+			}
+			got := reportTotalOf(t, f.name, content)
+			if want == "" {
+				want = got
+				continue
+			}
+			if got != want {
+				t.Fatalf("报告包数据跨快照漂移: %s=%s 其他=%s (iteration=%d)", f.name, got, want, i)
+			}
+		}
 	}
 }

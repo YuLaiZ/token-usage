@@ -37,13 +37,13 @@ func (q *Querier) Freshness(ctx context.Context, dates []string) (Freshness, err
 			"SELECT COALESCE(MAX(ts), 0) FROM messages WHERE ts > 0 AND date IN (%s)",
 			placeholders,
 		)
-		if err := q.db.QueryRowContext(ctx, query, args...).Scan(&fresh.MaxMessageTS); err != nil {
+		if err := q.queryRowContext(ctx, query, args...).Scan(&fresh.MaxMessageTS); err != nil {
 			return Freshness{}, fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
 		}
 	}
 
 	var collected string
-	if err := q.db.QueryRowContext(ctx,
+	if err := q.queryRowContext(ctx,
 		"SELECT COALESCE(MAX(collected_at), '') FROM collection_log",
 	).Scan(&collected); err != nil {
 		return Freshness{}, fmt.Errorf("%s: %w", ui.Bi("failed to query collection log", "查询采集记录失败"), err)
