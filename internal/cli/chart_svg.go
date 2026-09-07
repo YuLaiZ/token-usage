@@ -268,6 +268,12 @@ type chartSlice struct {
 // 不绘制任何扇区。
 func buildPieSVG(title, subtitle string, slices []chartSlice) string {
 	c := chartCanvas{width: 760, height: 420, left: 24, right: 24, top: 64, bottom: 24}
+	// 图例逐项按 26px 下移,最后一项底缘为 70+26n px;非时间维度不限制
+	// 类别数,超出默认高度容纳量(12 项)时按图例需求扩高,避免高基数图例
+	// 被视口底部裁剪(与热力图的动态行高同理)。
+	if h := 70 + 26*len(slices) + c.bottom; h > c.height {
+		c.height = h
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, `<?xml version="1.0" encoding="UTF-8"?>`+"\n")
 	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">`+"\n",

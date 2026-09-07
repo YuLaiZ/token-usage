@@ -102,6 +102,40 @@ func TestBuildPieSVG(t *testing.T) {
 	}
 }
 
+// buildPieSVG 高基数图例:图例逐项 26px 下移,类别数超过默认画布容纳量
+// (12 项)时按图例需求扩高,所有图例标签完整留在视口内;低基数保持默认
+// 420px 画布。非时间维度(client/model/project)不限制类别数,report 包
+// 固定生成这些饼图,越界即用户可见缺陷。
+func TestBuildPieSVG_HighCardinalityLegend(t *testing.T) {
+	makeSlices := func(n int) []chartSlice {
+		slices := make([]chartSlice, 0, n)
+		for i := 0; i < n; i++ {
+			slices = append(slices, chartSlice{
+				label: fmt.Sprintf("model-%02d", i), value: int64(i + 1),
+				hover: "h", color: piePalette[i%len(piePalette)],
+			})
+		}
+		return slices
+	}
+
+	// 20 类:画布须扩高到 70+26*20+24=614,全部图例标签可见。
+	dense := buildPieSVG("dense", "t", makeSlices(20))
+	if !strings.Contains(dense, `height="614"`) {
+		t.Errorf("20 类图例应扩高画布到 614:\n%s", dense)
+	}
+	for i := 0; i < 20; i++ {
+		if !strings.Contains(dense, fmt.Sprintf("model-%02d", i)) {
+			t.Errorf("图例 %02d 应出现在 SVG 中", i)
+		}
+	}
+
+	// 12 类:默认 420px 恰可容纳全部图例,画布保持不变。
+	base := buildPieSVG("base", "t", makeSlices(12))
+	if !strings.Contains(base, `height="420"`) {
+		t.Errorf("12 类图例应保持默认画布 420:\n%s", base)
+	}
+}
+
 // --by 维度校验与 --pie 的 day 拒绝在开库前生效。
 func TestChartCmd_ByDimensionValidation(t *testing.T) {
 	openCalls := 0
