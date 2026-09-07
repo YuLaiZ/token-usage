@@ -731,7 +731,7 @@ token-usage watch --once               # render a single frame and exit (pipe-fr
 
 ## report
 
-Generates a complete usage report bundle into a directory: a text summary, a usage comparison against the immediately preceding equal-length window (`compare.txt`, same default baseline rule as `compare`), per-dimension SVG charts (daily/hourly/weekday/monthly bars, client/model/provider/project pies), and the weekday-by-hour SVG heat matrix. All charts share the same aggregation core as the corresponding `query`/`chart` views.
+Generates a complete usage report bundle into a directory: a text summary, a usage comparison (`compare.txt`) whose default baseline is derived from the date argument's granularity exactly like `compare` (previous day for a day, previous calendar month for a month, previous calendar year for a year, equal-length preceding window for a range), per-dimension SVG charts (daily/hourly/weekday/monthly bars, client/model/provider/project pies), and the weekday-by-hour SVG heat matrix. All charts share the same aggregation core as the corresponding `query`/`chart` views.
 
 ```bash
 token-usage report 20260901-20260930 --out september-report
