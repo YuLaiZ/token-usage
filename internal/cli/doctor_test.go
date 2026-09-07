@@ -337,6 +337,23 @@ func TestDoctor_QueryDefinitions(t *testing.T) {
 	if !strings.Contains(out, "运行 `token-usage query list` 查看详情") {
 		t.Errorf("WARN 应指向 query list:\n%s", out)
 	}
+
+	// 顶层问题(配置层解析时 [query] 根不是表):使用路径会拒绝,doctor 须同样
+	// WARN,不得只看 RawQuery 而把坏配置报告为「定义合法」。
+	topLevel := func() (*config.Config, error) {
+		cfg := &config.Config{
+			DataDir: dataDir,
+			Clients: map[string]config.Client{},
+			RawQueryTopLevelIssues: map[string]config.RawQueryTopLevelIssue{
+				"query": {Name: "query", Kind: config.RawQueryIssueRootNotTable, Value: "broken"},
+			},
+		}
+		return cfg, nil
+	}
+	out = runDoctorForTest(t, topLevel, db.Open)
+	if !strings.Contains(out, "Query definitions / 查询视图: WARN / 警告") {
+		t.Errorf("顶层问题应 WARN,不得报告为定义合法:\n%s", out)
+	}
 }
 
 // 数据新鲜度陈旧分支:time.Since 不可注入,以 8 天前的采集记录触发

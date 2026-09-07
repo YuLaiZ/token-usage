@@ -350,7 +350,7 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	case configFailed:
 		doctorLine(out, ui.Bi("Query definitions", "查询视图"), statusSkip, ui.Bi("config failed", "配置加载失败"))
 	default:
-		if _, qdErr := querydef.ParseViews(querydef.Input{RawQuery: cfg.RawQuery}); qdErr != nil {
+		if _, qdErr := querydef.ParseViews(querydefInput(cfg)); qdErr != nil {
 			warnings++
 			var ve *querydef.ValidationError
 			desc := qdErr.Error()
