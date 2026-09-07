@@ -595,16 +595,15 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 		return ui.Bi(view.TitleEn+" - no data", view.TitleZh+" - 无数据"), nil
 	}
 
-	// 维度已在聚合核内完成白名单校验,此处按声明顺序取渲染表头与时间维度下标。
-	// temporalIdx 取首个命中下标即 break,与聚合核 AggregateDimensionView 的
-	// 取向一致(渲染侧仅作布尔消费,但两侧取向不一致是潜伏陷阱)。
+	// 维度已在聚合核内完成白名单校验,此处按声明顺序完整填充渲染表头;
+	// temporalIdx 记录首个时间维度下标(趋势列插入与行排序的轴),循环
+	// 不得提前退出——时间维度之后声明的维度同样需要表头。
 	dimHeaders := make([]string, len(view.Dimensions))
 	temporalIdx := -1
 	for i, name := range view.Dimensions {
 		dimHeaders[i] = dimensionWhitelist[name].header
-		if isTemporalDimension(name) {
+		if isTemporalDimension(name) && temporalIdx < 0 {
 			temporalIdx = i
-			break
 		}
 	}
 

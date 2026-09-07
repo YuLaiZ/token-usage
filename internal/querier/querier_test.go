@@ -1055,6 +1055,31 @@ func TestRunDimensionView_DayModelOrdersByDateThenTotal(t *testing.T) {
 	}
 }
 
+// 时间维度之后声明的维度表头必须完整渲染:表头填充不能在首个时间维度处
+// 提前退出(day+model+provider 的 Model/Provider 列不能是空表头)。
+func TestRunDimensionView_DimensionsAfterTemporalKeepHeaders(t *testing.T) {
+	q := setupMessageFixture(t)
+	msgs := []model.Message{
+		{ID: "dmp-a", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-01", TS: 1000, Model: "model-a", Provider: "prov-a", TotalTokens: 300},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	out, err := q.RunDimensionView(context.Background(), []string{"2026-07-01"}, DimensionView{
+		Dimensions: []string{"day", "model", "provider"},
+		TitleEn:    "Usage by day, model and provider", TitleZh: "按天/模型/供应商用量",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Model") || !strings.Contains(out, "模型") {
+		t.Errorf("时间维度之后的 model 列表头丢失:\n%s", out)
+	}
+	if !strings.Contains(out, "Provider") || !strings.Contains(out, "供应商") {
+		t.Errorf("时间维度之后的 provider 列表头丢失:\n%s", out)
+	}
+}
+
 // 未知维度错误文案由有序名单动态拼接:含 day 与 month 两个时间维度,
 // 不再是不含 month 的旧六维文本。
 func TestRunDimensionView_UnknownDimensionMessageListsDayAndMonth(t *testing.T) {
