@@ -121,3 +121,73 @@ func TestWatchCmd_ByInvalidDimension(t *testing.T) {
 		}
 	}
 }
+
+// runWatchLoop 装配循环模式 watch:注入时钟从 start 起,sleep 每次推进 2 秒,
+// 第 frames 帧渲染完后的 sleep 抛哨兵终止,返回逐帧输出(清屏序列分帧)。
+func runWatchLoop(t *testing.T, args []string, usageDB *db.DB, start time.Time, frames int) []string {
+	t.Helper()
+	now := start
+	n := 0
+	cmd := newWatchCmdWithDeps(
+		func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil },
+		func(string) (*db.DB, error) { return usageDB, nil },
+		func() time.Time { return now },
+		func(time.Duration) {
+			n++
+			now = now.Add(2 * time.Second)
+			if n == frames {
+				panic(watchLoopSentinel)
+			}
+		},
+	)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs(args)
+	func() {
+		defer func() {
+			if r := recover(); r != watchLoopSentinel {
+				t.Fatalf("unexpected panic: %v", r)
+			}
+		}()
+		_ = cmd.Execute()
+	}()
+	return strings.Split(buf.String(), "\x1b[2J\x1b[H")
+}
+
+// 缺省日期跨午夜逐帧重算:循环模式的「今天」不能在启动时固定,跨日后帧应
+// 查询新的一天;显式指定的日期区间保持固定(监视历史区间是合法用法)。
+// 两个子用例各建独立内存库:命令 RunE 会关闭注入的 DB,共享实例会被首个
+// 用例关闭。
+func TestWatchCmd_MidnightRolloverDefaultDate(t *testing.T) {
+	start := time.Date(2026, 9, 1, 23, 59, 59, 0, time.Local)
+	mkDB := func() *db.DB {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.UpsertMessages(context.Background(), usageDB, []model.Message{
+			{ID: "wm-a", SessionID: "s", Client: model.ClientClaudeCode,
+				Date: "2026-09-01", TS: start.UnixMilli(), Model: "yesterday-model", TotalTokens: 100},
+			{ID: "wm-b", SessionID: "s", Client: model.ClientClaudeCode,
+				Date: "2026-09-02", TS: start.Add(2 * time.Second).UnixMilli(), Model: "today-model", TotalTokens: 200},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return usageDB
+	}
+
+	// 缺省参数:第 2 帧在跨午夜后渲染,应查询 09-02。
+	frames := runWatchLoop(t, nil, mkDB(), start, 2)
+	last := frames[len(frames)-1]
+	if !strings.Contains(last, "today-model") {
+		t.Errorf("跨午夜后缺省日期应逐帧重算,帧应含新一天的分组:\n%s", last)
+	}
+
+	// 显式日期:跨午夜后仍查询固定窗口 09-01。
+	frames = runWatchLoop(t, []string{"20260901"}, mkDB(), start, 2)
+	last = frames[len(frames)-1]
+	if !strings.Contains(last, "yesterday-model") || strings.Contains(last, "today-model") {
+		t.Errorf("显式日期跨午夜后应保持固定窗口:\n%s", last)
+	}
+}

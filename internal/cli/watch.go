@@ -33,12 +33,13 @@ func newWatchCmdWithDeps(load func() (*config.Config, error), open func(string) 
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// 缺省日期与刷新时间戳同源,都取注入时钟:watch 的 now 是完整
 			// 语义注入,缺省"今天"若绕开它读真实时钟,测试注入即失效。
-			var dates []string
-			var err error
-			if len(args) == 0 {
-				dates = []string{now().Format("2006-01-02")}
-			} else {
-				dates, err = parseDateArgs(args, false, "watch")
+			// 缺省日期逐帧重算(跨午夜后帧自动切到新的一天);显式指定的
+			// 日期区间保持固定——监视历史区间是合法用法。
+			defaultToday := len(args) == 0
+			var fixedDates []string
+			if !defaultToday {
+				var err error
+				fixedDates, err = parseDateArgs(args, false, "watch")
 				if err != nil {
 					return err
 				}
@@ -87,8 +88,13 @@ func newWatchCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			q := querier.New(usageDB)
 			ctx := cmdContext(cmd)
 			out := cmd.OutOrStdout()
-			// 单帧渲染:错误即返回(数据库损坏等)而非静默闪烁。
+			// 单帧渲染:错误即返回(数据库损坏等)而非静默闪烁。缺省模式的
+			// 帧日期在此重算,保证跨午夜切日。
 			render := func() error {
+				dates := fixedDates
+				if defaultToday {
+					dates = []string{now().Format("2006-01-02")}
+				}
 				summary, err := q.Summary(ctx, dates)
 				if err != nil {
 					return err
