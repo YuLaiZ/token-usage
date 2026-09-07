@@ -140,7 +140,7 @@ func TestBuildPieSVG_HighCardinalityLegend(t *testing.T) {
 // 后,饼图/报告包只应出现合并显示键,分组与占比与 query/export 入口一致。
 func TestChartCmd_ProviderAliasesApplied(t *testing.T) {
 	cfg := &config.Config{
-		DataDir:        t.TempDir(),
+		DataDir:         t.TempDir(),
 		ProviderAliases: map[string]string{"vendor-a": "merged-vendor", "vendor-b": "merged-vendor"},
 	}
 	stamp := time.Date(2026, 9, 1, 12, 0, 0, 0, time.Local)
