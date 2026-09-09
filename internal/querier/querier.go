@@ -1160,6 +1160,13 @@ func (q *Querier) StatsBetween(ctx context.Context, fromDate, toDate string) (Ra
 }
 
 func formatTokens(tokens int64) string {
+	if tokens < 0 {
+		return fmt.Sprintf("%d", tokens)
+	}
+	return formatTokensUnsigned(uint64(tokens))
+}
+
+func formatTokensUnsigned(tokens uint64) string {
 	if tokens >= 1000000000 {
 		return fmt.Sprintf("%.2f B", float64(tokens)/1000000000)
 	}
@@ -1176,6 +1183,13 @@ func formatTokens(tokens int64) string {
 // 消费方与 query 表格使用同一 K/M/B 缩写口径,防止两处格式化漂移。
 func FormatTokens(tokens int64) string {
 	return formatTokens(tokens)
+}
+
+// FormatTokensUnsigned 使用与 FormatTokens 相同的 K/M/B 缩写口径渲染非负
+// token 数。供需要表示 int64 最小值绝对值的调用方使用，避免将 1<<63
+// 转回 int64 时溢出为负数。
+func FormatTokensUnsigned(tokens uint64) string {
+	return formatTokensUnsigned(tokens)
 }
 
 // heatLevels 是热力单元格的强度字符序列(下标 0..9):0 级为空格,密度沿
@@ -1365,4 +1379,35 @@ func formatDuration(ms int64) string {
 // 消费方与 query session 表格使用同一时长口径,防止两处格式化漂移。
 func FormatDuration(ms int64) string {
 	return formatDuration(ms)
+}
+
+// SortTopRows 返回按会话排行口径排序的行独立副本:TotalTokens 降序,同值按
+// Client 升序、再 Title 升序;前三键全并列时按会话首条消息时间戳 FirstTS 升序
+// 决序(确定性全序,不依赖 SessionRows 的 SQL 排序,消除同名同量会话的行序
+// 残余)。cli 的 top/report 与 web 仪表板的会话排行共用本实现,防止多入口
+// 排序口径漂移。
+func SortTopRows(rows []SessionRow) []SessionRow {
+	sorted := make([]SessionRow, len(rows))
+	copy(sorted, rows)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Agg.TotalTokens != sorted[j].Agg.TotalTokens {
+			return sorted[i].Agg.TotalTokens > sorted[j].Agg.TotalTokens
+		}
+		if sorted[i].Client != sorted[j].Client {
+			return sorted[i].Client < sorted[j].Client
+		}
+		if sorted[i].Title != sorted[j].Title {
+			return sorted[i].Title < sorted[j].Title
+		}
+		return sorted[i].FirstTS < sorted[j].FirstTS
+	})
+	return sorted
+}
+
+// TruncateTopRows 取排序后前 limit 行(limit 不小于行数时返回全部)。
+func TruncateTopRows(rows []SessionRow, limit int) []SessionRow {
+	if limit < len(rows) {
+		return rows[:limit]
+	}
+	return rows
 }

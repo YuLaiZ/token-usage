@@ -35,6 +35,10 @@ token-usage
 ├── chart [DATE|DATE-DATE]                # 将用量渲染为 SVG 图表（--by 维度、--pie、--line、--heatmap）
 ├── watch [DATE|DATE-DATE]                # 以固定间隔刷新 query 输出（视图选择与 query 一致）
 ├── report [DATE|DATE-DATE] --out <dir>   # 生成完整用量报告包
+├── serve                                 # 本地只读仪表板 HTTP 服务（默认 127.0.0.1:8619；前台运行；--open、--addr）
+│   ├── start                             # 同一仪表板转入后台运行（nginx 风格；日志写入 serve.log）
+│   ├── status                            # 查看后台仪表板运行状态
+│   └── stop                              # 停止后台仪表板
 ├── config                                # 无参数：打开交互式配置 TUI
 │   ├── show                              # 输出完整 effective TOML（只读、纯 TOML）
 │   ├── get <key>
@@ -644,11 +648,13 @@ catch-up 经 analyzer 的串行化锁 Submit（与实时触发同一路径，保
 
 ```text
 token-usage forecast
+token-usage forecast --format json
 ```
 
 - `Last 7 days / 最近 7 天` 与 `Last 30 days / 最近 30 天`：显示各窗口总量、日均（窗口总量除以**活跃**天数——有数据的天数，整数除法向下取整）与窗口内活跃天占比。
 - `Next 7 days / 未来 7 天` 与 `Next 30 days / 未来 30 天`：以该日均乘以未来自然天数得出估算，假设未来保持同等活跃强度。窗口内无数据时显示 `no data / 无数据` 并省略对应预测行。
 - 命令只读，K/M/B 缩写口径与 query 一致。
+- `--format` 选择 `table`（默认，行为不变）或 `json`；非法值在加载配置与打开数据库之前即被拒绝。JSON 契约与 `export --format json` 对齐：原始整数、两空格缩进加尾随换行、struct 序列化保证字段顺序稳定。顶层为 `today_so_far`（仅 `requests` 与 `total_tokens`）、`windows`（恒 2 条，先 `last_7_days` 后 `last_30_days`，各含 `window`、`days`、`active_days`、`requests`、`total_tokens` 与 `avg_per_active_day`；无数据窗口 `active_days` 为 0、`avg_per_active_day` 为 0）与 `projections`（先 `next_7_days` 后 `next_30_days`，各含 `window`、`days`、`based_on`、`avg_per_active_day` 与 `estimate_tokens`，即日均乘以未来自然天数）。窗口语义与表格逐点一致：窗口不含今天，依据窗口无数据的条目从 `projections` 中省略——两窗口均无数据时 `projections` 输出 `[]`。
 
 ## compare
 
@@ -689,10 +695,11 @@ token-usage compare 20260901-20260907 --format json
 显示总用量最重的会话排行：输出一张框线表，按名次列出会话的标题、客户端、项目、时长、请求数与总量。
 
 ```text
-token-usage top [DATE|DATE-DATE] [--limit N]
+token-usage top [DATE|DATE-DATE] [--limit N] [--format table|json]
 token-usage top
 token-usage top 20260901-20260907
 token-usage top 202609 --limit 20
+token-usage top 202609 --format json
 ```
 
 行为要点：
@@ -700,6 +707,7 @@ token-usage top 202609 --limit 20
 - 日期参数与 `query` 同形态（日 `YYYYMMDD`、月 `YYYYMM`、年 `YYYY`（仅单独使用）或日/月闭区间），缺省时默认今天；与 `query` 一样展开上限 366 天。
 - 会话按 TotalTokens 降序排列；同值按 Client 升序、再按 Title 升序决序，全并列时按会话首条消息时间戳升序，与数据库返回行序无关，排名确定。
 - `--limit` 为显示的会话数量，默认 10，无上限；小于 1 的取值在加载配置与打开数据库之前即被拒绝。
+- `--format` 选择 `table`（默认，行为不变）或 `json`；非法值在加载配置与打开数据库之前即被拒绝。JSON 契约与 `export --format json` 对齐：顶层为会话记录数组，顺序与表格行一致（排序与 `--limit` 截断之后），两空格缩进加尾随换行、struct 序列化保证字段顺序稳定。每条记录含 `rank`（从 1 起，与表格名次列同源）、源字段原值 `client`/`project`/`title`（空 `project` 保持 `""`——「未分类」映射仅是表格渲染方的显示形态）、Unix 毫秒时间戳 `first_ts`/`last_ts` 与二者之差 `duration_ms`，以及 7 字段全量原始整数指标 `requests`、`fresh_input`、`output`、`cache_read`、`cache_create`、`reasoning`、`total`——为表格 Requests/Total 两列的超集，不做 K/M 缩写。空结果输出 `[]`（JSON 不做表格的 no data 早退）。
 - Duration 是会话的请求跨度——区间内末条与首条消息时间戳之差——渲染口径与 `query session` 表格一致（`<1s`、`5m 0s`、`1h 1m`、`2d 3h`）。
 - 空 Project 显示为 `(uncategorized) / (未分类)`；Total 沿用与 query 相同的 K/M/B 缩写；Title 列与 `query session` 同款按 30 显示宽上限截断。
 - 无数据时只输出 `Top sessions / 会话排行` 标题行与 `no data / 无数据` 一行。
@@ -742,15 +750,60 @@ token-usage watch --once               # 只渲染一帧后退出（对管道友
 
 ## report
 
-将完整用量报告包生成到目录：文本摘要、用量对比文本 `compare.txt`（缺省基线与 `compare` 命令一样按日期参数粒度推导：单日对前一天、单月对上一个日历月、单年对上一个日历年、区间对前置等长窗口）、各维度 SVG 图表（日/小时/星期/月柱状图，客户端/模型/供应商/项目占比饼图）以及星期×小时 SVG 热力矩阵。所有图表与对应的 `query`/`chart` 视图共用同一聚合核。
+将完整用量报告包生成到目录：文本摘要、用量对比文本 `compare.txt`（缺省基线与 `compare` 命令一样按日期参数粒度推导：单日对前一天、单月对上一个日历月、单年对上一个日历年、区间对前置等长窗口）、各维度 SVG 图表（日/小时/星期/月柱状图，客户端/模型/供应商/项目占比饼图）、星期×小时 SVG 热力矩阵，以及 `index.html`——自包含交互式双语报告页（KPI 总览、两期对比、内嵌全部图表、Top sessions、逐维度数据表、表格排序、锚点导航），零外部资源可离线双击打开，是报告包的浏览入口。所有图表与对应的 `query`/`chart` 视图共用同一聚合核。
 
 ```bash
 token-usage report 20260901-20260930 --out september-report
 ```
 
 - `--out <目录>` 必填；目录不存在时自动创建，每个文件均为原子写入。
-- 文件：`summary.txt`、`compare.txt`、`daily.svg`、`hourly.svg`、`weekday.svg`、`monthly.svg`、`by-client.svg`、`by-model.svg`、`by-provider.svg`、`by-project.svg`、`heatmap.svg`。
+- 文件：`summary.txt`、`compare.txt`、`daily.svg`、`hourly.svg`、`weekday.svg`、`monthly.svg`、`by-client.svg`、`by-model.svg`、`by-provider.svg`、`by-project.svg`、`heatmap.svg`、`index.html`。
 - 日期参数与 `query`/`collect` 同形态（默认今天）。报告包不含 forecast 用量预测，请单独执行 `token-usage forecast`。除写入报告包外严格只读。
+
+## serve
+
+启动只读的本地 HTTP 服务，提供内嵌仪表板：`/` 的内嵌 HTML 页面、JSON 接口（`/api/meta`、`/api/dashboard`）与 SVG 图表（`/api/chart/{kind}.svg`），图表与 `chart`/`report` 命令共用同一构建核（标题、副标题与悬停文案完全一致）。默认仅绑定 `127.0.0.1:8619`，按 Ctrl+C 停止。HTTP 数据面严格只读——不设 CORS 头、不写数据库与配置；本地仅涉及服务生命周期状态文件 `serve.json`（前台/后台共用）与后台日志 `serve.log`。同一仪表板也可通过 `serve start` / `serve status` / `serve stop` 转入后台运行（见本节末尾）。
+
+```bash
+token-usage serve
+token-usage serve --open
+token-usage serve --addr 127.0.0.1:9000
+```
+
+- `--addr` 修改监听地址（默认 `127.0.0.1:8619`）。绑定 `0.0.0.0` 等公网地址会**把统计数据暴露给局域网**——服务只读但无鉴权——请保持在回环接口上。
+- `--open` 在启动后用默认浏览器打开仪表板；打开失败仅打印警告，服务继续运行。
+- 单次请求的全部数据查询共享同一读快照，并发采集写入下 totals、各维度行与会话行互相一致。
+
+| 接口 | 参数 | 返回 |
+|------|------|------|
+| `GET /api/meta` | — | 版本、`min_date`/`max_date`（全库）、`data_through`、`last_collection`；后三项缺数据时为 `null` |
+| `GET /api/dashboard` | `from`、`to`（`YYYY-MM-DD`；缺省为截至今天的 30 天；跨度至多 366 天） | 统计区间、totals（整数，含 `active_days`）、compare（基线窗口按 `compare` 命令区间模式推导——结束于区间开始日前一天的等长窗口，单日区间退化为前一天；含基线 totals 与 8 行预计算行：显示串、带符号变化、pos/neg 着色 class，基线为 0 时变化% 显示 `--`）、forecast（与 `forecast` 命令同口径的固定回看窗口：`today_so_far` 与恒 2 行的最近 7/30 天——窗口不含今天，日均按活跃天整数除法，预估为日均×未来天数；显示串预计算，窗口无数据时各格显示 `—`；不随 `from`/`to` 选区变化）、8 个固定维度行数组（`day`/`hour`/`weekday`/`month`/`client`/`model`/`provider`/`project`）、前 10 条会话，以及 `charts`——与总量同一读快照内渲染的 9 份 SVG 文档（`day`/`hour`/`weekday`/`month`/`client`/`model`/`provider`/`project`/`heatmap`），单次刷新不可能混用快照；内嵌页面消费该字段，`GET /api/chart/{kind}.svg` 仍可独立取图 |
+| `GET /api/chart/{kind}.svg` | 日期参数与 `/api/dashboard` 一致；`kind` ∈ `day`/`hour`/`weekday`/`month`（柱状）、`client`/`model`/`provider`/`project`（饼图）、`heatmap` | 一份 SVG 文档（`image/svg+xml`） |
+| `GET /`、`GET /assets/…` | — | 内嵌 HTML 页面与静态资产（`Cache-Control: no-store`） |
+
+- 错误统一为 JSON `{"error":{"message":"…"}}`：参数非法 `400`、图表类别或资产不存在 `404`、查询失败 `500`。
+- 数据面严格只读：不设 CORS 头（按同源使用）、不与守护进程交互、不写数据库与配置。本地仅涉及生命周期状态文件 `serve.json` 与后台日志 `serve.log`。维度行为原始整数，K/M/B 格式化交给前端；`provider` 行与查询视图一样应用 `[provider_aliases]`。
+
+### serve start / serve status / serve stop（后台，nginx 风格）
+
+同一仪表板也可以 nginx 风格在后台运行：`serve start` 拉起一个 detached 子进程并在其报告就绪后返回，`serve status` 查看状态，`serve stop` 停止。前台 `serve` 与后台子进程共用同一状态文件，且都在优雅停止时删除它，因此 `status`/`stop` 对两种实例一视同仁。
+
+```bash
+token-usage serve start
+token-usage serve start --addr 127.0.0.1:9000
+token-usage serve start --open
+token-usage serve status
+token-usage serve stop
+```
+
+- 状态文件：数据目录下的 `serve.json`（默认 `~/.token-usage/serve.json`），在服务完成监听时原子写出 `{"pid":…,"addr":…,"started_at":…}`（记录的 `addr` 为实际绑定的地址）。优雅停止时自动删除（前台按 Ctrl+C、后台经 `serve stop`）；崩溃或 `SIGKILL` 遗留的文件由 `status`/`stop` 的陈旧探活与下一次 `serve`/`serve start` 的单实例守卫兜底删除。状态迁移由数据目录下的 `serve-state.lock` 文件锁串行化，陈旧清理为条件删除：只有与判定所据内容仍一致的陈旧状态才会被移除——若新实例已接管，其新写出的 `serve.json` 绝不会被误删。
+- 日志文件：数据目录下的 `serve.log`（默认 `~/.token-usage/serve.log`）。每次 `serve start` 都会截断；子进程的 stdout 与 stderr 都写入其中，为纯文本（无终端超链接）。启动失败时错误信息会附带日志末尾 10 行。
+- `serve start` 在已记录状态于 `/api/meta` 上仍有响应时报告已在运行并以退出码 0 幂等返回（要重启请先用 `token-usage serve stop` 停止）；不再响应的陈旧状态与损坏的状态文件会被删除并照常启动。子进程 5s 内未就绪则启动失败，并指向日志末尾。并发的 `serve start` 由数据目录下的 `serve-start.lock` 文件锁串行化（仅用于启动协调——运行中的实例由 `serve.json` 描述、以 `serve.lock` 生命周期锁持有）：另一个 start 尚在执行时，第二个以非零退出码报错并提示稍后重试。
+- `serve status` 的所有状态结论均以退出码 0 返回（只有意外的 I/O 失败才非零）：`/api/meta` 有响应时报告 URL、PID 与启动时间；无响应（或状态文件损坏无法辨识）时删除陈旧/损坏文件并报告未运行。状态迁移由 `serve-state.lock` 串行化；锁被并发的 `status`/`stop` 持有超过带界重试窗口时，命令以非零退出并提示稍后重试。
+- `serve stop` 在 Unix 上发送 SIGTERM 并给 3s 优雅窗口，超时以 SIGKILL 兜底；在 Windows 上使用 `taskkill /F`——Windows 控制台进程没有跨进程的优雅停止通道，对严格只读的服务可接受。是否停止成功仅以 `/api/meta` 不再响应为准（记录的 PID 可能已被无关进程复用，探活的结论优先于信号发送结果——信号投递失败也不会短路探活等待）。只有探活确认下线（或信号发送前就无响应——陈旧/损坏状态被清理）才会删除状态文件。若强杀兜底后服务仍在响应（无论强杀本身是否报错），命令以非零退出码报错并列出记录的 URL 与 PID，保留 `serve.json` 供人工检查进程/端口。若停止进行期间有新实例接管（旧实例下线后状态文件被改写），命令会如实说明并转而停止新实例，而不是报告旧实例已停止。对已停止的服务重复执行是幂等空操作，退出码仍为 0。
+- 单实例契约：任意时刻至多一个仪表板实例（前台或后台）在运行。第二个 `serve`——无论前台后台、无论请求哪个地址——都会在监听之前被单实例守卫拒绝：打印运行中实例的 URL 与 PID 并以退出码 0 幂等返回（要重启请先用 `token-usage serve stop` 停止）；若撞上另一实例正在启动的窗口，守卫报错并提示稍后重试。服务主体在其整个生命周期持有数据目录下的 `serve.lock` 生命周期锁。由于守卫先于监听执行，与运行中实例的同端口冲突不会再表现为监听失败——监听失败只剩「请求的端口被一个没有留下 `serve.json` 记录的无关进程占用」这一种场景。因此 `serve status` / `serve stop` 始终管理唯一实例。
+- 前台与后台共用状态文件：启动时写入失败（如数据目录只读）服务即报错退出，不做无状态运行。
+- 两种形态都支持 `--open`：前台在启动后打开浏览器；`serve start` 仅在确认后台服务就绪后打开（无论哪种形态，打开浏览器失败都只是警告）。
 
 ## update
 

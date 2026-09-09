@@ -12,6 +12,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
+	"github.com/YuLaiZ/token-usage/internal/fmtx"
 	"github.com/YuLaiZ/token-usage/internal/model"
 	"github.com/YuLaiZ/token-usage/internal/querier"
 )
@@ -356,8 +357,8 @@ func TestFormatSignedTokens(t *testing.T) {
 		{-7, "-7"},
 	}
 	for _, tc := range cases {
-		if got := formatSignedTokens(tc.diff); got != tc.want {
-			t.Errorf("formatSignedTokens(%d) = %q, want %q", tc.diff, got, tc.want)
+		if got := fmtx.SignedTokens(tc.diff); got != tc.want {
+			t.Errorf("SignedTokens(%d) = %q, want %q", tc.diff, got, tc.want)
 		}
 	}
 }
@@ -365,8 +366,8 @@ func TestFormatSignedTokens(t *testing.T) {
 // TestFormatChangePercent_NearZeroKeepsSign 钉住极小正百分比的边界行为：
 // 四舍五入到一位小数后为 0.0 但并非恰好持平，仍保留 "+" 符号（+0.0%）。
 func TestFormatChangePercent_NearZeroKeepsSign(t *testing.T) {
-	if got := formatChangePercent(1000001, 1000000); got != "+0.0%" {
-		t.Errorf("formatChangePercent(1000001, 1000000) = %q, want %q", got, "+0.0%")
+	if got := fmtx.ChangePercent(1000001, 1000000); got != "+0.0%" {
+		t.Errorf("ChangePercent(1000001, 1000000) = %q, want %q", got, "+0.0%")
 	}
 }
 
@@ -1223,15 +1224,15 @@ func TestChangePercentValue(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := changePercentValue(tc.cur, tc.base)
+			got, ok := fmtx.ChangePercentValue(tc.cur, tc.base)
 			if ok != tc.wantOK {
-				t.Errorf("changePercentValue(%d, %d) ok = %v, want %v", tc.cur, tc.base, ok, tc.wantOK)
+				t.Errorf("ChangePercentValue(%d, %d) ok = %v, want %v", tc.cur, tc.base, ok, tc.wantOK)
 			}
 			if math.Abs(got-tc.want) > 1e-9 {
-				t.Errorf("changePercentValue(%d, %d) = %v, want %v", tc.cur, tc.base, got, tc.want)
+				t.Errorf("ChangePercentValue(%d, %d) = %v, want %v", tc.cur, tc.base, got, tc.want)
 			}
 			if math.Signbit(got) != tc.wantSignbit {
-				t.Errorf("changePercentValue(%d, %d) = %v 符号位 = %v, want %v", tc.cur, tc.base, got, math.Signbit(got), tc.wantSignbit)
+				t.Errorf("ChangePercentValue(%d, %d) = %v 符号位 = %v, want %v", tc.cur, tc.base, got, math.Signbit(got), tc.wantSignbit)
 			}
 		})
 	}
@@ -1283,7 +1284,7 @@ func jsonInt(t *testing.T, v interface{}, want int64) {
 }
 
 // jsonPercent 断言 change_percent：base==0 期望 nil，否则为四舍五入到
-// 1 位小数的数值（与表格 formatChangePercent 同口径）。
+// 1 位小数的数值（与表格 fmtx.ChangePercent 同口径）。
 func jsonPercent(t *testing.T, v interface{}, want *float64) {
 	t.Helper()
 	if want == nil {

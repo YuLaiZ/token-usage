@@ -18,7 +18,7 @@ import (
 )
 
 // report 命令端到端:--out 目录生成全部报告文件(summary/compare 文本 + 8 张
-// SVG),缺 --out 在开库前拒绝。
+// SVG + index.html),缺 --out 在开库前拒绝。
 func TestReportCmd_EndToEnd(t *testing.T) {
 	usageDB, err := db.Open(":memory:")
 	if err != nil {
@@ -48,13 +48,15 @@ func TestReportCmd_EndToEnd(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "11 个文件") {
-		t.Errorf("应回执 11 个文件:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "12 个文件") {
+		t.Errorf("应回执 12 个文件:\n%s", buf.String())
 	}
-	// 全部文件非空:summary 文本含标题,SVG 文件含结束标签。
+	// 全部文件非空:summary 文本含标题,SVG 文件含结束标签,index.html 为
+	// 完整 HTML 文档。
 	for _, f := range []string{
 		"summary.txt", "compare.txt", "heatmap.svg", "daily.svg", "hourly.svg", "weekday.svg",
 		"monthly.svg", "by-client.svg", "by-model.svg", "by-provider.svg", "by-project.svg",
+		"index.html",
 	} {
 		data, err := os.ReadFile(filepath.Join(outDir, f))
 		if err != nil {
@@ -62,6 +64,9 @@ func TestReportCmd_EndToEnd(t *testing.T) {
 		}
 		if len(data) == 0 {
 			t.Errorf("报告文件 %s 为空", f)
+		}
+		if f == "index.html" && !strings.Contains(string(data), "</html>") {
+			t.Errorf("index.html 应为完整 HTML 文档(含 </html> 结尾)")
 		}
 	}
 	// 内容断言:summary.txt 自证统计范围;SVG 文件为完整文档。
@@ -250,9 +255,18 @@ func TestReportFiles_CompareTxt(t *testing.T) {
 }
 
 // reportTotalOf 从渲染产物中提取区间总量口径:SVG 副标题 "Total X tokens"
-// 与 summary 的 Total 行 "Total / 总计: X" 同用 FormatTokens 缩写。
+// 与 summary 的 Total 行 "Total / 总计: X" 同用 FormatTokens 缩写;
+// index.html 提取 KPI Total tokens 卡主值(kpi-total-value 锚点,同
+// FormatTokens 口径),使报告页与文本/图表参与同一快照一致性比对。
 func reportTotalOf(t *testing.T, name, content string) string {
 	t.Helper()
+	if name == "index.html" {
+		m := regexp.MustCompile(`id="kpi-total-value">([^<]+)<`).FindStringSubmatch(content)
+		if m == nil {
+			t.Fatalf("%s 应含 KPI 总量锚点:\n%s", name, content)
+		}
+		return m[1]
+	}
 	if strings.HasSuffix(name, ".svg") {
 		m := regexp.MustCompile(`Total (\S+) tokens`).FindStringSubmatch(content)
 		if m == nil {

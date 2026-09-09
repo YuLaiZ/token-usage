@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
+	"github.com/YuLaiZ/token-usage/internal/fmtx"
 	"github.com/YuLaiZ/token-usage/internal/querier"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
@@ -169,7 +169,7 @@ Pass --by with a non-temporal dimension (client/model/provider/project) to compa
 
 // parseCompareArgs 解析 compare 的当前窗口与基线窗口。前置条件：args 恰有
 // 1 或 2 个元素（cobra Args 已校验）。1 个时 base 为空按当前窗口粒度推导
-// 缺省基线（defaultCompareBase），非空时用同一解析器独立解析；2 个时为
+// 缺省基线（querier.CompareBaseWindow），非空时用同一解析器独立解析；2 个时为
 // 双位置参数形态，两窗口按（起始日，起始日相同再按结束日）升序排列，早者
 // 为基线、晚者为当前（与输入顺序无关），此时 base 必须为空否则冲突报错。
 // 返回两个窗口的归一化起止时间。
@@ -197,7 +197,7 @@ func parseCompareArgs(args []string, base string) (curStart, curEnd, baseStart, 
 		return time.Time{}, time.Time{}, time.Time{}, time.Time{}, err
 	}
 	if base == "" {
-		baseStart, baseEnd = defaultCompareBase(curStart, curEnd, singleLen)
+		baseStart, baseEnd = querier.CompareBaseWindow(curStart, curEnd, singleLen)
 		return curStart, curEnd, baseStart, baseEnd, nil
 	}
 	baseStart, baseEnd, _, err = parseCompareRangeArg(base)
@@ -259,30 +259,6 @@ func parseCompareRangeArg(raw string) (first, last time.Time, singleLen int, err
 	return first, last, len(raw), nil
 }
 
-// defaultCompareBase 按 <range> 粒度推导缺省基线窗口：单日取前一天，单月取
-// 上一个日历月（AddDate 归一化自动处理闰月），单年取上一个日历年；区间取
-// 结束于开始日前一天的等长窗口。天数用纯 AddDate 循环计数，不用
-// end.Sub(start) 换算（time.Duration 约容 292 年，超长区间会饱和折损天数）。
-func defaultCompareBase(start, end time.Time, singleLen int) (time.Time, time.Time) {
-	switch singleLen {
-	case 8: // 单日：前一天
-		prev := start.AddDate(0, 0, -1)
-		return prev, prev
-	case 6: // 单月：上一个日历月，月末由 AddDate 归一化推导
-		first := start.AddDate(0, -1, 0)
-		return first, first.AddDate(0, 1, -1)
-	case 4: // 单年：上一个日历年
-		return start.AddDate(-1, 0, 0), end.AddDate(-1, 0, 0)
-	default: // 区间：结束于开始日前一天的等长窗口
-		days := 0
-		for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
-			days++
-		}
-		baseEnd := start.AddDate(0, 0, -1)
-		return baseEnd.AddDate(0, 0, -(days - 1)), baseEnd
-	}
-}
-
 // compareRenderInput 是 renderCompare 的渲染输入：两个窗口的起止日期
 // （YYYY-MM-DD 字符串）与各自的全量统计。
 type compareRenderInput struct {
@@ -314,11 +290,11 @@ func renderCompare(w io.Writer, in compareRenderInput) error {
 
 	countRow := func(label string, curV, baseV int64) {
 		t.Row(label, fmt.Sprintf("%d", curV), fmt.Sprintf("%d", baseV),
-			formatCountChange(curV-baseV), formatChangePercent(curV, baseV))
+			fmtx.CountChange(curV-baseV), fmtx.ChangePercent(curV, baseV))
 	}
 	tokenRow := func(label string, curV, baseV int64) {
 		t.Row(label, querier.FormatTokens(curV), querier.FormatTokens(baseV),
-			formatSignedTokens(curV-baseV), formatChangePercent(curV, baseV))
+			fmtx.SignedTokens(curV-baseV), fmtx.ChangePercent(curV, baseV))
 	}
 
 	countRow(ui.Bi("Active days", "活跃天"), in.cur.ActiveDays, in.base.ActiveDays)
@@ -332,63 +308,6 @@ func renderCompare(w io.Writer, in compareRenderInput) error {
 
 	fmt.Fprintln(w, t.String())
 	return nil
-}
-
-// formatSignedTokens 渲染带符号的 token 差值：正数前缀 "+"、负数前缀 "-"、
-// 零显示 "0"；幅值经 uint64 取绝对值（避免 MinInt64 取负溢出）后复用
-// querier.FormatTokens，缩写阈值与 query 表格完全一致。
-func formatSignedTokens(diff int64) string {
-	if diff == 0 {
-		return "0"
-	}
-	mag := uint64(diff)
-	if diff < 0 {
-		mag = uint64(-(diff + 1)) + 1
-	}
-	magnitude := querier.FormatTokens(int64(mag))
-	if diff > 0 {
-		return "+" + magnitude
-	}
-	return "-" + magnitude
-}
-
-// formatCountChange 渲染计数差值：0 显示 "0"，非 0 用 %+d 自带符号。
-func formatCountChange(diff int64) string {
-	if diff == 0 {
-		return "0"
-	}
-	return fmt.Sprintf("%+d", diff)
-}
-
-// changePercentValue 计算两期变化的百分比数值：四舍五入到 1 位小数。表格
-// formatChangePercent 与 JSON 的 change_percent 共用该函数，保证两个表面
-// 同一舍入口径。base == 0 时百分比无定义，返回 ok=false（与表格 "--"、
-// JSON null 同语义）。
-func changePercentValue(cur, base int64) (float64, bool) {
-	if base == 0 {
-		return 0, false
-	}
-	pct := float64(cur-base) / float64(base) * 100
-	return math.Round(pct*10) / 10, true
-}
-
-// formatChangePercent 渲染变化百分比：基线为 0 时百分比无定义，显示 "--"；
-// 数值部分经 changePercentValue 与 JSON 同口径舍入。符号按原始差值判断
-// （base > 0 时与未舍入百分比同号）：极小正百分比舍入后为 0.0 仍保留
-// "+"（+0.0%），负数由 %.1f 自带 "-"，恰好持平为 "0.0%"。
-func formatChangePercent(cur, base int64) string {
-	pct, ok := changePercentValue(cur, base)
-	if !ok {
-		return "--"
-	}
-	switch {
-	case cur > base:
-		return fmt.Sprintf("+%.1f%%", pct)
-	case cur < base:
-		return fmt.Sprintf("%.1f%%", pct)
-	default:
-		return "0.0%"
-	}
 }
 
 // compareByDimensions 是 compare --by 的允许集：仅非时间维度，与 querier
@@ -597,13 +516,13 @@ func renderCompareBy(w io.Writer, in compareByRenderInput) error {
 	for _, m := range members {
 		t.Row(m.key,
 			querier.FormatTokens(m.cur.TotalTokens), querier.FormatTokens(m.base.TotalTokens),
-			formatSignedTokens(m.cur.TotalTokens-m.base.TotalTokens),
-			formatChangePercent(m.cur.TotalTokens, m.base.TotalTokens))
+			fmtx.SignedTokens(m.cur.TotalTokens-m.base.TotalTokens),
+			fmtx.ChangePercent(m.cur.TotalTokens, m.base.TotalTokens))
 	}
 	t.Row(ui.ColTotal,
 		querier.FormatTokens(in.cur.Total.TotalTokens), querier.FormatTokens(in.base.Total.TotalTokens),
-		formatSignedTokens(in.cur.Total.TotalTokens-in.base.Total.TotalTokens),
-		formatChangePercent(in.cur.Total.TotalTokens, in.base.Total.TotalTokens))
+		fmtx.SignedTokens(in.cur.Total.TotalTokens-in.base.Total.TotalTokens),
+		fmtx.ChangePercent(in.cur.Total.TotalTokens, in.base.Total.TotalTokens))
 
 	fmt.Fprintln(w, t.String())
 	return nil
@@ -649,7 +568,7 @@ type compareJSONWindows struct {
 
 // compareJSONMetric 是总量对比 JSON 中的一行指标：metric 为 ui 输出指标
 // 稳定 ID（active_days 为 compare 特有）；值为原始整数（不做 K/M 缩写）；
-// change_percent 经 changePercentValue 与表格同口径（四舍五入到 1 位小数，
+// change_percent 经 fmtx.ChangePercentValue 与表格同口径（四舍五入到 1 位小数，
 // base==0 时为 null）。struct 序列化保证字段顺序稳定。
 type compareJSONMetric struct {
 	Metric        string   `json:"metric"`
@@ -703,10 +622,10 @@ type compareJSONByPayload struct {
 	Totals    compareJSONTotals   `json:"totals"`
 }
 
-// compareChangePercentPtr 把 changePercentValue 的可计算性映射为 JSON 的
+// compareChangePercentPtr 把 fmtx.ChangePercentValue 的可计算性映射为 JSON 的
 // 可空 change_percent：base == 0 时返回 nil（编码为 null）。
 func compareChangePercentPtr(cur, base int64) *float64 {
-	v, ok := changePercentValue(cur, base)
+	v, ok := fmtx.ChangePercentValue(cur, base)
 	if !ok {
 		return nil
 	}

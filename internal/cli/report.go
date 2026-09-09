@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/YuLaiZ/token-usage/internal/charts"
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/fileutil"
@@ -21,7 +22,7 @@ import (
 type reportFile struct {
 	name    string
 	render  func() (string, error)
-	summary bool // true=纯文本, false=SVG
+	summary bool // true=纯文本, false=SVG/HTML
 }
 
 func newReportCmd() *cobra.Command {
@@ -134,10 +135,11 @@ type reportDimChart struct {
 }
 
 // reportFiles 组装报告包的全部文件:文本摘要 + 两期用量对比文本 + 各维度
-// SVG 图表 + SVG 热力矩阵。渲染器与对应的 query/chart/compare 视图共用同一
-// 聚合核。全部数据库读取在同一个读事务快照内完成(经 querier 的 ReadTx:并发
-// 采集写入下,summary/compare/各图的总量与明细互相一致),渲染闭包为纯内存
-// 构建。singleLen 是原始日期参数的粒度(8/6/4=单日/单月/单年,0=区间);
+// SVG 图表 + SVG 热力矩阵 + 自包含交互式 HTML 报告页(index.html)。渲染器
+// 与对应的 query/chart/compare 视图共用同一聚合核。全部数据库读取在同一个
+// 读事务快照内完成(经 querier 的 ReadTx:并发采集写入下,summary/compare/
+// 各图/会话排行与 index.html 的总量及明细互相一致),渲染闭包为纯内存构建。
+// singleLen 是原始日期参数的粒度(8/6/4=单日/单月/单年,0=区间);
 // providerAliases 为 [provider_aliases] 配置,饼图 by-provider 与其他入口
 // 同口径合并供应商显示键。
 func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeLabel string, singleLen int, providerAliases map[string]string) ([]reportFile, error) {
@@ -150,7 +152,7 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 	if err != nil {
 		return nil, err
 	}
-	baseStartT, baseEndT := defaultCompareBase(curStartT, curEndT, singleLen)
+	baseStartT, baseEndT := querier.CompareBaseWindow(curStartT, curEndT, singleLen)
 
 	// 单维度图表:柱状(day/hour/weekday/month)+ 饼图(占比类维度)。
 	dimensionCharts := []struct {
@@ -168,11 +170,12 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 	}
 
 	// 同一读事务内取齐全部数据:数据截至/摘要/区间总量/热力矩阵/compare
-	// 基线与 8 张维度图表的聚合。
+	// 基线/8 张维度图表的聚合与会话明细行。
 	var fresh querier.Freshness
 	var summary string
 	var rangeStats, baseStats querier.RangeStats
 	var heatmapSVG string
+	var sessRows []querier.SessionRow
 	dimCharts := make(map[string]reportDimChart, len(dimensionCharts))
 	err = q.ReadTx(ctx, func(tq *querier.Querier) error {
 		var err error
@@ -190,11 +193,11 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 		}
 		subtitle := fmt.Sprintf("Total %s tokens / %d requests",
 			querier.FormatTokens(rangeStats.Total.TotalTokens), rangeStats.Total.Requests)
-		if heatmapSVG, err = buildChartHeatmap(ctx, tq, dates, subtitle); err != nil {
+		if heatmapSVG, err = charts.Heatmap(ctx, tq, dates, subtitle); err != nil {
 			return err
 		}
 		// compare.txt 的基线窗口聚合(缺省基线规则与 compare 命令完全一致,
-		// 窗口推导见上方 defaultCompareBase);当前窗口总量复用 rangeStats。
+		// 窗口推导见 querier.CompareBaseWindow);当前窗口总量复用 rangeStats。
 		if baseStats, err = tq.StatsBetween(ctx, baseStartT.Format("2006-01-02"), baseEndT.Format("2006-01-02")); err != nil {
 			return err
 		}
@@ -208,6 +211,10 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 				return err
 			}
 			dimCharts[dc.by] = reportDimChart{rows: rows, totals: totals}
+		}
+		// index.html 的 Top sessions 与上方图表共用同一快照。
+		if sessRows, err = tq.SessionRows(ctx, dates); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -240,49 +247,41 @@ func reportFiles(ctx context.Context, q *querier.Querier, dates []string, rangeL
 		}},
 		{name: "heatmap.svg", render: func() (string, error) { return heatmapSVG, nil }},
 	}
+	// SVG 按文件名收拢供 index.html 内嵌,同时照旧产出各独立 .svg 文件。
+	svgs := map[string]string{"heatmap.svg": heatmapSVG}
 	for _, dc := range dimensionCharts {
-		by, pie, file := dc.by, dc.pie, dc.file
-		data := dimCharts[by]
-		sub := fmt.Sprintf("Total %s tokens / %d requests",
-			querier.FormatTokens(data.totals.TotalTokens), data.totals.Requests)
-		chartTitle := chartTitleFor(rangeLabel, by)
-		var svg string
-		if pie {
-			slices := make([]chartSlice, 0, len(data.rows))
-			colorIdx := 0
-			for _, row := range data.rows {
-				if row.Agg.TotalTokens <= 0 {
-					continue
-				}
-				label := row.Keys[0]
-				slices = append(slices, chartSlice{
-					label: label, value: row.Agg.TotalTokens,
-					hover: fmt.Sprintf("%s: %s tokens, %d requests", label,
-						querier.FormatTokens(row.Agg.TotalTokens), row.Agg.Requests),
-					color: piePalette[colorIdx%len(piePalette)],
-				})
-				colorIdx++
-			}
-			svg = buildPieSVG(chartTitle, sub, slices)
-		} else {
-			bars := make([]chartBar, 0, len(data.rows))
-			for _, row := range data.rows {
-				if len(row.Keys) != 1 {
-					continue
-				}
-				bars = append(bars, chartBar{
-					label: row.Keys[0],
-					value: row.Agg.TotalTokens,
-					hover: fmt.Sprintf("%s: %s tokens, %d requests", row.Keys[0],
-						querier.FormatTokens(row.Agg.TotalTokens), row.Agg.Requests),
-				})
-			}
-			svg = buildBarSVG(chartTitle, sub, bars)
-		}
+		chart := dimCharts[dc.by]
+		svg := charts.BuildDimensionSVG(dc.by, rangeLabel, dc.pie, chart.rows, chart.totals)
+		svgs[dc.file] = svg
 		files = append(files, reportFile{
-			name:   file,
+			name:   dc.file,
 			render: func() (string, error) { return svg, nil },
 		})
 	}
+
+	// index.html:自包含交互式报告页,内嵌全部 SVG 与两期对比/会话排行/
+	// 逐维度数据表(会话排行取 top 口径前 10,与 top 命令同源排序)。
+	top10 := querier.TruncateTopRows(querier.SortTopRows(sessRows), 10)
+	htmlDoc, err := buildReportHTML(reportHTMLInput{
+		rangeText: rangeLabel,
+		fresh:     fresh,
+		curStart:  dates[0],
+		curEnd:    dates[len(dates)-1],
+		baseStart: baseStartT.Format("2006-01-02"),
+		baseEnd:   baseEndT.Format("2006-01-02"),
+		cur:       rangeStats,
+		base:      baseStats,
+		dayRows:   dimCharts["day"].rows,
+		dimCharts: dimCharts,
+		svgs:      svgs,
+		topRows:   top10,
+	})
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, reportFile{
+		name:   "index.html",
+		render: func() (string, error) { return htmlDoc, nil },
+	})
 	return files, nil
 }

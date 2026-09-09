@@ -1,12 +1,12 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"github.com/YuLaiZ/token-usage/internal/charts"
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/fileutil"
@@ -89,21 +89,22 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 				return err
 			}
 			totals := rangeTotals.Total
-			title := chartTitleFor(rangeLabel, by)
+			title := charts.TitleFor(rangeLabel, by)
 			subtitle := fmt.Sprintf("Total %s tokens / %d requests",
 				querier.FormatTokens(totals.TotalTokens), totals.Requests)
 
 			// heatmap 分支直接消费热力矩阵(--by/--pie/--line 与其无关,不浪费聚合),
 			// 汇总行沿用同一聚合核的范围统计。
 			if heatmap {
-				svg, err := buildChartHeatmap(cmdContext(cmd), q, dates, subtitle)
+				svg, err := charts.Heatmap(cmdContext(cmd), q, dates, subtitle)
 				if err != nil {
 					return err
 				}
 				return writeChartOutput(cmd, outFlag, svg)
 			}
 
-			// 柱状/折线/饼图:复用维度聚合核,缺口日自动补零(day)或 total 降序
+			// 柱状/折线/饼图:复用维度聚合核与 charts 包的行→数据点转换
+			// (悬停文案单一来源),缺口日自动补零(day)或 total 降序
 			// (非时间维度的既有排序规则);provider 维度应用配置别名,与
 			// query/export/compare 的分组口径一致。
 			rows, _, err := q.AggregateDimensionView(cmdContext(cmd), dates, querier.DimensionView{
@@ -114,38 +115,14 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 			if err != nil {
 				return err
 			}
-			bars := make([]chartBar, 0, len(rows))
-			for _, row := range rows {
-				if len(row.Keys) != 1 {
-					continue
-				}
-				bars = append(bars, chartBar{
-					label: row.Keys[0],
-					value: row.Agg.TotalTokens,
-					hover: fmt.Sprintf("%s: %s tokens, %d requests", row.Keys[0],
-						querier.FormatTokens(row.Agg.TotalTokens), row.Agg.Requests),
-				})
-			}
 			var svg string
 			if line {
-				// 折线是时间轴趋势,标题与柱状图同形态(chartTitleFor 已含 by)。
-				svg = buildLineSVG(title, subtitle, bars)
+				// 折线是时间轴趋势,标题与柱状图同形态(TitleFor 已含 by)。
+				svg = charts.LineSVG(title, subtitle, charts.DimensionBars(rows))
 			} else if pie {
-				slices := make([]chartSlice, 0, len(bars))
-				colorIdx := 0
-				for _, bar := range bars {
-					if bar.value <= 0 {
-						continue
-					}
-					slices = append(slices, chartSlice{
-						label: bar.label, value: bar.value, hover: bar.hover,
-						color: piePalette[colorIdx%len(piePalette)],
-					})
-					colorIdx++
-				}
-				svg = buildPieSVG(title, subtitle, slices)
+				svg = charts.PieSVG(title, subtitle, charts.DimensionSlices(rows))
 			} else {
-				svg = buildBarSVG(title, subtitle, bars)
+				svg = charts.BarSVG(title, subtitle, charts.DimensionBars(rows))
 			}
 
 			return writeChartOutput(cmd, outFlag, svg)
@@ -158,28 +135,6 @@ func newChartCmdWithDeps(load func() (*config.Config, error), open func(string) 
 	cmd.Flags().Bool("line", false, ui.Bi("Render a line chart instead of a bar chart (requires a temporal --by: day/month/hour/weekday)", "渲染折线图而非柱状图（--by 须为时间维度：day/month/hour/weekday）"))
 	cmd.Flags().Bool("heatmap", false, ui.Bi("Render a weekday-by-hour heat matrix instead of a bar chart", "渲染星期×小时热力矩阵而非柱状图"))
 	return cmd
-}
-
-// buildChartHeatmap 组装星期×小时热力矩阵 SVG:复用维度聚合核的
-// weekday,hour 组合(矩阵交点缺失即零值),行列标签与终端 heatmap 一致
-// (ISO 周序星期、本机时区小时)。查询失败时返回错误——有效空数据本身
-// 返回完整零矩阵,吞错降级为空图会把查询错误伪装成无数据。
-func buildChartHeatmap(ctx context.Context, q *querier.Querier, dates []string, subtitle string) (string, error) {
-	m, err := q.HeatmapMatrix(ctx, dates)
-	if err != nil {
-		return "", err
-	}
-	return buildHeatmapSVG(
-		"Weekday x hour heatmap / 星期×小时热力图",
-		subtitle,
-		m.Weekdays, m.Hours,
-		func(wi, hi int) int64 {
-			if wi < len(m.Values) && hi < len(m.Values[wi]) {
-				return m.Values[wi][hi]
-			}
-			return 0
-		},
-	), nil
 }
 
 // writeChartOutput 输出 SVG:未指定 --out 时写 stdout,指定时原子写入文件
@@ -206,12 +161,3 @@ var piePaletteBlockedDimensions = map[string]bool{"day": true, "month": true, "h
 // lineTemporalDimensions 是 --line 允许的维度:折线表达时间趋势,把无关类别
 // (client/model/provider/project)用线段连接会产生误导性趋势。
 var lineTemporalDimensions = map[string]bool{"day": true, "month": true, "hour": true, "weekday": true}
-
-// chartTitleFor 统一柱状/折线/饼图标题:by=day(默认按日柱状)时仅区间,
-// 其余维度追加 " by <维度>" 与 report 包内图表命名一致。
-func chartTitleFor(rangeLabel, by string) string {
-	if by == "day" {
-		return "token-usage " + rangeLabel
-	}
-	return "token-usage " + rangeLabel + " by " + by
-}

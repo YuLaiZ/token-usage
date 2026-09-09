@@ -35,6 +35,10 @@ token-usage
 ├── chart [DATE|DATE-DATE]                # render usage as an SVG chart (--by dimension, --pie, --line, --heatmap)
 ├── watch [DATE|DATE-DATE]                # refresh the query output at a fixed interval (view selection matches query)
 ├── report [DATE|DATE-DATE] --out <dir>   # generate a full usage report bundle
+├── serve                                 # local read-only dashboard HTTP server (default 127.0.0.1:8619; foreground; --open, --addr)
+│   ├── start                             # run the same dashboard in the background (nginx-style; logs to serve.log)
+│   ├── status                            # show whether the background dashboard is running
+│   └── stop                              # stop the background dashboard
 ├── config                                # no arguments: open the interactive configuration TUI
 │   ├── show                              # output complete effective TOML (read-only, pure TOML)
 │   ├── get <key>
@@ -644,11 +648,13 @@ Estimates upcoming usage from recent daily averages. Windows exclude today (an u
 
 ```text
 token-usage forecast
+token-usage forecast --format json
 ```
 
 - `Last 7 days / 最近 7 天` and `Last 30 days / 最近 30 天` show each window's total, the daily average (window total divided by **active** days — days with data — using integer division), and the active-day fraction of the window.
 - `Next 7 days / 未来 7 天` and `Next 30 days / 未来 30 天` project that average linearly over the coming natural days, assuming activity continues at the same intensity. A window with no data shows `no data / 无数据` and its projection is omitted.
 - The command is read-only and prints the same K/M/B abbreviations as query.
+- `--format` selects `table` (default, unchanged) or `json`; invalid values are rejected before the configuration is loaded and the database is opened. The JSON contract aligns with `export --format json`: raw integers, two-space indentation with a trailing newline, and structs serialized in a stable field order. The top level carries `today_so_far` (`requests` and `total_tokens` only), `windows` (always two entries, `last_7_days` then `last_30_days`, each with `window`, `days`, `active_days`, `requests`, `total_tokens`, and `avg_per_active_day`; a window with no data reports `active_days: 0` and `avg_per_active_day: 0`), and `projections` (`next_7_days` then `next_30_days`, each with `window`, `days`, `based_on`, `avg_per_active_day`, and `estimate_tokens`, the average multiplied by the coming days). Window semantics match the table point for point: windows exclude today, and entries whose source window has no data are omitted from `projections` — when neither window has data, `projections` prints `[]`.
 
 ## compare
 
@@ -689,10 +695,11 @@ Behavior:
 Shows the heaviest sessions by total tokens: one framed table ranking sessions with rank number, Title, Client, Project, Duration, Requests, and Total.
 
 ```text
-token-usage top [DATE|DATE-DATE] [--limit N]
+token-usage top [DATE|DATE-DATE] [--limit N] [--format table|json]
 token-usage top
 token-usage top 20260901-20260907
 token-usage top 202609 --limit 20
+token-usage top 202609 --format json
 ```
 
 Behavior:
@@ -700,6 +707,7 @@ Behavior:
 - The date argument accepts the same forms as `query` (a day `YYYYMMDD`, a month `YYYYMM`, a year `YYYY` as a single arg, or an inclusive day/month range) and defaults to today; like `query`, the expansion is capped at 366 days.
 - Sessions are ranked by TotalTokens descending; ties are broken by Client ascending, then Title ascending, and full ties are ordered by the session's first message timestamp ascending, so the order is deterministic regardless of the order the database returns rows in.
 - `--limit` is the number of sessions to show, default 10, with no upper bound; values below 1 are rejected before the configuration is loaded and the database is opened.
+- `--format` selects `table` (default, unchanged) or `json`; invalid values are rejected before the configuration is loaded and the database is opened. The JSON contract aligns with `export --format json`: a top-level JSON array of session records in the same order as the table rows (after sorting and `--limit` truncation), two-space indentation with a trailing newline, and structs serialized in a stable field order. Each record carries `rank` (1-based, matching the table's rank column), the raw source values `client`/`project`/`title` (an empty `project` stays `""` — the `(uncategorized)` mapping is a table-rendering concern only), `first_ts`/`last_ts` as Unix-millisecond timestamps with `duration_ms` as their difference, and all seven raw-integer metrics `requests`, `fresh_input`, `output`, `cache_read`, `cache_create`, `reasoning`, `total` — a superset of the table's Requests/Total columns, with no K/M abbreviation. An empty result prints `[]` (JSON output has no `no data` early exit).
 - Duration is the session's request span — the difference between the last and first message timestamps within the range — rendered in the same format as the `query session` table (`<1s`, `5m 0s`, `1h 1m`, `2d 3h`).
 - An empty Project is displayed as `(uncategorized) / (未分类)`; Total reuses the same K/M/B abbreviations as query; the Title column is truncated at a 30 display-width cap like `query session`.
 - When there is no data, only the `Top sessions / 会话排行` title line and a `no data / 无数据` line are printed.
@@ -742,15 +750,60 @@ token-usage watch --once               # render a single frame and exit (pipe-fr
 
 ## report
 
-Generates a complete usage report bundle into a directory: a text summary, a usage comparison (`compare.txt`) whose default baseline is derived from the date argument's granularity exactly like `compare` (previous day for a day, previous calendar month for a month, previous calendar year for a year, equal-length preceding window for a range), per-dimension SVG charts (daily/hourly/weekday/monthly bars, client/model/provider/project pies), and the weekday-by-hour SVG heat matrix. All charts share the same aggregation core as the corresponding `query`/`chart` views.
+Generates a complete usage report bundle into a directory: a text summary, a usage comparison (`compare.txt`) whose default baseline is derived from the date argument's granularity exactly like `compare` (previous day for a day, previous calendar month for a month, previous calendar year for a year, equal-length preceding window for a range), per-dimension SVG charts (daily/hourly/weekday/monthly bars, client/model/provider/project pies), the weekday-by-hour SVG heat matrix, and `index.html`, a self-contained interactive bilingual report page (KPI overview, two-period comparison, all embedded charts, top sessions, per-dimension data tables, sortable tables, anchor navigation) with zero external resources — it opens offline with a double click and is the browsing entry point of the bundle. All charts share the same aggregation core as the corresponding `query`/`chart` views.
 
 ```bash
 token-usage report 20260901-20260930 --out september-report
 ```
 
 - `--out <dir>` is required; the directory is created when missing and each file is written atomically.
-- Files: `summary.txt`, `compare.txt`, `daily.svg`, `hourly.svg`, `weekday.svg`, `monthly.svg`, `by-client.svg`, `by-model.svg`, `by-provider.svg`, `by-project.svg`, `heatmap.svg`.
+- Files: `summary.txt`, `compare.txt`, `daily.svg`, `hourly.svg`, `weekday.svg`, `monthly.svg`, `by-client.svg`, `by-model.svg`, `by-provider.svg`, `by-project.svg`, `heatmap.svg`, `index.html`.
 - The date argument accepts the same forms as `query`/`collect` (defaults to today). The bundle does not include forecast projections — run `token-usage forecast` separately. Strictly read-only apart from writing the report bundle.
+
+## serve
+
+Starts a read-only local HTTP server that serves the built-in dashboard: the embedded HTML page at `/`, JSON endpoints (`/api/meta`, `/api/dashboard`), and SVG charts (`/api/chart/{kind}.svg`) rendered by the same chart core as the `chart`/`report` commands (identical titles, subtitles, and hover text). The server binds to `127.0.0.1:8619` by default and stops with Ctrl+C. Its HTTP data surface is strictly read-only — no CORS headers and no database or configuration writes; the only local files involved are the lifecycle state file `serve.json` (shared by the foreground and background forms) and `serve.log` for background runs. The same dashboard can also run in the background via `serve start` / `serve status` / `serve stop` (see the end of this section).
+
+```bash
+token-usage serve
+token-usage serve --open
+token-usage serve --addr 127.0.0.1:9000
+```
+
+- `--addr` changes the listen address (default `127.0.0.1:8619`). Binding a public address such as `0.0.0.0` **exposes your usage data to the local network** — the service is read-only but unauthenticated — so keep it on the loopback interface.
+- `--open` opens the dashboard in the default browser after startup; a failure to launch the browser is printed as a warning and the server keeps running.
+- Foreground and background runs share the same `serve.json` state file; if writing it fails at startup (e.g. a read-only data directory), the server exits with an error instead of serving untracked.
+- All data queries for one request share a single read snapshot, so totals, per-dimension rows, and session rows are mutually consistent under concurrent collection writes.
+
+| Endpoint | Parameters | Returns |
+|------|------|---------|
+| `GET /api/meta` | — | version, `min_date`/`max_date` (whole database), `data_through`, `last_collection`; the last three are `null` when absent |
+| `GET /api/dashboard` | `from`, `to` (`YYYY-MM-DD`; defaults to the 30 days ending today; span at most 366 days) | range, totals (integers, including `active_days`), compare (baseline window derived as in the `compare` command's range mode — an equal-length window ending the day before the range starts, or the previous day for a single-day range; carries base totals plus 8 pre-computed rows with display strings, signed changes, pos/neg change classes, and change % shown as `--` when the baseline is 0), forecast (fixed look-back windows mirroring the `forecast` command: `today_so_far` plus always 2 rows for the last 7/30 days — windows exclude today, averages divide by active days, estimates multiply the average by future days; display strings pre-computed, cells show `—` when a window has no data; independent of the `from`/`to` range), 8 fixed dimension row arrays (`day`/`hour`/`weekday`/`month`/`client`/`model`/`provider`/`project`), top 10 sessions, and `charts` — the 9 SVG documents (`day`/`hour`/`weekday`/`month`/`client`/`model`/`provider`/`project`/`heatmap`) rendered inside the same read snapshot as the totals, so a single refresh cannot mix snapshots; the embedded page consumes these, while `GET /api/chart/{kind}.svg` remains available for standalone retrieval |
+| `GET /api/chart/{kind}.svg` | same date parameters as `/api/dashboard`; `kind` ∈ `day`/`hour`/`weekday`/`month` (bars), `client`/`model`/`provider`/`project` (pies), `heatmap` | one SVG document (`image/svg+xml`) |
+| `GET /`, `GET /assets/…` | — | embedded HTML page and static assets (`Cache-Control: no-store`) |
+
+- Errors are uniform JSON `{"error":{"message":"…"}}`: `400` for invalid parameters, `404` for unknown chart kinds or assets, `500` for query failures.
+- Strictly read-only data surface: no CORS headers (same-origin use), no daemon interaction, and no database or configuration writes. The only local files involved are the lifecycle state file `serve.json` and the background log `serve.log`. Dimension rows are plain integers — K/M/B formatting is left to the frontend; `provider` rows apply `[provider_aliases]` exactly like the query views.
+
+### serve start / serve status / serve stop (background, nginx-style)
+
+The same dashboard can also run in the background, nginx-style: `serve start` spawns a detached child process and returns once the child reports ready, `serve status` inspects it, and `serve stop` stops it. The foreground `serve` command and the background child share the same state file and both remove it on graceful stop, so `status`/`stop` apply to either instance.
+
+```bash
+token-usage serve start
+token-usage serve start --addr 127.0.0.1:9000
+token-usage serve start --open
+token-usage serve status
+token-usage serve stop
+```
+
+- State file: `serve.json` in the data directory (`~/.token-usage/serve.json` by default), written atomically as `{"pid":…,"addr":…,"started_at":…}` as soon as the server finishes listening (the recorded `addr` is what is actually bound). It is removed automatically on graceful stop (Ctrl+C for the foreground, `serve stop` for the background); a file left behind by a crash or `SIGKILL` is cleaned up by the stale-state probes in `status`/`stop` and by the single-instance guard of the next `serve`/`serve start`. State transitions are serialized by a `serve-state.lock` file lock in the data directory, and stale cleanup is a conditional delete: a stale state is only removed while it still matches what was judged — if a new instance has already taken over, its fresh `serve.json` is never removed.
+- Log file: `serve.log` in the data directory (`~/.token-usage/serve.log` by default). Each `serve start` truncates it; the child's stdout and stderr both go there, in plain text (no terminal hyperlinks). A failed start attaches the last 10 log lines to the error message.
+- `serve start` reports and returns idempotently with exit code 0 when the recorded state still answers on `/api/meta` (already running — stop it first with `token-usage serve stop` to restart); state that no longer answers (stale) or is corrupt is removed and start proceeds. If the child does not become ready within 5s, start fails and points at the log tail. Concurrent `serve start` invocations are serialized by a `serve-start.lock` file lock in the data directory (start coordination only — a running instance is described by `serve.json` and held via the `serve.lock` lifecycle lock); a second start while another is still in progress exits non-zero with a retry hint.
+- `serve status` exits 0 for every state outcome (only unexpected I/O failures exit non-zero): when `/api/meta` answers it reports the URL, PID, and start time; otherwise (no answer, or a corrupt state file) it removes the stale or corrupt file and reports not running. State transitions are serialized by `serve-state.lock`; when the lock stays held past the bounded retry (a concurrent `status`/`stop` probing), the command exits non-zero with a busy hint — simply retry.
+- `serve stop` sends SIGTERM with a 3s graceful window and a SIGKILL fallback on Unix; on Windows it uses `taskkill /F` — Windows console processes have no cross-process graceful-stop channel, which is acceptable for a strictly read-only service. Success is judged solely by `/api/meta` no longer responding (the recorded PID may have been reused by an unrelated process, so the probe wins over the signal result — a failed signal delivery does not short-circuit the probe wait). The state file is removed only after the probe confirms shutdown (or when the server already fails to answer before signalling — stale or corrupt state is cleaned up). If the server still responds after the SIGKILL fallback (whether or not the kill itself reported an error), the command exits non-zero with the recorded URL and PID, keeps `serve.json` in place, and leaves the process/port for manual inspection. If a new instance takes over while the stop is in progress (the state file is replaced after the old instance went down), the command says so and routes the stop to the new instance instead of reporting the old one. Stopping an already-stopped server is an idempotent no-op that still exits 0.
+- Single-instance contract: at most one dashboard instance (foreground or background) runs at any time. A second `serve` — in either form, regardless of the address it asks for — is rejected by a single-instance guard before listening: it prints the running instance's URL and PID and exits 0 idempotently (stop it first with `token-usage serve stop`); if another instance is caught mid-startup, the guard fails with a retry hint instead. The serving process holds a `serve.lock` lifecycle lock in the data directory for its whole lifetime. Because the guard runs before listening, a same-port conflict with a running instance never surfaces as a listen failure — a listen failure only remains possible when the requested port is occupied by a process that left no `serve.json` record (an unrelated process). `serve status` / `serve stop` therefore always manage the one and only instance.
+- `--open` is honored by both forms: the foreground opens the browser after startup; `serve start` opens it only after the background server is confirmed up (a failure to launch the browser is a warning either way).
 
 ## update
 

@@ -74,3 +74,35 @@ func DateBounds(dates []string) (string, string) {
 	}
 	return first, last
 }
+
+// DateSpan 返回全库 messages 的最小/最大日期(YYYY-MM-DD,字典序即时间序):
+// 全库视角的数据边界,与 Freshness 的「随日期参数过滤」口径互补。库中无
+// 消息数据时 found=false 且两日期为空串。
+func (q *Querier) DateSpan(ctx context.Context) (minDate, maxDate string, found bool, err error) {
+	if _, err := q.readyContext(ctx); err != nil {
+		return "", "", false, err
+	}
+	const query = "SELECT COALESCE(MIN(date), ''), COALESCE(MAX(date), '') FROM messages"
+	var mn, mx string
+	if err := q.queryRowContext(ctx, query).Scan(&mn, &mx); err != nil {
+		return "", "", false, fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
+	}
+	if mn == "" {
+		return "", "", false, nil
+	}
+	return mn, mx, true, nil
+}
+
+// DataThrough 返回全库最大非零消息时间戳(Unix 毫秒):数据截至的全库口径,
+// 不随日期参数过滤;库中无带时间戳的消息时为 0。
+func (q *Querier) DataThrough(ctx context.Context) (int64, error) {
+	if _, err := q.readyContext(ctx); err != nil {
+		return 0, err
+	}
+	var maxTS int64
+	const query = "SELECT COALESCE(MAX(ts), 0) FROM messages WHERE ts > 0"
+	if err := q.queryRowContext(ctx, query).Scan(&maxTS); err != nil {
+		return 0, fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
+	}
+	return maxTS, nil
+}

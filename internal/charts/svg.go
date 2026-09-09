@@ -1,4 +1,7 @@
-package cli
+// Package charts 是柱状/折线/饼图/热力矩阵 SVG 的唯一构建实现:cli 的
+// chart/report 命令与 web 仪表板的 /api/chart 接口共用同一份几何、取色与
+// 悬停文案,防止多入口图表漂移。
+package charts
 
 import (
 	"fmt"
@@ -20,24 +23,24 @@ func (c chartCanvas) plotWidth() int   { return c.width - c.left - c.right }
 func (c chartCanvas) plotHeight() int  { return c.height - c.top - c.bottom }
 func (c chartCanvas) plotBottomY() int { return c.height - c.bottom }
 
-// defaultChartCanvas 是 chart 命令的默认画布:900x420,左侧留 Y 轴刻度,
+// defaultChartCanvas 是柱状/折线图的默认画布:900x420,左侧留 Y 轴刻度,
 // 顶部留标题与汇总两行,底部留 X 轴日期标签。
 func defaultChartCanvas() chartCanvas {
 	return chartCanvas{width: 900, height: 420, left: 70, right: 24, top: 64, bottom: 40}
 }
 
-// chartBar 是一根柱:标签(X 轴)、值(Y)与悬停提示(SVG 原生 <title>)。
-type chartBar struct {
-	label string
-	value int64
-	hover string
+// Bar 是一根柱(或折线图的一个点):标签(X 轴)、值(Y)与悬停提示(SVG 原生 <title>)。
+type Bar struct {
+	Label string
+	Value int64
+	Hover string
 }
 
-// buildBarSVG 生成按日柱状图的独立 SVG 文档(零外部依赖,浏览器/图片查看器
-// 直接打开):白色背景、标题与总计两行、Y 轴三条等分网格刻度、每根柱一个
-// 矩形(自带 <title> 悬停提示)与抽样 X 轴标签。bar 值可为 0(高度 0 不绘制
-// 矩形);bars 为空时绘制空坐标轴。
-func buildBarSVG(title, subtitle string, bars []chartBar) string {
+// BarSVG 生成柱状图的独立 SVG 文档(零外部依赖,浏览器/图片查看器直接打开):
+// 白色背景、标题与总计两行、Y 轴三条等分网格刻度、每根柱一个矩形(自带
+// <title> 悬停提示)与抽样 X 轴标签。bar 值可为 0(高度 0 不绘制矩形);
+// bars 为空时绘制空坐标轴。
+func BarSVG(title, subtitle string, bars []Bar) string {
 	c := defaultChartCanvas()
 	var b strings.Builder
 	fmt.Fprintf(&b, `<?xml version="1.0" encoding="UTF-8"?>`+"\n")
@@ -62,8 +65,8 @@ func buildBarSVG(title, subtitle string, bars []chartBar) string {
 	// 避免最高柱顶到绘图区上缘。
 	var maxVal int64
 	for _, bar := range bars {
-		if bar.value > maxVal {
-			maxVal = bar.value
+		if bar.Value > maxVal {
+			maxVal = bar.Value
 		}
 	}
 	yMax := yScaleMax(maxVal)
@@ -84,13 +87,13 @@ func buildBarSVG(title, subtitle string, bars []chartBar) string {
 			barW = 1
 		}
 		for i, bar := range bars {
-			if bar.value <= 0 || yMax == 0 {
+			if bar.Value <= 0 || yMax == 0 {
 				continue
 			}
-			h := int(float64(plotH) * float64(bar.value) / float64(yMax))
+			h := int(float64(plotH) * float64(bar.Value) / float64(yMax))
 			x := c.left + int(float64(i)*slot)
 			fmt.Fprintf(&b, "  <rect x=\"%d\" y=\"%d\" width=\"%d\" height=\"%d\" fill=\"#4a90d9\"><title>%s</title></rect>\n",
-				x, baseY-h, int(barW)+1, h, svgEscape(bar.hover))
+				x, baseY-h, int(barW)+1, h, svgEscape(bar.Hover))
 		}
 		// X 轴标签抽样:目标约 8 个,均匀取下标(含首尾);中心位置钳制在
 		// 画布内,避免首尾标签以 middle 锚点越出画布边缘被裁剪。
@@ -111,12 +114,12 @@ func buildBarSVG(title, subtitle string, bars []chartBar) string {
 	return b.String()
 }
 
-// buildLineSVG 生成时间趋势折线图的独立 SVG 文档:画布、坐标轴、Y 轴网格刻度
+// LineSVG 生成时间趋势折线图的独立 SVG 文档:画布、坐标轴、Y 轴网格刻度
 // 与抽样 X 轴标签同柱状图(同一比例映射);数据点以 polyline 连续连线,零值点
 // 仍参与连线保证折线连续,点数不超过 60 时逐点绘制带 <title> 悬停提示的圆点,
 // 更密的序列只画折线避免杂乱。全零数据折线贴 X 轴并跳过网格;points 为空时
 // 绘制空坐标轴。
-func buildLineSVG(title, subtitle string, points []chartBar) string {
+func LineSVG(title, subtitle string, points []Bar) string {
 	c := defaultChartCanvas()
 	var b strings.Builder
 	fmt.Fprintf(&b, `<?xml version="1.0" encoding="UTF-8"?>`+"\n")
@@ -141,8 +144,8 @@ func buildLineSVG(title, subtitle string, points []chartBar) string {
 	// 整数倍;全零数据网格与 X 轴重合,跳过仅留坐标轴。
 	var maxVal int64
 	for _, p := range points {
-		if p.value > maxVal {
-			maxVal = p.value
+		if p.Value > maxVal {
+			maxVal = p.Value
 		}
 	}
 	yMax := yScaleMax(maxVal)
@@ -164,7 +167,7 @@ func buildLineSVG(title, subtitle string, points []chartBar) string {
 			x := float64(c.left) + float64(i)*slot + slot/2
 			y := float64(baseY)
 			if yMax > 0 {
-				y -= float64(plotH) * float64(p.value) / float64(yMax)
+				y -= float64(plotH) * float64(p.Value) / float64(yMax)
 			}
 			coords = append(coords, fmt.Sprintf("%.1f,%.1f", x, y))
 		}
@@ -175,7 +178,7 @@ func buildLineSVG(title, subtitle string, points []chartBar) string {
 			for i, p := range points {
 				cx, cy, _ := strings.Cut(coords[i], ",")
 				fmt.Fprintf(&b, "  <circle cx=\"%s\" cy=\"%s\" r=\"2.5\" fill=\"#4a90d9\"><title>%s</title></circle>\n",
-					cx, cy, svgEscape(p.hover))
+					cx, cy, svgEscape(p.Hover))
 			}
 		}
 		// X 轴标签抽样与钳制:同柱状图,首尾标签不越出画布边缘。
@@ -203,7 +206,7 @@ type chartXLabel struct {
 }
 
 // xAxisLabels 从 bars 均匀抽样至多 max 个标签(恒含首尾),下标去重。
-func xAxisLabels(bars []chartBar, max int) []chartXLabel {
+func xAxisLabels(bars []Bar, max int) []chartXLabel {
 	if len(bars) == 0 {
 		return nil
 	}
@@ -213,7 +216,7 @@ func xAxisLabels(bars []chartBar, max int) []chartXLabel {
 	if len(bars) <= max {
 		out := make([]chartXLabel, len(bars))
 		for i, bar := range bars {
-			out[i] = chartXLabel{i, bar.label}
+			out[i] = chartXLabel{i, bar.Label}
 		}
 		return out
 	}
@@ -225,7 +228,7 @@ func xAxisLabels(bars []chartBar, max int) []chartXLabel {
 			continue
 		}
 		seen[idx] = true
-		out = append(out, chartXLabel{idx, bars[idx].label})
+		out = append(out, chartXLabel{idx, bars[idx].Label})
 	}
 	return out
 }
@@ -255,18 +258,18 @@ var piePalette = []string{
 	"#4fb0a5", "#d97ba6", "#8a9bab", "#c96f4a", "#7a9e5f",
 }
 
-// chartSlice 是一个饼图扇区:标签、值、悬停提示与取色。
-type chartSlice struct {
-	label string
-	value int64
-	hover string
-	color string
+// Slice 是一个饼图扇区:标签、值、悬停提示与取色。
+type Slice struct {
+	Label string
+	Value int64
+	Hover string
+	Color string
 }
 
-// buildPieSVG 生成占比饼图的独立 SVG 文档:左侧扇区(原生 path 圆弧),
+// PieSVG 生成占比饼图的独立 SVG 文档:左侧扇区(原生 path 圆弧),
 // 右侧图例(色块+标签+百分比)。slices 为空或总和为 0 时输出无数据文本,
 // 不绘制任何扇区。
-func buildPieSVG(title, subtitle string, slices []chartSlice) string {
+func PieSVG(title, subtitle string, slices []Slice) string {
 	c := chartCanvas{width: 760, height: 420, left: 24, right: 24, top: 64, bottom: 24}
 	// 图例逐项按 26px 下移,最后一项底缘为 70+26n px;非时间维度不限制
 	// 类别数,超出默认高度容纳量(12 项)时按图例需求扩高,避免高基数图例
@@ -288,7 +291,7 @@ func buildPieSVG(title, subtitle string, slices []chartSlice) string {
 	cx, cy, r := 240, 240, 150
 	var total int64
 	for _, sl := range slices {
-		total += sl.value
+		total += sl.Value
 	}
 	if total <= 0 {
 		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"14\" fill=\"#666\">%s</text>\n",
@@ -301,7 +304,7 @@ func buildPieSVG(title, subtitle string, slices []chartSlice) string {
 	const twoPi = 2 * 3.141592653589793
 	angle := -twoPi / 4
 	for i, sl := range slices {
-		frac := float64(sl.value) / float64(total)
+		frac := float64(sl.Value) / float64(total)
 		sweep := frac * twoPi
 		if sweep <= 0 {
 			continue
@@ -309,7 +312,7 @@ func buildPieSVG(title, subtitle string, slices []chartSlice) string {
 		// 单扇区独占全圆(100%)时 path 圆弧退化为零面积,退化为整圆。
 		if sweep >= twoPi-1e-9 {
 			fmt.Fprintf(&b, "  <circle cx=\"%d\" cy=\"%d\" r=\"%d\" fill=\"%s\"><title>%s</title></circle>\n",
-				cx, cy, r, sl.color, svgEscape(sl.hover))
+				cx, cy, r, sl.Color, svgEscape(sl.Hover))
 		} else {
 			x1 := float64(cx) + float64(r)*cos(angle)
 			y1 := float64(cy) + float64(r)*sin(angle)
@@ -320,13 +323,13 @@ func buildPieSVG(title, subtitle string, slices []chartSlice) string {
 				large = 1
 			}
 			fmt.Fprintf(&b, "  <path d=\"M %d %d L %.2f %.2f A %d %d 0 %d 1 %.2f %.2f Z\" fill=\"%s\"><title>%s</title></path>\n",
-				cx, cy, x1, y1, r, r, large, x2, y2, sl.color, svgEscape(sl.hover))
+				cx, cy, x1, y1, r, r, large, x2, y2, sl.Color, svgEscape(sl.Hover))
 		}
 		// 图例:色块 + 标签 + 百分比。
 		lx, ly := 460, 84+i*26
-		fmt.Fprintf(&b, "  <rect x=\"%d\" y=\"%d\" width=\"12\" height=\"12\" fill=\"%s\"/>\n", lx, ly, sl.color)
+		fmt.Fprintf(&b, "  <rect x=\"%d\" y=\"%d\" width=\"12\" height=\"12\" fill=\"%s\"/>\n", lx, ly, sl.Color)
 		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" font-family=\"monospace\" font-size=\"12\" fill=\"#333\">%s (%.1f%%)</text>\n",
-			lx+20, ly+10, svgEscape(sl.label), frac*100)
+			lx+20, ly+10, svgEscape(sl.Label), frac*100)
 		angle += sweep
 	}
 	b.WriteString("</svg>\n")
@@ -345,10 +348,10 @@ var heatFills = []string{
 	"#628fc0", "#4a79b2", "#3963a0", "#2b4f8c", "#1f3d6e",
 }
 
-// buildHeatmapSVG 渲染星期×小时热力矩阵:行=ISO 周序 7 星期,列=24 小时,
+// HeatmapSVG 渲染星期×小时热力矩阵:行=ISO 周序 7 星期,列=24 小时,
 // 格子取色按交点值相对最大值的 11 级渐变(0 级浅灰为无数据),每格带悬停
 // 提示(星期/小时/tokens)。行列由 weekdays/hours 与 values 回调按下标对应。
-func buildHeatmapSVG(title, subtitle string, weekdays, hours []string, values func(wi, hi int) int64) string {
+func HeatmapSVG(title, subtitle string, weekdays, hours []string, values func(wi, hi int) int64) string {
 	// 高度随星期行数动态收紧:头部 + 行数×格高 + 图例区 + 底边距。
 	c := chartCanvas{width: 860, left: 150, right: 24, top: 64, bottom: 24}
 	c.height = c.top + len(weekdays)*26 + 46 + c.bottom

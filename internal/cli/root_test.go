@@ -11,8 +11,8 @@ import (
 )
 
 // TestRootCommand_HasSubcommands 收口：root 必须列出且仅列出
-// collect/config/doctor/errors/export/query/restart/start/status/stop/update/version/help/completion/forecast/compare/top/chart/watch/report
-// 二十个用户可见子命令。
+// collect/config/doctor/errors/export/query/restart/start/status/stop/update/version/help/completion/forecast/compare/top/chart/watch/report/serve
+// 二十一个用户可见子命令。
 //
 // 这是 strict 集合断言：多余或缺失任一项均失败。newRootCmd 现在显式
 // InitDefaultHelpCmd/InitDefaultCompletionCmd（为改写双语 Short），因此
@@ -33,6 +33,7 @@ func TestRootCommand_HasSubcommands(t *testing.T) {
 		"chart":      true,
 		"watch":      true,
 		"report":     true,
+		"serve":      true,
 		"errors":     true,
 		"start":      true,
 		"status":     true,
@@ -60,7 +61,7 @@ func TestRootCommand_HasSubcommands(t *testing.T) {
 	}
 	for name := range got {
 		if !want[name] {
-			t.Errorf("unexpected user-visible subcommand %q at root (收口集合为 config/collect/query/export/doctor/forecast/compare/top/chart/watch/report/errors/start/status/stop/restart/update/version/help/completion)", name)
+			t.Errorf("unexpected user-visible subcommand %q at root (收口集合为 config/collect/query/export/doctor/forecast/compare/top/chart/watch/report/serve/errors/start/status/stop/restart/update/version/help/completion)", name)
 		}
 	}
 }
@@ -100,6 +101,24 @@ func TestRootCommand_HiddenInternalRun(t *testing.T) {
 		if sub.Name() == "_run" && !sub.Hidden {
 			t.Error("_run 必须保持 Hidden（用户侧 CLI 表面无 run）")
 		}
+	}
+}
+
+// TestRootCommand_HiddenServeRun _serve-run 是 serve start 拉起的后台仪表板
+// 子进程入口，必须 Hidden（用户侧 CLI 表面无 serve run），与 _run 的先例一致。
+func TestRootCommand_HiddenServeRun(t *testing.T) {
+	root := NewRootCmd()
+	found := false
+	for _, sub := range root.Commands() {
+		if sub.Name() == "_serve-run" {
+			found = true
+			if !sub.Hidden {
+				t.Error("_serve-run 必须保持 Hidden（用户侧 CLI 表面无 serve run）")
+			}
+		}
+	}
+	if !found {
+		t.Error("root 应注册 Hidden 的 _serve-run 内部命令")
 	}
 }
 

@@ -11,7 +11,7 @@ A local LLM usage analytics CLI. It collects token usage from the AI clients you
 - Collectors for Claude Code/Desktop, OpenCode, Codex, WorkBuddy, ZCode, and Zhipu-AutoClaw.
 - CC-Switch router attribution for the Claude family and Codex, backfilling the actual provider and model from proxy logs.
 - One-off commands or a real-time background monitoring daemon, with macOS launchd and Windows Registry autostart.
-- **Visual analytics built in.** Hourly and weekday distributions, a weekday-by-hour heat matrix, SVG bar/pie/line/heat charts, usage forecasts from recent averages, period-over-period comparisons, top-session rankings, a live watch mode, and a one-shot report bundle.
+- **Visual analytics built in.** Hourly and weekday distributions, a weekday-by-hour heat matrix, SVG bar/pie/line/heat charts, usage forecasts from recent averages, period-over-period comparisons, top-session rankings, a live watch mode, a one-shot report bundle, and a local dashboard server (`token-usage serve`) with an embedded HTML dashboard.
 - A pure-Go, single-binary CLI for macOS and Windows.
 
 ## Quick Start
@@ -144,12 +144,13 @@ token-usage query list
 | `export [view] [date]` | Export usage data as CSV or JSON to stdout. |
 | `errors [date]` | Show collection failures for a date or range (`--format json` emits machine-readable output). |
 | `doctor` | Run read-only health checks. |
-| `forecast` | Estimate upcoming usage from recent daily averages. |
+| `forecast` | Estimate upcoming usage from recent daily averages (`--format json` emits machine-readable output). |
 | `compare <range> [range2]` | Compare usage between two periods (two positional periods compared chronologically: the earlier one is the baseline and argument order does not matter; `--base` overrides the granularity-derived baseline: previous day for a day, previous calendar month for a month, previous calendar year for a year, equal-length preceding window for a range; `--by` splits per dimension member, `--format json` emits machine-readable output). |
-| `top [date]` | Show the heaviest sessions by total tokens (`--limit`, default 10). |
+| `top [date]` | Show the heaviest sessions by total tokens (`--limit`, default 10; `--format json` emits machine-readable output). |
 | `chart [date]` | Render usage as an SVG chart (`--by` dimension, `--pie`, `--line` for trend lines, `--heatmap`, `--out` to save). |
 | `watch [date]` | Refresh the `query` output at a fixed interval (`--once` for a single frame; view selection matches `query` — `--by` takes a built-in view or a configured view name, default view follows `query.default`). |
-| `report [date] --out <dir>` | Generate a full usage report bundle (summary, comparison, SVG charts). |
+| `report [date] --out <dir>` | Generate a full usage report bundle (summary, comparison, SVG charts, interactive HTML dashboard). |
+| `serve` | Start the local read-only dashboard server (foreground; `serve start/status/stop` for background, `--open` to launch a browser). |
 | `version` / `--version` | Show detailed / one-line version information. |
 | `start` / `status` / `stop` / `restart` | Control the background daemon. |
 | `completion <shell>` | Print a Bash, Zsh, Fish, or PowerShell completion script. |

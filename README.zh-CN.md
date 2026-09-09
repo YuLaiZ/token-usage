@@ -11,7 +11,7 @@
 - 支持 Claude Code/Desktop、OpenCode、Codex、WorkBuddy、ZCode 与 Zhipu-AutoClaw。
 - 支持 Claude 系列与 Codex 的 CC-Switch router 归因：通过代理日志回填实际 provider/model。
 - 可单次执行，也可使用实时后台监控守护进程；支持 macOS launchd 与 Windows 注册表自启。
-- 内建可视化分析：按小时/星期分布、星期×小时热力矩阵、SVG 柱状/折线/饼图/热力图、按近期日均估算未来用量、两期环比对比、最重会话排行、实时监视模式，以及一键报告包。
+- 内建可视化分析：按小时/星期分布、星期×小时热力矩阵、SVG 柱状/折线/饼图/热力图、按近期日均估算未来用量、两期环比对比、最重会话排行、实时监视模式、一键报告包，以及本地仪表板服务（`token-usage serve`，内嵌 HTML 仪表板）。
 - 纯 Go 单二进制 CLI，支持 macOS 和 Windows。
 
 ## 快速开始
@@ -144,12 +144,13 @@ token-usage query list
 | `export [view] [date]` | 将使用数据以 CSV 或 JSON 导出到 stdout。 |
 | `errors [日期]` | 查看某日期或区间的采集失败（`--format json` 输出机器可读结果）。 |
 | `doctor` | 运行只读健康检查。 |
-| `forecast` | 按近期日均估算即将到来的用量。 |
+| `forecast` | 按近期日均估算即将到来的用量（`--format json` 输出机器可读结果）。 |
 | `compare <range> [range2]` | 对比两个时间段的用量（两个位置参数按时间先后对比：早者为基线、参数顺序不影响结果；`--base` 显式指定基线，缺省按参数粒度自动推导：单日对前一天、单月对上一个日历月、单年对上一个日历年、区间对前置等长窗口；`--by` 按维度成员对比，`--format json` 输出机器可读结果）。 |
-| `top [日期]` | 显示总用量最重的会话排行（`--limit`，默认 10）。 |
+| `top [日期]` | 显示总用量最重的会话排行（`--limit`，默认 10；`--format json` 输出机器可读结果）。 |
 | `chart [日期]` | 将用量渲染为 SVG 图表（`--by` 维度、`--pie`、`--line` 趋势线、`--heatmap`、`--out` 保存）。 |
 | `watch [日期]` | 以固定间隔刷新 `query` 输出（`--once` 单帧；视图选择与 `query` 一致——`--by` 接受内置视图或已配置视图名，缺省跟随 `query.default`）。 |
-| `report [日期] --out <目录>` | 生成完整用量报告包（摘要、对比 + SVG 图表）。 |
+| `report [日期] --out <目录>` | 生成完整用量报告包（摘要、对比 + SVG 图表 + 交互式 HTML 仪表板）。 |
+| `serve` | 启动本地只读仪表板服务（前台运行；`serve start/status/stop` 管理后台实例，`--open` 自动开浏览器）。 |
 | `version` / `--version` | 查看多行详细 / 单行简要的版本信息。 |
 | `start` / `status` / `stop` / `restart` | 控制后台守护进程。 |
 | `completion <shell>` | 输出 Bash、Zsh、Fish 或 PowerShell 的补全脚本。 |

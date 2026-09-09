@@ -48,6 +48,8 @@ func newRootCmd(info buildinfo.Info) *cobra.Command {
 		newChartCmd(),
 		newWatchCmd(),
 		newReportCmd(),
+		newServeCmd(info),
+		newServeRunCmd(info.Version),
 		newUpdateCmd(info),
 		newInternalRunCmd(),
 		newUpdateHelperCmd(),
