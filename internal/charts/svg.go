@@ -37,7 +37,7 @@ type Bar struct {
 }
 
 // BarSVG 生成柱状图的独立 SVG 文档(零外部依赖,浏览器/图片查看器直接打开):
-// 白色背景、标题与总计两行、Y 轴三条等分网格刻度、每根柱一个矩形(自带
+// 深色背景(#131a22)、标题与总计两行、Y 轴三条等分网格刻度、每根柱一个矩形(自带
 // <title> 悬停提示)与抽样 X 轴标签。bar 值可为 0(高度 0 不绘制矩形);
 // bars 为空时绘制空坐标轴。
 func BarSVG(title, subtitle string, bars []Bar) string {
@@ -47,18 +47,18 @@ func BarSVG(title, subtitle string, bars []Bar) string {
 	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">`+"\n",
 		c.width, c.height, c.width, c.height)
 	fmt.Fprintf(&b, "  <title>%s</title>\n", svgEscape(title))
-	fmt.Fprintf(&b, "  <rect width=\"%d\" height=\"%d\" fill=\"#ffffff\"/>\n", c.width, c.height)
-	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"26\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"16\" fill=\"#222\">%s</text>\n",
+	fmt.Fprintf(&b, "  <rect width=\"%d\" height=\"%d\" fill=\"#131a22\"/>\n", c.width, c.height)
+	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"26\" text-anchor=\"middle\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"16\" fill=\"#dee8f2\">%s</text>\n",
 		c.width/2, svgEscape(title))
-	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"48\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"12\" fill=\"#555\">%s</text>\n",
+	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"48\" text-anchor=\"middle\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"12\" fill=\"#8ca0b4\">%s</text>\n",
 		c.width/2, svgEscape(subtitle))
 
 	plotW, plotH := c.plotWidth(), c.plotHeight()
 	baseY := c.plotBottomY()
 	// 坐标轴。
-	fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#999\"/>\n",
+	fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#31435a\"/>\n",
 		c.left, baseY-plotH, c.left, baseY)
-	fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#999\"/>\n",
+	fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#31435a\"/>\n",
 		c.left, baseY, c.left+plotW, baseY)
 
 	// Y 轴最大值与三条等分网格:取 max 向上取整到「1/3 最大值」的整数倍,
@@ -74,9 +74,9 @@ func BarSVG(title, subtitle string, bars []Bar) string {
 	for i := 1; maxVal > 0 && i <= 3; i++ {
 		v := yMax / 3 * int64(i)
 		y := baseY - int(float64(plotH)*float64(v)/float64(yMax))
-		fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#eee\"/>\n",
+		fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#223041\"/>\n",
 			c.left, y, c.left+plotW, y)
-		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"end\" font-family=\"monospace\" font-size=\"11\" fill=\"#666\">%s</text>\n",
+		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"end\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"11\" fill=\"#7f92a4\">%s</text>\n",
 			c.left-6, y+4, querier.FormatTokens(v))
 	}
 
@@ -92,7 +92,7 @@ func BarSVG(title, subtitle string, bars []Bar) string {
 			}
 			h := int(float64(plotH) * float64(bar.Value) / float64(yMax))
 			x := c.left + int(float64(i)*slot)
-			fmt.Fprintf(&b, "  <rect x=\"%d\" y=\"%d\" width=\"%d\" height=\"%d\" fill=\"#4a90d9\"><title>%s</title></rect>\n",
+			fmt.Fprintf(&b, "  <rect x=\"%d\" y=\"%d\" width=\"%d\" height=\"%d\" fill=\"#5cc8ff\"><title>%s</title></rect>\n",
 				x, baseY-h, int(barW)+1, h, svgEscape(bar.Hover))
 		}
 		// X 轴标签抽样:目标约 8 个,均匀取下标(含首尾);中心位置钳制在
@@ -106,7 +106,7 @@ func BarSVG(title, subtitle string, bars []Bar) string {
 			if x > c.width-34 {
 				x = c.width - 34
 			}
-			fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"10\" fill=\"#666\">%s</text>\n",
+			fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"middle\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"10\" fill=\"#7f92a4\">%s</text>\n",
 				x, baseY+14, svgEscape(l.text))
 		}
 	}
@@ -126,18 +126,18 @@ func LineSVG(title, subtitle string, points []Bar) string {
 	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">`+"\n",
 		c.width, c.height, c.width, c.height)
 	fmt.Fprintf(&b, "  <title>%s</title>\n", svgEscape(title))
-	fmt.Fprintf(&b, "  <rect width=\"%d\" height=\"%d\" fill=\"#ffffff\"/>\n", c.width, c.height)
-	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"26\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"16\" fill=\"#222\">%s</text>\n",
+	fmt.Fprintf(&b, "  <rect width=\"%d\" height=\"%d\" fill=\"#131a22\"/>\n", c.width, c.height)
+	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"26\" text-anchor=\"middle\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"16\" fill=\"#dee8f2\">%s</text>\n",
 		c.width/2, svgEscape(title))
-	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"48\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"12\" fill=\"#555\">%s</text>\n",
+	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"48\" text-anchor=\"middle\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"12\" fill=\"#8ca0b4\">%s</text>\n",
 		c.width/2, svgEscape(subtitle))
 
 	plotW, plotH := c.plotWidth(), c.plotHeight()
 	baseY := c.plotBottomY()
 	// 坐标轴。
-	fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#999\"/>\n",
+	fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#31435a\"/>\n",
 		c.left, baseY-plotH, c.left, baseY)
-	fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#999\"/>\n",
+	fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#31435a\"/>\n",
 		c.left, baseY, c.left+plotW, baseY)
 
 	// Y 轴最大值与三条等分网格:同柱状图取 max 向上取整到「1/3 最大值」的
@@ -152,9 +152,9 @@ func LineSVG(title, subtitle string, points []Bar) string {
 	for i := 1; maxVal > 0 && i <= 3; i++ {
 		v := yMax / 3 * int64(i)
 		y := baseY - int(float64(plotH)*float64(v)/float64(yMax))
-		fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#eee\"/>\n",
+		fmt.Fprintf(&b, "  <line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke=\"#223041\"/>\n",
 			c.left, y, c.left+plotW, y)
-		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"end\" font-family=\"monospace\" font-size=\"11\" fill=\"#666\">%s</text>\n",
+		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"end\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"11\" fill=\"#7f92a4\">%s</text>\n",
 			c.left-6, y+4, querier.FormatTokens(v))
 	}
 
@@ -171,13 +171,13 @@ func LineSVG(title, subtitle string, points []Bar) string {
 			}
 			coords = append(coords, fmt.Sprintf("%.1f,%.1f", x, y))
 		}
-		fmt.Fprintf(&b, "  <polyline fill=\"none\" stroke=\"#4a90d9\" stroke-width=\"2\" points=\"%s\"/>\n",
+		fmt.Fprintf(&b, "  <polyline fill=\"none\" stroke=\"#5cc8ff\" stroke-width=\"2\" points=\"%s\"/>\n",
 			strings.Join(coords, " "))
 		// 逐点悬停圆点:超过 60 点时只画折线,密集圆点会杂乱难读。
 		if len(points) <= 60 {
 			for i, p := range points {
 				cx, cy, _ := strings.Cut(coords[i], ",")
-				fmt.Fprintf(&b, "  <circle cx=\"%s\" cy=\"%s\" r=\"2.5\" fill=\"#4a90d9\"><title>%s</title></circle>\n",
+				fmt.Fprintf(&b, "  <circle cx=\"%s\" cy=\"%s\" r=\"2.5\" fill=\"#5cc8ff\"><title>%s</title></circle>\n",
 					cx, cy, svgEscape(p.Hover))
 			}
 		}
@@ -191,7 +191,7 @@ func LineSVG(title, subtitle string, points []Bar) string {
 			if x > c.width-34 {
 				x = c.width - 34
 			}
-			fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"10\" fill=\"#666\">%s</text>\n",
+			fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"middle\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"10\" fill=\"#7f92a4\">%s</text>\n",
 				x, baseY+14, svgEscape(l.text))
 		}
 	}
@@ -254,8 +254,8 @@ func svgEscape(s string) string {
 
 // piePalette 是饼图扇区的固定取色序列(10 色循环),顺序即维度值的排序位次。
 var piePalette = []string{
-	"#4a90d9", "#e07a5f", "#5faa64", "#b58fd8", "#d9a648",
-	"#4fb0a5", "#d97ba6", "#8a9bab", "#c96f4a", "#7a9e5f",
+	"#5cc8ff", "#ffb454", "#57d9a3", "#d98ce5", "#ff8a66",
+	"#7a9eff", "#ffd166", "#63d3ff", "#9ae6b4", "#f2789f",
 }
 
 // Slice 是一个饼图扇区:标签、值、悬停提示与取色。
@@ -282,10 +282,10 @@ func PieSVG(title, subtitle string, slices []Slice) string {
 	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">`+"\n",
 		c.width, c.height, c.width, c.height)
 	fmt.Fprintf(&b, "  <title>%s</title>\n", svgEscape(title))
-	fmt.Fprintf(&b, "  <rect width=\"%d\" height=\"%d\" fill=\"#ffffff\"/>\n", c.width, c.height)
-	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"26\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"16\" fill=\"#222\">%s</text>\n",
+	fmt.Fprintf(&b, "  <rect width=\"%d\" height=\"%d\" fill=\"#131a22\"/>\n", c.width, c.height)
+	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"26\" text-anchor=\"middle\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"16\" fill=\"#dee8f2\">%s</text>\n",
 		c.width/2, svgEscape(title))
-	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"48\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"12\" fill=\"#555\">%s</text>\n",
+	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"48\" text-anchor=\"middle\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"12\" fill=\"#8ca0b4\">%s</text>\n",
 		c.width/2, svgEscape(subtitle))
 
 	cx, cy, r := 240, 240, 150
@@ -294,7 +294,7 @@ func PieSVG(title, subtitle string, slices []Slice) string {
 		total += sl.Value
 	}
 	if total <= 0 {
-		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"14\" fill=\"#666\">%s</text>\n",
+		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"middle\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"14\" fill=\"#7f92a4\">%s</text>\n",
 			cx, cy, svgEscape(ui.Bi("no data", "无数据")))
 		b.WriteString("</svg>\n")
 		return b.String()
@@ -328,7 +328,7 @@ func PieSVG(title, subtitle string, slices []Slice) string {
 		// 图例:色块 + 标签 + 百分比。
 		lx, ly := 460, 84+i*26
 		fmt.Fprintf(&b, "  <rect x=\"%d\" y=\"%d\" width=\"12\" height=\"12\" fill=\"%s\"/>\n", lx, ly, sl.Color)
-		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" font-family=\"monospace\" font-size=\"12\" fill=\"#333\">%s (%.1f%%)</text>\n",
+		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"12\" fill=\"#8ca0b4\">%s (%.1f%%)</text>\n",
 			lx+20, ly+10, svgEscape(sl.Label), frac*100)
 		angle += sweep
 	}
@@ -340,16 +340,16 @@ func PieSVG(title, subtitle string, slices []Slice) string {
 func cos(x float64) float64 { return math.Cos(x) }
 func sin(x float64) float64 { return math.Sin(x) }
 
-// heatFills 是 SVG 热力格子的 11 级取色(下标 0..10):0 级为无数据的浅灰,
-// 1..10 级为浅到深的单色渐变,对应 querier 热力的「0 值 + 9 级」且 SVG 侧
-// 有值至少 1 级(浅色可见,与终端空格语义区分)。
+// heatFills 是 SVG 热力格子的 11 级取色(下标 0..10):0 级为无数据的底色
+// 深蓝灰,1..10 级为深蓝到浅青的单色渐变(值越大越亮),对应 querier 热力的
+// 「0 值 + 9 级」且 SVG 侧有值至少 1 级(与终端空格语义区分)。
 var heatFills = []string{
-	"#f2f4f7", "#e3eaf4", "#d3dfef", "#b9cfe6", "#9cbcd9", "#7ea5cc",
-	"#628fc0", "#4a79b2", "#3963a0", "#2b4f8c", "#1f3d6e",
+	"#141c26", "#12324a", "#1b4d6e", "#26719c", "#3898c6", "#45a9d4",
+	"#5cc8ff", "#79d4ff", "#96e0ff", "#b3ebff", "#d0f5ff",
 }
 
 // HeatmapSVG 渲染星期×小时热力矩阵:行=ISO 周序 7 星期,列=24 小时,
-// 格子取色按交点值相对最大值的 11 级渐变(0 级浅灰为无数据),每格带悬停
+// 格子取色按交点值相对最大值的 11 级渐变(0 级底色为无数据),每格带悬停
 // 提示(星期/小时/tokens)。行列由 weekdays/hours 与 values 回调按下标对应。
 func HeatmapSVG(title, subtitle string, weekdays, hours []string, values func(wi, hi int) int64) string {
 	// 高度随星期行数动态收紧:头部 + 行数×格高 + 图例区 + 底边距。
@@ -360,15 +360,15 @@ func HeatmapSVG(title, subtitle string, weekdays, hours []string, values func(wi
 	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">`+"\n",
 		c.width, c.height, c.width, c.height)
 	fmt.Fprintf(&b, "  <title>%s</title>\n", svgEscape(title))
-	fmt.Fprintf(&b, "  <rect width=\"%d\" height=\"%d\" fill=\"#ffffff\"/>\n", c.width, c.height)
-	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"26\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"16\" fill=\"#222\">%s</text>\n",
+	fmt.Fprintf(&b, "  <rect width=\"%d\" height=\"%d\" fill=\"#131a22\"/>\n", c.width, c.height)
+	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"26\" text-anchor=\"middle\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"16\" fill=\"#dee8f2\">%s</text>\n",
 		c.width/2, svgEscape(title))
-	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"48\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"12\" fill=\"#555\">%s</text>\n",
+	fmt.Fprintf(&b, "  <text x=\"%d\" y=\"48\" text-anchor=\"middle\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"12\" fill=\"#8ca0b4\">%s</text>\n",
 		c.width/2, svgEscape(subtitle))
 
 	if len(hours) == 0 || len(weekdays) == 0 {
 		// 空矩阵(无数据):只输出标题,不绘制网格。
-		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"14\" fill=\"#666\">%s</text>\n",
+		fmt.Fprintf(&b, "  <text x=\"%d\" y=\"%d\" text-anchor=\"middle\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"14\" fill=\"#7f92a4\">%s</text>\n",
 			c.width/2, c.height/2, svgEscape(ui.Bi("no data", "无数据")))
 		b.WriteString("</svg>\n")
 		return b.String()
@@ -389,17 +389,17 @@ func HeatmapSVG(title, subtitle string, weekdays, hours []string, values func(wi
 	}
 
 	// 列头:每 2 小时标注一次,避免拥挤。
-	fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"10\" fill=\"#666\">%s</text>\n",
+	fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" text-anchor=\"middle\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"10\" fill=\"#7f92a4\">%s</text>\n",
 		originX+float64(0)*cellW+cellW/2, originY-6, svgEscape(hours[0]))
 	for hi := 2; hi < len(hours); hi += 2 {
-		fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" text-anchor=\"middle\" font-family=\"monospace\" font-size=\"10\" fill=\"#666\">%s</text>\n",
+		fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" text-anchor=\"middle\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"10\" fill=\"#7f92a4\">%s</text>\n",
 			originX+float64(hi)*cellW+cellW/2, originY-6, svgEscape(hours[hi]))
 	}
 
 	// 级数折算复用 querier.HeatLevel(0..9):0 值(缺失交点)取 heatFills[0]
-	// 最浅灰,有值交点取 2..11 档(与终端空格语义区分,SVG 用浅色可见);
+	// 无数据底色,有值交点取 2..11 档(与终端空格语义区分,深底上以亮色渐进);
 	// 相对占比再小的正值也至少取最低正值档 heatFills[2],不得折算回
-	// 无数据灰。
+	// 无数据底色。
 	fill := func(v int64) string {
 		if v == 0 {
 			return heatFills[0]
@@ -413,7 +413,7 @@ func HeatmapSVG(title, subtitle string, weekdays, hours []string, values func(wi
 
 	for wi, wd := range weekdays {
 		y := originY + float64(wi)*cellH
-		fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" text-anchor=\"end\" font-family=\"monospace\" font-size=\"11\" fill=\"#333\">%s</text>\n",
+		fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" text-anchor=\"end\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"11\" fill=\"#8ca0b4\">%s</text>\n",
 			originX-8, y+cellH/2+4, svgEscape(wd))
 		for hi, h := range hours {
 			v := values(wi, hi)
@@ -426,12 +426,12 @@ func HeatmapSVG(title, subtitle string, weekdays, hours []string, values func(wi
 
 	// 图例:色阶条(11 格)与两端标注,读者无需悬停即可理解取色语义。
 	legendY := originY + float64(len(weekdays))*cellH + 20
-	fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" font-family=\"monospace\" font-size=\"10\" fill=\"#666\">0</text>\n", originX, legendY+10)
+	fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"10\" fill=\"#7f92a4\">0</text>\n", originX, legendY+10)
 	for i := range heatFills {
 		fmt.Fprintf(&b, "  <rect x=\"%.0f\" y=\"%.0f\" width=\"18\" height=\"12\" fill=\"%s\"/>\n",
 			originX+14+float64(i)*20, legendY, heatFills[i])
 	}
-	fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" font-family=\"monospace\" font-size=\"10\" fill=\"#666\">%s</text>\n",
+	fmt.Fprintf(&b, "  <text x=\"%.0f\" y=\"%.0f\" font-family=\"ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace\" font-size=\"10\" fill=\"#7f92a4\">%s</text>\n",
 		originX+14+float64(len(heatFills))*20+6, legendY+10,
 		svgEscape(querier.FormatTokens(maxVal)))
 	b.WriteString("</svg>\n")

@@ -177,6 +177,18 @@ var metricColumnByID = map[string]metricColumn{
 	}},
 }
 
+// OutputColumnIDs 返回当前布局的指标 ID 序列（独立副本，ID 与 ui.Metric*
+// 常量一致），供 web 仪表板把指标条对齐 query 的可见输出列。
+func (q *Querier) OutputColumnIDs() []string {
+	columns := q.outputColumns
+	if len(columns) == 0 {
+		columns = ui.DefaultOutputColumns()
+	}
+	out := make([]string, len(columns))
+	copy(out, columns)
+	return out
+}
+
 // metricColumns 返回当前布局的描述符序列。布局仅经 New/SetOutputColumns
 // 写入且已校验,此处直接查找;未知 ID 属内部不变式破坏,panic 早暴露。
 func (q *Querier) metricColumns() []metricColumn {

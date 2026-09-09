@@ -110,48 +110,56 @@ type reportHTMLData struct {
 }
 
 // reportHTMLTemplate 是报告页模板:自包含单文件,样式取自 serve 仪表板的
-// 设计语言(等宽主导、白卡 6px 圆角、KPI 卡、面板、表格、details 折叠块),
-// 交互仅一段内联 vanilla JS(表格排序)。零外部资源:无外链、无外脚本、
-// 无字体/图片引用,可离线双击打开。
+// 设计语言(深色计量仪表台、全等宽字体、圆角卡片、KPI 卡、面板、表格、
+// details 折叠块;内嵌 SVG 图表同为深色底,二者同底色无缝拼接),
+// 交互为一段内联 vanilla JS(表格排序 + 数据表一键导出 CSV,按当前排序
+// 所见行、data-v 精确整数,与 serve 仪表板同一导出口径)。零外部资源:
+// 无外链、无外脚本、无字体/图片引用,可离线双击打开。
 const reportHTMLTemplate = `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>{{.Title}}</title>
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0nIzEzMWEyMicvPjxyZWN0IHg9JzYnIHk9JzE1JyB3aWR0aD0nNScgaGVpZ2h0PScxMScgcng9JzEuNScgZmlsbD0nIzVjYzhmZicvPjxyZWN0IHg9JzEzLjUnIHk9JzknIHdpZHRoPSc1JyBoZWlnaHQ9JzE3JyByeD0nMS41JyBmaWxsPScjZmZiNDU0Jy8+PHJlY3QgeD0nMjEnIHk9JzUnIHdpZHRoPSc1JyBoZWlnaHQ9JzIxJyByeD0nMS41JyBmaWxsPScjNTdkOWEzJy8+PC9zdmc+">
 <style>
-:root{--paper:#f6f8fa;--panel:#fff;--ink:#1c2733;--muted:#5f6b7a;--line:#dce3ea;--accent:#4a90d9;--pos:#5faa64;--neg:#e07a5f;--mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,"Liberation Mono",monospace;--sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+:root{--bg:#0c1117;--surface:#131a22;--surface-2:#182129;--line:#223041;--line-strong:#31435a;--ink:#dee8f2;--muted:#8ca0b4;--faint:#5b6e80;--accent:#5cc8ff;--pos:#57d9a3;--neg:#ff8a7a;--mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,"Liberation Mono",monospace}
 *{box-sizing:border-box}
-html{scroll-behavior:smooth}
-body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.65 var(--sans)}
-.wrap{max-width:1180px;margin:0 auto;padding:0 24px}
-.topbar{position:sticky;top:0;z-index:10;background:rgba(246,248,250,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(8px)}
-.bar-inner{display:flex;align-items:center;gap:16px;min-height:56px;flex-wrap:wrap;padding:6px 0}
-.brand{font-family:var(--mono);font-weight:700;font-size:13px;white-space:nowrap}
-.sec-nav{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
-.sec-nav a{font-family:var(--mono);font-size:12px;color:var(--muted);text-decoration:none;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:4px 10px}
-.sec-nav a:hover{color:var(--accent);border-color:var(--accent)}
-main{padding:28px 0 0}
-.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px}
-.kpi{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 16px}
-.kpi .label{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
-.kpi .label .zh{text-transform:none;letter-spacing:0}
-.kpi .value{font-family:var(--mono);font-size:22px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:4px;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.kpi .sub{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-section{margin:32px 0}
-h2{font-family:var(--mono);font-size:15px;font-weight:700;margin:0 0 14px;padding-left:10px;border-left:3px solid var(--accent);line-height:1.3}
-h2 .zh{color:var(--muted);font-weight:400}
-.meta{font-family:var(--mono);font-size:12px;color:var(--muted);margin:0 0 16px}
+html{scroll-behavior:smooth;scroll-padding-top:76px}
+body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 var(--mono);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1240px;margin:0 auto;padding:0 22px}
+.muted{color:var(--muted)}
+.topbar{position:sticky;top:0;z-index:10;background:rgba(12,17,23,.88);border-bottom:1px solid var(--line);backdrop-filter:blur(10px)}
+.bar-inner{display:flex;align-items:center;gap:18px;min-height:52px;flex-wrap:wrap;padding:8px 22px}
+.brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:13.5px;letter-spacing:.02em;white-space:nowrap}
+.brand::before{content:"";width:9px;height:9px;border-radius:2px;background:linear-gradient(135deg,var(--accent) 0%,#7a9eff 100%);box-shadow:0 0 8px rgba(92,200,255,.55)}
+.sec-nav{display:flex;gap:10px;flex-wrap:wrap;margin-left:auto}
+.sec-nav a{font-size:11.5px;color:var(--muted);text-decoration:none;letter-spacing:.03em}
+.sec-nav a:hover,.sec-nav a.active{color:var(--accent)}
+main{padding:26px 0 0}
+section{margin:34px 0}
+h2{display:flex;align-items:baseline;gap:10px;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;margin:0 0 14px;line-height:1.3}
+h2::before{content:"";width:14px;height:3px;border-radius:2px;background:var(--accent);align-self:center}
+h2 .zh{color:var(--muted);font-weight:400;letter-spacing:.02em;text-transform:none}
+.meta{font-size:11px;color:var(--muted);margin:0 0 16px}
 .meta b{color:var(--ink);font-weight:600}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px 18px}
-.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
-@media (max-width:860px){.grid{grid-template-columns:1fr}}
-.chart{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px;min-height:120px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 16px}
+.kpi .label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+.kpi .label .zh{text-transform:none;letter-spacing:0}
+.kpi .value{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em;margin-top:5px;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kpi .sub{font-size:10.5px;color:var(--faint);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+@media (max-width:900px){.grid{grid-template-columns:1fr}}
+.chart{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px;min-height:120px}
 .chart svg{display:block;width:100%;height:auto}
-table{border-collapse:collapse;width:100%;font-family:var(--mono);font-size:12.5px;font-variant-numeric:tabular-nums}
-th{font-size:11px;font-weight:600;color:var(--muted);text-align:left;border-bottom:1px solid var(--line);padding:6px 10px;white-space:nowrap}
-td{padding:6px 10px;border-bottom:1px solid #edf1f5;vertical-align:top}
-tbody tr:hover td{background:#f2f6fa}
+table{border-collapse:collapse;width:100%;font-size:12px;font-variant-numeric:tabular-nums}
+th{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);text-align:left;border-bottom:1px solid var(--line);padding:8px 10px;white-space:nowrap}
+td{padding:7px 10px;border-bottom:1px solid rgba(34,48,65,.5);vertical-align:top}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:rgba(92,200,255,.045)}
 th.num,td.num{text-align:right}
 td.num{white-space:nowrap}
 th.sortable{cursor:pointer;user-select:none}
@@ -159,16 +167,25 @@ th.sortable::after{content:"↕";opacity:.25;margin-left:4px}
 th.sorted-asc::after{content:"↑";opacity:1;color:var(--accent)}
 th.sorted-desc::after{content:"↓";opacity:1;color:var(--accent)}
 .pos{color:var(--pos)}.neg{color:var(--neg)}
+td .bar-track{display:block;height:6px;border-radius:3px;background:var(--surface-2);overflow:hidden;min-width:90px}
 td.title-cell{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.muted{color:var(--muted)}
-details.data-block{background:var(--panel);border:1px solid var(--line);border-radius:6px;margin-bottom:10px}
-details.data-block summary{font-family:var(--mono);font-size:13px;font-weight:600;cursor:pointer;padding:10px 16px;list-style:none;display:flex;justify-content:space-between;align-items:center}
+.export-btn{
+  font-family:var(--mono);font-size:10px;color:var(--muted);
+  background:none;border:1px solid var(--line);border-radius:6px;
+  padding:2px 9px;cursor:pointer;
+}
+.export-btn:hover{color:var(--accent);border-color:var(--accent)}
+.export-btn:disabled{opacity:.35;cursor:not-allowed}
+.sum-right{display:inline-flex;align-items:center;gap:10px}
+details.data-block{background:var(--surface);border:1px solid var(--line);border-radius:10px;margin-bottom:10px;overflow:hidden}
+details.data-block summary{font-size:12px;font-weight:600;cursor:pointer;padding:11px 16px;list-style:none;display:flex;justify-content:space-between;align-items:center}
+details.data-block summary:hover{background:var(--surface-2)}
 details.data-block summary::-webkit-details-marker{display:none}
-details.data-block summary::after{content:"+";color:var(--muted);font-weight:400}
+details.data-block summary::after{content:"+";color:var(--faint);font-weight:400}
 details.data-block[open] summary::after{content:"–"}
 details.data-block .tbl-wrap{padding:0 16px 12px;overflow-x:auto}
-.empty{font-family:var(--mono);font-size:12.5px;color:var(--muted)}
-footer{margin:48px 0 32px;text-align:center;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.empty{font-size:11.5px;color:var(--faint);text-align:center;padding:18px 0}
+footer{margin:52px 0 34px;text-align:center;font-size:10.5px;color:var(--faint)}
 </style>
 </head>
 <body>
@@ -238,7 +255,7 @@ footer{margin:48px 0 32px;text-align:center;font-family:var(--mono);font-size:11
 <section id="data">
   <h2>Data tables <span class="zh">/ 数据明细</span></h2>
   {{range .DataBlocks}}<details class="data-block">
-    <summary><span>{{.Name}} <span class="zh">{{.NameZh}}</span></span><span class="muted">{{.Count}} rows</span></summary>
+    <summary><span>{{.Name}} <span class="zh">{{.NameZh}}</span></span><span class="sum-right"><button type="button" class="export-btn" data-dim="{{.Name}}" data-range="{{$.RangeText}}"{{if eq .Count 0}} disabled{{end}}>Export CSV</button><span class="muted">{{.Count}} rows</span></span></summary>
     <div class="tbl-wrap">
       <table>
         <thead><tr><th class="sortable">Key</th>{{range .Headers}}<th class="sortable num">{{.}}</th>{{end}}</tr></thead>
@@ -256,6 +273,23 @@ footer{margin:48px 0 32px;text-align:center;font-family:var(--mono);font-size:11
 <script>
 (function(){
   'use strict';
+  // 锚点导航随滚动高亮:以顶栏下方判定线取当前章节。轮询而非监听 scroll:
+  // 嵌 WebView/自动化环境下 scroll 事件可能不派发、rAF 可能被节流,而
+  // 400ms 一次的 6 次几何读取开销可忽略且在任何环境都能工作。
+  var navLinks = Array.prototype.slice.call(document.querySelectorAll('.sec-nav a'));
+  var navIds = navLinks.map(function(a){ return a.getAttribute('href').slice(1); });
+  function navUpdate(){
+    var current = navIds[0];
+    navIds.forEach(function(id){
+      var sec = document.getElementById(id);
+      if (sec && sec.getBoundingClientRect().top <= 90) current = id;
+    });
+    navLinks.forEach(function(a){
+      a.classList.toggle('active', a.getAttribute('href').slice(1) === current);
+    });
+  }
+  navUpdate();
+  setInterval(navUpdate, 400);
   document.querySelectorAll('th.sortable').forEach(function(th){
     th.addEventListener('click', function(){
       var table = th.closest('table');
@@ -281,6 +315,46 @@ footer{margin:48px 0 32px;text-align:center;font-family:var(--mono);font-size:11
         return desc ? -cmp : cmp;
       });
       rows.forEach(function(row){ tbody.appendChild(row); });
+    });
+  });
+
+  // 数据明细一键导出 CSV:按当前排序所见行,键列取文本、数值列取 data-v
+  // 精确整数(与 serve 仪表板同一导出口径);RFC 4180 转义,CRLF + UTF-8 BOM。
+  function csvField(v){
+    var s = String(v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  document.querySelectorAll('.export-btn').forEach(function(btn){
+    btn.addEventListener('click', function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      var block = btn.closest('.data-block');
+      if (!block) return;
+      var tbody = block.querySelector('tbody');
+      if (!tbody || tbody.querySelector('td.empty')) return;
+      var table = block.querySelector('table');
+      var headers = Array.prototype.map.call(table.querySelectorAll('thead th'), function(th){
+        return th.textContent.trim();
+      });
+      var lines = [headers.map(csvField).join(',')];
+      Array.prototype.forEach.call(tbody.rows, function(tr){
+        var fields = [];
+        Array.prototype.forEach.call(tr.cells, function(td, i){
+          fields.push(csvField(i === 0 ? td.textContent.trim() : (td.dataset.v || '0')));
+        });
+        lines.push(fields.join(','));
+      });
+      var dim = (btn.dataset.dim || 'view').toLowerCase().replace(/[^a-z0-9]+/gi, '-');
+      var range = (btn.dataset.range || '').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '');
+      var blob = new Blob(['\uFEFF' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'token-usage-' + dim + '-' + range + '.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
     });
   });
 })();

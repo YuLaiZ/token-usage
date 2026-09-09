@@ -38,7 +38,8 @@ token-usage
 ├── serve                                 # 本地只读仪表板 HTTP 服务（默认 127.0.0.1:8619；前台运行；--open、--addr）
 │   ├── start                             # 同一仪表板转入后台运行（nginx 风格；日志写入 serve.log）
 │   ├── status                            # 查看后台仪表板运行状态
-│   └── stop                              # 停止后台仪表板
+│   ├── stop                              # 停止后台仪表板
+│   └── restart                           # 停止运行中的仪表板并拉起全新后台实例
 ├── config                                # 无参数：打开交互式配置 TUI
 │   ├── show                              # 输出完整 effective TOML（只读、纯 TOML）
 │   ├── get <key>
@@ -727,7 +728,7 @@ token-usage chart 20260901-20260930 --line         # 日趋势折线图（默认
 - 默认柱为逐日源 total，按日期升序；无数据日高度为零，每根柱带原生 `<title>` 悬停提示（当日 tokens 与请求数）。
 - `--by <维度>` 切换聚合维度（`client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday`）；非时间维度按总量降序。
 - `--pie` 渲染占比饼图而非柱状图，需 `--by` 指定非时间维度（按天切分饼图不可读）；扇区使用固定 10 色取色序列与百分比图例，100% 占比退化为整圆。
-- `--heatmap` 渲染星期×小时热力矩阵（ISO 周序 7 行、24 小时列、11 级灰蓝取色按最繁忙交点缩放、每格悬停提示）而非柱状图；数据源与 `query heatmap` 相同，与 `--pie`、`--line` 互斥。
+- `--heatmap` 渲染星期×小时热力矩阵（ISO 周序 7 行、24 小时列、11 级深蓝到浅青取色（深色底）按最繁忙交点缩放、每格悬停提示）而非柱状图；数据源与 `query heatmap` 相同，与 `--pie`、`--line` 互斥。
 - `--line` 渲染 tokens 趋势折线而非柱状图，需 `--by` 指定时间维度（`day`、`month`、`hour`、`weekday`）；把无关类别用线段连接会产生误导性趋势。点数不超过 60 时逐点带悬停提示，更密的序列只画折线；与 `--pie`、`--heatmap` 互斥。
 - 头部显示区间及其 total tokens / 请求数；柱状图 Y 轴按三条等分网格以 K/M/B 缩写标注。
 - `--out <文件>` 原子写入（先写临时文件再换名）而非标准输出；日期参数与 `query`/`collect` 同形态。
@@ -751,7 +752,7 @@ token-usage watch --once               # 只渲染一帧后退出（对管道友
 
 ## report
 
-将完整用量报告包生成到目录：文本摘要、用量对比文本 `compare.txt`（缺省基线与 `compare` 命令一样按日期参数粒度推导：单日对前一天、单月对上一个日历月、单年对上一个日历年、区间对前置等长窗口）、各维度 SVG 图表（日/小时/星期/月柱状图，客户端/模型/供应商/项目占比饼图）、星期×小时 SVG 热力矩阵，以及 `index.html`——自包含交互式双语报告页（KPI 总览、两期对比、内嵌全部图表、Top sessions、逐维度数据表、表格排序、锚点导航），零外部资源可离线双击打开，是报告包的浏览入口。所有图表与对应的 `query`/`chart` 视图共用同一聚合核。
+将完整用量报告包生成到目录：文本摘要、用量对比文本 `compare.txt`（缺省基线与 `compare` 命令一样按日期参数粒度推导：单日对前一天、单月对上一个日历月、单年对上一个日历年、区间对前置等长窗口）、各维度 SVG 图表（日/小时/星期/月柱状图，客户端/模型/供应商/项目占比饼图）、星期×小时 SVG 热力矩阵，以及 `index.html`——自包含交互式双语报告页（KPI 总览、两期对比、内嵌全部图表、Top sessions、逐维度数据表、表格排序、逐表一键导出 CSV（按当前行序、精确整数、UTF-8 BOM）、锚点导航），零外部资源可离线双击打开，是报告包的浏览入口。所有图表与对应的 `query`/`chart` 视图共用同一聚合核。
 
 ```bash
 token-usage report 20260901-20260930 --out september-report
@@ -774,18 +775,19 @@ token-usage serve --addr 127.0.0.1:9000
 - `--addr` 修改监听地址（默认 `127.0.0.1:8619`）。绑定 `0.0.0.0` 等公网地址会**把统计数据暴露给局域网**——服务只读但无鉴权——请保持在回环接口上。
 - `--open` 在启动后用默认浏览器打开仪表板；打开失败仅打印警告，服务继续运行。
 - 单次请求的全部数据查询共享同一读快照，并发采集写入下 totals、各维度行与会话行互相一致。
+- 内嵌页面全部由前端按这些数值行自绘：KPI 卡（相对基线窗口的增减 chips）、对齐所配置 query 输出列的指标条（除已升格 KPI 卡的 requests/total/cache-hit 外的 token 类别列——默认布局即新输入/输出/缓存读/推理，布局含缓存写时才会出现该列）、堆叠/单系列柱状图（点击按天/按月柱条即聚焦对应区间；超过 92 天按天柱自动按 ISO 周聚合并停用钻取）、占比环形图一行四张、带行列合计的星期×小时热力矩阵（对齐 `query heatmap` 的尾行/尾列合计）、带 token 占比条与 CSV 导出的会话排行、逐维度数据表（可排序、一键导出 CSV——按当前行序、精确整数）、整行环比对比（左侧逐日对比曲线、右侧指标表）与整行预估、范围预设与自定义起止日期（首次进入默认 Today、跨刷新记忆）以及自动刷新。按天桶不足 2 个时隐藏按天维度图、按月桶不足 2 个时隐藏按月维度图，单日选区只保留按小时图（星期视图对单日无意义）并隐藏环比对比表——单桶形态不携带信息——KPI 增减 chips 仍指向基线窗口（单日即前一日）。
 
 | 接口 | 参数 | 返回 |
 |------|------|------|
 | `GET /api/meta` | — | 版本、`min_date`/`max_date`（全库）、`data_through`、`last_collection`；后三项缺数据时为 `null` |
-| `GET /api/dashboard` | `from`、`to`（`YYYY-MM-DD`；缺省为截至今天的 30 天；跨度至多 366 天） | 统计区间、totals（整数，含 `active_days`）、compare（基线窗口按 `compare` 命令区间模式推导——结束于区间开始日前一天的等长窗口，单日区间退化为前一天；含基线 totals 与 8 行预计算行：显示串、带符号变化、pos/neg 着色 class，基线为 0 时变化% 显示 `--`）、forecast（与 `forecast` 命令同口径的固定回看窗口：`today_so_far` 与恒 2 行的最近 7/30 天——窗口不含今天，日均按活跃天整数除法，预估为日均×未来天数；显示串预计算，窗口无数据时各格显示 `—`；不随 `from`/`to` 选区变化）、8 个固定维度行数组（`day`/`hour`/`weekday`/`month`/`client`/`model`/`provider`/`project`）、前 10 条会话，以及 `charts`——与总量同一读快照内渲染的 9 份 SVG 文档（`day`/`hour`/`weekday`/`month`/`client`/`model`/`provider`/`project`/`heatmap`），单次刷新不可能混用快照；内嵌页面消费该字段，`GET /api/chart/{kind}.svg` 仍可独立取图 |
+| `GET /api/dashboard` | `from`、`to`（`YYYY-MM-DD`；缺省为截至今天的 30 天；跨度至多 366 天） | 统计区间、totals（整数，含 `active_days`）、compare（基线窗口按 `compare` 命令区间模式推导——结束于区间开始日前一天的等长窗口，单日区间退化为前一天；含基线 totals、8 行预计算行（显示串、带符号变化、pos/neg 着色 class，基线为 0 时变化% 显示 `--`），以及 `daily`——基线窗口逐日行（按窗口缺口填充、键即日期、纯整数，供前端绘制当前 vs 基线逐日对比曲线））、forecast（与 `forecast` 命令同口径的固定回看窗口：`today_so_far` 与恒 2 行的最近 7/30 天——窗口不含今天，日均按活跃天整数除法，预估为日均×未来天数；显示串预计算，窗口无数据时各格显示 `—`；不随 `from`/`to` 选区变化）、8 个固定维度行数组（`day`/`hour`/`weekday`/`month`/`client`/`model`/`provider`/`project`）、前 10 条会话，以及 `heatmap`——7×24 的 token 矩阵（`weekdays` 为 ISO 周序周一在首、`hours` 为 `00:00`..`23:00`、`values` 为 7×24 数组，空交点为 `0`），与总量同一读快照读取，单次刷新不可能混用快照；内嵌页面全部图表由前端按这些数值行自绘，`GET /api/chart/{kind}.svg` 仍可独立取图 |
 | `GET /api/chart/{kind}.svg` | 日期参数与 `/api/dashboard` 一致；`kind` ∈ `day`/`hour`/`weekday`/`month`（柱状）、`client`/`model`/`provider`/`project`（饼图）、`heatmap` | 一份 SVG 文档（`image/svg+xml`） |
 | `GET /`、`GET /assets/…` | — | 内嵌 HTML 页面与静态资产（`Cache-Control: no-store`） |
 
 - 错误统一为 JSON `{"error":{"message":"…"}}`：参数非法 `400`、图表类别或资产不存在 `404`、查询失败 `500`。
 - 数据面严格只读：不设 CORS 头（按同源使用）、不与守护进程交互、不写数据库与配置。本地仅涉及生命周期状态文件 `serve.json` 与后台日志 `serve.log`。维度行为原始整数，K/M/B 格式化交给前端；`provider` 行与查询视图一样应用 `[provider_aliases]`。
 
-### serve start / serve status / serve stop（后台，nginx 风格）
+### serve start / serve status / serve stop / serve restart（后台，nginx 风格）
 
 同一仪表板也可以 nginx 风格在后台运行：`serve start` 拉起一个 detached 子进程并在其报告就绪后返回，`serve status` 查看状态，`serve stop` 停止。前台 `serve` 与后台子进程共用同一状态文件，且都在优雅停止时删除它，因此 `status`/`stop` 对两种实例一视同仁。
 
@@ -795,16 +797,18 @@ token-usage serve start --addr 127.0.0.1:9000
 token-usage serve start --open
 token-usage serve status
 token-usage serve stop
+token-usage serve restart
 ```
 
 - 状态文件：数据目录下的 `serve.json`（默认 `~/.token-usage/serve.json`），在服务完成监听时原子写出 `{"pid":…,"addr":…,"started_at":…}`（记录的 `addr` 为实际绑定的地址）。优雅停止时自动删除（前台按 Ctrl+C、后台经 `serve stop`）；崩溃或 `SIGKILL` 遗留的文件由 `status`/`stop` 的陈旧探活与下一次 `serve`/`serve start` 的单实例守卫兜底删除。状态迁移由数据目录下的 `serve-state.lock` 文件锁串行化，陈旧清理为条件删除：只有与判定所据内容仍一致的陈旧状态才会被移除——若新实例已接管，其新写出的 `serve.json` 绝不会被误删。
 - 日志文件：数据目录下的 `serve.log`（默认 `~/.token-usage/serve.log`）。每次 `serve start` 都会截断；子进程的 stdout 与 stderr 都写入其中，为纯文本（无终端超链接）。启动失败时错误信息会附带日志末尾 10 行。
-- `serve start` 在已记录状态于 `/api/meta` 上仍有响应时报告已在运行并以退出码 0 幂等返回（要重启请先用 `token-usage serve stop` 停止）；不再响应的陈旧状态与损坏的状态文件会被删除并照常启动。子进程 5s 内未就绪则启动失败，并指向日志末尾。并发的 `serve start` 由数据目录下的 `serve-start.lock` 文件锁串行化（仅用于启动协调——运行中的实例由 `serve.json` 描述、以 `serve.lock` 生命周期锁持有）：另一个 start 尚在执行时，第二个以非零退出码报错并提示稍后重试。
+- `serve start` 在已记录状态于 `/api/meta` 上仍有响应时报告已在运行并以退出码 0 幂等返回（要重启请用 `token-usage serve restart`，或先 `token-usage serve stop` 停止）；不再响应的陈旧状态与损坏的状态文件会被删除并照常启动。子进程 5s 内未就绪则启动失败，并指向日志末尾。并发的 `serve start` 由数据目录下的 `serve-start.lock` 文件锁串行化（仅用于启动协调——运行中的实例由 `serve.json` 描述、以 `serve.lock` 生命周期锁持有）：另一个 start 尚在执行时，第二个以非零退出码报错并提示稍后重试。
 - `serve status` 的所有状态结论均以退出码 0 返回（只有意外的 I/O 失败才非零）：`/api/meta` 有响应时报告 URL、PID 与启动时间；无响应（或状态文件损坏无法辨识）时删除陈旧/损坏文件并报告未运行。状态迁移由 `serve-state.lock` 串行化；锁被并发的 `status`/`stop` 持有超过带界重试窗口时，命令以非零退出并提示稍后重试。
 - `serve stop` 在 Unix 上发送 SIGTERM 并给 3s 优雅窗口，超时以 SIGKILL 兜底；在 Windows 上使用 `taskkill /F`——Windows 控制台进程没有跨进程的优雅停止通道，对严格只读的服务可接受。是否停止成功仅以 `/api/meta` 不再响应为准（记录的 PID 可能已被无关进程复用，探活的结论优先于信号发送结果——信号投递失败也不会短路探活等待）。只有探活确认下线（或信号发送前就无响应——陈旧/损坏状态被清理）才会删除状态文件。若强杀兜底后服务仍在响应（无论强杀本身是否报错），命令以非零退出码报错并列出记录的 URL 与 PID，保留 `serve.json` 供人工检查进程/端口。若停止进行期间有新实例接管（旧实例下线后状态文件被改写），命令会如实说明并转而停止新实例，而不是报告旧实例已停止。对已停止的服务重复执行是幂等空操作，退出码仍为 0。
-- 单实例契约：任意时刻至多一个仪表板实例（前台或后台）在运行。第二个 `serve`——无论前台后台、无论请求哪个地址——都会在监听之前被单实例守卫拒绝：打印运行中实例的 URL 与 PID 并以退出码 0 幂等返回（要重启请先用 `token-usage serve stop` 停止）；若撞上另一实例正在启动的窗口，守卫报错并提示稍后重试。服务主体在其整个生命周期持有数据目录下的 `serve.lock` 生命周期锁。由于守卫先于监听执行，与运行中实例的同端口冲突不会再表现为监听失败——监听失败只剩「请求的端口被一个没有留下 `serve.json` 记录的无关进程占用」这一种场景。因此 `serve status` / `serve stop` 始终管理唯一实例。
+- `serve restart` 以与 `serve stop` 完全相同的编排停止运行中的实例（以探活为判据；前台 Ctrl+C 会话同样会被优雅停止），随后以与 `serve start` 完全相同的编排拉起全新后台实例（`--addr`/`--open` 作用于新实例）。当前没有实例在运行时等价于直接启动。若运行中的实例在 SIGKILL 兜底后仍在响应，重启以非零错误中止——旧实例继续服务，此类场景请用 `serve stop` 排查。
+- 单实例契约：任意时刻至多一个仪表板实例（前台或后台）在运行。第二个 `serve`——无论前台后台、无论请求哪个地址——都会在监听之前被单实例守卫拒绝：打印运行中实例的 URL 与 PID 并以退出码 0 幂等返回（要重启请用 `token-usage serve restart`，或先 `token-usage serve stop` 停止）；若撞上另一实例正在启动的窗口，守卫报错并提示稍后重试。服务主体在其整个生命周期持有数据目录下的 `serve.lock` 生命周期锁。由于守卫先于监听执行，与运行中实例的同端口冲突不会再表现为监听失败——监听失败只剩「请求的端口被一个没有留下 `serve.json` 记录的无关进程占用」这一种场景。因此 `serve status` / `serve stop` 始终管理唯一实例。
 - 前台与后台共用状态文件：启动时写入失败（如数据目录只读）服务即报错退出，不做无状态运行。
-- 两种形态都支持 `--open`：前台在启动后打开浏览器；`serve start` 仅在确认后台服务就绪后打开（无论哪种形态，打开浏览器失败都只是警告）。
+- 三种形态都支持 `--open`：前台在启动后打开浏览器；`serve start` / `serve restart` 仅在确认后台服务就绪后打开（无论哪种形态，打开浏览器失败都只是警告）。
 
 ## update
 

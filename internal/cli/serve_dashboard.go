@@ -26,7 +26,6 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/daemon"
 	"github.com/YuLaiZ/token-usage/internal/db"
-	"github.com/YuLaiZ/token-usage/internal/querier"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 	"github.com/YuLaiZ/token-usage/internal/web"
 )
@@ -92,13 +91,22 @@ func serveLifecycleGuard(dataDir string, out io.Writer, probeTimeout time.Durati
 
 	// 生命周期锁：挡住「另一个实例正在启动」的瞬时竞态（它已通过状态文件
 	// 之前的检查但尚未写出 serve.json）。锁由调用方持有至服务退出。
-	lock, ok := daemon.AcquireLock(filepath.Join(dataDir, serveLifecycleLockFile))
-	if !ok {
-		return nil, false, errors.New(ui.Bi(
-			"another serve instance is starting; retry in a moment",
-			"另一个 serve 实例正在启动，请稍后重试"))
+	// 获取失败按带界重试处理:探活判定下线只说明端口已关闭,前一个实例可能
+	// 尚未走完退出路径(释放 serve.lock 前的收尾),serve restart 的 start 段
+	// 恰好落在这一瞬态窗口;窗口耗尽仍是真互斥失败,报错退出。
+	deadline := time.Now().Add(serveLifecycleLockWait)
+	for {
+		lock, ok := daemon.AcquireLock(filepath.Join(dataDir, serveLifecycleLockFile))
+		if ok {
+			return lock, true, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, false, errors.New(ui.Bi(
+				"another serve instance is starting; retry in a moment",
+				"另一个 serve 实例正在启动，请稍后重试"))
+		}
+		time.Sleep(serveLifecycleLockRetry)
 	}
-	return lock, true, nil
 }
 
 // serveDashboard 完成一次前台或后台的仪表板服务生命周期：单实例守卫（serve.json
@@ -182,7 +190,19 @@ func serveDashboard(cfg *config.Config, usageDB *db.DB, version, addr string, ou
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
 
-	handler := web.NewServer(querier.New(usageDB), version, web.WithProviderAliases(cfg.ProviderAliases))
+	// 输出列布局:与 query 静态命令同一解析(query.output 配置 → 布局),
+	// 让仪表板的指标条对齐用户配置的可见列;布局非法时启动失败并把诊断
+	// 写入 serve.log(start 会附带日志尾),与静态命令的开库前错误同语义。
+	layout, err := staticTableOutputLayout(cfg)
+	if err != nil {
+		return err
+	}
+	q, err := newLayoutQuerier(usageDB, layout)
+	if err != nil {
+		return err
+	}
+
+	handler := web.NewServer(q, version, web.WithProviderAliases(cfg.ProviderAliases))
 	srv := &http.Server{Handler: handler}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()

@@ -192,11 +192,11 @@ func TestServeDashboard_ShapeAndOrder(t *testing.T) {
 
 	// 第一检:map 键集合精确匹配(多字段/少字段/拼错均失败)。
 	m := decodeJSON(t, rec)
-	assertKeys(t, "dashboard 顶层", m, "range", "totals", "compare", "forecast", "dimensions", "sessions", "charts")
+	assertKeys(t, "dashboard 顶层", m, "range", "totals", "compare", "forecast", "columns", "dimensions", "heatmap", "sessions")
 	assertKeys(t, "range", m["range"].(map[string]any), "from", "to")
 	assertKeys(t, "totals", m["totals"].(map[string]any),
 		"requests", "fresh_input", "output", "cache_read", "cache_create", "reasoning", "total", "active_days")
-	assertKeys(t, "compare", m["compare"].(map[string]any), "base_start", "base_end", "totals", "rows")
+	assertKeys(t, "compare", m["compare"].(map[string]any), "base_start", "base_end", "totals", "rows", "daily")
 	assertKeys(t, "compare.rows[0]", m["compare"].(map[string]any)["rows"].([]any)[0].(map[string]any),
 		"label", "current", "base", "change", "change_class", "change_pct")
 	assertKeys(t, "forecast", m["forecast"].(map[string]any), "today_so_far", "rows")
@@ -259,12 +259,37 @@ func TestServeDashboard_ShapeAndOrder(t *testing.T) {
 	if nonZero[1].Total != fx.todayRow.Total || nonZero[1].Requests != fx.todayRow.Requests {
 		t.Errorf("今日行应 %+v,实际 %+v", fx.todayRow, nonZero[1])
 	}
+	// columns 恒为 querier 布局的指标 ID 序列:夹具走 New 的默认布局,
+	// 与 ui.DefaultOutputColumns 同序同值(七列,不含 cache_create)。
+	if want := []string{"requests", "input", "output", "cache_read", "reasoning", "total", "cache_hit"}; !reflect.DeepEqual(resp.Columns, want) {
+		t.Errorf("columns 应为默认七列 %v,实际 %v", want, resp.Columns)
+	}
+
 	// hour/weekday 为固定刻度缺口填充:行数恰 24/7。
 	if len(resp.Dimensions["hour"]) != 24 {
 		t.Errorf("hour 维度应固定 24 行,实际 %d", len(resp.Dimensions["hour"]))
 	}
 	if len(resp.Dimensions["weekday"]) != 7 {
 		t.Errorf("weekday 维度应固定 7 行,实际 %d", len(resp.Dimensions["weekday"]))
+	}
+	// compare.daily 为基线窗口的逐日行(缺口填充):默认区间 to-29..to 的
+	// 基线为 to-59..to-30,行数恰 30、键严格升序;夹具数据只在今天与
+	// to-5,均落在当前区间内,基线窗口逐日全为 0。
+	if len(resp.Compare.Daily) != 30 {
+		t.Fatalf("compare.daily 应按基线窗口补零至 30 行,实际 %d", len(resp.Compare.Daily))
+	}
+	var dailySum int64
+	for i, row := range resp.Compare.Daily {
+		if row.Total != 0 {
+			t.Errorf("compare.daily[%d] 应为 0,实际 %d", i, row.Total)
+		}
+		dailySum += row.Total
+		if i > 0 && resp.Compare.Daily[i-1].Key >= row.Key {
+			t.Errorf("compare.daily 键应严格升序,位置 %d 出现 %s >= %s", i, resp.Compare.Daily[i-1].Key, row.Key)
+		}
+	}
+	if dailySum != resp.Compare.Totals.Total {
+		t.Errorf("compare.daily 总和应等于基线窗口总量 %d,实际 %d", resp.Compare.Totals.Total, dailySum)
 	}
 	// forecast 恒 2 行且标签顺序固定;夹具在两个回看窗口内恰有 5 天前的
 	// 999(1 活跃天):日均 999、预估 999×天数,与 forecast 命令整数除法
@@ -420,6 +445,33 @@ func TestServeDashboard_Compare_ExplicitRange(t *testing.T) {
 	// 基线窗口:1 请求 / 999 token / 1 活跃天。基线 totals 字段精确值同款断言。
 	if want := (totalsJSON{Requests: 1, Total: 999, ActiveDays: 1}); c.Totals != want {
 		t.Errorf("基线 totals 应 %+v,实际 %+v", want, c.Totals)
+	}
+	// compare.daily:基线窗口逐日行缺口填充至 3 行,键升序且恰为基线三天;
+	// 999 落在首行(today-5),其余两天为 0,总和等于基线总量。
+	if len(c.Daily) != 3 {
+		t.Fatalf("compare.daily 应按基线窗口补零至 3 行,实际 %d", len(c.Daily))
+	}
+	wantKeys := []string{
+		today.AddDate(0, 0, -5).Format("2006-01-02"),
+		today.AddDate(0, 0, -4).Format("2006-01-02"),
+		today.AddDate(0, 0, -3).Format("2006-01-02"),
+	}
+	var dailySum int64
+	for i, row := range c.Daily {
+		if row.Key != wantKeys[i] {
+			t.Errorf("compare.daily[%d].key 应为 %s,实际 %s", i, wantKeys[i], row.Key)
+		}
+		wantTotal := int64(0)
+		if i == 0 {
+			wantTotal = 999
+		}
+		if row.Total != wantTotal {
+			t.Errorf("compare.daily[%d].total 应为 %d,实际 %d", i, wantTotal, row.Total)
+		}
+		dailySum += row.Total
+	}
+	if dailySum != c.Totals.Total {
+		t.Errorf("compare.daily 总和应等于基线总量 %d,实际 %d", c.Totals.Total, dailySum)
 	}
 	// Requests 13 vs 1 → "+12"、pos、"+1200.0%"。
 	reqRow := c.Rows[1]
@@ -637,53 +689,90 @@ func TestServeDashboard_BadParams(t *testing.T) {
 	}
 }
 
-// TestServeDashboard_Charts:图表内嵌载荷的形态与同源一致性。charts 恒
-// 9 键(8 维度图 + heatmap),每个值为剥离 XML 序言的完整 SVG;heatmap 含
-// 热力图标题片段;charts["day"] 的标题含区间标签(from ~ to)、副标题含
-// Total 口径串(与 totals.TotalTokens 的 FormatTokens 一致),证明图表与
-// totals 同一读事务快照。
-func TestServeDashboard_Charts(t *testing.T) {
+// TestServeDashboard_Heatmap:/api/dashboard 的活动热力矩阵。矩阵恒 7×24,
+// 行=星期(ISO 周序周一在首)、列=小时("00:00".."23:00");数值与 totals
+// 同一读事务快照:今天 12 条消息(10:01..10:12)落在 10 点桶共 7800,
+// s12 的第二条(11:12)落在 11 点桶 200,5 天前消息(10:00)落在 10 点桶
+// 999,其余交点全为 0;全矩阵总和恰等于 totals.Total。
+func TestServeDashboard_Heatmap(t *testing.T) {
 	h, fx := newTestServer(t)
 	rec := doGet(h, "/api/dashboard")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("应 200,实际 %d:\n%s", rec.Code, rec.Body.String())
 	}
+
+	// 第一检:map 键集合精确匹配(多字段/少字段/拼错均失败)。
+	hm := decodeJSON(t, rec)["heatmap"].(map[string]any)
+	assertKeys(t, "heatmap", hm, "weekdays", "hours", "values")
+
+	// 第二检:结构体反序列化校验形状与数值。
 	var resp dashboardResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("结构体反序列化失败: %v", err)
 	}
-	chartsMap := resp.Charts
-	want := map[string]bool{
-		"day": true, "hour": true, "weekday": true, "month": true,
-		"client": true, "model": true, "provider": true, "project": true,
-		"heatmap": true,
+	hj := resp.Heatmap
+	if len(hj.Values) != 7 {
+		t.Fatalf("热力矩阵应 7 行(按星期),实际 %d", len(hj.Values))
 	}
-	got := make(map[string]bool, len(chartsMap))
-	for k := range chartsMap {
-		got[k] = true
+	if len(hj.Weekdays) != 7 {
+		t.Fatalf("星期行标签应 7 项,实际 %d", len(hj.Weekdays))
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("charts 应恰 9 个固定键,实际 %v", chartsMap)
+	if len(hj.Hours) != 24 || hj.Hours[0] != "00:00" || hj.Hours[23] != "23:00" {
+		t.Fatalf("小时列标签应为 00:00..23:00 共 24 项,实际 %v", hj.Hours)
 	}
-	for kind, svg := range chartsMap {
-		if !strings.HasPrefix(svg, "<svg") || !strings.Contains(svg, "</svg>") {
-			t.Errorf("charts[%s] 应为剥离序言的完整 SVG 文档:\n%s", kind, svg)
+	for wi, row := range hj.Values {
+		if len(row) != 24 {
+			t.Fatalf("热力矩阵第 %d 行应 24 列,实际 %d", wi, len(row))
 		}
 	}
-	// 热力图标题与 charts 包 HeatmapSVG 的固定标题同源,片段 "heatmap" 稳定。
-	if !strings.Contains(chartsMap["heatmap"], "heatmap") {
-		t.Errorf("charts[heatmap] 应含热力图标题片段:\n%s", chartsMap["heatmap"])
+	// 与夹具同源推导两天的星期行(ISO 周序:周一=0)。
+	today, err := time.ParseInLocation("2006-01-02", fx.maxDate, time.Local)
+	if err != nil {
+		t.Fatalf("maxDate 应为 YYYY-MM-DD: %v", err)
 	}
-	// 一致性:charts["day"] 与 /api/chart/day.svg 同构(rangeLabel 单日仅
-	// 日期、区间用 " ~ ";副标题 Total 口径取同一事务的区间汇总)。夹具
-	// 默认 30 天区间 from=to-29,标题应为 "token-usage <from> ~ <to>"。
-	if got := resp.Range.From + " ~ " + resp.Range.To; !strings.Contains(chartsMap["day"], got) {
-		t.Errorf("charts[day] 标题应含区间标签 %q:\n%s", got, chartsMap["day"])
+	old, err := time.ParseInLocation("2006-01-02", fx.minDate, time.Local)
+	if err != nil {
+		t.Fatalf("minDate 应为 YYYY-MM-DD: %v", err)
 	}
-	wantSubtitle := fmt.Sprintf("Total %s tokens / %d requests",
-		querier.FormatTokens(fx.totals.Total), fx.totals.Requests)
-	if !strings.Contains(chartsMap["day"], wantSubtitle) {
-		t.Errorf("charts[day] 副标题应含 %q(与 totals 同源):\n%s", wantSubtitle, chartsMap["day"])
+	todayRow, oldRow := int(today.Weekday()+6)%7, int(old.Weekday()+6)%7
+	wantCells := []struct {
+		wi, hi   int
+		want     int64
+		describe string
+	}{
+		{todayRow, 10, 7800, "今天 10 点桶(12 条消息)"},
+		{todayRow, 11, 200, "今天 11 点桶(s12 第二条)"},
+		{oldRow, 10, 999, "5 天前 10 点桶"},
+	}
+	for _, wc := range wantCells {
+		if got := hj.Values[wc.wi][wc.hi]; got != wc.want {
+			t.Errorf("%s 应为 %d,实际 %d", wc.describe, wc.want, got)
+		}
+	}
+	// 其余交点全为 0:置零两个非零桶所在星期行后整体求和应为 0。
+	var sum int64
+	for wi, row := range hj.Values {
+		for hi, v := range row {
+			if wi == todayRow && (hi == 10 || hi == 11) {
+				continue
+			}
+			if wi == oldRow && hi == 10 {
+				continue
+			}
+			sum += v
+		}
+	}
+	if sum != 0 {
+		t.Errorf("其余交点应全为 0,实际和 %d", sum)
+	}
+	// 同源一致性:全矩阵总和恰等于区间 totals.Total(同一读事务快照)。
+	for _, row := range hj.Values {
+		for _, v := range row {
+			sum += v
+		}
+	}
+	if sum != fx.totals.Total {
+		t.Errorf("矩阵总和应等于 totals.Total %d,实际 %d", fx.totals.Total, sum)
 	}
 }
 

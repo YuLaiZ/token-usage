@@ -33,7 +33,7 @@ func WithProviderAliases(m map[string]string) ServerOption {
 // NewServer 构造本地仪表板服务的 HTTP Handler。路由:
 //
 //	GET /api/meta              服务版本与数据边界
-//	GET /api/dashboard         区间汇总 + 8 维度行 + Top sessions + 9 张图表
+//	GET /api/dashboard         区间汇总 + 8 维度行 + 活动热力矩阵 + Top sessions
 //	GET /api/chart/{kind}.svg  单维度柱状/饼图与热力矩阵(独立取图接口)
 //	GET /                      内嵌仪表板首页
 //	GET /assets/               内嵌静态资产

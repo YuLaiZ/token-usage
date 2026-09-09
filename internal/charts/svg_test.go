@@ -294,7 +294,7 @@ func TestBuildLineSVG_ZeroDenseAndEmpty(t *testing.T) {
 			t.Errorf("全零数据折线应贴基线 %d,实际 %v", baseY, y)
 		}
 	}
-	if strings.Contains(zero, `stroke="#eee"`) {
+	if strings.Contains(zero, `stroke="#223041"`) {
 		t.Errorf("全零数据应跳过网格:\n%s", zero)
 	}
 
@@ -329,7 +329,7 @@ func TestBuildLineSVG_ZeroDenseAndEmpty(t *testing.T) {
 	if strings.Contains(empty, "<polyline") || strings.Contains(empty, "<circle") {
 		t.Errorf("空输入不应有折线与圆点:\n%s", empty)
 	}
-	if strings.Count(empty, `stroke="#999"`) != 2 {
+	if strings.Count(empty, `stroke="#31435a"`) != 2 {
 		t.Errorf("空输入应画两条坐标轴:\n%s", empty)
 	}
 }

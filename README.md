@@ -11,8 +11,10 @@ A local LLM usage analytics CLI. It collects token usage from the AI clients you
 - Collectors for Claude Code/Desktop, OpenCode, Codex, WorkBuddy, ZCode, and Zhipu-AutoClaw.
 - CC-Switch router attribution for the Claude family and Codex, backfilling the actual provider and model from proxy logs.
 - One-off commands or a real-time background monitoring daemon, with macOS launchd and Windows Registry autostart.
-- **Visual analytics built in.** Hourly and weekday distributions, a weekday-by-hour heat matrix, SVG bar/pie/line/heat charts, usage forecasts from recent averages, period-over-period comparisons, top-session rankings, a live watch mode, a one-shot report bundle, and a local dashboard server (`token-usage serve`) with an embedded HTML dashboard.
+- **Visual analytics built in.** Hourly and weekday distributions, a weekday-by-hour heat matrix, SVG bar/pie/line/heat charts, usage forecasts from recent averages, period-over-period comparisons, top-session rankings, a live watch mode, a one-shot report bundle, and a local dashboard server (`token-usage serve`) with an embedded interactive HTML dashboard (client-rendered charts, a weekday-by-hour heat matrix, one-click CSV export, and drill-down range picking).
 - A pure-Go, single-binary CLI for macOS and Windows.
+
+![token-usage serve dashboard](docs/images/dashboard.png)
 
 ## Quick Start
 
@@ -150,7 +152,7 @@ token-usage query list
 | `chart [date]` | Render usage as an SVG chart (`--by` dimension, `--pie`, `--line` for trend lines, `--heatmap`, `--out` to save). |
 | `watch [date]` | Refresh the `query` output at a fixed interval (`--once` for a single frame; view selection matches `query` — `--by` takes a built-in view or a configured view name, default view follows `query.default`). |
 | `report [date] --out <dir>` | Generate a full usage report bundle (summary, comparison, SVG charts, interactive HTML dashboard). |
-| `serve` | Start the local read-only dashboard server (foreground; `serve start/status/stop` for background, `--open` to launch a browser). |
+| `serve` | Start the local read-only dashboard server (foreground; `serve start/status/stop/restart` for background, `--open` to launch a browser). |
 | `version` / `--version` | Show detailed / one-line version information. |
 | `start` / `status` / `stop` / `restart` | Control the background daemon. |
 | `completion <shell>` | Print a Bash, Zsh, Fish, or PowerShell completion script. |

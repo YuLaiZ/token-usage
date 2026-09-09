@@ -26,7 +26,7 @@
 |------|------|
 | `cmd/token-usage/` | Program entry point (`main.go` only assembles the root command and calls `Execute`; an error maps to exit code 1). |
 | `internal/buildinfo/` | Normalizes version and build metadata (`Current()`/`Info.Short()`/`Info.Detail()`); the `version` command and `--version` flag share the same snapshot. |
-| `internal/cli/` | Cobra command assembly (config/collect/query/errors/export/top/chart/forecast/compare/watch/report/update/doctor/start/status/stop/restart/version, built-in help and completion, and hidden `_run`/`_update-helper`/`_update-cleanup`). |
+| `internal/cli/` | Cobra command assembly (config/collect/query/errors/export/top/chart/forecast/compare/watch/report/serve/update/doctor/start/status/stop/restart/version, built-in help and completion, and hidden `_run`/`_update-helper`/`_update-cleanup`). |
 | `internal/configapp/` | Configuration application layer: `ApplyConfig` atomically orchestrates revision protection, writing, autostart synchronization, and action suggestions under the control lock; `AnalyzeConfigEffects` is the impact matrix. |
 | `internal/runtimecfg/` | Configuration parsing boundary: `LoadEffectiveConfig` expands `~`, fills defaults and registry paths; also provides `ValidateUserConfig` and user-layer snapshots. |
 | `internal/config/` | User-configuration read/write, dotted-key get/set, and the default template. Keeps the raw `[query]` section as an opaque carrier (`RawQuery` plus mutually exclusive `RawQueryTopLevelIssues`) so query semantics are never validated on the global load path. |
@@ -140,6 +140,10 @@ Queries directly SUM `fresh_input_tokens` and `total_tokens`: values come from t
 | `engine/` | Collection orchestration: dependency assembly, main loop, transactional writing, retries, and result validation. | `NewDeps()`, `RunCollect()`, `RunRetryWithDeps()`, `RunRouterBackfill()`, `ValidateResult()` |
 | `analyzer/` | Daemon monitoring: ChangedFile/Incremental/router-source collection triggers, debounced merging, and a serialization lock. | `NewFromConfig()`, `JSONLWatcher`, `SQLitePoller` |
 | `querier/` | Real-time aggregation from messages and formatted output. | `ByClient()`, `ByModel()`, `ByProject()`, `ByHour()`, `ByWeekday()`, `Heatmap()`, `HeatmapMatrix()`, `RunDimensionView()`, `Sessions()`, `Summary()`, `StatsBetween()` |
+| `web/` | Local read-only dashboard server of the `serve` command: the embedded HTML page (dark metering-console theme; charts are rendered client-side from numeric rows), JSON endpoints (`/api/meta`, `/api/dashboard`), and the per-dimension SVG endpoint. All queries of one request share a single read-transaction snapshot. | `NewServer()` |
+| `charts/` | The single SVG chart implementation shared by chart/report/web: bars, lines, pies, and the weekday-by-hour heatmap (dark palette, full monospace font stack, hover `<title>`). | `BuildDimensionSVG()`, `Heatmap()`, `BarSVG()`, `LineSVG()`, `PieSVG()` |
+| `querydef/` | Query view vocabulary: builtin dimension constants, builtin view names, and the reserved-name list shared by the query/watch/export view-name parsing in `cli`. | `BuiltinDimensionNames()`, `IsReservedName()` |
+| `fmtx/` | Shared display-formatting helpers: thousands separators, signed K/M/B tokens, change coloring classes, and change percentages. | `Thousands()`, `SignedTokens()`, `CountChange()`, `ChangeClass()`, `ChangePercent()` |
 | `tui/` | Interactive configuration-editing TUI (dual edit/display models; manual saves use `ApplyConfig`; includes autostart toggle). | `Run()` |
 | `logger/` | Built on log/slog, with daily rotation and automatic cleanup. | `Init()` |
 
@@ -151,7 +155,7 @@ Queries directly SUM `fresh_input_tokens` and `total_tokens`: values come from t
 User runs a command → load configuration → collect/query/edit configuration → print results → exit
 ```
 
-Command groups: `version` (five-line detailed output), Cobra's built-in `help` and `completion`, `config` (interactive TUI with `show`/`init`/`get`/`set` subcommands), `collect` (with `all`/`router`/`retry`), `query` (with `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`heatmap`/`session`/`summary` plus `custom <name>` and the read-only `list`), `export` (CSV/JSON stdout export of the aggregated views), `errors`, `start`, `status`, `stop`, `restart`, `doctor` (read-only health check), `forecast` (usage estimation from recent daily averages), `compare` (usage comparison between two periods), `top` (heaviest sessions by total tokens), `chart` (SVG charts: daily or per-dimension bars, trend lines, share pies, and the weekday-by-hour heatmap), `watch` (interval-refreshed `query` output), `report` (full usage report bundle into a directory), `update` (self-update to the latest or a given version), and the hidden internal `_run`, `_update-helper`, and `_update-cleanup`. The root command also has the `-v, --version` flag for one-line short output.
+Command groups: `version` (five-line detailed output), Cobra's built-in `help` and `completion`, `config` (interactive TUI with `show`/`init`/`get`/`set` subcommands), `collect` (with `all`/`router`/`retry`), `query` (with `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`heatmap`/`session`/`summary` plus `custom <name>` and the read-only `list`), `export` (CSV/JSON stdout export of the aggregated views), `errors`, `start`, `status`, `stop`, `restart`, `doctor` (read-only health check), `forecast` (usage estimation from recent daily averages), `compare` (usage comparison between two periods), `top` (heaviest sessions by total tokens), `chart` (SVG charts: daily or per-dimension bars, trend lines, share pies, and the weekday-by-hour heatmap), `watch` (interval-refreshed `query` output), `report` (full usage report bundle into a directory), `serve` (local read-only dashboard server: foreground run, with `start`/`status`/`stop`/`restart` managing a background instance), `update` (self-update to the latest or a given version), and the hidden internal `_run`, `_update-helper`, and `_update-cleanup`. The root command also has the `-v, --version` flag for one-line short output.
 
 Running `token-usage` with no arguments only prints help; it neither starts the TUI nor the daemon. See the [CLI Reference](cli.md) for the full command tree, arguments, flags, exit codes, and examples.
 
@@ -333,7 +337,7 @@ Dependencies flow from top to bottom; reverse dependencies are forbidden:
 ```text
 cmd/token-usage → cli
 
-cli → control / configapp / runtimecfg / daemon / config / querier / engine / collector / db / logger / buildinfo / update
+cli → control / configapp / runtimecfg / daemon / config / querier / engine / collector / db / logger / buildinfo / update / charts / fmtx / querydef / web / ui
 tui → configapp / runtimecfg / config
 configapp → control / runtimecfg / service / fileutil / config
 control → daemon / runmeta / runtimecfg / config
@@ -341,6 +345,10 @@ daemon → runmeta / fileutil / analyzer / engine / db / logger
 update → control / config / fileutil (buildinfo version literal and runtimecfg effective config injected via seams, not imported)
 runmeta → fileutil
 runtimecfg → config
+web → querier / charts / fmtx / ui
+charts → querier / ui
+querydef → ui
+fmtx → querier
 buildinfo → standard library (runtime / runtime/debug)
 fileutil → standard library (+ golang.org/x/sys on Windows)
 ```

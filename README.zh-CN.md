@@ -11,8 +11,10 @@
 - 支持 Claude Code/Desktop、OpenCode、Codex、WorkBuddy、ZCode 与 Zhipu-AutoClaw。
 - 支持 Claude 系列与 Codex 的 CC-Switch router 归因：通过代理日志回填实际 provider/model。
 - 可单次执行，也可使用实时后台监控守护进程；支持 macOS launchd 与 Windows 注册表自启。
-- 内建可视化分析：按小时/星期分布、星期×小时热力矩阵、SVG 柱状/折线/饼图/热力图、按近期日均估算未来用量、两期环比对比、最重会话排行、实时监视模式、一键报告包，以及本地仪表板服务（`token-usage serve`，内嵌 HTML 仪表板）。
+- 内建可视化分析：按小时/星期分布、星期×小时热力矩阵、SVG 柱状/折线/饼图/热力图、按近期日均估算未来用量、两期环比对比、最重会话排行、实时监视模式、一键报告包，以及本地仪表板服务（`token-usage serve`，内嵌交互式 HTML 仪表板：前端自绘图表、星期×小时热力矩阵、一键 CSV 导出、点击柱条即聚焦对应区间）。
 - 纯 Go 单二进制 CLI，支持 macOS 和 Windows。
+
+![token-usage serve 仪表板](docs/images/dashboard.png)
 
 ## 快速开始
 
@@ -150,7 +152,7 @@ token-usage query list
 | `chart [日期]` | 将用量渲染为 SVG 图表（`--by` 维度、`--pie`、`--line` 趋势线、`--heatmap`、`--out` 保存）。 |
 | `watch [日期]` | 以固定间隔刷新 `query` 输出（`--once` 单帧；视图选择与 `query` 一致——`--by` 接受内置视图或已配置视图名，缺省跟随 `query.default`）。 |
 | `report [日期] --out <目录>` | 生成完整用量报告包（摘要、对比 + SVG 图表 + 交互式 HTML 仪表板）。 |
-| `serve` | 启动本地只读仪表板服务（前台运行；`serve start/status/stop` 管理后台实例，`--open` 自动开浏览器）。 |
+| `serve` | 启动本地只读仪表板服务（前台运行；`serve start/status/stop/restart` 管理后台实例，`--open` 自动开浏览器）。 |
 | `version` / `--version` | 查看多行详细 / 单行简要的版本信息。 |
 | `start` / `status` / `stop` / `restart` | 控制后台守护进程。 |
 | `completion <shell>` | 输出 Bash、Zsh、Fish 或 PowerShell 的补全脚本。 |

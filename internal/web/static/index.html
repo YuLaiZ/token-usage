@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>token-usage · dashboard</title>
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0nIzEzMWEyMicvPjxyZWN0IHg9JzYnIHk9JzE1JyB3aWR0aD0nNScgaGVpZ2h0PScxMScgcng9JzEuNScgZmlsbD0nIzVjYzhmZicvPjxyZWN0IHg9JzEzLjUnIHk9JzknIHdpZHRoPSc1JyBoZWlnaHQ9JzE3JyByeD0nMS41JyBmaWxsPScjZmZiNDU0Jy8+PHJlY3QgeD0nMjEnIHk9JzUnIHdpZHRoPSc1JyBoZWlnaHQ9JzIxJyByeD0nMS41JyBmaWxsPScjNTdkOWEzJy8+PC9zdmc+">
 <link rel="stylesheet" href="/assets/app.css">
 <script src="/assets/app.js" defer></script>
 </head>
@@ -11,238 +13,190 @@
 
 <header class="topbar">
   <div class="wrap bar-inner">
-    <span class="brand">token-usage · dashboard</span>
-    <nav>
-      <a href="#overview">Overview / 概览</a><a href="#forecast">Forecast / 预估</a><a href="#trends">Trends / 趋势</a><a href="#share">Share / 占比</a><a href="#heatmap">Heatmap / 热力</a><a href="#sessions">Sessions / 会话</a><a href="#data">Data / 明细</a>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <a class="brand-name" href="https://github.com/YuLaiZ/token-usage" target="_blank" rel="noopener noreferrer">token-usage</a>
+      <span class="chip" id="ver-chip" title="service version / 服务版本">–</span>
+    </div>
+    <nav aria-label="sections / 章节">
+      <a href="#overview">Overview <span class="zh">概览</span></a><a href="#trends">Trends <span class="zh">趋势</span></a><a href="#share">Share <span class="zh">占比</span></a><a href="#heatmap">Heatmap <span class="zh">热力</span></a><a href="#sessions">Sessions <span class="zh">会话</span></a><a href="#data">Data <span class="zh">明细</span></a>
     </nav>
-    <div class="controls">
-      <button type="button" data-preset="today">Today 今天</button>
-      <button type="button" data-preset="d7">7d 近7天</button>
-      <button type="button" data-preset="d30" class="active">30d 近30天</button>
-      <button type="button" data-preset="d90">90d 近90天</button>
-      <button type="button" data-preset="month">Month 本月</button>
-      <button type="button" data-preset="all" disabled>All 全部</button>
-      <input type="date" id="date-from" aria-label="from / 开始日期">
-      <input type="date" id="date-to" aria-label="to / 结束日期">
+    <div class="status" id="status-line"></div>
+  </div>
+  <div class="wrap controls-bar-outer">
+  <div class="controls-band">
+    <div class="controls" role="group" aria-label="time range / 时间范围">
+      <span class="ctl-label">Range 范围</span>
+      <div class="seg" id="presets">
+        <button type="button" data-preset="today">Today</button>
+        <button type="button" data-preset="d7">7d</button>
+        <button type="button" data-preset="d30" class="active">30d</button>
+        <button type="button" data-preset="d90">90d</button>
+        <button type="button" data-preset="month">Month</button>
+        <button type="button" data-preset="all" disabled>All</button>
+      </div>
+      <span class="date-pair">
+        <input type="date" id="date-from" aria-label="from / 开始日期">
+        <span class="date-arrow" aria-hidden="true">→</span>
+        <input type="date" id="date-to" aria-label="to / 结束日期">
+      </span>
+    </div>
+    <div class="controls" role="group" aria-label="refresh / 刷新">
+      <label class="ctl-label" for="auto-select">Auto</label>
       <select id="auto-select" aria-label="auto refresh / 自动刷新">
-        <option value="0">off 关</option>
+        <option value="0">off</option>
         <option value="10000">10s</option>
         <option value="30000" selected>30s</option>
         <option value="60000">60s</option>
       </select>
-      <button type="button" id="refresh-btn">Refresh 刷新</button>
+      <button type="button" class="btn-accent" id="refresh-btn">Refresh 刷新</button>
     </div>
+  </div>
   </div>
 </header>
 
 <main class="wrap">
-  <p class="meta" id="status-line"></p>
   <div class="banner" id="notice" role="status"></div>
 
-  <section id="overview">
-    <h2>Overview <span class="zh">概览</span></h2>
-    <div class="kpis">
-      <div class="kpi"><div class="label">Total tokens <span class="zh">总 token</span></div><div class="value" id="kpi-total">–</div><div class="sub" id="kpi-total-sub"></div></div>
-      <div class="kpi"><div class="label">Requests <span class="zh">请求数</span></div><div class="value" id="kpi-requests">–</div><div class="sub"></div></div>
-      <div class="kpi"><div class="label">Active days <span class="zh">活跃天数</span></div><div class="value" id="kpi-days">–</div><div class="sub"></div></div>
-      <div class="kpi"><div class="label">Fresh input <span class="zh">新输入</span></div><div class="value" id="kpi-fresh">–</div><div class="sub" id="kpi-fresh-sub"></div></div>
-      <div class="kpi"><div class="label">Output <span class="zh">输出</span></div><div class="value" id="kpi-output">–</div><div class="sub" id="kpi-output-sub"></div></div>
-      <div class="kpi"><div class="label">Cache read <span class="zh">缓存读</span></div><div class="value" id="kpi-cache-read">–</div><div class="sub" id="kpi-cache-read-sub"></div></div>
-      <div class="kpi"><div class="label">Cache create <span class="zh">缓存写</span></div><div class="value" id="kpi-cache-create">–</div><div class="sub" id="kpi-cache-create-sub"></div></div>
-      <div class="kpi"><div class="label">Reasoning <span class="zh">推理</span></div><div class="value" id="kpi-reasoning">–</div><div class="sub" id="kpi-reasoning-sub"></div></div>
+  <section id="overview" aria-labelledby="h-overview">
+    <h2 class="sec-title" id="h-overview">Overview <span class="zh">概览</span></h2>
+    <div class="hero-row">
+      <div class="card hero" id="kpi-total-card">
+        <div class="card-label">Total tokens <span class="zh">总 token</span></div>
+        <div class="hero-value" id="kpi-total">–</div>
+        <div class="hero-delta" id="kpi-total-delta"></div>
+        <div class="ribbon" id="kpi-ribbon" aria-label="token composition / token 构成"></div>
+        <div class="ribbon-legend" id="kpi-ribbon-legend"></div>
+      </div>
+      <div class="mini-col">
+        <div class="card mini" id="kpi-requests-card"><div class="card-label">Requests <span class="zh">请求数</span></div><div class="mini-value" id="kpi-requests">–</div><div class="delta" id="kpi-requests-delta"></div></div>
+        <div class="card mini" id="kpi-days-card"><div class="card-label">Active days <span class="zh">活跃天数</span></div><div class="mini-value" id="kpi-days">–</div><div class="delta" id="kpi-days-delta"></div></div>
+        <div class="card mini" id="kpi-hit-card"><div class="card-label">Cache hit <span class="zh">缓存命中</span></div><div class="mini-value" id="kpi-hit">–</div><div class="delta" id="kpi-hit-delta"></div></div>
+      </div>
     </div>
-    <div class="panel" id="compare-panel" style="margin-top:16px">
-      <p class="meta" id="compare-meta"></p>
-      <table>
-        <thead>
-          <tr>
-            <th>Metric / 指标</th>
-            <th class="num">Current / 当前</th>
-            <th class="num">Base / 基线</th>
-            <th class="num">Change / 变化</th>
-            <th class="num">Change % / 变化%</th>
-          </tr>
-        </thead>
-        <tbody id="compare-body"></tbody>
-      </table>
+    <div class="strip" id="metric-strip"></div>
+
+    <div class="duo" id="overview-duo">
+      <div class="card panel" id="compare-panel">
+        <div class="panel-head">
+          <h3>Compare <span class="zh">环比对比</span></h3>
+          <p class="meta" id="compare-meta"></p>
+        </div>
+        <div class="cmp-grid">
+          <div class="cmp-chart">
+            <div class="cmp-chart-head">
+              <span class="card-label">Daily totals <span class="zh">逐日对比</span></span>
+              <span class="kind-legend" id="legend-compare">
+                <span class="lg"><i style="background:#5cc8ff"></i>Current 当前</span>
+                <span class="lg"><i class="lg-dash"></i>Base 基线</span>
+              </span>
+            </div>
+            <div class="chart-body" id="chart-compare"></div>
+          </div>
+          <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Metric 指标</th><th class="num">Current 当前</th><th class="num">Base 基线</th><th class="num">Δ</th><th class="num">Δ%</th></tr></thead>
+            <tbody id="compare-body"></tbody>
+          </table>
+          </div>
+        </div>
+      </div>
+      <div class="card panel" id="forecast-panel">
+        <div class="panel-head">
+          <h3>Forecast <span class="zh">预估</span></h3>
+          <p class="meta">Today so far 今日至今 <b id="forecast-today">–</b><span class="muted"> · fixed lookback, independent of range / 固定回看，不随选区变化</span></p>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Window 窗口</th><th class="num">Total 总量</th><th class="num">Avg/day 日均</th><th class="num">Active 活跃</th><th class="num">Estimate 预估</th></tr></thead>
+            <tbody id="forecast-body"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </section>
 
-  <section id="forecast">
-    <h2>Forecast <span class="zh">预估</span></h2>
-    <div class="panel">
-      <p class="meta">Today so far / 今日至今: <b id="forecast-today"></b> · based on the last 7/30 days / 基于最近 7/30 天日均（不随上方选区变化）</p>
-      <table>
-        <thead>
-          <tr>
-            <th>Window / 窗口</th>
-            <th class="num">Total / 总量</th>
-            <th class="num">Avg / day 日均</th>
-            <th class="num">Active days / 活跃天</th>
-            <th class="num">Estimate / 预估</th>
-          </tr>
-        </thead>
-        <tbody id="forecast-body"></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section id="trends">
-    <h2>Trends <span class="zh">时间趋势</span></h2>
+  <section id="trends" aria-labelledby="h-trends">
+    <h2 class="sec-title" id="h-trends">Trends <span class="zh">时间趋势</span></h2>
     <div class="grid">
-      <div class="chart" id="chart-day"></div>
-      <div class="chart" id="chart-hour"></div>
-      <div class="chart" id="chart-weekday"></div>
-      <div class="chart" id="chart-month"></div>
+      <figure class="card chart-card" id="card-day">
+        <figcaption><span>Usage by day <span class="zh">按天用量</span></span><span class="muted" id="note-day"></span></figcaption>
+        <div class="chart-body" id="chart-day"></div>
+        <div class="kind-legend" id="legend-day"></div>
+      </figure>
+      <figure class="card chart-card" id="card-hour">
+        <figcaption><span>Usage by hour <span class="zh">按小时用量</span></span></figcaption>
+        <div class="chart-body" id="chart-hour"></div>
+      </figure>
+      <figure class="card chart-card" id="card-weekday">
+        <figcaption><span>Usage by weekday <span class="zh">按星期用量</span></span></figcaption>
+        <div class="chart-body" id="chart-weekday"></div>
+      </figure>
+      <figure class="card chart-card" id="card-month">
+        <figcaption><span>Usage by month <span class="zh">按月用量</span></span><span class="muted" id="note-month"></span></figcaption>
+        <div class="chart-body" id="chart-month"></div>
+      </figure>
     </div>
   </section>
 
-  <section id="share">
-    <h2>Share <span class="zh">构成占比</span></h2>
-    <div class="grid">
-      <div class="chart" id="chart-client"></div>
-      <div class="chart" id="chart-model"></div>
-      <div class="chart" id="chart-provider"></div>
-      <div class="chart" id="chart-project"></div>
+  <section id="share" aria-labelledby="h-share">
+    <h2 class="sec-title" id="h-share">Share <span class="zh">构成占比</span></h2>
+    <div class="grid share-grid">
+      <figure class="card chart-card" id="card-client">
+        <figcaption><span>By client <span class="zh">按客户端</span></span></figcaption>
+        <div class="chart-body" id="chart-client"></div>
+      </figure>
+      <figure class="card chart-card" id="card-model">
+        <figcaption><span>By model <span class="zh">按模型</span></span></figcaption>
+        <div class="chart-body" id="chart-model"></div>
+      </figure>
+      <figure class="card chart-card" id="card-provider">
+        <figcaption><span>By provider <span class="zh">按供应商</span></span></figcaption>
+        <div class="chart-body" id="chart-provider"></div>
+      </figure>
+      <figure class="card chart-card" id="card-project">
+        <figcaption><span>By project <span class="zh">按项目</span></span></figcaption>
+        <div class="chart-body" id="chart-project"></div>
+      </figure>
     </div>
   </section>
 
-  <section id="heatmap">
-    <h2>Activity heatmap <span class="zh">活动热力</span></h2>
-    <div class="chart" id="chart-heatmap"></div>
+  <section id="heatmap" aria-labelledby="h-heatmap">
+    <h2 class="sec-title" id="h-heatmap">Activity heatmap <span class="zh">活动热力</span></h2>
+    <figure class="card chart-card wide" id="card-heatmap">
+      <figcaption><span>Weekday × hour <span class="zh">星期 × 小时</span></span><span class="hm-legend" id="hm-legend"></span></figcaption>
+      <div class="chart-body hm-scroll" id="chart-heatmap"></div>
+    </figure>
   </section>
 
-  <section id="sessions">
-    <h2>Top sessions <span class="zh">最重会话</span></h2>
-    <div class="panel">
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Title</th>
-            <th>Client</th>
-            <th>Project</th>
-            <th class="num">Duration</th>
-            <th class="num">Requests</th>
-            <th class="num">Total</th>
-          </tr>
-        </thead>
-        <tbody id="sessions-body"></tbody>
-      </table>
+  <section id="sessions" aria-labelledby="h-sessions">
+    <h2 class="sec-title" id="h-sessions">Top sessions <span class="zh">最重会话</span></h2>
+    <div class="card panel">
+      <div class="panel-head">
+        <h3>Ranking <span class="zh">排行</span></h3>
+        <p class="meta"><button type="button" class="export-btn" id="export-sessions">Export CSV</button><span class="muted" id="count-sessions"></span></p>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th class="sortable">#</th><th class="sortable">Title</th><th class="sortable">Client</th><th class="sortable">Project</th>
+            <th class="sortable num">Duration</th><th class="sortable num">Requests</th><th class="sortable num">Total</th><th class="th-bar"></th>
+          </tr></thead>
+          <tbody id="sessions-body"></tbody>
+        </table>
+      </div>
     </div>
   </section>
 
-  <section id="data">
-    <h2>Data tables <span class="zh">数据明细</span></h2>
-
-    <details class="data-block">
-      <summary><span>Day <span class="muted">按天</span></span><span class="muted" id="count-day">0 rows</span></summary>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr>
-            <th class="sortable">Key</th><th class="sortable">Requests</th><th class="sortable">Fresh input</th><th class="sortable">Output</th>
-            <th class="sortable">Cache read</th><th class="sortable">Cache create</th><th class="sortable">Reasoning</th><th class="sortable">Total</th>
-          </tr></thead>
-          <tbody id="tbl-day"></tbody>
-        </table>
-      </div>
-    </details>
-
-    <details class="data-block">
-      <summary><span>Hour <span class="muted">按小时</span></span><span class="muted" id="count-hour">0 rows</span></summary>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr>
-            <th class="sortable">Key</th><th class="sortable">Requests</th><th class="sortable">Fresh input</th><th class="sortable">Output</th>
-            <th class="sortable">Cache read</th><th class="sortable">Cache create</th><th class="sortable">Reasoning</th><th class="sortable">Total</th>
-          </tr></thead>
-          <tbody id="tbl-hour"></tbody>
-        </table>
-      </div>
-    </details>
-
-    <details class="data-block">
-      <summary><span>Weekday <span class="muted">按星期</span></span><span class="muted" id="count-weekday">0 rows</span></summary>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr>
-            <th class="sortable">Key</th><th class="sortable">Requests</th><th class="sortable">Fresh input</th><th class="sortable">Output</th>
-            <th class="sortable">Cache read</th><th class="sortable">Cache create</th><th class="sortable">Reasoning</th><th class="sortable">Total</th>
-          </tr></thead>
-          <tbody id="tbl-weekday"></tbody>
-        </table>
-      </div>
-    </details>
-
-    <details class="data-block">
-      <summary><span>Month <span class="muted">按月</span></span><span class="muted" id="count-month">0 rows</span></summary>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr>
-            <th class="sortable">Key</th><th class="sortable">Requests</th><th class="sortable">Fresh input</th><th class="sortable">Output</th>
-            <th class="sortable">Cache read</th><th class="sortable">Cache create</th><th class="sortable">Reasoning</th><th class="sortable">Total</th>
-          </tr></thead>
-          <tbody id="tbl-month"></tbody>
-        </table>
-      </div>
-    </details>
-
-    <details class="data-block">
-      <summary><span>Client <span class="muted">客户端</span></span><span class="muted" id="count-client">0 rows</span></summary>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr>
-            <th class="sortable">Key</th><th class="sortable">Requests</th><th class="sortable">Fresh input</th><th class="sortable">Output</th>
-            <th class="sortable">Cache read</th><th class="sortable">Cache create</th><th class="sortable">Reasoning</th><th class="sortable">Total</th>
-          </tr></thead>
-          <tbody id="tbl-client"></tbody>
-        </table>
-      </div>
-    </details>
-
-    <details class="data-block">
-      <summary><span>Model <span class="muted">模型</span></span><span class="muted" id="count-model">0 rows</span></summary>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr>
-            <th class="sortable">Key</th><th class="sortable">Requests</th><th class="sortable">Fresh input</th><th class="sortable">Output</th>
-            <th class="sortable">Cache read</th><th class="sortable">Cache create</th><th class="sortable">Reasoning</th><th class="sortable">Total</th>
-          </tr></thead>
-          <tbody id="tbl-model"></tbody>
-        </table>
-      </div>
-    </details>
-
-    <details class="data-block">
-      <summary><span>Provider <span class="muted">供应商</span></span><span class="muted" id="count-provider">0 rows</span></summary>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr>
-            <th class="sortable">Key</th><th class="sortable">Requests</th><th class="sortable">Fresh input</th><th class="sortable">Output</th>
-            <th class="sortable">Cache read</th><th class="sortable">Cache create</th><th class="sortable">Reasoning</th><th class="sortable">Total</th>
-          </tr></thead>
-          <tbody id="tbl-provider"></tbody>
-        </table>
-      </div>
-    </details>
-
-    <details class="data-block">
-      <summary><span>Project <span class="muted">项目</span></span><span class="muted" id="count-project">0 rows</span></summary>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr>
-            <th class="sortable">Key</th><th class="sortable">Requests</th><th class="sortable">Fresh input</th><th class="sortable">Output</th>
-            <th class="sortable">Cache read</th><th class="sortable">Cache create</th><th class="sortable">Reasoning</th><th class="sortable">Total</th>
-          </tr></thead>
-          <tbody id="tbl-project"></tbody>
-        </table>
-      </div>
-    </details>
-
+  <section id="data" aria-labelledby="h-data">
+    <h2 class="sec-title" id="h-data">Data tables <span class="zh">数据明细</span></h2>
+    <div id="data-blocks"></div>
   </section>
 </main>
 
-<footer>token-usage serve · local only · 数据口径与 CLI 一致 / same aggregation core as the CLI</footer>
+<footer>token-usage serve · 本地只读 local only · 数据口径与 CLI 一致 same aggregation core as the CLI</footer>
+
+<div class="tooltip" id="tooltip" role="presentation" hidden></div>
 
 </body>
 </html>

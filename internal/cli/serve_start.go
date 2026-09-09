@@ -12,6 +12,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,6 +40,10 @@ var (
 	serveStartProbeRetries = 3
 	serveStartConfirmGap   = 100 * time.Millisecond
 	serveStartLogTailLines = 10
+	// serveLifecycleLockWait/serveLifecycleLockRetry 是 serveLifecycleGuard
+	// 获取 serve.lock 的带界重试参数(前一个实例退出收尾的瞬态窗口)。
+	serveLifecycleLockWait  = 3 * time.Second
+	serveLifecycleLockRetry = 100 * time.Millisecond
 )
 
 // serveSpawnAndWait 是「spawn + 轮询等待」的注入 seam：生产实现拉起 detached
@@ -156,79 +161,86 @@ func newServeStartCmd(load func() (*config.Config, error), version string) *cobr
 		RunE: func(cmd *cobra.Command, args []string) error {
 			addr, _ := cmd.Flags().GetString("addr")
 			autoOpen, _ := cmd.Flags().GetBool("open")
-			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
-
-			if strings.TrimSpace(addr) == "" {
-				return fmt.Errorf("%s: %s",
-					ui.Bi("missing required --addr", "缺少必填的 --addr"),
-					ui.Bi("example: token-usage serve start --addr 127.0.0.1:8619", "示例：token-usage serve start --addr 127.0.0.1:8619"))
-			}
 			cfg, err := load()
 			if err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 			}
-
-			// 启动互斥（serve-start.lock）：串行化并发 start 的竞态窗口（两个
-			// start 同时通过「未运行」预检会各拉起一个实例抢同一端口）。锁持有
-			// 覆盖预检 → spawn → 探活确认 → 输出的全过程；已运行拒绝逻辑仍由
-			// serve.json 与探活决定，锁只保证同一时刻至多一个 start 在执行。
-			// 注意与 serve.lock 的分工：后者是服务主体经 serveDashboard 持有的
-			// 生命周期锁（见 serveLifecycleGuard），本锁不表达运行状态。
-			lock, ok := daemon.AcquireLock(filepath.Join(cfg.DataDir, serveStartLockFile))
-			if !ok {
-				return errors.New(ui.Bi(
-					"another serve start is in progress; retry in a moment",
-					"另一个 serve start 正在执行，请稍后重试"))
-			}
-			defer daemon.ReleaseLock(lock)
-
-			// 已运行检查（serveStartPreflight，state 锁内）：状态文件存在且
-			// /api/meta 有响应 → 幂等返回（与 daemon start 的 AlreadyRunning
-			// 同语义：informational 输出、退出码 0、不倒 Usage）；存在但无响应
-			// → 视为陈旧（SIGKILL/崩溃遗留），条件删除后继续；条件删除发现新
-			// 实例接管且响应 → 同样幂等拒绝（拒绝的是新实例）。返回时 state 锁
-			// 已释放，spawn 之前不得再持锁（子进程写状态需取同一把锁）。
-			if running, err := serveStartPreflight(cfg.DataDir); err != nil {
-				return err
-			} else if running != nil {
-				fmt.Fprintf(out, "%s\n", ui.Bi(
-					fmt.Sprintf("serve is already running (pid %d, http://%s); stop it first with token-usage serve stop", running.PID, running.Addr),
-					fmt.Sprintf("仪表板已在后台运行（PID %d，http://%s）；请先用 token-usage serve stop 停止", running.PID, running.Addr)))
-				return nil
-			}
-
-			logPath := serveLogPath(cfg.DataDir)
-			pid, realAddr, err := serveSpawnAndWait(cfg, addr, logPath)
-			if err != nil {
-				// 失败时把 serve.log 末尾 ≤10 行附在错误里，用户无需另开日志。
-				return fmt.Errorf("%s: %w", ui.Bi("failed to start dashboard in background", "后台启动仪表板失败"),
-					errors.Join(err, serveLogTailError(logPath, serveStartLogTailLines)))
-			}
-
-			url := "http://" + realAddr
-			// 交互终端下同样用 OSC 8 链接包裹 URL（与前台启动行一致的降级逻辑）。
-			linked := hyperlinkURL(url, writerIsTerminal(out))
-			fmt.Fprintf(out, "%s\n", ui.Bi(
-				fmt.Sprintf("dashboard started in background at %s (pid %d)", linked, pid),
-				fmt.Sprintf("仪表板已后台启动 %s（PID %d）", linked, pid),
-			))
-			fmt.Fprintf(out, "%s\n", ui.Bi(
-				fmt.Sprintf("log: %s · stop: token-usage serve stop", logPath),
-				fmt.Sprintf("日志 %s · 停止 token-usage serve stop", logPath),
-			))
-
-			if autoOpen {
-				// 打开浏览器失败不致命：打印警告，后台服务已就绪。
-				if err := serveOpenBrowser(url); err != nil {
-					fmt.Fprintf(errOut, "%s\n", ui.Bi(
-						fmt.Sprintf("failed to open browser: %v", err),
-						fmt.Sprintf("打开浏览器失败：%v", err),
-					))
-				}
-			}
-			return nil
+			return serveStartRun(cfg, addr, autoOpen, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
+}
+
+// serveStartRun 执行一次完整的后台启动编排：--addr 非空校验 → serve-start.lock
+// 串行化 → 已运行预检（幂等拒绝/陈旧清理）→ spawn + 探活确认 → 输出 →
+// （--open 时开浏览器）。由 `serve start` 与 `serve restart` 共用：restart 在
+// 调用本函数前先完成 stop 编排。返回值语义与 start 的 RunE 一致（已运行为
+// 幂等成功 exit 0）。
+func serveStartRun(cfg *config.Config, addr string, autoOpen bool, out, errOut io.Writer) error {
+	if strings.TrimSpace(addr) == "" {
+		return fmt.Errorf("%s: %s",
+			ui.Bi("missing required --addr", "缺少必填的 --addr"),
+			ui.Bi("example: token-usage serve start --addr 127.0.0.1:8619", "示例：token-usage serve start --addr 127.0.0.1:8619"))
+	}
+
+	// 启动互斥（serve-start.lock）：串行化并发 start 的竞态窗口（两个
+	// start 同时通过「未运行」预检会各拉起一个实例抢同一端口）。锁持有
+	// 覆盖预检 → spawn → 探活确认 → 输出的全过程；已运行拒绝逻辑仍由
+	// serve.json 与探活决定，锁只保证同一时刻至多一个 start 在执行。
+	// 注意与 serve.lock 的分工：后者是服务主体经 serveDashboard 持有的
+	// 生命周期锁（见 serveLifecycleGuard），本锁不表达运行状态。
+	lock, ok := daemon.AcquireLock(filepath.Join(cfg.DataDir, serveStartLockFile))
+	if !ok {
+		return errors.New(ui.Bi(
+			"another serve start is in progress; retry in a moment",
+			"另一个 serve start 正在执行，请稍后重试"))
+	}
+	defer daemon.ReleaseLock(lock)
+
+	// 已运行检查（serveStartPreflight，state 锁内）：状态文件存在且
+	// /api/meta 有响应 → 幂等返回（与 daemon start 的 AlreadyRunning
+	// 同语义：informational 输出、退出码 0、不倒 Usage）；存在但无响应
+	// → 视为陈旧（SIGKILL/崩溃遗留），条件删除后继续；条件删除发现新
+	// 实例接管且响应 → 同样幂等拒绝（拒绝的是新实例）。返回时 state 锁
+	// 已释放，spawn 之前不得再持锁（子进程写状态需取同一把锁）。
+	if running, err := serveStartPreflight(cfg.DataDir); err != nil {
+		return err
+	} else if running != nil {
+		fmt.Fprintf(out, "%s\n", ui.Bi(
+			fmt.Sprintf("serve is already running (pid %d, http://%s); stop it first with token-usage serve stop", running.PID, running.Addr),
+			fmt.Sprintf("仪表板已在后台运行（PID %d，http://%s）；请先用 token-usage serve stop 停止", running.PID, running.Addr)))
+		return nil
+	}
+
+	logPath := serveLogPath(cfg.DataDir)
+	pid, realAddr, err := serveSpawnAndWait(cfg, addr, logPath)
+	if err != nil {
+		// 失败时把 serve.log 末尾 ≤10 行附在错误里，用户无需另开日志。
+		return fmt.Errorf("%s: %w", ui.Bi("failed to start dashboard in background", "后台启动仪表板失败"),
+			errors.Join(err, serveLogTailError(logPath, serveStartLogTailLines)))
+	}
+
+	url := "http://" + realAddr
+	// 交互终端下同样用 OSC 8 链接包裹 URL（与前台启动行一致的降级逻辑）。
+	linked := hyperlinkURL(url, writerIsTerminal(out))
+	fmt.Fprintf(out, "%s\n", ui.Bi(
+		fmt.Sprintf("dashboard started in background at %s (pid %d)", linked, pid),
+		fmt.Sprintf("仪表板已后台启动 %s（PID %d）", linked, pid),
+	))
+	fmt.Fprintf(out, "%s\n", ui.Bi(
+		fmt.Sprintf("log: %s · stop: token-usage serve stop", logPath),
+		fmt.Sprintf("日志 %s · 停止 token-usage serve stop", logPath),
+	))
+
+	if autoOpen {
+		// 打开浏览器失败不致命：打印警告，后台服务已就绪。
+		if err := serveOpenBrowser(url); err != nil {
+			fmt.Fprintf(errOut, "%s\n", ui.Bi(
+				fmt.Sprintf("failed to open browser: %v", err),
+				fmt.Sprintf("打开浏览器失败：%v", err),
+			))
+		}
+	}
+	return nil
 }
 
 // truncateServeLog 截断重建后台日志文件（O_TRUNC|O_CREATE 0644）。

@@ -26,7 +26,7 @@
 |------|------|
 | `cmd/token-usage/` | 程序入口（`main.go`，仅装配 root cmd 并 `Execute`；error → 退出码 1） |
 | `internal/buildinfo/` | 规范化版本与构建元数据（`Current()`/`Info.Short()`/`Info.Detail()`，供 `version` 命令与 `--version` flag 复用同一份快照） |
-| `internal/cli/` | Cobra 命令组装配（config/collect/query/errors/export/top/chart/forecast/compare/watch/report/update/doctor/start/status/stop/restart/version、内置 help/completion + Hidden `_run`/`_update-helper`/`_update-cleanup`） |
+| `internal/cli/` | Cobra 命令组装配（config/collect/query/errors/export/top/chart/forecast/compare/watch/report/serve/update/doctor/start/status/stop/restart/version、内置 help/completion + Hidden `_run`/`_update-helper`/`_update-cleanup`） |
 | `internal/configapp/` | 配置应用层：`ApplyConfig` 在 control lock 内原子编排（revision 保护、写盘、自启同步、动作建议）；`AnalyzeConfigEffects` 影响矩阵 |
 | `internal/runtimecfg/` | 配置解析边界：`LoadEffectiveConfig`（展开 `~`、补默认值、补 registry 默认路径）、`ValidateUserConfig`、用户层 snapshot |
 | `internal/config/` | 用户配置读写、dotted key get/set、默认模板。`[query]` 段以 raw 载体原样保留（`RawQuery` 与互斥的 `RawQueryTopLevelIssues`），全局加载链不做 query 语义校验 |
@@ -140,6 +140,10 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 | `engine/` | 采集编排：依赖装配、主循环、事务化写入、重试、结果校验 | `NewDeps()`, `RunCollect()`, `RunRetryWithDeps()`, `RunRouterBackfill()`, `ValidateResult()` |
 | `analyzer/` | 守护进程监控：ChangedFile/Incremental/router source 触发采集，debounce 合并，串行化锁 | `NewFromConfig()`, `JSONLWatcher`, `SQLitePoller` |
 | `querier/` | 从 messages 实时聚合查询，格式化输出 | `ByClient()`, `ByModel()`, `ByProject()`, `ByHour()`, `ByWeekday()`, `Heatmap()`, `HeatmapMatrix()`, `RunDimensionView()`, `Sessions()`, `Summary()`, `StatsBetween()` |
+| `web/` | serve 命令的本地只读仪表板服务：go:embed 内嵌 HTML 页面（深色计量仪表台，图表由前端按数值行自绘）、JSON 接口（`/api/meta`、`/api/dashboard`）与单维度 SVG 接口；单请求全部查询在同一读事务快照完成 | `NewServer()` |
+| `charts/` | SVG 图表唯一实现，chart/report/web 三入口共用：柱状、折线、饼图与星期×小时热力矩阵（深色取色、完整等宽字体栈、悬停 `<title>`） | `BuildDimensionSVG()`, `Heatmap()`, `BarSVG()`, `LineSVG()`, `PieSVG()` |
+| `querydef/` | query 视图词表：内置维度常量、内置视图名与保留名清单，由 cli 的 query/watch/export 视图名解析共用 | `BuiltinDimensionNames()`, `IsReservedName()` |
+| `fmtx/` | 跨命令共享的显示格式化助手：千分位、带符号 K/M/B、差值着色 class 与变化百分比 | `Thousands()`, `SignedTokens()`, `CountChange()`, `ChangeClass()`, `ChangePercent()` |
 | `tui/` | 配置交互编辑 TUI（双模型 edit/display + 手动保存经 `ApplyConfig` + 自启 toggle） | `Run()` |
 | `logger/` | 基于 log/slog，按天轮转，自动清理 | `Init()` |
 
@@ -151,7 +155,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 用户执行命令 → 加载配置 → 执行采集/查询/配置编辑 → 输出结果 → 退出
 ```
 
-命令组：`version`（多行详细输出）、Cobra 内置 `help`/`completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`heatmap`/`session`/`summary`，另加 `custom <name>` 与只读的 `list`）、`export`（聚合视图的 CSV/JSON stdout 导出）、`errors`、`start`、`status`、`stop`、`restart`、`doctor`（只读健康自检）、`forecast`（按近期日均估算未来用量）、`compare`（对比两个时间段的用量）、`top`（总用量最重的会话排行）、`chart`（SVG 图表：按日/按维度柱状图、趋势折线、占比饼图与星期×小时热力图）、`watch`（定间隔刷新的 `query` 输出）、`report`（生成到目录的完整用量报告包）、`update`（自更新到最新或指定版本），以及 Hidden 内部命令 `_run`/`_update-helper`/`_update-cleanup`。根命令另带 `-v, --version` flag（单行短输出）。
+命令组：`version`（多行详细输出）、Cobra 内置 `help`/`completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`heatmap`/`session`/`summary`，另加 `custom <name>` 与只读的 `list`）、`export`（聚合视图的 CSV/JSON stdout 导出）、`errors`、`start`、`status`、`stop`、`restart`、`doctor`（只读健康自检）、`forecast`（按近期日均估算未来用量）、`compare`（对比两个时间段的用量）、`top`（总用量最重的会话排行）、`chart`（SVG 图表：按日/按维度柱状图、趋势折线、占比饼图与星期×小时热力图）、`watch`（定间隔刷新的 `query` 输出）、`report`（生成到目录的完整用量报告包）、`serve`（本地只读仪表板服务：前台运行，`start`/`status`/`stop`/`restart` 管理后台实例）、`update`（自更新到最新或指定版本），以及 Hidden 内部命令 `_run`/`_update-helper`/`_update-cleanup`。根命令另带 `-v, --version` flag（单行短输出）。
 
 直接执行 `token-usage`（不带任何参数）只会打印帮助信息，既不启动 TUI 也不启动守护进程。命令树、参数、标志、退出码与示例的完整参考见 [CLI 参考](cli.zh-CN.md)。
 
@@ -333,7 +337,7 @@ Windows staged replacement 已实现（代码经 `update.NewWindowsInstaller()` 
 ```text
 cmd/token-usage → cli
 
-cli → control / configapp / runtimecfg / daemon / config / querier / engine / collector / db / logger / buildinfo / update
+cli → control / configapp / runtimecfg / daemon / config / querier / engine / collector / db / logger / buildinfo / update / charts / fmtx / querydef / web / ui
 tui → configapp / runtimecfg / config
 configapp → control / runtimecfg / service / fileutil / config
 control → daemon / runmeta / runtimecfg / config
@@ -341,6 +345,10 @@ daemon → runmeta / fileutil / analyzer / engine / db / logger
 update → control / config / fileutil（buildinfo 版本字面量与 runtimecfg effective 配置经 seam 注入，不直接 import）
 runmeta → fileutil
 runtimecfg → config
+web → querier / charts / fmtx / ui
+charts → querier / ui
+querydef → ui
+fmtx → querier
 buildinfo → 标准库（runtime / runtime/debug）
 fileutil → 标准库（+ Windows 经 golang.org/x/sys）
 ```
