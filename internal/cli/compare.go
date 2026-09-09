@@ -26,24 +26,46 @@ func newCompareCmd() *cobra.Command {
 // 调用链(生产路径传入 loadConfig 与 db.Open)。只读命令,不触碰 daemon。
 func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string) (*db.DB, error)) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "compare <range>",
+		Use:   "compare <range> [range2]",
 		Short: "Compare usage between two periods / 对比两个时间段的用量",
 		Long: ui.Bi(
-			"Compare token usage between two periods. RANGE accepts a day (YYYYMMDD), a month (YYYYMM), a year (YYYY; single arg only), or a day/month range like 20260701-20260710 whose endpoints may mix days and months; dashed ISO forms like 2026-08-01 are rejected. Without --base the baseline window is derived from RANGE's granularity: a day compares with the previous day, a month with the previous calendar month, a year with the previous calendar year, and a range with an equal-length window ending the day before it starts, e.g. token-usage compare 20260701-20260710 compares 2026-06-21..2026-06-30. Pass --base with the same forms to pick the baseline explicitly (it may overlap the current window and is parsed independently of RANGE's granularity), e.g. token-usage compare 202609 --base 202608. Pass --by with a non-temporal dimension (client/model/provider/project) to compare per member of that dimension across the two windows instead of whole-period totals. --format selects the output format: table (default, the framed comparison table) or json (machine-readable: raw integers, two-space indentation); invalid values are rejected before the database opens.",
-			"对比两个时间段的 token 用量。RANGE 接受日（YYYYMMDD）、月（YYYYMM）、年（YYYY，仅单独使用）或日/月区间（如 20260701-20260710，端点可日/月混用）；拒绝 2026-08-01 这类 ISO 破折号形态。缺省 --base 时按 RANGE 粒度自动推导基线窗口：单日对比前一天，单月对比上一个日历月，单年对比上一个日历年，区间对比结束于开始日前一天的等长窗口，如 token-usage compare 20260701-20260710 对比 2026-06-21..2026-06-30。可用 --base 以相同形态显式指定基线（允许与当前窗口重叠，且不与 RANGE 粒度耦合），如 token-usage compare 202609 --base 202608。可用 --by 指定非时间维度（client/model/provider/project），按该维度成员对比两期用量而非两期总量。--format 选择输出格式：table（默认，框线对比表）或 json（机器可读、原始整数、两空格缩进）；非法值在打开数据库之前即被拒绝。",
+			`Compare token usage between two periods.
+
+Pick the two periods in either of two ways:
+
+  token-usage compare 202607 202608         two periods, compared chronologically: the earlier one is the baseline and the later one is current; argument order does not matter
+  token-usage compare 202607 --base 202608  one period plus an explicit baseline (--base accepts the same forms and may overlap the current window; use it when the current period must be the earlier one)
+
+With a single period and no --base, the baseline is derived from its granularity: a day compares with the previous day, a month with the previous calendar month, a year with the previous calendar year, and a range with an equal-length window ending the day before it starts, e.g. token-usage compare 20260701-20260710 compares 2026-06-21..2026-06-30.
+
+Each period accepts a day (YYYYMMDD), a month (YYYYMM), a year (YYYY), or a day/month range like 20260701-20260710 whose endpoints may mix days and months; dashed ISO forms like 2026-08-01 are rejected. Note that 202607-202608 is a single two-month window, not a two-period comparison; to compare two months, write token-usage compare 202607 202608. Two positional periods cannot be combined with --base: the baseline would be fixed twice.
+
+Pass --by with a non-temporal dimension (client/model/provider/project) to compare per member of that dimension across the two windows instead of whole-period totals. --format selects the output format: table (default, the framed comparison table) or json (machine-readable: raw integers, two-space indentation); invalid values are rejected before the database opens.`,
+			`对比两个时间段的 token 用量。
+
+两种方式指定这两个时段：
+
+  token-usage compare 202607 202608         两个时段按时间先后对比：早者为基线、晚者为当前；参数顺序不影响结果
+  token-usage compare 202607 --base 202608  单个时段加显式基线（--base 接受相同形态，允许与当前窗口重叠；当前期需要是较早者时用它）
+
+单个时段且缺省 --base 时，基线按其粒度推导：单日对比前一天，单月对比上一个日历月，单年对比上一个日历年，区间对比结束于开始日前一天的等长窗口，如 token-usage compare 20260701-20260710 对比 2026-06-21..2026-06-30。
+
+每个时段接受日（YYYYMMDD）、月（YYYYMM）、年（YYYY）或日/月区间（如 20260701-20260710，端点可日/月混用）；拒绝 2026-08-01 这类 ISO 破折号形态。注意 202607-202608 是单个跨两月的窗口，不是两期对比；对比两个月请写 token-usage compare 202607 202608。两个位置参数不可与 --base 同用：基线会被确定两次。
+
+可用 --by 指定非时间维度（client/model/provider/project），按该维度成员对比两期用量而非两期总量。--format 选择输出格式：table（默认，框线对比表）或 json（机器可读、原始整数、两空格缩进）；非法值在打开数据库之前即被拒绝。`,
 		),
 		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) != 1 {
+			if len(args) != 1 && len(args) != 2 {
 				return fmt.Errorf("%s", ui.Bi(
-					fmt.Sprintf("compare requires exactly 1 positional arg (a date or date range), got %d. Accepts %s, e.g. token-usage compare 20260701", len(args), dateFormatsHintEN),
-					fmt.Sprintf("compare 需要恰好 1 个位置参数（日期或日期区间），当前 %d 个。%s，例如 token-usage compare 20260701", len(args), dateFormatsHintZH),
+					fmt.Sprintf("compare requires 1 or 2 positional args (date periods), got %d. One period compares it with the derived baseline, e.g. token-usage compare 202608; two periods compare them chronologically, earlier as the baseline and later as current, e.g. token-usage compare 202607 202608. Accepts %s", len(args), dateFormatsHintEN),
+					fmt.Sprintf("compare 需要 1 或 2 个位置参数（时间段），当前 %d 个。单个时段与按粒度推导的基线对比，例如 token-usage compare 202608；两个时段按时间先后对比，早者为基线、晚者为当前，例如 token-usage compare 202607 202608。%s", len(args), dateFormatsHintZH),
 				))
 			}
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// 参数解析与 --by 校验先于配置与数据库打开，非法输入即时报错、不占运行时资源。
-			curStart, curEnd, baseStart, baseEnd, err := parseCompareArgs(args[0], cmd.Flag("base").Value.String())
+			curStart, curEnd, baseStart, baseEnd, err := parseCompareArgs(args, cmd.Flag("base").Value.String())
 			if err != nil {
 				return err
 			}
@@ -130,8 +152,8 @@ func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string
 		},
 	}
 	cmd.Flags().String("base", "", ui.Bi(
-		"base period range (same forms as RANGE); overrides the granularity-derived baseline (previous day/month/year for a single day/month/year RANGE, equal-length window ending the day before a range starts)",
-		"基线时间段（与 RANGE 同形态）；缺省基线按 RANGE 粒度推导：单日/单月/单年对前一天/上一个日历月/上一个日历年，区间对结束于开始日前一天的等长窗口",
+		"base period range (same forms as RANGE); overrides the granularity-derived baseline (previous day/month/year for a single day/month/year RANGE, equal-length window ending the day before a range starts), e.g. token-usage compare 202609 --base 202608",
+		"基线时间段（与 RANGE 同形态）；覆盖缺省推导的基线（单日/单月/单年对前一天/上一个日历月/上一个日历年，区间对结束于开始日前一天的等长窗口），例如 token-usage compare 202609 --base 202608",
 	))
 	cmd.Flags().String("by", "", ui.Bi(
 		"Compare per member of a dimension: client/model/provider/project",
@@ -145,11 +167,32 @@ func newCompareCmdWithDeps(load func() (*config.Config, error), open func(string
 	return cmd
 }
 
-// parseCompareArgs 解析 compare 的当前窗口与基线窗口：base 为空时按当前
-// 窗口粒度推导缺省基线（defaultCompareBase），非空时用同一解析器独立解析。
+// parseCompareArgs 解析 compare 的当前窗口与基线窗口。前置条件：args 恰有
+// 1 或 2 个元素（cobra Args 已校验）。1 个时 base 为空按当前窗口粒度推导
+// 缺省基线（defaultCompareBase），非空时用同一解析器独立解析；2 个时为
+// 双位置参数形态，两窗口按（起始日，起始日相同再按结束日）升序排列，早者
+// 为基线、晚者为当前（与输入顺序无关），此时 base 必须为空否则冲突报错。
 // 返回两个窗口的归一化起止时间。
-func parseCompareArgs(raw, base string) (curStart, curEnd, baseStart, baseEnd time.Time, err error) {
-	curStart, curEnd, singleLen, err := parseCompareRangeArg(raw)
+func parseCompareArgs(args []string, base string) (curStart, curEnd, baseStart, baseEnd time.Time, err error) {
+	if len(args) == 2 {
+		if base != "" {
+			return time.Time{}, time.Time{}, time.Time{}, time.Time{}, twoPositionalBaseConflictError()
+		}
+		firstStart, firstEnd, _, err := parseCompareRangeArg(args[0])
+		if err != nil {
+			return time.Time{}, time.Time{}, time.Time{}, time.Time{}, err
+		}
+		secondStart, secondEnd, _, err := parseCompareRangeArg(args[1])
+		if err != nil {
+			return time.Time{}, time.Time{}, time.Time{}, time.Time{}, err
+		}
+		baseStart, baseEnd, curStart, curEnd = firstStart, firstEnd, secondStart, secondEnd
+		if curStart.Before(baseStart) || (curStart.Equal(baseStart) && curEnd.Before(baseEnd)) {
+			baseStart, baseEnd, curStart, curEnd = curStart, curEnd, baseStart, baseEnd
+		}
+		return curStart, curEnd, baseStart, baseEnd, nil
+	}
+	curStart, curEnd, singleLen, err := parseCompareRangeArg(args[0])
 	if err != nil {
 		return time.Time{}, time.Time{}, time.Time{}, time.Time{}, err
 	}
@@ -162,6 +205,15 @@ func parseCompareArgs(raw, base string) (curStart, curEnd, baseStart, baseEnd ti
 		return time.Time{}, time.Time{}, time.Time{}, time.Time{}, err
 	}
 	return curStart, curEnd, baseStart, baseEnd, nil
+}
+
+// twoPositionalBaseConflictError 双位置参数与 --base 同用：基线会被确定
+// 两次，二者只能二选一。
+func twoPositionalBaseConflictError() error {
+	return fmt.Errorf("%s", ui.Bi(
+		"compare accepts either two positional periods or --base, not both: with two periods the baseline is the earlier one, e.g. token-usage compare 202607 202608",
+		"两个位置参数与 --base 只能二选一：两个时段已按时间先后确定基线（早者为基线），例如 token-usage compare 202607 202608",
+	))
 }
 
 // parseCompareRangeArg 解析 compare 的一个时间段参数（当前窗口或 --base），

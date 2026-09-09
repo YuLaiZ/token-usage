@@ -545,6 +545,48 @@ func TestUpsertSessionMeta(t *testing.T) {
 	}
 }
 
+// 空 title 不得覆盖库中已有 title：Codex watcher 路径（ChangedFile/rollout 全扫）
+// 解析时拿不到标题（title 只在 Codex state DB），空值若无条件覆盖会冲掉补查写入的标题。
+func TestUpsertSessionMetaEmptyTitleKeepsExisting(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	if _, err := UpsertSessionMeta(ctx, db, []model.Session{
+		{ID: "s1", Client: model.ClientCodexApp, Directory: "/p", Project: "proj",
+			Title: "评审标题", FirstTS: 100, LastTS: 200},
+	}); err != nil {
+		t.Fatalf("initial upsert failed: %v", err)
+	}
+	if _, err := UpsertSessionMeta(ctx, db, []model.Session{
+		{ID: "s1", Client: model.ClientCodexApp, Directory: "/p", Project: "proj",
+			Title: "", FirstTS: 100, LastTS: 300},
+	}); err != nil {
+		t.Fatalf("empty-title upsert failed: %v", err)
+	}
+	var title string
+	if err := db.QueryRow(`SELECT title FROM sessions WHERE id=? AND client=?`,
+		"s1", model.ClientCodexApp).Scan(&title); err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if title != "评审标题" {
+		t.Errorf("empty title must not overwrite existing: title = %q", title)
+	}
+
+	// 非空 title 仍然正常更新。
+	if _, err := UpsertSessionMeta(ctx, db, []model.Session{
+		{ID: "s1", Client: model.ClientCodexApp, Directory: "/p", Project: "proj",
+			Title: "新标题", FirstTS: 100, LastTS: 400},
+	}); err != nil {
+		t.Fatalf("non-empty-title upsert failed: %v", err)
+	}
+	if err := db.QueryRow(`SELECT title FROM sessions WHERE id=? AND client=?`,
+		"s1", model.ClientCodexApp).Scan(&title); err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if title != "新标题" {
+		t.Errorf("non-empty title should overwrite: title = %q", title)
+	}
+}
+
 // cursor round-trip 多 source
 func TestSyncCursors(t *testing.T) {
 	db := setupTestDB(t)

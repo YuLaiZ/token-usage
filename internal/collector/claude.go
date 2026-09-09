@@ -148,14 +148,17 @@ func findClaudeJSONLFiles(ctx context.Context, projectsDir string) ([]string, er
 
 // jsonlEntry JSONL 单行结构。lineNo 记录源行号（非 JSON 字段），供坏行汇总定位。
 type jsonlEntry struct {
-	Type        string `json:"type"`
-	SessionID   string `json:"sessionId"`
-	Timestamp   string `json:"timestamp"`
-	Entrypoint  string `json:"entrypoint"`
-	Cwd         string `json:"cwd"`
-	CustomTitle string `json:"custom-title"`
-	lineNo      int
-	Message     *struct {
+	Type       string `json:"type"`
+	SessionID  string `json:"sessionId"`
+	Timestamp  string `json:"timestamp"`
+	Entrypoint string `json:"entrypoint"`
+	Cwd        string `json:"cwd"`
+	// 标题行 {"type":"custom-title"} 的载荷字段双形态：现行版本为驼峰 customTitle，
+	// kebab custom-title 为历史兼容；同行两形态同现时驼峰优先。
+	CustomTitleCamel string `json:"customTitle"`
+	CustomTitle      string `json:"custom-title"`
+	lineNo           int
+	Message          *struct {
 		ID      string          `json:"id"`
 		Role    string          `json:"role"`
 		Model   string          `json:"model"`
@@ -268,7 +271,11 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 		if entry.Cwd != "" && cwd == "" {
 			cwd = entry.Cwd
 		}
-		if entry.CustomTitle != "" {
+		// 标题双形态归一：行内驼峰优先、kebab 兜底；跨行保持"行序最后非空"语义
+		// （单遍循环内逐行归一，不得拆成两遍独立扫描导致顺序失真）。
+		if title := entry.CustomTitleCamel; title != "" {
+			customTitle = title
+		} else if entry.CustomTitle != "" {
 			customTitle = entry.CustomTitle
 		}
 		if entry.Timestamp != "" {

@@ -21,7 +21,7 @@ func newForecastCmd() *cobra.Command {
 func newForecastCmdWithDeps(load func() (*config.Config, error), open func(string) (*db.DB, error), now func() time.Time) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "forecast",
-		Short: "Extrapolate usage from recent daily averages / 按近期日均外推用量",
+		Short: "Estimate future usage from recent daily averages / 按近期日均估算未来用量",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := load()
@@ -68,13 +68,13 @@ type forecastWindowStats struct {
 	last30 querier.RangeStats
 }
 
-// renderForecast 输出用量外推:今日至今、最近 7/30 天的总量与日均(按活跃天
-// 平均,与 query summary 的 Daily average 同一口径),再按各自日均线性外推
-// 未来 7/30 天(假设未来保持同等活跃强度)。窗口内无数据时该行显示无数据、
-// 对应外推行省略。双语只出现在标签位,数值行保持符号化形态避免中英文词序
-// 互相割裂。
+// renderForecast 输出用量预测:今日至今、最近 7/30 天的总量与日均(按活跃天
+// 平均,与 query summary 的 Daily average 同一口径),再按各自日均乘以未来
+// 天数估算未来 7/30 天(假设未来保持同等活跃强度)。窗口内无数据时该行显示
+// 无数据、对应预测行省略。双语只出现在标签位,数值行保持符号化形态避免
+// 中英文词序互相割裂。
 func renderForecast(w io.Writer, s forecastWindowStats) error {
-	fmt.Fprintln(w, ui.Bi("Forecast", "用量外推"))
+	fmt.Fprintln(w, ui.Bi("Forecast", "用量预测"))
 	fmt.Fprintln(w)
 
 	fmt.Fprintf(w, "%s: %s\n",
@@ -104,8 +104,8 @@ func writeWindowLine(w io.Writer, label string, days int, s querier.RangeStats) 
 		ui.Bi("days active", "天有数据"))
 }
 
-// writeProjectionLine 输出外推行:窗口日均乘以未来自然天数;窗口无数据时
-// 省略该行(外推没有依据,不编造数字)。
+// writeProjectionLine 输出预测行:窗口日均乘以未来自然天数;窗口无数据时
+// 省略该行(预测没有依据,不编造数字)。
 func writeProjectionLine(w io.Writer, label string, days int, s querier.RangeStats) {
 	if s.ActiveDays == 0 {
 		return

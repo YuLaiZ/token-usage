@@ -24,7 +24,7 @@ func forecastTestStats() forecastWindowStats {
 	}
 }
 
-// 渲染合同:今日至今、窗口行(总量/自然天/活跃天/日均)、外推行(日均×自然天)。
+// 渲染合同:今日至今、窗口行(总量/自然天/活跃天/日均)、预测行(日均×自然天)。
 func TestRenderForecast_WithFullData(t *testing.T) {
 	var buf bytes.Buffer
 	if err := renderForecast(&buf, forecastTestStats()); err != nil {
@@ -32,7 +32,7 @@ func TestRenderForecast_WithFullData(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"Forecast / 用量外推",
+		"Forecast / 用量预测",
 		"Today so far / 今日至今: 1.00 K",
 		"Last 7 days / 最近 7 天: 7.00 K, 1.00 K/day (7/7 days active / 天有数据)",
 		"Last 30 days / 最近 30 天: 28.00 K, 1.00 K/day (28/30 days active / 天有数据)",
@@ -44,14 +44,14 @@ func TestRenderForecast_WithFullData(t *testing.T) {
 		}
 	}
 	// 日均口径:30 天窗口 28 天活跃,日均 = 28000/28 = 1000;若错误地按自然天
-	// 平均(28000/30≈933)则 1.00 K/day 不会变,但外推基数变化——用整数整除
+	// 平均(28000/30≈933)则 1.00 K/day 不会变,但预测基数变化——用整数整除
 	// 敏感的数字再验一次:28000/28=1000 vs 28000/30=933(非整除可见)。
 	if !strings.Contains(out, "1.00 K/day") {
 		t.Errorf("日均应按活跃天平均:\n%s", out)
 	}
 }
 
-// 窗口无数据:窗口行显示无数据,对应外推行省略,不编造数字。
+// 窗口无数据:窗口行显示无数据,对应预测行省略,不编造数字。
 func TestRenderForecast_NoData(t *testing.T) {
 	var buf bytes.Buffer
 	empty := forecastWindowStats{}
@@ -66,7 +66,7 @@ func TestRenderForecast_NoData(t *testing.T) {
 		t.Errorf("两个窗口行都应显示无数据:\n%s", out)
 	}
 	if strings.Contains(out, "Next 7 days") || strings.Contains(out, "Next 30 days") {
-		t.Errorf("无数据时不应输出外推行:\n%s", out)
+		t.Errorf("无数据时不应输出预测行:\n%s", out)
 	}
 }
 
@@ -112,12 +112,12 @@ func TestForecastCmd_EndToEnd(t *testing.T) {
 	if !strings.Contains(out, "Last 7 days / 最近 7 天: 700, 700/day (1/7 days active / 天有数据)") {
 		t.Errorf("最近 7 天行应只统计窗口内数据:\n%s", out)
 	}
-	// 外推:7 天日均 700×7=4900;30 天窗口同为昨日一天 → 700×30=21000。
+	// 预测:7 天日均 700×7=4900;30 天窗口同为昨日一天 → 700×30=21000。
 	if !strings.Contains(out, "Next 7 days / 未来 7 天: 4.90 K (700/day × 7)") {
-		t.Errorf("7 天外推应为 4.90 K:\n%s", out)
+		t.Errorf("7 天预测应为 4.90 K:\n%s", out)
 	}
 	if !strings.Contains(out, "Next 30 days / 未来 30 天: 21.00 K (700/day × 30)") {
-		t.Errorf("30 天外推应为 21.00 K:\n%s", out)
+		t.Errorf("30 天预测应为 21.00 K:\n%s", out)
 	}
 }
 
@@ -240,7 +240,8 @@ func TestChartCmd_PieEndToEnd(t *testing.T) {
 	}
 }
 
-// watch 单帧渲染:输出实时监视头(刷新时间)、summary 与按模型分组;
+// watch 单帧渲染:输出实时监视头(刷新时间)与帧体;缺省视图执行
+// query.default(无配置回退 client),帧体与 query 输出一致;
 // --once 模式渲染一帧即返回,重定向与管道友好。
 func TestWatchCmd_OnceFrame(t *testing.T) {
 	usageDB, err := db.Open(":memory:")
@@ -278,11 +279,11 @@ func TestWatchCmd_OnceFrame(t *testing.T) {
 	if !strings.Contains(out, "Live watch - refreshed at 09:30:00") {
 		t.Errorf("应含实时监视头与刷新时间:\n%s", out)
 	}
-	if !strings.Contains(out, "Total requests / 请求总数: 1") {
-		t.Errorf("帧内应含 summary:\n%s", out)
+	if !strings.Contains(out, "Usage statistics / 使用统计") {
+		t.Errorf("帧体应与 query 一致,含统计信息区:\n%s", out)
 	}
-	if !strings.Contains(out, "model-x") {
-		t.Errorf("帧内应含按模型分组:\n%s", out)
+	if !strings.Contains(out, model.ClientClaudeCode) {
+		t.Errorf("缺省视图回退 client,帧内应含按客户端分组:\n%s", out)
 	}
 	if strings.Contains(out, "\x1b[2J") {
 		t.Errorf("once 模式不应输出清屏序列:\n%s", out)

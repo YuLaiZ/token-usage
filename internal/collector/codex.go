@@ -211,7 +211,8 @@ func advanceCodexCursor(current model.SyncCursor, hasCurrent bool, th codexThrea
 }
 
 // collectChangedFile 只解析单个 rollout 文件，fallback metadata 为空，
-// 由 rollout 内的 session_meta 提供 ID/client/cwd/ParentID/source/originator。
+// 由 rollout 内的 session_meta 提供 ID/client/cwd/ParentID/source/originator；
+// title 由 backfillThreadTitles 从 state DB 补齐。
 func (c *CodexCollector) collectChangedFile(ctx context.Context, path string, logger *slog.Logger) (CollectResult, error) {
 	// fallback 为空 codexThread：所有字段零值，session_meta 将回填。
 	part, status, err := parseRolloutWithStatus(ctx, path, codexThread{}, map[string]struct{}{}, logger)
@@ -220,8 +221,87 @@ func (c *CodexCollector) collectChangedFile(ctx context.Context, path string, lo
 		part.FileStatuses = []FileScanStatus{status}
 		return part, err
 	}
+	c.backfillThreadTitles(ctx, &part, logger)
 	part.FileStatuses = []FileScanStatus{status}
 	return part, nil
+}
+
+// loadThreadTitleMap 汇总各 state DB threads 表的非空标题，键为 thread id。
+// 单个 DB 读取失败不中断（返回已收集到的部分与合并错误），由调用方决定降级方式。
+func loadThreadTitleMap(ctx context.Context, dbPaths []string) (map[string]string, error) {
+	titles := make(map[string]string)
+	var joinedErr error
+	for _, dbPath := range dbPaths {
+		if err := ctx.Err(); err != nil {
+			return titles, errors.Join(joinedErr, err)
+		}
+		db, err := openSQLiteReadOnly(dbPath)
+		if err != nil {
+			joinedErr = errors.Join(joinedErr, fmt.Errorf("%s: %w", dbPath, err))
+			continue
+		}
+		rows, err := db.QueryContext(ctx,
+			`SELECT COALESCE(id,''),COALESCE(title,'') FROM threads WHERE COALESCE(title,'')<>''`)
+		if err != nil {
+			db.Close()
+			joinedErr = errors.Join(joinedErr, fmt.Errorf("%s: %w", dbPath, err))
+			continue
+		}
+		var rowErr error
+		for rows.Next() {
+			var id, title string
+			if err := rows.Scan(&id, &title); err != nil {
+				rowErr = err
+				break
+			}
+			if id != "" {
+				titles[id] = title
+			}
+		}
+		if rowErr == nil {
+			rowErr = rows.Err()
+		}
+		rows.Close()
+		db.Close()
+		if rowErr != nil {
+			joinedErr = errors.Join(joinedErr, fmt.Errorf("%s: %w", dbPath, rowErr))
+		}
+	}
+	return titles, joinedErr
+}
+
+// backfillThreadTitles 用 state DB threads.title 补齐 result.Sessions 中缺失的标题。
+// ChangedFile 与 rollout 全扫路径的 fallback 为空 codexThread，rollout session_meta
+// 又不含 title（标题只在 state DB），解析侧无法获得，故在此补齐。标题属增强信息：
+// state DB 不可达时降级为无标题（Warn），不影响采集主流程。
+func (c *CodexCollector) backfillThreadTitles(ctx context.Context, result *CollectResult, logger *slog.Logger) {
+	need := false
+	for i := range result.Sessions {
+		if result.Sessions[i].Title == "" {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return
+	}
+	stateDBs, err := findStateDBs(c.stateDir)
+	if err != nil {
+		logger.Warn("Codex thread title lookup failed, skipped", "state_dir", c.stateDir, "error", err)
+		return
+	}
+	if len(stateDBs) == 0 {
+		return
+	}
+	titles, loadErr := loadThreadTitleMap(ctx, stateDBs)
+	if loadErr != nil {
+		logger.Warn("Codex thread title lookup incomplete", "error", loadErr)
+	}
+	for i := range result.Sessions {
+		if result.Sessions[i].Title == "" {
+			result.Sessions[i].Title = titles[result.Sessions[i].ID]
+		}
+	}
 }
 
 // collectExistingJSONL 递归扫描 Codex 当前 sessions_dir 与同级 archived_sessions。
@@ -257,6 +337,7 @@ func (c *CodexCollector) collectExistingJSONL(ctx context.Context, gate FileSkip
 		result.Messages = append(result.Messages, part.Messages...)
 		result.Sessions = append(result.Sessions, part.Sessions...)
 	}
+	c.backfillThreadTitles(ctx, &result, logger)
 	return result, nil
 }
 

@@ -1141,6 +1141,96 @@ func TestCodexCollector_ChangedFileMode(t *testing.T) {
 	})
 }
 
+// ChangedFile 路径的 fallback 为空 codexThread，标题必须从 state DB threads.title 补齐。
+func TestCodexCollector_ChangedFileBackfillsTitleFromStateDB(t *testing.T) {
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	sessionsDir := filepath.Join(tmp, "sessions")
+	os.MkdirAll(stateDir, 0755)
+	os.MkdirAll(sessionsDir, 0755)
+
+	rollout := filepath.Join(sessionsDir, "rollout-titled.jsonl")
+	writeRollout(t, rollout, "thread-titled", "gpt-5.4", "msg-1")
+	createStateDBWithThreads(t, stateDir, []codexThread{
+		{ID: "thread-titled", RolloutPath: rollout, Cwd: "/tmp/a", Source: "cli",
+			Title: "评审标题", UpdatedAtMS: 1000},
+	})
+
+	cfg := &config.Config{Clients: map[string]config.Client{
+		"codex": {Enabled: true, Paths: map[string]string{
+			"state_dir": stateDir, "sessions_dir": sessionsDir,
+		}},
+	}}
+	collector := NewCodexCollector(cfg)
+	result, err := collector.Collect(context.Background(),
+		CollectRequest{ChangedFile: rollout}, slog.Default())
+	if err != nil {
+		t.Fatalf("Collect failed: %v", err)
+	}
+	if len(result.Sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(result.Sessions))
+	}
+	if result.Sessions[0].Title != "评审标题" {
+		t.Errorf("Title = %q, want %q (backfilled from state DB threads.title)",
+			result.Sessions[0].Title, "评审标题")
+	}
+}
+
+// state DB 不可达时标题降级为空，不影响 ChangedFile 采集主流程。
+func TestCodexCollector_ChangedFileTitleDegradesWithoutStateDB(t *testing.T) {
+	cfg := &config.Config{Clients: map[string]config.Client{
+		"codex": {Enabled: true, Paths: map[string]string{
+			"state_dir": "/nonexistent", "sessions_dir": "/nonexistent",
+		}},
+	}}
+	collector := NewCodexCollector(cfg)
+	result, err := collector.Collect(context.Background(),
+		CollectRequest{ChangedFile: "../../testdata/codex/message-level.jsonl"}, slog.Default())
+	if err != nil {
+		t.Fatalf("Collect must not fail when state DB unreachable: %v", err)
+	}
+	for _, s := range result.Sessions {
+		if s.Title != "" {
+			t.Errorf("Title = %q, want empty when state DB unreachable", s.Title)
+		}
+	}
+}
+
+// rollout 全扫路径（startup catch-up）同样要从 state DB 补齐标题。
+func TestCodexCollector_ExistingJSONLBackfillsTitleFromStateDB(t *testing.T) {
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	sessionsDir := filepath.Join(tmp, "sessions")
+	os.MkdirAll(stateDir, 0755)
+	os.MkdirAll(sessionsDir, 0755)
+
+	rollout := filepath.Join(sessionsDir, "rollout-titled.jsonl")
+	writeRollout(t, rollout, "thread-titled", "gpt-5.4", "msg-1")
+	createStateDBWithThreads(t, stateDir, []codexThread{
+		{ID: "thread-titled", RolloutPath: rollout, Cwd: "/tmp/a", Source: "cli",
+			Title: "评审标题", UpdatedAtMS: 1000},
+	})
+
+	cfg := &config.Config{Clients: map[string]config.Client{
+		"codex": {Enabled: true, Paths: map[string]string{
+			"state_dir": stateDir, "sessions_dir": sessionsDir,
+		}},
+	}}
+	collector := NewCodexCollector(cfg)
+	result, err := collector.Collect(context.Background(),
+		CollectRequest{ScanExistingJSONL: true}, slog.Default())
+	if err != nil {
+		t.Fatalf("Collect failed: %v", err)
+	}
+	if len(result.Sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(result.Sessions))
+	}
+	if result.Sessions[0].Title != "评审标题" {
+		t.Errorf("Title = %q, want %q (backfilled from state DB threads.title)",
+			result.Sessions[0].Title, "评审标题")
+	}
+}
+
 // state 增量 (updated_at_ms,id) 定位变更 rollout。
 func TestCodexCollector_IncrementalCursor(t *testing.T) {
 	tmp := t.TempDir()

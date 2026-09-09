@@ -1,0 +1,5 @@
+{"type":"session_meta","sessionId":"kebab-last-1","timestamp":"2026-07-08T10:00:00Z","entrypoint":"cli","cwd":"/tmp/proj"}
+{"type":"custom-title","sessionId":"kebab-last-1","customTitle":"驼峰先写"}
+{"type":"user","sessionId":"kebab-last-1","timestamp":"2026-07-08T10:01:00Z","parentUuid":"u1","isSidechain":false,"uuid":"u1","userType":"human","entrypoint":"cli","cwd":"/tmp/proj","version":"1.0.0","gitBranch":"main","message":{"role":"user","content":"你好"}}
+{"type":"assistant","sessionId":"kebab-last-1","timestamp":"2026-07-08T10:02:00Z","parentUuid":"u1","isSidechain":false,"uuid":"a1","message":{"id":"msg-kebab-1","role":"assistant","model":"glm-5.3","content":[{"type":"text","text":"好的"}],"usage":{"input_tokens":100,"output_tokens":20}}}
+{"type":"custom-title","sessionId":"kebab-last-1","custom-title":"kebab后写最终标题"}

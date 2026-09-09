@@ -1,0 +1,5 @@
+{
+ "agent:main:main": {"sessionId": "sess-a", "label": "C 层标签A"},
+ "agent:main:cron:x": {"sessionId": "sess-c", "label": "Cron: 只在C层"},
+ "agent:main:other": {"sessionId": "sess-unrelated"}
+}

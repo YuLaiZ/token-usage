@@ -622,3 +622,37 @@ func TestClaude_FileParseFailureLogsWarn(t *testing.T) {
 		t.Fatalf("missing file-failure warn record: %v", handler.Messages())
 	}
 }
+
+// 标题行载荷双形态：真实数据为驼峰 customTitle（现行版本），kebab custom-title 为历史兼容。
+// 双向行序夹具：行序最后的非空值胜出，不得因实现为两遍独立扫描而顺序失真。
+func TestClaudeCustomTitleCamelForm(t *testing.T) {
+	t.Run("kebab 先写、驼峰后写 → 最后的驼峰胜出", func(t *testing.T) {
+		dir, _ := copyFixtureToTempDir(t, "custom-title-camel.jsonl")
+		c := newClaudeCollectorCfg(t, dir)
+		result, err := c.Collect(t.Context(), CollectRequest{}, slog.Default())
+		if err != nil {
+			t.Fatalf("Collect failed: %v", err)
+		}
+		if len(result.Sessions) != 1 {
+			t.Fatalf("expected 1 session, got %d", len(result.Sessions))
+		}
+		if got := result.Sessions[0].Title; got != "评审驼峰最终标题" {
+			t.Errorf("Title = %q, want 评审驼峰最终标题 (行序最后的非空值)", got)
+		}
+	})
+
+	t.Run("驼峰先写、kebab 后写 → 最后的 kebab 胜出", func(t *testing.T) {
+		dir, _ := copyFixtureToTempDir(t, "custom-title-kebab-last.jsonl")
+		c := newClaudeCollectorCfg(t, dir)
+		result, err := c.Collect(t.Context(), CollectRequest{}, slog.Default())
+		if err != nil {
+			t.Fatalf("Collect failed: %v", err)
+		}
+		if len(result.Sessions) != 1 {
+			t.Fatalf("expected 1 session, got %d", len(result.Sessions))
+		}
+		if got := result.Sessions[0].Title; got != "kebab后写最终标题" {
+			t.Errorf("Title = %q, want kebab后写最终标题 (行序最后的非空值，防驼峰恒优先的错误实现)", got)
+		}
+	})
+}

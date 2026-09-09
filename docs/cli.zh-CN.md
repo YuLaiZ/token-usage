@@ -29,11 +29,11 @@ token-usage
 ├── export [view] [DATE|DATE-DATE] # 以 CSV 或 JSON 导出使用数据（--format csv|json）
 ├── errors [DATE|DATE-DATE]
 ├── doctor                                # 只读健康自检（配置、数据目录、数据库、客户端、采集、异常）
-├── forecast                              # 按近期日均外推用量
-├── compare <range>                       # 对比两个时间段的用量（--base 显式指定基线，--by 按维度成员对比）
+├── forecast                              # 按近期日均估算未来用量
+├── compare <range> [range2]              # 对比两个时间段的用量（两个位置参数按时间先后对比、早者为基线；--base 显式指定基线，--by 按维度成员对比）
 ├── top [DATE|DATE-DATE]                  # 显示总用量最重的会话排行（--limit，默认 10）
 ├── chart [DATE|DATE-DATE]                # 将用量渲染为 SVG 图表（--by 维度、--pie、--line、--heatmap）
-├── watch [DATE|DATE-DATE]                # 以固定间隔刷新实时摘要（--by 分组维度，默认 model）
+├── watch [DATE|DATE-DATE]                # 以固定间隔刷新 query 输出（视图选择与 query 一致）
 ├── report [DATE|DATE-DATE] --out <dir>   # 生成完整用量报告包
 ├── config                                # 无参数：打开交互式配置 TUI
 │   ├── show                              # 输出完整 effective TOML（只读、纯 TOML）
@@ -64,7 +64,7 @@ token-usage
 
 | 命令 | 接受形式 | 缺省 |
 |------|----------|------|
-| `collect`、`query`（含子命令）、`export` | `DATE`（日 `YYYYMMDD`、月 `YYYYMM` 或年 `YYYY`，年仅单独使用）或 `DATE-DATE`（日/月端点，闭区间） | 今天 |
+| `collect`、`query`（含子命令）、`export`、`watch` | `DATE`（日 `YYYYMMDD`、月 `YYYYMM` 或年 `YYYY`，年仅单独使用）或 `DATE-DATE`（日/月端点，闭区间） | 今天 |
 | `errors` | `DATE` 或 `DATE-DATE`（与 `collect`/`query` 相同形态） | 无日期且无 `--source` 时只看未解决 |
 
 `YYYYMMDD` 为 8 位紧凑格式（如 `20260701`）；`YYYYMM` 表示一个自然月，`YYYY` 表示一个自然年（年形态仅单独使用）。`YYYY-MM-DD`、多余位置参数、年做区间端点、结束早于开始均报错并给出命令示例。单参数或区间统一归一化为逐日列表（含两端），上限 366 天（一个闰年），更长范围请拆分多次执行。
@@ -302,14 +302,14 @@ columns = ["requests", "input", "output", "total", "cache_hit"]
 | `total` | Total / 总计 | 源 total tokens |
 | `cache_hit` | Cache Hit / 缓存命中 | cache_read / (fresh input + cache_read + cache_create) |
 
-- **适用范围**：布局作用于 `query client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday`、`session`，以及裸 query、具名视图（`query <name>` / `query custom <name>`）与组合查询展开的每张表。`query summary` 不适用——它保持完整纵向摘要（含 Cache Create）；`query list` 不渲染数据表。维度列始终显示在每张表左侧（session 表固定先显示 Client/Project/Title/Duration），不参与布局。
+- **适用范围**：布局作用于 `query client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday`、`session`，以及裸 query、具名视图（`query <name>` / `query custom <name>`）与组合查询展开的每张表，外加对应的 `watch` 帧（其视图表与 `query` 走同一执行链；`watch --by summary` 保持完整纵向摘要）。`query summary` 不适用——它保持完整纵向摘要（含 Cache Create）；`query list` 不渲染数据表；`export` 有意不应用布局（固定机器 schema）。维度列始终显示在每张表左侧（session 表固定先显示 Client/Project/Title/Duration），不参与布局。
 - **默认值**：缺失 `[query.output]` 或缺失 `columns` 时使用 `requests, input, output, cache_read, reasoning, total, cache_hit` 七列，升级后既有配置与输出保持不变。`cache_create` 是首个可选但默认隐藏的指标；它始终计入缓存命中率分母，显示或隐藏都不改变任何统计值、排序与总计。
 - **校验规则**：`query.output` 必须是表且只允许 `columns` 一个子键；数组非空、元素为上表中的字符串、不得重复（元素首尾空格自动去除）。空数组不是「恢复默认」——恢复默认应删除 `query.output`（或 `query.output.columns`）。错误会报出完整配置路径与具体值。`config set` 不支持写入 `query.output.columns`，请使用 TUI 的 Output columns 页或手工编辑 TOML。
 - **错误边界**：无关的视图定义错误（`subqueries`/`groups`/`default`）不阻断九个受布局影响的静态表格命令——合法布局仍生效。`query.output` 自身不合法时，这九个命令在打开数据库前失败。顶层 query 问题（`[query]` 与 `[Query]` 并存、根值非表）下静态表格命令静默回退默认七列，裸 query、具名视图与 `query list` 仍按既有定位错误失败。TUI 保存始终执行完整 query 校验。
 
 `query provider`（以及任何自定义视图中的 provider 维度）优先使用路由归因，其次使用采集器的供应商值；历史空值保持未归因，查询不会依据客户端推断供应商。`provider_aliases` 在组合键形成前生效：相同别名在每个视图中合并为同一行，且不会修改 `usage.db`。
 
-query 配置是纯展示配置。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突、`query = "x"` 根值非表）只会使默认路径（裸 `query` 与 `query <日期>`）、全部具名调用（`query <name>` / `query custom <name>`）、`query list` 与 TUI 保存失败并定位具体配置键；九个受布局影响的静态表格命令（`client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`session`）在顶层问题态回退默认七列、仅无关视图定义损坏时保持合法布局，`query summary` 不受影响，`collect`、`status`、`start`、守护进程、`config set`、`config show` 不受影响且原样保留问题项。TUI 主菜单按 `v` 进入 **Query** 页，含三个平级入口——**Views / 查询视图**（自定义子查询、组合查询、默认行为）、**Output columns / 输出列**（全局指标布局，`d` 恢复默认）、**Provider aliases / 供应商别名**——各自的部分无法解析时先显示自己的恢复列表。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]`、`[query.output]` 段：旧版本会拒绝任何非空 query 段。
+query 配置是纯展示配置。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突、`query = "x"` 根值非表）只会使默认路径（裸 `query` 与 `query <日期>`）、全部具名调用（`query <name>` / `query custom <name>`）、`query list` 与 TUI 保存失败并定位具体配置键；九个受布局影响的静态表格命令（`client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`session`）在顶层问题态回退默认七列、仅无关视图定义损坏时保持合法布局，`query summary` 不受影响，`collect`、`status`、`start`、守护进程、`config set`、`config show` 不受影响且原样保留问题项。`watch` 与 `export` 遵循同一分界：其缺省视图与配置视图路径与裸 `query` 同样以本地化诊断失败，而显式内置视图名（`watch --by client`、`export client`）与静态表格命令一致，忽略无关的视图定义错误。TUI 主菜单按 `v` 进入 **Query** 页，含三个平级入口——**Views / 查询视图**（自定义子查询、组合查询、默认行为）、**Output columns / 输出列**（全局指标布局，`d` 恢复默认）、**Provider aliases / 供应商别名**——各自的部分无法解析时先显示自己的恢复列表。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]`、`[query.output]` 段：旧版本会拒绝任何非空 query 段。
 
 示例：
 
@@ -333,7 +333,8 @@ token-usage export [view] [DATE|DATE-DATE] [--format csv|json]
 
 | 视图 | 键列 | 内容 |
 |---|---|---|
-| `client`（默认） | `client` | 按客户端分组 |
+| *（不带视图）* | — | 默认视图（`query.default`，内置回退 `client`） |
+| `client` | `client` | 按客户端分组 |
 | `model` | `model` | 按模型分组 |
 | `provider` | `provider` | 按供应商分组（路由归因优先；`provider_aliases` 合并行，行为与 `query provider` 一致；空 provider 导出为 `(unattributed) / (未归因)`，与 query 显示一致） |
 | `project` | `project` | 按项目分组（空 project 导出为 `(uncategorized) / (未分类)`，与 query 显示一致） |
@@ -342,10 +343,12 @@ token-usage export [view] [DATE|DATE-DATE] [--format csv|json]
 | `hour` | `hour` | 按小时用量，本机时区折算，小时升序，整日 24 小时刻度全量呈现，无数据小时补零值行 |
 | `weekday` | `weekday` | 按星期用量，本机时区折算，ISO 周序（周一在首），整周 7 天刻度全量呈现，无数据星期补零值行 |
 | `session` | `client`、`project`、`title`、`duration_ms` | 会话明细，顺序与 `query session` 一致；`project`/`title` 保留源字段原值——空 project 就是空串，与分组视图替换占位文案不同；`duration_ms` 为该会话的请求跨度（末条减首条消息时间戳，毫秒） |
+| 已配置子查询 | 每维度一列键列，按声明顺序 | 每个维度组合一行；键列名沿用与内置视图相同的 `day` → `date` 映射 |
+| 已配置组合查询 | 随成员而异 | 成员视图按声明顺序导出（见下） |
 
-`summary` 与已配置自定义视图（`query.subqueries` / `query.groups`）明确不可导出；未知视图会在加载配置与打开数据库之前按允许集合拒绝。
+`summary` 与 `heatmap` 没有行 schema，明确不可导出。`query.subqueries` / `query.groups` 中的已配置视图受支持：**子查询**按维度组合逐行导出，每个维度一列键列；**组合查询**导出成员视图——CSV 为多段、按声明顺序排列（段间空行分隔，各段自带表头，键列随成员视图类型），JSON 为成员名到行数组的对象映射（键按字母序输出，与单视图对象的 JSON map 语义一致）。未知视图在加载配置之后、打开数据库之前按动态允许集合（内置视图 + 已配置名称）拒绝；解析到坏视图定义的名称与 `query` 同样以本地化诊断失败，而显式内置视图名与 `query` 静态子命令一致，忽略无关的视图定义错误。
 
-日期参数与 `query` 相同：`DATE` 为日（`YYYYMMDD`）、月（`YYYYMM`）或年（`YYYY`，仅单独使用），`DATE-DATE` 为闭区间（端点为日或月）；缺省日期为今天（见「[日期参数格式](#日期参数格式)」）。位置参数分派与 `query` 一致：数字开头的单参数是日期（`token-usage export 20260901` 等价 `token-usage export client 20260901`）；两个位置参数时第一个必须是视图名。
+日期参数与 `query` 相同：`DATE` 为日（`YYYYMMDD`）、月（`YYYYMM`）或年（`YYYY`，仅单独使用），`DATE-DATE` 为闭区间（端点为日或月）；缺省日期为今天（见「[日期参数格式](#日期参数格式)」）。位置参数分派与 `query` 一致：数字开头的单参数是作用于默认视图的日期；两个位置参数时第一个必须是视图名（`token-usage export client 20260901`）。
 
 `--format` 选择 `csv`（默认）或 `json`。非法取值在加载配置与打开数据库之前拒绝。
 
@@ -365,8 +368,9 @@ token-usage export [view] [DATE|DATE-DATE] [--format csv|json]
 ```bash
 token-usage export day 20260901-20260907 > usage.csv
 token-usage export session --format json | jq .
-token-usage export 20260701                # 单日 client 视图
+token-usage export 20260701                # 单日默认视图（query.default）
 token-usage export provider --format json  # provider 视图，JSON 输出到 stdout
+token-usage export <已配置视图名>           # query.subqueries / query.groups 中的子查询或组合查询
 ```
 
 ## errors
@@ -636,14 +640,14 @@ catch-up 经 analyzer 的串行化锁 Submit（与实时触发同一路径，保
 
 ## forecast
 
-按近期日均外推即将到来的用量。窗口不含今天（未结束的一天会拉低日均）；今天单独以「至今」累计量呈现。
+按近期日均估算即将到来的用量。窗口不含今天（未结束的一天会拉低日均）；今天单独以「至今」累计量呈现。
 
 ```text
 token-usage forecast
 ```
 
 - `Last 7 days / 最近 7 天` 与 `Last 30 days / 最近 30 天`：显示各窗口总量、日均（窗口总量除以**活跃**天数——有数据的天数，整数除法向下取整）与窗口内活跃天占比。
-- `Next 7 days / 未来 7 天` 与 `Next 30 days / 未来 30 天`：以该日均线性外推未来自然天数，假设未来保持同等活跃强度。窗口内无数据时显示 `no data / 无数据` 并省略对应外推行。
+- `Next 7 days / 未来 7 天` 与 `Next 30 days / 未来 30 天`：以该日均乘以未来自然天数得出估算，假设未来保持同等活跃强度。窗口内无数据时显示 `no data / 无数据` 并省略对应预测行。
 - 命令只读，K/M/B 缩写口径与 query 一致。
 
 ## compare
@@ -651,23 +655,28 @@ token-usage forecast
 对比两个时间段的用量：输出一张 5 列框线表（指标 / 当前 / 基线 / 变化 / 变化%），覆盖活跃天、请求数与全部 token 指标。`--format json` 切换为机器可读 JSON 输出。
 
 ```text
-token-usage compare <range> [--base <range>] [--format table|json]
+token-usage compare <range> [range2] [--base <range>] [--format table|json]
+token-usage compare 202607 202608
 token-usage compare 20260901-20260907
 token-usage compare 202609 --base 202608
 token-usage compare 20260901-20260907 --by model
 token-usage compare 20260901-20260907 --format json
 ```
 
-| `<range>` / `--base` 形态 | 含义 |
+`<range>` 与 `[range2]` 接受与下表 `--base` 相同的形态。`[range2]` 不可与 `--base` 同用：两个位置参数的窗口按时间先后排序，较早者为基线，参数顺序不影响结果——`token-usage compare 202607 202608` 对比 2026-08 与 2026-07，与 `token-usage compare 202608 --base 202607` 相同。允许等值或重叠窗口，年也可做两个位置参数之一。注意 `202607-202608` 这类破折号区间是单个跨两月的窗口，不是两期对比。
+
+单个位置参数（或 `--base`）时各形态含义如下：
+
+| `<range>` / `[range2]` / `--base` 形态 | 含义 |
 |------|---------|
 | `YYYYMMDD` | 单日；缺省基线为前一天。 |
 | `YYYYMM` | 一个自然月；缺省基线为上一个日历月。 |
-| `YYYY` | 一个自然年（仅单独使用）；缺省基线为上一个日历年。 |
+| `YYYY` | 一个自然年（不可做区间端点，但可做两个位置参数之一）；缺省基线为上一个日历年。 |
 | `A-B` | 闭区间，端点为日或月（可混用）；缺省基线为结束于 A 前一天的等长窗口。 |
 
 行为要点：
 
-- 缺省 `--base` 时按上表粒度自动推导基线（含闰月；如 `20260701-20260710` 对比 `2026-06-21..2026-06-30`）。
+- 单个位置参数且缺省 `--base` 时按上表粒度自动推导基线（含闰月；如 `20260701-20260710` 对比 `2026-06-21..2026-06-30`）。
 - `--base <range>` 接受相同形态，与当前窗口的粒度解耦解析，允许与当前窗口重叠。拒绝 `2026-08-01` 这类 ISO 破折号形态；结束早于开始也报错。
 - 不设 366 天上限（与 `query`/`collect` 不同）：不带 `--by` 时本命令不做逐日展开——每个窗口用一条 `BETWEEN` 聚合读取，跨多年区间同样可用。
 - 行文案：活跃天与请求数显示带符号整数变化（`%+d`）；token 行沿用 K/M/B 缩写并带 `+`/`-` 符号；基线值为 0 时变化% 显示 `--`。表头不使用 Δ 等 ambiguous 宽度字符，保证 CJK 终端下框线对齐。
@@ -716,15 +725,17 @@ token-usage chart 20260901-20260930 --line         # 日趋势折线图（默认
 
 ## watch
 
-以固定间隔刷新实时摘要（总量与帧内分组表，默认维度 `--by model`），直到 Ctrl+C 中断。
+渲染某个窗口的 `query` 输出并以固定间隔刷新，直到 Ctrl+C 中断。帧体与 query 输出完全一致——统计信息区、应用 `[query.output.columns]` 布局与 `provider_aliases` 的视图表，以及采集异常警告——视图选择与 `query` 同一规则：不带 `--by` 时执行默认视图（`query.default`，内置回退 `client`）；watch 只额外加上 `Live watch` 横幅、固定间隔刷新与帧间清屏。
 
 ```bash
-token-usage watch                      # 今日摘要，每 5 秒刷新
+token-usage watch                      # 今天，默认视图，每 5 秒刷新
 token-usage watch 20260901 --interval 10s
+token-usage watch --by group           # query.groups 中已配置的视图名
 token-usage watch --once               # 只渲染一帧后退出（对管道友好）
 ```
 
-- `--by <维度>` 切换帧内分组表的维度（`client`、`model`、`provider`、`project`；默认 `model`）；`provider` 应用配置中 `[provider_aliases]` 的显示别名。非法值（含时间维度）在打开数据库之前即被拒绝，报错提示时间趋势请用 `token-usage chart --line`。
+- `--by` 选择帧内视图：内置视图（`client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday`、`heatmap`、`session`、`summary`）或 `query.subqueries` / `query.groups` 中已配置的视图名。不带 `--by` 时执行默认视图——`query.default`（内置回退 `client`），已配置组合查询时每帧渲染全部成员表。显式内置名与 `query` 静态子命令一致，忽略无关的视图定义错误；不带标志与配置视图名路径走完整 query 校验，与裸 `query` 同样以本地化诊断失败。未知 `--by` 值在打开数据库之前按动态允许集合拒绝。
+- 日期参数与 `query` 同形态；不带日期时帧跟随今天，每次刷新重算，跨午夜自动切换；显式指定的日期或区间保持固定（监视历史区间是合法用法）。
 - `--interval` 接受 Go 时长，下限 1 秒；更小的值在打开数据库之前即被拒绝。
 - 交互式循环在每帧之间清屏（Windows 控制台会自动启用虚拟终端处理）；`--once` 只渲染一帧且不含转义序列，重定向输出保持纯文本。
 - 严格只读：与其他读取类命令相同的开库语义，不与守护进程交互，Ctrl+C 不残留任何状态。
@@ -739,7 +750,7 @@ token-usage report 20260901-20260930 --out september-report
 
 - `--out <目录>` 必填；目录不存在时自动创建，每个文件均为原子写入。
 - 文件：`summary.txt`、`compare.txt`、`daily.svg`、`hourly.svg`、`weekday.svg`、`monthly.svg`、`by-client.svg`、`by-model.svg`、`by-provider.svg`、`by-project.svg`、`heatmap.svg`。
-- 日期参数与 `query`/`collect` 同形态（默认今天）。报告包不含 forecast 外推，请单独执行 `token-usage forecast`。除写入报告包外严格只读。
+- 日期参数与 `query`/`collect` 同形态（默认今天）。报告包不含 forecast 用量预测，请单独执行 `token-usage forecast`。除写入报告包外严格只读。
 
 ## update
 

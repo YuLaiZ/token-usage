@@ -42,7 +42,7 @@ func TestParseCompareArgs_DefaultBase(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			curStart, curEnd, baseStart, baseEnd, err := parseCompareArgs(tc.raw, "")
+			curStart, curEnd, baseStart, baseEnd, err := parseCompareArgs([]string{tc.raw}, "")
 			if err != nil {
 				t.Fatalf("parseCompareArgs(%q) 出错: %v", tc.raw, err)
 			}
@@ -71,7 +71,7 @@ func TestParseCompareArgs_ExplicitBase(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			curStart, curEnd, baseStart, baseEnd, err := parseCompareArgs(tc.raw, tc.base)
+			curStart, curEnd, baseStart, baseEnd, err := parseCompareArgs([]string{tc.raw}, tc.base)
 			if err != nil {
 				t.Fatalf("parseCompareArgs(%q, %q) 出错: %v", tc.raw, tc.base, err)
 			}
@@ -117,7 +117,7 @@ func TestParseCompareArgs_Errors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, _, err := parseCompareArgs(tc.raw, tc.base)
+			_, _, _, _, err := parseCompareArgs([]string{tc.raw}, tc.base)
 			if err == nil {
 				t.Fatalf("parseCompareArgs(%q, %q) 应返回 error", tc.raw, tc.base)
 			}
@@ -131,6 +131,105 @@ func TestParseCompareArgs_Errors(t *testing.T) {
 			// 命令示例统一为 compare（cmdName 贯穿）。
 			if !strings.Contains(msg, "token-usage compare 20260701") {
 				t.Errorf("错误应含命令示例 token-usage compare 20260701，实际 %q", msg)
+			}
+		})
+	}
+}
+
+// TestParseCompareArgs_TwoPositional 双位置参数排序制：两窗口按（起始日，
+// 起始日相同再按结束日）升序，早者为基线、晚者为当前，与输入顺序无关；
+// 年/月/日/区间形态与等值、同起异终窗口逐一断言四窗口精确值，并以关系
+// 断言钉住与单参数 --base 写法的等价式。
+func TestParseCompareArgs_TwoPositional(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		wantCur  [2]string
+		wantBase [2]string
+	}{
+		{"month pair", []string{"202607", "202608"},
+			[2]string{"2026-08-01", "2026-08-31"}, [2]string{"2026-07-01", "2026-07-31"}},
+		{"reversed order normalizes", []string{"202608", "202607"},
+			[2]string{"2026-08-01", "2026-08-31"}, [2]string{"2026-07-01", "2026-07-31"}},
+		{"year pair", []string{"2025", "2026"},
+			[2]string{"2026-01-01", "2026-12-31"}, [2]string{"2025-01-01", "2025-12-31"}},
+		{"day with month", []string{"20260815", "202609"},
+			[2]string{"2026-09-01", "2026-09-30"}, [2]string{"2026-08-15", "2026-08-15"}},
+		{"range pair", []string{"20260701-20260710", "20260801-20260810"},
+			[2]string{"2026-08-01", "2026-08-10"}, [2]string{"2026-07-01", "2026-07-10"}},
+		{"equal windows", []string{"202607", "202607"},
+			[2]string{"2026-07-01", "2026-07-31"}, [2]string{"2026-07-01", "2026-07-31"}},
+		{"same start sorts by end", []string{"20260701-20260831", "202607"},
+			[2]string{"2026-07-01", "2026-08-31"}, [2]string{"2026-07-01", "2026-07-31"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			curStart, curEnd, baseStart, baseEnd, err := parseCompareArgs(tc.args, "")
+			if err != nil {
+				t.Fatalf("parseCompareArgs(%v) 出错: %v", tc.args, err)
+			}
+			assertCompareWindow(t, "current", curStart, curEnd, tc.wantCur)
+			assertCompareWindow(t, "base", baseStart, baseEnd, tc.wantBase)
+		})
+	}
+	// 等价式（parse 层关系断言）：双参数写法与单参数 --base 写法的四个
+	// 返回窗口逐值相等——按时间先后书写时 compare A B 等价于 compare B --base A。
+	pairCurStart, pairCurEnd, pairBaseStart, pairBaseEnd, err := parseCompareArgs([]string{"202607", "202608"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseCurStart, baseCurEnd, baseBaseStart, baseBaseEnd, err := parseCompareArgs([]string{"202608"}, "202607")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pairCurStart != baseCurStart || pairCurEnd != baseCurEnd ||
+		pairBaseStart != baseBaseStart || pairBaseEnd != baseBaseEnd {
+		t.Errorf("等价式两侧窗口应逐值相等: 双参数 = %v..%v / %v..%v, --base = %v..%v / %v..%v",
+			pairCurStart, pairCurEnd, pairBaseStart, pairBaseEnd,
+			baseCurStart, baseCurEnd, baseBaseStart, baseBaseEnd)
+	}
+}
+
+// TestParseCompareArgs_TwoPositionalErrors 双位置参数负向形态：与 --base
+// 同用冲突、日历非法、长度非法、ISO 破折号拆分出年端点；断言双语关键
+// 句式与各自的命令示例，保证各分支命中预期的错误辅助函数。
+func TestParseCompareArgs_TwoPositionalErrors(t *testing.T) {
+	cases := []struct {
+		name        string
+		args        []string
+		base        string
+		wantEn      string
+		wantZh      string
+		wantExample string
+	}{
+		{"two positional with --base", []string{"202607", "202608"}, "202605",
+			"either two positional periods or --base", "只能二选一",
+			"token-usage compare 202607 202608"},
+		{"illegal calendar", []string{"202613", "202607"}, "",
+			"date is not a valid date", "日期不合法",
+			"token-usage compare 20260701"},
+		{"illegal length", []string{"20260", "202607"}, "",
+			"accepts YYYYMMDD (day)", "接受 YYYYMMDD（日）",
+			"token-usage compare 20260701"},
+		{"ISO dashed splits to year endpoint", []string{"2026-07", "202608"}, "",
+			"only as a single arg", "仅接受单独使用",
+			"token-usage compare 20260701"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, _, err := parseCompareArgs(tc.args, tc.base)
+			if err == nil {
+				t.Fatalf("parseCompareArgs(%v, %q) 应返回 error", tc.args, tc.base)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.wantEn) {
+				t.Errorf("错误应含英文句式 %q，实际 %q", tc.wantEn, msg)
+			}
+			if !strings.Contains(msg, tc.wantZh) {
+				t.Errorf("错误应含中文句式 %q，实际 %q", tc.wantZh, msg)
+			}
+			if !strings.Contains(msg, tc.wantExample) {
+				t.Errorf("错误应含命令示例 %s，实际 %q", tc.wantExample, msg)
 			}
 		})
 	}
@@ -354,9 +453,10 @@ func TestCompareCmd_EndToEnd(t *testing.T) {
 	}
 }
 
-// TestCompareCmd_RequiresExactlyOneArg Args 校验：数量非 1 时手写双语错误。
-func TestCompareCmd_RequiresExactlyOneArg(t *testing.T) {
-	for _, args := range [][]string{{}, {"20260901", "20260902"}} {
+// TestCompareCmd_RejectsArgCount Args 校验：数量非 1/2 时手写双语错误，
+// 文案自带两种调用范式的可照抄示例；参数错误不加载配置、不打开数据库。
+func TestCompareCmd_RejectsArgCount(t *testing.T) {
+	for _, args := range [][]string{{}, {"20260901", "20260902", "20260903"}} {
 		cmd := newCompareCmdWithDeps(
 			func() (*config.Config, error) { t.Fatal("参数错误不应加载配置"); return nil, nil },
 			func(string) (*db.DB, error) { t.Fatal("参数错误不应打开数据库"); return nil, nil },
@@ -367,9 +467,238 @@ func TestCompareCmd_RequiresExactlyOneArg(t *testing.T) {
 			t.Fatalf("args %v 应返回 error", args)
 		}
 		msg := err.Error()
-		if !strings.Contains(msg, "exactly 1 positional arg") || !strings.Contains(msg, "恰好 1 个位置参数") {
+		if !strings.Contains(msg, "1 or 2 positional args") || !strings.Contains(msg, "1 或 2 个位置参数") {
 			t.Errorf("args %v 错误应双语说明参数数量，实际 %q", args, msg)
 		}
+		for _, example := range []string{"token-usage compare 202608", "token-usage compare 202607 202608"} {
+			if !strings.Contains(msg, example) {
+				t.Errorf("args %v 错误应含示例 %q，实际 %q", args, example, msg)
+			}
+		}
+	}
+}
+
+// TestCompareCmd_HelpGuidance 帮助契约守卫：Long 双语含两种调用范式的
+// 可照抄示例与区间澄清句，--base flag 描述含示例命令——cobra 参数错误
+// 路径不输出 Long，帮助质量由本测试钉住。
+func TestCompareCmd_HelpGuidance(t *testing.T) {
+	cmd := newCompareCmd()
+	long := cmd.Long
+	for _, want := range []string{
+		"token-usage compare 202607 202608",
+		"token-usage compare 202607 --base 202608",
+		"not a two-period comparison",
+	} {
+		if !strings.Contains(long, want) {
+			t.Errorf("Long 应含 %q:\n%s", want, long)
+		}
+	}
+	baseUsage := cmd.Flags().Lookup("base").Usage
+	if !strings.Contains(baseUsage, "token-usage compare 202609 --base 202608") {
+		t.Errorf("--base flag 描述应含示例命令:\n%s", baseUsage)
+	}
+}
+
+// TestCompareCmd_EndToEnd_TwoPositional 真实调用链双位置参数：排序制窗口
+// 分配（早=基线）、Total 方向断言、逆序输出逐字节一致、区间对双参数与
+// 单参数 --base 区间写法逐字节一致（等价式守卫）。
+func TestCompareCmd_EndToEnd_TwoPositional(t *testing.T) {
+	day := func(date string, offsetDays int) time.Time {
+		base, err := time.ParseInLocation("2006-01-02", date, time.Local)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base.AddDate(0, 0, offsetDays).Add(9 * time.Hour)
+	}
+	msgs := []model.Message{
+		{ID: "cmp2p-cur-a", SessionID: "s", Client: model.ClientClaudeCode,
+			Date: "2026-08-02", TS: day("2026-08-02", 0).UnixMilli(), TotalTokens: 600},
+		{ID: "cmp2p-cur-b", SessionID: "s", Client: model.ClientClaudeCode,
+			Date: "2026-08-03", TS: day("2026-08-03", 0).UnixMilli(), TotalTokens: 400},
+		{ID: "cmp2p-base", SessionID: "s", Client: model.ClientClaudeCode,
+			Date: "2026-07-02", TS: day("2026-07-02", 0).UnixMilli(), TotalTokens: 750},
+	}
+	seededOpen := func(string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { usageDB.Close() })
+		if _, err := db.UpsertMessages(context.Background(), usageDB, msgs); err != nil {
+			return nil, err
+		}
+		return usageDB, nil
+	}
+	load := func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil }
+	run := func(args ...string) string {
+		cmd := newCompareCmdWithDeps(load, seededOpen)
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		cmd.SetErr(&buf)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("compare %v 执行失败: %v", args, err)
+		}
+		return buf.String()
+	}
+
+	// 正序：早者 202607 为基线、晚者 202608 为当前。
+	out := run("202607", "202608")
+	if !strings.Contains(out, "Current / 当前: 2026-08-01 .. 2026-08-31") ||
+		!strings.Contains(out, "Base / 基线: 2026-07-01 .. 2026-07-31") {
+		t.Errorf("窗口行不符合排序制（早=基线）:\n%s", out)
+	}
+	totalCells := tableRowCells(t, out, "Total / 总计")
+	wantTotal := []string{"Total / 总计", "1.00 K", "750", "+250", "+33.3%"}
+	for i := range wantTotal {
+		if totalCells[i] != wantTotal[i] {
+			t.Errorf("Total 行第 %d 列 = %q, want %q\n%s", i, totalCells[i], wantTotal[i], out)
+		}
+	}
+
+	// 顺序无关：逆序输出与正序逐字节一致。
+	if reversed := run("202608", "202607"); reversed != out {
+		t.Errorf("逆序输出应与正序逐字节一致:\n正序:\n%s\n逆序:\n%s", out, reversed)
+	}
+
+	// 等价式守卫：区间对双参数与单参数 --base 区间写法逐字节一致。
+	rangePair := run("20260701-20260710", "20260801-20260810")
+	withBase := run("20260801-20260810", "--base", "20260701-20260710")
+	if rangePair != withBase {
+		t.Errorf("等价式两侧输出应逐字节一致:\n双参数:\n%s\n--base:\n%s", rangePair, withBase)
+	}
+	if !strings.Contains(rangePair, "Current / 当前: 2026-08-01 .. 2026-08-10") ||
+		!strings.Contains(rangePair, "Base / 基线: 2026-07-01 .. 2026-07-10") {
+		t.Errorf("区间对窗口行不符:\n%s", rangePair)
+	}
+}
+
+// TestCompareCmd_EndToEnd_TwoPositional_ByModel 真实调用链双位置参数 +
+// --by model：窗口头按时间先后（当前 8 月、基线 7 月），成员行按两期之
+// 和降序、缺失侧语义不变。
+func TestCompareCmd_EndToEnd_TwoPositional_ByModel(t *testing.T) {
+	day := func(date string, offsetDays int) time.Time {
+		base, err := time.ParseInLocation("2006-01-02", date, time.Local)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base.AddDate(0, 0, offsetDays).Add(9 * time.Hour)
+	}
+	msgs := []model.Message{
+		{ID: "cmp2pm-cur-a", SessionID: "s", Client: model.ClientClaudeCode, Model: "model-a",
+			Date: "2026-08-02", TS: day("2026-08-02", 0).UnixMilli(), TotalTokens: 600},
+		{ID: "cmp2pm-base-b", SessionID: "s", Client: model.ClientClaudeCode, Model: "model-b",
+			Date: "2026-07-02", TS: day("2026-07-02", 0).UnixMilli(), TotalTokens: 750},
+	}
+	seededOpen := func(string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { usageDB.Close() })
+		if _, err := db.UpsertMessages(context.Background(), usageDB, msgs); err != nil {
+			return nil, err
+		}
+		return usageDB, nil
+	}
+	load := func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil }
+
+	cmd := newCompareCmdWithDeps(load, seededOpen)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"202607", "202608", "--by", "model"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+
+	if !strings.Contains(out, "Current / 当前: 2026-08-01 .. 2026-08-31") ||
+		!strings.Contains(out, "Base / 基线: 2026-07-01 .. 2026-07-31") {
+		t.Errorf("窗口行不符合排序制（早=基线）:\n%s", out)
+	}
+	// model-b 只在基线期（全部流失 -100.0%）、model-a 只在当前期（变化% 无定义 "--"）。
+	rows := map[string][]string{
+		"model-b": {"model-b", "0", "750", "-750", "-100.0%"},
+		"model-a": {"model-a", "600", "0", "+600", "--"},
+	}
+	for key, want := range rows {
+		if got := tableRowCellsByFirst(t, out, key); !reflect.DeepEqual(got, want) {
+			t.Errorf("成员 %q 行 = %v, want %v\n%s", key, got, want, out)
+		}
+	}
+	wantTotal := []string{"Total / 总计", "600", "750", "-150", "-20.0%"}
+	if got := tableRowCellsByFirst(t, out, "Total / 总计"); !reflect.DeepEqual(got, wantTotal) {
+		t.Errorf("Total 行 = %v, want %v\n%s", got, wantTotal, out)
+	}
+}
+
+// TestCompareCmd_EndToEnd_TwoPositional_JSON 真实调用链双位置参数 JSON：
+// windows 与排序制窗口同源；--by model --format json 组合下窗口一致且
+// dimension 字段不变。
+func TestCompareCmd_EndToEnd_TwoPositional_JSON(t *testing.T) {
+	day := func(date string, offsetDays int) time.Time {
+		base, err := time.ParseInLocation("2006-01-02", date, time.Local)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base.AddDate(0, 0, offsetDays).Add(9 * time.Hour)
+	}
+	msgs := []model.Message{
+		{ID: "cmp2pj-cur-a", SessionID: "s", Client: model.ClientClaudeCode, Model: "model-a",
+			Date: "2026-08-02", TS: day("2026-08-02", 0).UnixMilli(), TotalTokens: 600},
+		{ID: "cmp2pj-base-b", SessionID: "s", Client: model.ClientClaudeCode, Model: "model-b",
+			Date: "2026-07-02", TS: day("2026-07-02", 0).UnixMilli(), TotalTokens: 750},
+	}
+	seededOpen := func(string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { usageDB.Close() })
+		if _, err := db.UpsertMessages(context.Background(), usageDB, msgs); err != nil {
+			return nil, err
+		}
+		return usageDB, nil
+	}
+	load := func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil }
+	run := func(args ...string) map[string]interface{} {
+		cmd := newCompareCmdWithDeps(load, seededOpen)
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		cmd.SetErr(&buf)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("compare %v 执行失败: %v", args, err)
+		}
+		var doc map[string]interface{}
+		if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+			t.Fatalf("输出应为合法 JSON: %v\n%s", err, buf.String())
+		}
+		return doc
+	}
+
+	doc := run("202607", "202608", "--format", "json")
+	windows := jsonMap(t, doc["windows"])
+	current := jsonMap(t, windows["current"])
+	base := jsonMap(t, windows["base"])
+	if current["from"] != "2026-08-01" || current["to"] != "2026-08-31" {
+		t.Errorf("windows.current = %v/%v, want 2026-08-01/2026-08-31", current["from"], current["to"])
+	}
+	if base["from"] != "2026-07-01" || base["to"] != "2026-07-31" {
+		t.Errorf("windows.base = %v/%v, want 2026-07-01/2026-07-31", base["from"], base["to"])
+	}
+
+	byDoc := run("202607", "202608", "--by", "model", "--format", "json")
+	if byDoc["dimension"] != "model" {
+		t.Errorf("dimension = %v, want \"model\"", byDoc["dimension"])
+	}
+	byWindows := jsonMap(t, byDoc["windows"])
+	byCurrent := jsonMap(t, byWindows["current"])
+	byBase := jsonMap(t, byWindows["base"])
+	if byCurrent["from"] != "2026-08-01" || byBase["from"] != "2026-07-01" {
+		t.Errorf("--by 组合窗口与总量模式应一致: current=%v/%v base=%v/%v",
+			byCurrent["from"], byCurrent["to"], byBase["from"], byBase["to"])
 	}
 }
 

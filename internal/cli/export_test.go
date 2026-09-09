@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -275,7 +276,8 @@ func TestExportUnknownViewRejectedBeforeOpen(t *testing.T) {
 
 // TestExportDigitArgAsDateEqualsClientView 数字开头的单参数作为日期:
 // `export 20260901` 与 `export client 20260901` 输出逐字一致(该日有数据,
-// 对比两条含数据行的输出才有区分度)。
+// 对比两条含数据行的输出才有区分度;夹具无 query 配置,缺省视图回退 client,
+// 因此与显式 client 视图一致)。
 func TestExportDigitArgAsDateEqualsClientView(t *testing.T) {
 	open := func(string) (*db.DB, error) {
 		usageDB, err := db.Open(":memory:")
@@ -559,19 +561,29 @@ func TestExportJSONSessionView(t *testing.T) {
 	}
 }
 
-// TestParseExportInvocation 位置参数分派合同:零参数 → client + 今天;
+// TestParseExportInvocation 位置参数分派合同:零参数与数字单参数 → 缺省视图
+// (view 为空串,执行 query.default,内置回退 client 由执行层兑现);
 // 非数字单参数 → 该视图名 + 今天;两参数数字开头固定报「此位置须为视图名」
 // 的双语用法错误,且不检查第二参数。
 func TestParseExportInvocation(t *testing.T) {
 	today := time.Now().Format("2006-01-02")
 
-	// case 0:零参数 → client + today。
+	// case 0:零参数 → 缺省视图 + today。
 	inv, err := parseExportInvocation(nil)
 	if err != nil {
 		t.Fatalf("零参数不应报错: %v", err)
 	}
-	if inv.view != "client" || strings.Join(inv.dates, ",") != today {
-		t.Errorf("零参数 = (%q,%v), want (client,[%s])", inv.view, inv.dates, today)
+	if inv.view != "" || strings.Join(inv.dates, ",") != today {
+		t.Errorf("零参数 = (%q,%v), want (\"\",[%s])", inv.view, inv.dates, today)
+	}
+
+	// case 1 显式空串:named 哨兵置位,视图名保留空串(执行层按未知名拒绝)。
+	inv, err = parseExportInvocation([]string{""})
+	if err != nil {
+		t.Fatalf("显式空串分派不应报错: %v", err)
+	}
+	if !inv.named || inv.view != "" {
+		t.Errorf("显式空串 = (named=%v,view=%q), want (true,\"\")", inv.named, inv.view)
 	}
 
 	// case 1 非数字:视图名 + today。
@@ -581,6 +593,15 @@ func TestParseExportInvocation(t *testing.T) {
 	}
 	if inv.view != "day" || strings.Join(inv.dates, ",") != today {
 		t.Errorf("非数字单参数 = (%q,%v), want (day,[%s])", inv.view, inv.dates, today)
+	}
+
+	// case 1 数字开头:缺省视图 + 该日期区间。
+	inv, err = parseExportInvocation([]string{"20260701"})
+	if err != nil {
+		t.Fatalf("数字单参数不应报错: %v", err)
+	}
+	if inv.view != "" || strings.Join(inv.dates, ",") != "2026-07-01" {
+		t.Errorf("数字单参数 = (%q,%v), want (\"\",[2026-07-01])", inv.view, inv.dates)
 	}
 
 	// case 2 数字开头:固定优先报视图名错误,合法与非法第二参数都不再检查。
@@ -838,6 +859,287 @@ func TestExportJSONWeekdayView(t *testing.T) {
 			if total != 0 {
 				t.Errorf("无数据星期 %s 的 total 应为 0,实际 %v", got, total)
 			}
+		}
+	}
+}
+
+// exportMPCFixture 写入带 model/provider 的两条消息,供多维子查询与组合查询
+// 导出断言维度键。
+func exportMPCFixture(t *testing.T) func(string) (*db.DB, error) {
+	t.Helper()
+	return func(string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { usageDB.Close() })
+		msgs := []model.Message{
+			{ID: "emp-a", SessionID: "s", Client: model.ClientClaudeCode, Model: "model-a",
+				Provider: "prov-a", Date: "2026-07-09", TS: 1, TotalTokens: 100},
+			{ID: "emp-b", SessionID: "s", Client: model.ClientCodexApp, Model: "model-b",
+				Provider: "prov-b", Date: "2026-07-09", TS: 2, TotalTokens: 200},
+		}
+		if _, err := db.UpsertMessages(context.Background(), usageDB, msgs); err != nil {
+			return nil, err
+		}
+		return usageDB, nil
+	}
+}
+
+// TestExportCustomSubqueryMultiKey 自定义子查询按维度组合逐行导出:
+// CSV 表头为声明顺序的维度键列(mpc=model,provider,client)加固定指标列;
+// JSON 行对象含全部维度键。
+func TestExportCustomSubqueryMultiKey(t *testing.T) {
+	cmd, out, _ := newExportOutputCmdWithDeps(loadWithRaw(watchGroupConfig("/mem").RawQuery, nil), exportMPCFixture(t))
+	cmd.SetArgs([]string{"mpc", "20260709"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("export mpc: %v", err)
+	}
+	records, err := csv.NewReader(out).ReadAll()
+	if err != nil {
+		t.Fatalf("输出应为合法 CSV:\n%s", out.String())
+	}
+	wantHeader := []string{"model", "provider", "client", "requests", "input", "output", "cache_read", "cache_create", "reasoning", "total"}
+	if !reflect.DeepEqual(records[0], wantHeader) {
+		t.Errorf("多维表头应按声明顺序 = %v,实际 %v", wantHeader, records[0])
+	}
+	if len(records) != 3 {
+		t.Fatalf("两条消息应产出表头 + 2 数据行,实际 %d 行:\n%s", len(records), out.String())
+	}
+
+	cmdJSON, outJSON, _ := newExportOutputCmdWithDeps(loadWithRaw(watchGroupConfig("/mem").RawQuery, nil), exportMPCFixture(t))
+	cmdJSON.SetArgs([]string{"mpc", "20260709", "--format", "json"})
+	if err := cmdJSON.Execute(); err != nil {
+		t.Fatalf("export mpc json: %v", err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(outJSON.Bytes(), &rows); err != nil {
+		t.Fatalf("JSON 应为对象数组: %v\n%s", err, outJSON.String())
+	}
+	first := rows[0]
+	for _, key := range []string{"model", "provider", "client", "total"} {
+		if _, ok := first[key]; !ok {
+			t.Errorf("JSON 行对象应含键 %q:\n%s", key, outJSON.String())
+		}
+	}
+}
+
+// TestExportGroupCSVSections 组合查询 CSV 按声明顺序导出成员段,段间空行
+// 分隔,各段表头键列随成员视图类型(单维一列、多维多维列)。
+func TestExportGroupCSVSections(t *testing.T) {
+	cmd, out, _ := newExportOutputCmdWithDeps(loadWithRaw(watchGroupConfig("/mem").RawQuery, nil), exportMPCFixture(t))
+	cmd.SetArgs([]string{"group", "20260709"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("export group: %v", err)
+	}
+	text := out.String()
+	sections := strings.Split(text, "\n\n")
+	if len(sections) != 4 {
+		t.Fatalf("组合查询应导出 4 个成员段,实际 %d:\n%s", len(sections), text)
+	}
+	wantHeaders := []string{
+		"client,requests,input,output,cache_read,cache_create,reasoning,total",
+		"provider,requests,input,output,cache_read,cache_create,reasoning,total",
+		"model,requests,input,output,cache_read,cache_create,reasoning,total",
+		"model,provider,client,requests,input,output,cache_read,cache_create,reasoning,total",
+	}
+	for i, want := range wantHeaders {
+		header := strings.SplitN(sections[i], "\n", 2)[0]
+		if header != want {
+			t.Errorf("第 %d 段表头应为 %q,实际 %q", i+1, want, header)
+		}
+	}
+}
+
+// TestExportGroupJSONMemberMap 组合查询 JSON:顶层为成员名到行数组的对象映射,
+// 各成员行对象键集合与该成员视图的列集合一致。
+func TestExportGroupJSONMemberMap(t *testing.T) {
+	cmd, out, _ := newExportOutputCmdWithDeps(loadWithRaw(watchGroupConfig("/mem").RawQuery, nil), exportMPCFixture(t))
+	cmd.SetArgs([]string{"group", "20260709", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("export group json: %v", err)
+	}
+	var members map[string][]map[string]any
+	if err := json.Unmarshal(out.Bytes(), &members); err != nil {
+		t.Fatalf("JSON 顶层应为成员名到行数组的对象映射: %v\n%s", err, out.String())
+	}
+	for _, name := range []string{"client", "provider", "model", "mpc"} {
+		if _, ok := members[name]; !ok {
+			t.Errorf("JSON 应含成员 %q:\n%s", name, out.String())
+		}
+	}
+	if got := len(members["mpc"][0]); got != 10 {
+		t.Errorf("mpc 成员行应含 3 键列 + 7 指标列 = 10 键,实际 %d:\n%s", got, out.String())
+	}
+	// JSON map 的键按字母序序列化(文档承诺):对原始文本断言成员键的
+	// 首现顺序,实现改为有序序列化时此断言会暴露形态变化。
+	text := out.String()
+	positions := []int{}
+	for _, name := range []string{"\"client\":", "\"model\":", "\"mpc\":", "\"provider\":"} {
+		idx := strings.Index(text, name)
+		if idx < 0 {
+			t.Fatalf("JSON 文本应含成员键 %s:\n%s", name, text)
+		}
+		positions = append(positions, idx)
+	}
+	if !sort.IntsAreSorted(positions) {
+		t.Errorf("成员键应按字母序出现在 JSON 文本中:\n%s", text)
+	}
+}
+
+// TestExportDefaultFollowsQueryDefault 缺省视图执行 query.default:
+// 数字单参数形态(缺省视图 + 指定日期)与组合查询导出一致。
+func TestExportDefaultFollowsQueryDefault(t *testing.T) {
+	cmd, out, _ := newExportOutputCmdWithDeps(loadWithRaw(watchGroupConfig("/mem").RawQuery, nil), exportMPCFixture(t))
+	cmd.SetArgs([]string{"20260709"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("export 20260709: %v", err)
+	}
+	if sections := strings.Split(out.String(), "\n\n"); len(sections) != 4 {
+		t.Errorf("缺省视图(default=group)应导出 4 个成员段:\n%s", out.String())
+	}
+}
+
+// TestExportUnknownViewAllowedIncludesConfigured 未知视图:允许集合动态包含
+// 已配置视图名,并在打开数据库之前拒绝。
+func TestExportUnknownViewAllowedIncludesConfigured(t *testing.T) {
+	openCalls := 0
+	open := func(string) (*db.DB, error) {
+		openCalls++
+		return nil, errors.New("must not open database")
+	}
+	cmd, _, _ := newExportOutputCmdWithDeps(loadWithRaw(watchGroupConfig("/mem").RawQuery, nil), open)
+	cmd.SetArgs([]string{"bogus"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("未知视图应报错")
+	}
+	msg := err.Error()
+	for _, want := range []string{"session, mpc, group", "/"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("错误应含允许集合片段 %q: %q", want, msg)
+		}
+	}
+	if openCalls != 0 {
+		t.Errorf("未知视图拒绝不得打开 DB,实际调用 open %d 次", openCalls)
+	}
+}
+
+// TestExportExplicitBuiltinIsolatesBrokenDefs 显式内置视图与 query 静态子命令
+// 同一隔离语义:视图定义坏档不阻断导出。
+func TestExportExplicitBuiltinIsolatesBrokenDefs(t *testing.T) {
+	broken := map[string]any{"groups": map[string]any{"bad": "client,nosuch"}}
+	cmd, out, _ := newExportOutputCmdWithDeps(loadWithRaw(broken, nil), exportMPCFixture(t))
+	cmd.SetArgs([]string{"client", "20260709"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("显式内置视图不应被无关视图定义错误阻断: %v", err)
+	}
+	if !strings.Contains(out.String(), "client,requests") {
+		t.Errorf("client 视图导出应正常产出:\n%s", out.String())
+	}
+}
+
+// TestExportDefaultRejectsBrokenDefs 缺省视图消费完整解析:视图定义坏档时
+// 与裸 query 一致拒绝,且不打开数据库。
+func TestExportDefaultRejectsBrokenDefs(t *testing.T) {
+	openCalls := 0
+	open := func(string) (*db.DB, error) {
+		openCalls++
+		return nil, errors.New("must not open database")
+	}
+	broken := map[string]any{"groups": map[string]any{"bad": "client,nosuch"}}
+	cmd, _, _ := newExportOutputCmdWithDeps(loadWithRaw(broken, nil), open)
+	cmd.SetArgs(nil)
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("坏视图定义应使缺省导出拒绝")
+	}
+	if !strings.Contains(err.Error(), "invalid item") {
+		t.Errorf("错误应含 querydef 诊断,实际: %v", err)
+	}
+	if openCalls != 0 {
+		t.Errorf("坏定义拒绝不得打开 DB,实际调用 open %d 次", openCalls)
+	}
+}
+
+// TestExportDefaultCustomSubquery 缺省视图指向自定义子查询:
+// 数字单参数形态(缺省视图 + 指定日期)按多维 schema 导出。
+func TestExportDefaultCustomSubquery(t *testing.T) {
+	raw := map[string]any{
+		"default":    "mpc",
+		"subqueries": map[string]any{"mpc": "model,provider"},
+	}
+	cmd, out, _ := newExportOutputCmdWithDeps(loadWithRaw(raw, nil), exportMPCFixture(t))
+	cmd.SetArgs([]string{"20260709"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("export 20260709 (default=mpc): %v", err)
+	}
+	records, err := csv.NewReader(out).ReadAll()
+	if err != nil {
+		t.Fatalf("输出应为合法 CSV:\n%s", out.String())
+	}
+	wantHeader := []string{"model", "provider", "requests", "input", "output", "cache_read", "cache_create", "reasoning", "total"}
+	if !reflect.DeepEqual(records[0], wantHeader) {
+		t.Errorf("多维表头应为 %v,实际 %v", wantHeader, records[0])
+	}
+}
+
+// TestExportSubqueryDayKeyColumnMapping 子查询含 day 维度:键列名沿用内置
+// 视图的 day → date 映射。
+func TestExportSubqueryDayKeyColumnMapping(t *testing.T) {
+	raw := map[string]any{
+		"subqueries": map[string]any{"trend": "client,day"},
+	}
+	cmd, out, _ := newExportOutputCmdWithDeps(loadWithRaw(raw, nil), exportMPCFixture(t))
+	cmd.SetArgs([]string{"trend", "20260709"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("export trend: %v", err)
+	}
+	header := strings.SplitN(out.String(), "\n", 2)[0]
+	want := "client,date,requests,input,output,cache_read,cache_create,reasoning,total"
+	if header != want {
+		t.Errorf("含 day 维度的键列应映射为 date:\nwant %q\ngot  %q", want, header)
+	}
+}
+
+// TestExportEmptyViewNameRejected 显式空串视图名按未知名拒绝,
+// 不得静默回退缺省视图,且在打开数据库之前拒绝。
+func TestExportEmptyViewNameRejected(t *testing.T) {
+	openCalls := 0
+	open := func(string) (*db.DB, error) {
+		openCalls++
+		return nil, errors.New("must not open database")
+	}
+	cmd, _, _ := newExportOutputCmdWithDeps(loadWithRaw(nil, nil), open)
+	cmd.SetArgs([]string{""})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("显式空串视图名应被拒绝")
+	}
+	if !strings.Contains(err.Error(), `unknown export view ""`) {
+		t.Errorf("空串应按未知名拒绝,实际: %v", err)
+	}
+	if openCalls != 0 {
+		t.Errorf("空串拒绝不得打开 DB,实际调用 open %d 次", openCalls)
+	}
+}
+
+// TestExportGroupEmptyMemberSectionHeaderOnly 组合查询在区间无数据时,
+// 非时间维度成员段仅含表头行(空数据段),段间仍以空行分隔。
+func TestExportGroupEmptyMemberSectionHeaderOnly(t *testing.T) {
+	cmd, out, _ := newExportOutputCmdWithDeps(loadWithRaw(watchGroupConfig("/mem").RawQuery, nil), exportMPCFixture(t))
+	cmd.SetArgs([]string{"group", "20260101"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("export group (empty range): %v", err)
+	}
+	sections := strings.Split(out.String(), "\n\n")
+	if len(sections) != 4 {
+		t.Fatalf("组合查询应导出 4 个成员段,实际 %d:\n%s", len(sections), out.String())
+	}
+	for i, section := range sections {
+		lines := strings.Split(strings.TrimRight(section, "\n"), "\n")
+		if len(lines) != 1 {
+			t.Errorf("空区间下第 %d 段应仅含表头行,实际 %d 行:\n%q", i+1, len(lines), section)
 		}
 	}
 }

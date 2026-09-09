@@ -520,8 +520,9 @@ func consumePendingResult(target string, l *stepLogger) {
 // 仅按精确前缀匹配普通文件，跳过目录/symlink（继承 cleanupUpdateTempByPrefix 语义）。
 // best-effort：扫描/删除失败不阻塞升级。
 //
-// 仅在 POSIX 平台调用（goos != windows）。Windows 放弃跨事务 sweep（control lock 不足以
-// 串行化 helper/cleanup，见方案设计 §2.3），故 Windows 事务文件不会被误删。
+// 仅在 POSIX 平台调用（goos != windows）。Windows 上缺少与 control lock 等价的
+// 跨进程互斥手段，无法保证 sweep 与并发运行的 helper/其他安装实例串行，为避免
+// 误删正在写的事务文件而放弃 sweep；Windows 的事务文件由各自流程自行清理。
 func SweepStaleTempFiles(target string) error {
 	return cleanupUpdateTempByPrefix(filepath.Dir(target), updateTempPrefixesFor(target))
 }

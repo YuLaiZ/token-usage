@@ -357,13 +357,15 @@ VALUES (?,?,?,?,?,?,?,?)
 ON CONFLICT(id,client) DO UPDATE SET
  directory=excluded.directory,
  project=excluded.project,
- title=excluded.title,
+ title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE sessions.title END,
  parent_id=excluded.parent_id,
  first_ts=CASE WHEN sessions.first_ts=0 OR (excluded.first_ts>0 AND excluded.first_ts<sessions.first_ts) THEN excluded.first_ts ELSE sessions.first_ts END,
  last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END`
 
 // UpsertSessionMeta 写入会话最终元数据（directory/project/title/parent_id/first_ts/last_ts），
 // 不写 token 列（token 统计由 messages 账本聚合）。
+// title 为空时保留库中已有值：部分采集路径（如 Codex ChangedFile/rollout 全扫）在
+// 解析侧拿不到标题，空值覆盖会把其他路径补齐的标题冲掉。
 func UpsertSessionMeta(ctx context.Context, q dbtx, sessions []model.Session) (int, error) {
 	count := 0
 	for _, s := range sessions {

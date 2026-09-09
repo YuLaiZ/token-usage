@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -24,11 +25,14 @@ import (
 type AutoClawCollector struct {
 	cfg *config.Config
 
-	// walkFn / parseFn 仅供包内测试注入确定性 seam（构造时为 nil，Collect 走生产路径）。
-	// walkFn 注入目录遍历器（测试可模拟 Walk 错误/取消）；parseFn 注入文件解析器
-	// （测试可模拟 parser 返回 ctx.Canceled 或部分结果 + error）。
-	walkFn  autoClawWalker
-	parseFn func(ctx context.Context, path string, logger *slog.Logger) ([]autoclawParsedMessage, FileScanStatus, error)
+	// walkFn / parseFn / localTitleFn 仅供包内测试注入确定性 seam（构造时为 nil，
+	// Collect 走生产路径）。walkFn 注入目录遍历器（测试可模拟 Walk 错误/取消）；
+	// parseFn 注入文件解析器（测试可模拟 parser 返回 ctx.Canceled 或部分结果 +
+	// error）；localTitleFn 注入客户端 LocalStorage 标题加载（测试可模拟锁失败/
+	// 漂移降级），生产路径为 loadAutoClawClientTitles(localStorageDir())。
+	walkFn       autoClawWalker
+	parseFn      func(ctx context.Context, path string, logger *slog.Logger) ([]autoclawParsedMessage, FileScanStatus, error)
+	localTitleFn func() (map[string]string, error)
 }
 
 // NewAutoClawCollector 创建 AutoClaw 采集器。
@@ -108,6 +112,20 @@ func (c *AutoClawCollector) Collect(ctx context.Context, req CollectRequest, log
 	// providerMap 按 agent 缓存：同一 agent 的多个 session 文件共享一份 models.json 解析结果，
 	// 避免重复 IO 与反序列化（仍按 agent 隔离，不跨 agent 合并）。
 	providerCache := make(map[string]map[string]autoclawProviderInfo)
+	// sessionIndex 按 agent 缓存：sessions.json 的 sessionId → (key, label)，
+	// A 层 key 反查桥接与 C 层 label 共用一次读取；读失败缓存 nil（A、C 层降级）。
+	sessionIndexCache := make(map[string]map[string]autoClawSessionsIndexEntry)
+	// A 层标题：客户端 LocalStorage（每次 Collect 调用只读一次）。目录不存在为
+	// 预期形态（Debug）；打开失败等其他错误 Warn 一次。任一失败均降级 C/B。
+	localTitleDir, _ := localStorageDir()
+	localTitles, localTitleErr := c.loadClientTitles()
+	if localTitleErr != nil {
+		if errors.Is(localTitleErr, fs.ErrNotExist) {
+			logger.Debug("AutoClaw client LocalStorage not found, title layer A skipped", "dir", localTitleDir, "error", localTitleErr)
+		} else {
+			logger.Warn("AutoClaw client LocalStorage unavailable, title layer A skipped", "dir", localTitleDir, "error", localTitleErr)
+		}
+	}
 	for _, file := range files {
 		if err := ctx.Err(); err != nil {
 			// 逐文件循环开头检查 ctx；取消立即返回已收集结果 + ctx.Err。
@@ -181,6 +199,8 @@ func (c *AutoClawCollector) Collect(ctx context.Context, req CollectRequest, log
 		result.Messages = append(result.Messages, hitMessages...)
 		// 仅当该文件至少有一条 Message 命中日期时产出 Session；
 		// FirstTS/LastTS 取全文件有效消息范围，不受日期过滤影响。
+		// Title 按 A→C→B 三级降级链合成：客户端 LocalStorage
+		// displayName → sessions.json cron label → 首条有效 user 消息派生 → 空。
 		result.Sessions = append(result.Sessions, model.Session{
 			ID:        fileSessionID,
 			Client:    model.ClientZhipuAutoClaw,
@@ -188,6 +208,7 @@ func (c *AutoClawCollector) Collect(ctx context.Context, req CollectRequest, log
 			Project:   autoclawInferProject(pmsgs[0].Cwd),
 			FirstTS:   firstTS,
 			LastTS:    lastTS,
+			Title:     c.resolveAutoClawTitle(pmsgs[0].Title, fileSessionID, agentID, sessionsDir, localTitles, sessionIndexCache),
 		})
 	}
 
@@ -364,6 +385,10 @@ type autoclawMessage struct {
 		Provider  string         `json:"provider"`
 		Usage     *autoclawUsage `json:"usage"`
 		Timestamp int64          `json:"timestamp"` // 毫秒，主时间
+		// user 行的 content 实测为字符串或 text block 数组双形态，仅用于派生
+		// 标题捕获；assistant 行不消费该字段（RawMessage 会拷贝大响应体，接受
+		// 该开销以保持单次 Unmarshal 的解析路径简单）。
+		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 }
 
@@ -379,8 +404,11 @@ type autoclawUsage struct {
 
 // autoclawParsedMessage 解析后的单条有效消息。
 type autoclawParsedMessage struct {
-	ID                string
-	Cwd               string
+	ID  string
+	Cwd string
+	// Title 为文件级派生标题（B 层：首条有效 user 消息），整文件所有消息填同值，
+	// Collect 层取首条使用——与 Cwd 的文件级复用同模式。
+	Title             string
 	Model             string
 	Provider          string
 	InputTokens       int64
@@ -448,6 +476,7 @@ func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, log
 
 	var messages []autoclawParsedMessage
 	var cwd string
+	var derivedTitle string
 	seen := make(map[string]struct{})
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), maxJSONLLineSize)
@@ -477,10 +506,18 @@ func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, log
 			continue
 		}
 
-		// 只处理 type=message + role=assistant + usage 非空（结构性过滤，不计坏行）
 		if msg.Type != "message" {
 			continue
 		}
+
+		// user 行：仅捕获首条有效文本作派生标题（清洗失败继续向后扫，不计坏行、
+		// 不参与 token 统计）；捕获到后仍 continue，user 行不进入消息账本。
+		if msg.Message != nil && msg.Message.Role == "user" && derivedTitle == "" {
+			derivedTitle = deriveAutoClawSessionTitle(msg.Message.Content)
+			continue
+		}
+
+		// 只处理 type=message + role=assistant + usage 非空（结构性过滤，不计坏行）
 		if msg.Message == nil || msg.Message.Role != "assistant" || msg.Message.Usage == nil {
 			continue
 		}
@@ -526,6 +563,13 @@ func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, log
 			TotalTokens:       usage.TotalTokens,
 			Timestamp:         ts,
 		})
+	}
+
+	// Title 为文件级派生标题，循环结束后统一回填整文件同值：首条带 usage 的
+	// assistant 行可能先于首条有效 user 行出现，append 时刻填值会让靠前消息
+	// 携带空标题。
+	for i := range messages {
+		messages[i].Title = derivedTitle
 	}
 
 	// scanner 错误（IO 错误、行超 maxJSONLLineSize）：返回已解析部分 + err，

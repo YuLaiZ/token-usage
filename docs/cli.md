@@ -29,11 +29,11 @@ token-usage
 ├── export [view] [DATE|DATE-DATE] # export usage data as CSV or JSON (--format csv|json)
 ├── errors [DATE|DATE-DATE]
 ├── doctor                                # read-only health check (config, data directory, database, clients, collection, errors)
-├── forecast                              # extrapolate usage from recent daily averages
-├── compare <range>                       # compare usage between two periods (--base overrides the baseline, --by per member)
+├── forecast                              # estimate future usage from recent daily averages
+├── compare <range> [range2]              # compare usage between two periods (two positional periods compared chronologically, earlier as baseline; --base overrides the baseline, --by per member)
 ├── top [DATE|DATE-DATE]                  # heaviest sessions by total tokens (--limit, default 10)
 ├── chart [DATE|DATE-DATE]                # render usage as an SVG chart (--by dimension, --pie, --line, --heatmap)
-├── watch [DATE|DATE-DATE]                # refresh a live summary at a fixed interval (--by grouping dimension, default model)
+├── watch [DATE|DATE-DATE]                # refresh the query output at a fixed interval (view selection matches query)
 ├── report [DATE|DATE-DATE] --out <dir>   # generate a full usage report bundle
 ├── config                                # no arguments: open the interactive configuration TUI
 │   ├── show                              # output complete effective TOML (read-only, pure TOML)
@@ -64,7 +64,7 @@ Design points:
 
 | Command | Accepted form | Default |
 |------|----------|------|
-| `collect`, `query` (with subcommands), and `export` | `DATE` (day `YYYYMMDD`, month `YYYYMM`, or year `YYYY`; year as a single arg only) or `DATE-DATE` (inclusive day/month endpoints) | Today |
+| `collect`, `query` (with subcommands), `export`, and `watch` | `DATE` (day `YYYYMMDD`, month `YYYYMM`, or year `YYYY`; year as a single arg only) or `DATE-DATE` (inclusive day/month endpoints) | Today |
 | `errors` | `DATE` or `DATE-DATE` (same forms as `collect`/`query`) | With neither a date nor `--source`, only unresolved errors are shown. |
 
 `YYYYMMDD` is an eight-digit compact format (for example, `20260701`); `YYYYMM` selects a calendar month and `YYYY` a calendar year (the year form is accepted only as a single arg). `YYYY-MM-DD`, extra positional arguments, a year used as a range endpoint, and an end date before the start date all fail with an error and command examples. A single arg or a range normalizes to an inclusive per-day list capped at 366 days (one leap year); split longer ranges into multiple runs.
@@ -302,14 +302,14 @@ columns = ["requests", "input", "output", "total", "cache_hit"]
 | `total` | Total / 总计 | source total tokens |
 | `cache_hit` | Cache Hit / 缓存命中 | cache_read / (fresh input + cache_read + cache_create) |
 
-- **Scope**: the layout applies to `query client`, `model`, `provider`, `project`, `day`, `month`, `hour`, `weekday`, `session`, and every table of the bare query, named views (`query <name>` / `query custom <name>`), and groups. `query summary` is not covered — it keeps its complete vertical summary, including Cache Create; `query list` renders no data table. Dimension columns are always shown on the left of each table (the session table always shows Client/Project/Title/Duration first) and never take part in the layout.
+- **Scope**: the layout applies to `query client`, `model`, `provider`, `project`, `day`, `month`, `hour`, `weekday`, `session`, and every table of the bare query, named views (`query <name>` / `query custom <name>`), and groups, plus the matching `watch` frames (their view tables run the same execution chain as `query`; `watch --by summary` keeps the complete vertical summary). `query summary` is not covered — it keeps its complete vertical summary, including Cache Create; `query list` renders no data table; `export` deliberately ignores the layout (fixed machine schema). Dimension columns are always shown on the left of each table (the session table always shows Client/Project/Title/Duration first) and never take part in the layout.
 - **Default**: when `[query.output]` or `columns` is missing, the seven columns `requests, input, output, cache_read, reasoning, total, cache_hit` are used, so existing configs and outputs stay identical after an upgrade. `cache_create` is the first metric that is selectable but hidden by default; it always counts toward the Cache Hit denominator, so hiding or showing it never changes any statistic, sort order, or total.
 - **Validation**: `query.output` must be a table whose only key is `columns`; the array must be non-empty, its elements strings from the table above, without duplicates (whitespace around an element is trimmed). An empty array is not "restore defaults" — remove `query.output` (or `query.output.columns`) to restore the default layout. Errors are reported with the full config path and the offending value. `config set` cannot write `query.output.columns`; use the TUI Output columns page or edit the TOML by hand.
 - **Error boundary**: unrelated view-definition errors (`subqueries`/`groups`/`default`) never block the nine layout-affected static table commands — a valid layout still applies. An invalid `query.output` itself fails those nine commands before the database is opened. A top-level query problem (`[query]` alongside `[Query]`, or a non-table root) silently falls back to the default seven columns for the static table commands, while the bare query, named views, and `query list` keep failing with the existing localized errors. TUI saves always run the full query validation.
 
 `query provider` (and the provider dimension of any custom view) prefers router attribution, then the collector's provider value. Historical empty values remain unattributed; the query does not infer a provider from the client. `provider_aliases` is applied before composite keys are formed: aliases with the same value are combined into one row in every view, without changing `usage.db`.
 
-Query configuration is display-only. Semantic errors (broken references, malformed CSV, unknown keys, top-level conflicts such as `[query]` alongside `[Query]`, or a non-table root like `query = "x"`) make the default path (bare `query` and `query <date>`), every named invocation (`query <name>` / `query custom <name>`), `query list`, and TUI saves fail with the offending key; the nine layout-affected static table commands (`client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`session`) fall back to the default seven columns on a top-level problem and otherwise keep their layout when only unrelated view definitions are broken, `query summary` is unaffected, and `collect`, `status`, `start`, the daemon, `config set`, and `config show` keep working and preserve the offending entries. In the TUI, `v` on the main menu opens the **Query** page with three entries — **Views** (custom subqueries, groups, default behavior), **Output columns** (the global metric layout, with `d` to restore the default), and **Provider aliases** — each showing a recovery list when its own part of the raw section cannot be parsed. Before downgrading to a version without query-view support, remove the whole `[query]`, `[query.subqueries]`, `[query.groups]`, and `[query.output]` sections: older versions reject any non-empty query section.
+Query configuration is display-only. Semantic errors (broken references, malformed CSV, unknown keys, top-level conflicts such as `[query]` alongside `[Query]`, or a non-table root like `query = "x"`) make the default path (bare `query` and `query <date>`), every named invocation (`query <name>` / `query custom <name>`), `query list`, and TUI saves fail with the offending key; the nine layout-affected static table commands (`client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`session`) fall back to the default seven columns on a top-level problem and otherwise keep their layout when only unrelated view definitions are broken, `query summary` is unaffected, and `collect`, `status`, `start`, the daemon, `config set`, and `config show` keep working and preserve the offending entries. `watch` and `export` follow the same split: their default-view and configured-view paths fail with the same localized diagnostics as the bare `query`, while an explicit built-in view name (`watch --by client`, `export client`) ignores unrelated view-definition errors like the static table commands. In the TUI, `v` on the main menu opens the **Query** page with three entries — **Views** (custom subqueries, groups, default behavior), **Output columns** (the global metric layout, with `d` to restore the default), and **Provider aliases** — each showing a recovery list when its own part of the raw section cannot be parsed. Before downgrading to a version without query-view support, remove the whole `[query]`, `[query.subqueries]`, `[query.groups]`, and `[query.output]` sections: older versions reject any non-empty query section.
 
 Examples:
 
@@ -333,7 +333,8 @@ token-usage export [view] [DATE|DATE-DATE] [--format csv|json]
 
 | View | Key column(s) | Content |
 |---|---|---|
-| `client` (default) | `client` | group by client |
+| *(no view)* | — | the default view (`query.default`, built-in fallback `client`) |
+| `client` | `client` | group by client |
 | `model` | `model` | group by model |
 | `provider` | `provider` | group by provider (router attribution first; `provider_aliases` merge rows exactly like `query provider`; an empty provider exports as `(unattributed) / (未归因)`, matching the query display) |
 | `project` | `project` | group by project (an empty project exports as `(uncategorized) / (未分类)`, matching the query display) |
@@ -342,10 +343,12 @@ token-usage export [view] [DATE|DATE-DATE] [--format csv|json]
 | `hour` | `hour` | usage by hour in local time, hour ascending, all 24 hourly ticks present with zero rows for hours without data |
 | `weekday` | `weekday` | usage by weekday in local time, ISO week order (Monday first), all 7 weekday ticks present with zero rows for weekdays without data |
 | `session` | `client`, `project`, `title`, `duration_ms` | session details in the same order as `query session`; `project`/`title` keep their raw source values — an empty project stays an empty string, unlike the grouped views which substitute the placeholder; `duration_ms` is the session's request span (last minus first message timestamp, in milliseconds) |
+| configured subquery | one key column per dimension, in declaration order | one row per dimension combination; column names follow the same `day` → `date` mapping as the built-in views |
+| configured group | varies per member | members exported in declaration order (see below) |
 
-`summary` and configured custom views (`query.subqueries` / `query.groups`) are deliberately not exportable; an unknown view is rejected with the allowed set before the configuration is loaded or the database opens.
+`summary` and `heatmap` have no row schema and are deliberately not exportable. Configured views from `query.subqueries` / `query.groups` are supported: a **subquery** exports as one row per dimension combination with one key column per dimension; a **group** exports its member views — as CSV sections in declaration order, separated by a blank line (each section carries its own header, whose key columns match the member's view type), or as a JSON object mapping member names to their row arrays (keys serialized in alphabetical order, the same JSON map semantics as single-view objects). An unknown view is rejected with the dynamic allowed set (built-in views plus configured names) after the configuration loads and before the database opens; a view name that resolves to a broken view definition fails with the same localized diagnostics as `query`, while an explicit built-in view name ignores unrelated view-definition errors exactly like the static `query` subcommands.
 
-The date argument accepts the same forms as `query`: `DATE` is a day (`YYYYMMDD`), month (`YYYYMM`), or year (`YYYY`; single arg only), and `DATE-DATE` is an inclusive range whose endpoints are days or months; with no date it defaults to today (see [Date Argument Format](#date-argument-format)). Positional dispatch mirrors `query`: a digit-leading single argument is a date (`token-usage export 20260901` equals `token-usage export client 20260901`), and with two positional args the first must be a view name.
+The date argument accepts the same forms as `query`: `DATE` is a day (`YYYYMMDD`), month (`YYYYMM`), or year (`YYYY`; single arg only), and `DATE-DATE` is an inclusive range whose endpoints are days or months; with no date it defaults to today (see [Date Argument Format](#date-argument-format)). Positional dispatch mirrors `query`: a digit-leading single argument is a date applied to the default view, and with two positional args the first must be a view name (`token-usage export client 20260901`).
 
 `--format` selects `csv` (default) or `json`. Invalid format values are rejected before the configuration is loaded and the database is opened.
 
@@ -365,8 +368,9 @@ Examples:
 ```bash
 token-usage export day 20260901-20260907 > usage.csv
 token-usage export session --format json | jq .
-token-usage export 20260701                # client view for one day
+token-usage export 20260701                # default view (query.default) for one day
 token-usage export provider --format json  # provider view as JSON on stdout
+token-usage export <configured-view>       # a subquery or group from query.subqueries / query.groups
 ```
 
 ## errors
@@ -636,7 +640,7 @@ An internal command started by `start` through detached spawn or directly by lau
 
 ## forecast
 
-Extrapolates upcoming usage from recent daily averages. Windows exclude today (an unfinished day would understate the average); today is shown separately as its running total.
+Estimates upcoming usage from recent daily averages. Windows exclude today (an unfinished day would understate the average); today is shown separately as its running total.
 
 ```text
 token-usage forecast
@@ -651,23 +655,28 @@ token-usage forecast
 Compares token usage between two periods: a five-column framed table (Metric / Current / Base / Change / Change %) over active days, requests, and every token metric. `--format json` switches to machine-readable JSON output.
 
 ```text
-token-usage compare <range> [--base <range>] [--format table|json]
+token-usage compare <range> [range2] [--base <range>] [--format table|json]
+token-usage compare 202607 202608
 token-usage compare 20260901-20260907
 token-usage compare 202609 --base 202608
 token-usage compare 20260901-20260907 --by model
 token-usage compare 20260901-20260907 --format json
 ```
 
-| `<range>` / `--base` form | Meaning |
+`<range>` and `[range2]` accept the same forms as `--base` listed below. `<range2>` cannot be combined with `--base`: with two positional periods the windows are ordered chronologically and the earlier one becomes the baseline, so argument order does not matter — `token-usage compare 202607 202608` compares 2026-08 with 2026-07, the same as `token-usage compare 202608 --base 202607`. Equal or overlapping windows are allowed, and a year is accepted as one of the two periods. Note that a dashed range like `202607-202608` is a single two-month window, not a two-period comparison.
+
+With a single positional period (or `--base`), each form is:
+
+| `<range>` / `[range2]` / `--base` form | Meaning |
 |------|---------|
 | `YYYYMMDD` | A single day; the auto base is the previous day. |
 | `YYYYMM` | A calendar month; the auto base is the previous calendar month. |
-| `YYYY` | A calendar year (single arg only); the auto base is the previous calendar year. |
+| `YYYY` | A calendar year (not usable as a range endpoint, but valid as one of two positional periods); the auto base is the previous calendar year. |
 | `A-B` | Inclusive range whose endpoints are days or months (they may be mixed); the auto base is an equal-length window ending the day before A. |
 
 Behavior:
 
-- Without `--base`, the baseline window is derived from the current window's granularity as listed above (leap months handled; e.g. `20260701-20260710` compares `2026-06-21..2026-06-30`).
+- With a single positional period and no `--base`, the baseline window is derived from its granularity as listed above (leap months handled; e.g. `20260701-20260710` compares `2026-06-21..2026-06-30`).
 - `--base <range>` accepts the same forms and is parsed independently of the current window's granularity; it may overlap the current window. Dashed ISO forms such as `2026-08-01` and an end date before the start date are rejected.
 - There is no 366-day cap (unlike `query`/`collect`): without `--by`, the command does not expand days — each window is read with a single `BETWEEN` aggregate, so multi-year ranges work.
 - Rows: active days and requests show signed integer changes (`%+d`); token rows reuse the K/M/B abbreviations with `+`/`-` signed changes; `Change %` shows `--` when the base value is 0. Headers avoid ambiguous-width characters (such as Δ) to preserve table borders under CJK terminals.
@@ -716,15 +725,17 @@ token-usage chart 20260901-20260930 --line         # daily trend as a line chart
 
 ## watch
 
-Refreshes a live summary (totals plus a frame grouping table, `--by model` by default) at a fixed interval until interrupted with Ctrl+C.
+Renders the `query` output for a window and refreshes it at a fixed interval until interrupted with Ctrl+C. The frame body is exactly the query output — statistics header, view tables with the configured `[query.output.columns]` layout and `provider_aliases`, and collection-error warnings — selected with the same rules as `query`: with no `--by`, the default view runs (`query.default`, built-in fallback `client`); watch adds only the `Live watch` banner, the fixed-interval refresh, and the screen clearing between frames.
 
 ```bash
-token-usage watch                      # today's summary, refreshed every 5s
+token-usage watch                      # today, default view, refreshed every 5s
 token-usage watch 20260901 --interval 10s
+token-usage watch --by group           # a configured view name from query.groups
 token-usage watch --once               # render a single frame and exit (pipe-friendly)
 ```
 
-- `--by <dimension>` switches the grouping table of each frame (`client`, `model`, `provider`, `project`; default `model`); `provider` applies the display aliases from `[provider_aliases]` in the config. Unknown values, including the temporal dimensions, are rejected before the database opens; the error points to `token-usage chart --line` for temporal trends.
+- `--by` selects the frame view: a built-in view (`client`, `model`, `provider`, `project`, `day`, `month`, `hour`, `weekday`, `heatmap`, `session`, `summary`) or a configured view name from `query.subqueries` / `query.groups`. With no `--by` the default view runs — `query.default` with the built-in fallback `client` (a configured group renders all of its member tables per frame). Explicit built-in names ignore unrelated view-definition errors exactly like the static `query` subcommands; the no-flag and configured-name paths run the full query validation and fail with the same localized diagnostics as the bare `query`. An unknown `--by` value is rejected with the dynamic allowed set before the database opens.
+- The date argument accepts the same forms as `query`; with no date the frame tracks today, recomputed on every refresh so it rolls over midnight automatically, while an explicit date or range stays fixed (watching a historical window is a valid use).
 - `--interval` accepts a Go duration with a minimum of 1s; shorter values are rejected before the database opens.
 - Interactive loops clear the screen between frames (Windows consoles get virtual-terminal processing enabled automatically); `--once` renders exactly one frame with no escape sequences, so redirected output stays plain.
 - Strictly read-only: the same opening semantics as every other read command, no daemon interaction, and Ctrl+C leaves no state behind.
@@ -739,7 +750,7 @@ token-usage report 20260901-20260930 --out september-report
 
 - `--out <dir>` is required; the directory is created when missing and each file is written atomically.
 - Files: `summary.txt`, `compare.txt`, `daily.svg`, `hourly.svg`, `weekday.svg`, `monthly.svg`, `by-client.svg`, `by-model.svg`, `by-provider.svg`, `by-project.svg`, `heatmap.svg`.
-- The date argument accepts the same forms as `query`/`collect` (defaults to today). The bundle does not include forecast extrapolation — run `token-usage forecast` separately. Strictly read-only apart from writing the report bundle.
+- The date argument accepts the same forms as `query`/`collect` (defaults to today). The bundle does not include forecast projections — run `token-usage forecast` separately. Strictly read-only apart from writing the report bundle.
 
 ## update
 
