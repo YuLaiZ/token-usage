@@ -39,3 +39,5 @@ dist/
 *.sqlite-shm
 *.sqlite-journal
 /token-usage
+
+/devdashboard
