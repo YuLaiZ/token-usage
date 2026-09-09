@@ -43,6 +43,10 @@
 | `internal/engine/` | 采集编排（依赖装配、主循环、事务化写入、重试、结果校验） |
 | `internal/analyzer/` | 守护进程实时监控（JSONL watcher、SQLite poller、debounce、串行化锁） |
 | `internal/querier/` | 查询引擎（从 messages 实时聚合） |
+| `internal/web/` | 只读本地仪表板 HTTP 服务，含内嵌静态资源与 JSON/SVG 接口 |
+| `internal/charts/` | `chart`、`report` 与 `serve` 共用的 SVG 图表渲染 |
+| `internal/querydef/` | 配置化查询视图与输出列布局的纯函数解析、校验 |
+| `internal/fmtx/` | compare/report/dashboard 变化值共用的显示格式化 |
 | `internal/tui/` | 配置交互编辑 TUI（bubbletea；保存经 `ApplyConfig`） |
 | `internal/logger/` | 基于 log/slog，按天轮转，自动清理 |
 

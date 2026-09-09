@@ -14,7 +14,7 @@ token-usage
 │   ├── all                               # two-phase full collection: all historical messages + full router backfill
 │   ├── router --client X                 # full router backfill only (does not touch messages)
 │   └── retry                             # retry unresolved groups in collection_errors
-├── query [DATE|DATE-DATE]
+├── query [<name> [DATE|DATE-DATE] | DATE|DATE-DATE]
 │   ├── client [DATE|DATE-DATE]    # group by client (default view)
 │   ├── model [DATE|DATE-DATE]     # group by model
 │   ├── provider [DATE|DATE-DATE]  # group by provider
@@ -25,7 +25,9 @@ token-usage
 │   ├── weekday [DATE|DATE-DATE]   # usage by weekday
 │   ├── heatmap [DATE|DATE-DATE]   # weekday x hour heatmap
 │   ├── session [DATE|DATE-DATE]   # session details
-│   └── summary [DATE|DATE-DATE]   # overview summary
+│   ├── summary [DATE|DATE-DATE]   # overview summary
+│   ├── custom <name> [DATE|DATE-DATE] # explicit configured-view form
+│   └── list                        # list configured views (config only; no database)
 ├── export [view] [DATE|DATE-DATE] # export usage data as CSV or JSON (--format csv|json)
 ├── errors [DATE|DATE-DATE]
 ├── doctor                                # read-only health check (config, data directory, database, clients, collection, errors)
@@ -764,7 +766,7 @@ token-usage report 20260901-20260930 --out september-report
 
 ## serve
 
-Starts a read-only local HTTP server that serves the built-in dashboard: the embedded HTML page at `/`, JSON endpoints (`/api/meta`, `/api/dashboard`), and SVG charts (`/api/chart/{kind}.svg`) rendered by the same chart core as the `chart`/`report` commands (identical titles, subtitles, and hover text). The server binds to `127.0.0.1:8619` by default and stops with Ctrl+C. Its HTTP data surface is strictly read-only — no CORS headers and no database or configuration writes; the only local files involved are the lifecycle state file `serve.json` (shared by the foreground and background forms) and `serve.log` for background runs. The same dashboard can also run in the background via `serve start` / `serve status` / `serve stop` (see the end of this section).
+Starts a read-only local HTTP server that serves the built-in dashboard: the embedded HTML page at `/`, JSON endpoints (`/api/meta`, `/api/dashboard`), and SVG charts (`/api/chart/{kind}.svg`) rendered by the same chart core as the `chart`/`report` commands (identical titles, subtitles, and hover text). The server binds to `127.0.0.1:8619` by default and stops with Ctrl+C. Its HTTP data surface is strictly read-only — no CORS headers and no database or configuration writes; `serve.json` is the shared lifecycle state, `serve.log` is used for background runs, and `serve.lock`, `serve-state.lock`, and `serve-start.lock` coordinate the lifecycle. The same dashboard can also run in the background via `serve start` / `serve status` / `serve stop` (see the end of this section).
 
 ```bash
 token-usage serve
@@ -786,7 +788,7 @@ token-usage serve --addr 127.0.0.1:9000
 | `GET /`, `GET /assets/…` | — | embedded HTML page and static assets (`Cache-Control: no-store`) |
 
 - Errors are uniform JSON `{"error":{"message":"…"}}`: `400` for invalid parameters, `404` for unknown chart kinds or assets, `500` for query failures.
-- Strictly read-only data surface: no CORS headers (same-origin use), no daemon interaction, and no database or configuration writes. The only local files involved are the lifecycle state file `serve.json` and the background log `serve.log`. Dimension rows are plain integers — K/M/B formatting is left to the frontend; `provider` rows apply `[provider_aliases]` exactly like the query views.
+- Strictly read-only data surface: no CORS headers (same-origin use), no daemon interaction, and no database or configuration writes. The persistent state is `serve.json`, background output goes to `serve.log`, and `serve.lock`, `serve-state.lock`, and `serve-start.lock` coordinate lifecycle transitions. Dimension rows are plain integers — K/M/B formatting is left to the frontend; `provider` rows apply `[provider_aliases]` exactly like the query views.
 
 ### serve start / serve status / serve stop / serve restart (background, nginx-style)
 

@@ -43,6 +43,10 @@
 | `internal/engine/` | Collection orchestration: dependency assembly, main loop, transactional writes, retries, and result validation. |
 | `internal/analyzer/` | Daemon real-time monitoring: JSONL watcher, SQLite poller, debounce, and serialization lock. |
 | `internal/querier/` | Query engine that aggregates directly from `messages`. |
+| `internal/web/` | Read-only local dashboard HTTP server, including embedded static assets and JSON/SVG endpoints. |
+| `internal/charts/` | Shared SVG chart rendering for `chart`, `report`, and `serve`. |
+| `internal/querydef/` | Pure parser and validator for configured query views and output-column layouts. |
+| `internal/fmtx/` | Shared display formatting for compare/report/dashboard change values. |
 | `internal/tui/` | Interactive configuration-editing TUI (bubbletea; saves through `ApplyConfig`). |
 | `internal/logger/` | Built on log/slog, with daily rotation and automatic cleanup. |
 

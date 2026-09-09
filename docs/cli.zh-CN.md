@@ -14,7 +14,7 @@ token-usage
 │   ├── all                               # 两阶段全采：messages 全历史 + router 全量回填
 │   ├── router --client X                 # 仅 router 全量回填（不动 messages）
 │   └── retry                             # 重试 collection_errors 中未解决失败组
-├── query [DATE|DATE-DATE]
+├── query [<name> [DATE|DATE-DATE] | DATE|DATE-DATE]
 │   ├── client [DATE|DATE-DATE]    # 按客户端分组（默认视图）
 │   ├── model [DATE|DATE-DATE]     # 按模型分组
 │   ├── provider [DATE|DATE-DATE]  # 按供应商分组
@@ -25,7 +25,9 @@ token-usage
 │   ├── weekday [DATE|DATE-DATE]   # 按星期用量
 │   ├── heatmap [DATE|DATE-DATE]   # 星期×小时热力图
 │   ├── session [DATE|DATE-DATE]   # 会话明细
-│   └── summary [DATE|DATE-DATE]   # 总览摘要
+│   ├── summary [DATE|DATE-DATE]   # 总览摘要
+│   ├── custom <name> [DATE|DATE-DATE] # 显式运行已配置视图
+│   └── list                        # 列出已配置视图（只读配置，不开数据库）
 ├── export [view] [DATE|DATE-DATE] # 以 CSV 或 JSON 导出使用数据（--format csv|json）
 ├── errors [DATE|DATE-DATE]
 ├── doctor                                # 只读健康自检（配置、数据目录、数据库、客户端、采集、异常）
@@ -764,7 +766,7 @@ token-usage report 20260901-20260930 --out september-report
 
 ## serve
 
-启动只读的本地 HTTP 服务，提供内嵌仪表板：`/` 的内嵌 HTML 页面、JSON 接口（`/api/meta`、`/api/dashboard`）与 SVG 图表（`/api/chart/{kind}.svg`），图表与 `chart`/`report` 命令共用同一构建核（标题、副标题与悬停文案完全一致）。默认仅绑定 `127.0.0.1:8619`，按 Ctrl+C 停止。HTTP 数据面严格只读——不设 CORS 头、不写数据库与配置；本地仅涉及服务生命周期状态文件 `serve.json`（前台/后台共用）与后台日志 `serve.log`。同一仪表板也可通过 `serve start` / `serve status` / `serve stop` 转入后台运行（见本节末尾）。
+启动只读的本地 HTTP 服务，提供内嵌仪表板：`/` 的内嵌 HTML 页面、JSON 接口（`/api/meta`、`/api/dashboard`）与 SVG 图表（`/api/chart/{kind}.svg`），图表与 `chart`/`report` 命令共用同一构建核（标题、副标题与悬停文案完全一致）。默认仅绑定 `127.0.0.1:8619`，按 Ctrl+C 停止。HTTP 数据面严格只读——不设 CORS 头、不写数据库与配置；`serve.json` 是前后台共用的生命周期状态，`serve.log` 用于后台日志，`serve.lock`、`serve-state.lock` 与 `serve-start.lock` 负责生命周期协调。同一仪表板也可通过 `serve start` / `serve status` / `serve stop` 转入后台运行（见本节末尾）。
 
 ```bash
 token-usage serve
@@ -785,7 +787,7 @@ token-usage serve --addr 127.0.0.1:9000
 | `GET /`、`GET /assets/…` | — | 内嵌 HTML 页面与静态资产（`Cache-Control: no-store`） |
 
 - 错误统一为 JSON `{"error":{"message":"…"}}`：参数非法 `400`、图表类别或资产不存在 `404`、查询失败 `500`。
-- 数据面严格只读：不设 CORS 头（按同源使用）、不与守护进程交互、不写数据库与配置。本地仅涉及生命周期状态文件 `serve.json` 与后台日志 `serve.log`。维度行为原始整数，K/M/B 格式化交给前端；`provider` 行与查询视图一样应用 `[provider_aliases]`。
+- 数据面严格只读：不设 CORS 头（按同源使用）、不与守护进程交互、不写数据库与配置。持久状态为 `serve.json`，后台输出写入 `serve.log`，`serve.lock`、`serve-state.lock` 与 `serve-start.lock` 负责生命周期迁移协调。维度行为原始整数，K/M/B 格式化交给前端；`provider` 行与查询视图一样应用 `[provider_aliases]`。
 
 ### serve start / serve status / serve stop / serve restart（后台，nginx 风格）
 
