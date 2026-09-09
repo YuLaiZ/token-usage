@@ -9,7 +9,7 @@ This document covers every installation method in detail: the recommended instal
 Configuration, database, and logs always live under `~/.token-usage` (Windows: `%USERPROFILE%\.token-usage`). The script and manual binary installations also put the binary there — `~/.token-usage/bin/token-usage` (Windows: `%USERPROFILE%\.token-usage\bin\token-usage.exe`) — exposed through your user PATH, with no sudo or administrator privileges needed; `go install` and the direct development build (`go build`) place the binary elsewhere (see their sections). The methods differ in upgrade semantics:
 
 - **Official Release binary** (installed by the script below, by the AI-agent instruction, or manually): supports in-place self-update — the binary is the real file on PATH, which is exactly what the self-update source check requires.
-- **Built from source** (`make build` / `go build`): reports `Version = dev` (plain-build pseudo-versions are normalized to `dev`) and cannot self-update by default; run `token-usage update --force` to switch to an official Release asset (automatic updates then work normally), or rebuild and replace the file manually.
+- **Built from source** (`make build` / `go build`): reports a dev form (`Version = dev`, or `vX.Y.Z-dev` for a plain-build pseudo-version) and cannot self-update by default; run `token-usage update --force` to switch to an official Release asset (automatic updates then work normally), or rebuild and replace the file manually.
 
 Published assets (the platforms with official binaries — also the platforms supported by self-update):
 
@@ -167,7 +167,7 @@ git clone https://github.com/YuLaiZ/token-usage.git && cd token-usage
 make build   # produces ./token-usage (make build-all produces dist/token-usage-windows-amd64.exe)
 ```
 
-Put the built binary into the bin directory and add it to your PATH exactly as in the official-asset steps above (`~/.token-usage/bin/token-usage` on macOS, `%USERPROFILE%\.token-usage\bin\token-usage.exe` on Windows). A source-built binary reports `Version = dev` (plain-build pseudo-versions are normalized to `dev`) and cannot self-update by default; run `token-usage update --force` to switch to an official Release asset (automatic updates then work normally), or rebuild and replace the file under the bin directory manually.
+Put the built binary into the bin directory and add it to your PATH exactly as in the official-asset steps above (`~/.token-usage/bin/token-usage` on macOS, `%USERPROFILE%\.token-usage\bin\token-usage.exe` on Windows). A source-built binary reports a dev form (`Version = dev`, or `vX.Y.Z-dev` for a plain-build pseudo-version) and cannot self-update by default; run `token-usage update --force` to switch to an official Release asset (automatic updates then work normally), or rebuild and replace the file under the bin directory manually.
 
 ## go install (Requires Go)
 
@@ -175,7 +175,7 @@ Put the built binary into the bin directory and add it to your PATH exactly as i
 go install github.com/YuLaiZ/token-usage/cmd/token-usage@latest
 ```
 
-The binary is installed to `$GOBIN` (by default `~/go/bin`); ensure that directory is on `PATH`. Configuration and logs remain under `~/.token-usage/`. Verify the installation with `token-usage --version`. A binary installed with a Release tag (for example, `go install github.com/YuLaiZ/token-usage/cmd/token-usage@vX.Y.Z`) is not byte-identical to the official asset; run `token-usage update --force` once to replace it with an official Release asset, after which normal self-update works. The same applies when `@latest` resolves to a Release tag. If `@latest` resolves to a development version, inspect `token-usage version`: literal `Version = dev` is eligible for `--force`, while an explicitly requested pseudo-version must be installed manually.
+The binary is installed to `$GOBIN` (by default `~/go/bin`); ensure that directory is on `PATH`. Configuration and logs remain under `~/.token-usage/`. Verify the installation with `token-usage --version`. A binary installed with a Release tag (for example, `go install github.com/YuLaiZ/token-usage/cmd/token-usage@vX.Y.Z`) is not byte-identical to the official asset; run `token-usage update --force` once to replace it with an official Release asset, after which normal self-update works. The same applies when `@latest` resolves to a Release tag. If `@latest` resolves to a development version or an explicit pseudo-version, inspect `token-usage version`: `dev` and `vX.Y.Z-dev` displays are eligible for `--force`.
 
 ## Build Directly with Go (for Development)
 

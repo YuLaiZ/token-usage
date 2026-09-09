@@ -9,7 +9,7 @@
 配置、数据库与日志始终位于 `~/.token-usage`（Windows 为 `%USERPROFILE%\.token-usage`）。脚本安装与手动二进制安装还把二进制也放在这里——`~/.token-usage/bin/token-usage`（Windows 为 `%USERPROFILE%\.token-usage\bin\token-usage.exe`）——经用户 PATH 暴露命令，无需 sudo（Windows 无需管理员权限）；`go install` 与开发用直接构建（`go build`）的二进制位置见各自小节。各方式在升级语义上不同：
 
 - **官方 Release 二进制**（经下方脚本、AI Agent 指令或手动安装）：支持原地自更新——二进制是 PATH 上的真实文件，正是自更新来源校验所要求的形态。
-- **源码构建**（`make build` / `go build`）：`Version = dev`（直接构建的伪版本会被规范化为 `dev`），默认不能自更新；运行 `token-usage update --force` 可切换为官方 Release 资产（此后自动更新恢复正常），或重新构建后手动替换文件。
+- **源码构建**（`make build` / `go build`）：dev 形态（`Version = dev`，或直接构建伪版本归一显示的 `vX.Y.Z-dev`），默认不能自更新；运行 `token-usage update --force` 可切换为官方 Release 资产（此后自动更新恢复正常），或重新构建后手动替换文件。
 
 已发布的资产（有官方二进制的平台——也是自更新支持的平台）：
 
@@ -165,7 +165,7 @@ git clone https://github.com/YuLaiZ/token-usage.git && cd token-usage
 make build   # 产出 ./token-usage（make build-all 产 dist/token-usage-windows-amd64.exe）
 ```
 
-把构建产物按上方官方资产步骤放进 bin 目录并加入 PATH（macOS 为 `~/.token-usage/bin/token-usage`，Windows 为 `%USERPROFILE%\.token-usage\bin\token-usage.exe`）。源码构建产物 `Version = dev`（直接构建的伪版本会被规范化为 `dev`），默认不能自更新；运行 `token-usage update --force` 可切换为官方 Release 资产（此后自动更新恢复正常），或重新构建后手动替换 bin 目录下的文件。
+把构建产物按上方官方资产步骤放进 bin 目录并加入 PATH（macOS 为 `~/.token-usage/bin/token-usage`，Windows 为 `%USERPROFILE%\.token-usage\bin\token-usage.exe`）。源码构建产物为 dev 形态（`Version = dev`，或直接构建伪版本归一显示的 `vX.Y.Z-dev`），默认不能自更新；运行 `token-usage update --force` 可切换为官方 Release 资产（此后自动更新恢复正常），或重新构建后手动替换 bin 目录下的文件。
 
 ## go install（需 Go 环境）
 
@@ -173,7 +173,7 @@ make build   # 产出 ./token-usage（make build-all 产 dist/token-usage-window
 go install github.com/YuLaiZ/token-usage/cmd/token-usage@latest
 ```
 
-二进制装到 `$GOBIN`（默认 `~/go/bin`），需自行确保该目录在 PATH 中。配置和日志仍在 `~/.token-usage/`。安装后可用 `token-usage --version` 验证。通过正式 Release tag 安装的产物（如 `go install github.com/YuLaiZ/token-usage/cmd/token-usage@vX.Y.Z`）与官方资产并非字节完全一致；先运行一次 `token-usage update --force`，将其替换为一个官方 Release 资产，之后即可正常自更新。`@latest` 解析到正式 Release tag 时同样适用。若 `@latest` 解析到开发版本，请先查看 `token-usage version`：只有字面值为 `Version = dev` 的产物可用 `--force`，显式指定的伪版本须手动安装。
+二进制装到 `$GOBIN`（默认 `~/go/bin`），需自行确保该目录在 PATH 中。配置和日志仍在 `~/.token-usage/`。安装后可用 `token-usage --version` 验证。通过正式 Release tag 安装的产物（如 `go install github.com/YuLaiZ/token-usage/cmd/token-usage@vX.Y.Z`）与官方资产并非字节完全一致；先运行一次 `token-usage update --force`，将其替换为一个官方 Release 资产，之后即可正常自更新。`@latest` 解析到正式 Release tag 时同样适用。若 `@latest` 解析到开发版本，请先查看 `token-usage version`：`dev` 与 `vX.Y.Z-dev` 显示的产物均可用 `--force`。
 
 ## 直接 go build（开发用）
 

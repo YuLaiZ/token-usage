@@ -211,6 +211,46 @@ func TestVerifyProvenance_DevRejected(t *testing.T) {
 	}
 }
 
+// TestVerifyProvenance_DevShortDisplayRejected：buildinfo 伪版本短显示
+// （v0.1.8-dev）与显式 "dev" 同语义 → untrusted 且短路不触网。
+func TestVerifyProvenance_DevShortDisplayRejected(t *testing.T) {
+	deps, _, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
+
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.8-dev", rc, ProvenanceOptions{})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if res.Trusted {
+		t.Fatal("v0.1.8-dev 应判定为 untrusted")
+	}
+	if len(rc.fetches) != 0 {
+		t.Fatalf("dev 短路前不应查询 Release，fetches=%v", rc.fetches)
+	}
+}
+
+// TestVerifyProvenance_DevShortDisplayForceStructurePass：v0.1.8-dev + force →
+// 与显式 "dev" 同走 dev-build 豁免。
+func TestVerifyProvenance_DevShortDisplayForceStructurePass(t *testing.T) {
+	deps, binPath, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))
+
+	res, err := VerifyProvenance(context.Background(), deps, "v0.1.8-dev", rc, ProvenanceOptions{Force: true})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if res.Trusted {
+		t.Fatal("v0.1.8-dev + force 也不可信（Trusted=false）")
+	}
+	if res.Exemption != ExemptionDevBuild {
+		t.Fatalf("Exemption = %q, want dev-build", res.Exemption)
+	}
+	if res.BinaryPath != binPath {
+		t.Fatalf("BinaryPath = %q, want %q", res.BinaryPath, binPath)
+	}
+	if len(rc.fetches) != 0 {
+		t.Fatalf("dev + force 无可查询对象，不应查询 Release，fetches=%v", rc.fetches)
+	}
+}
+
 // TestVerifyProvenance_InvalidVersionRejected：当前版本非正式 tag → untrusted。
 func TestVerifyProvenance_InvalidVersionRejected(t *testing.T) {
 	deps, _, rc, _, _, _ := makeProvenanceDeps(t, "v0.1.0", []byte("official-bin"))

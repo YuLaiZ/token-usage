@@ -101,7 +101,7 @@ token-usage version          # 多行详细输出
 
 | 形式 | 输出 |
 |------|------|
-| `--version`（`-v`） | 单行 `token-usage <version>\n`；本地开发为 `token-usage dev` |
+| `--version`（`-v`） | 单行 `token-usage <version>\n`；本地开发为 `token-usage v0.1.8-dev`（伪版本归一显示） |
 | `version` | 严格五行详细输出（末尾换行）：`token-usage <version>` / `commit: <hash>` / `build_time: <time>` / `go: <go版本>` / `platform: <os>/<arch>` |
 
 详细输出示例（release 构建）：
@@ -109,7 +109,7 @@ token-usage version          # 多行详细输出
 ```text
 token-usage <version>
 commit: 59a8d55a1b2c
-build_time: 2026-07-30T10:00:00Z
+build_time: 2026-07-30 18:00:00
 go: go1.26.4
 platform: darwin/arm64
 ```
@@ -117,7 +117,8 @@ platform: darwin/arm64
 - `commit` 展示完整 revision 的前 12 位；工作树有修改时（`vcs.modified=true`）追加 `-dirty`。
 - **版本来源优先级**：① Makefile `ldflags -X` 注入的 `Version` → ② `go install @version` 时 `debug.ReadBuildInfo().Main.Version` → ③ 本地默认 `dev`。
 - **commit 来源**：① 注入的 `Commit` → ② `debug.BuildInfo` 的 `vcs.revision` → ③ `unknown`。**build_time 不使用 `vcs.time`**（那是 commit 时间，非构建时间），仅取注入值，未注入为 `unknown`。
-- 直接 `go build` 未注入 ldflags 时：version 为 `dev`，build_time 为 `unknown`，commit 会在 Go 写入 VCS 信息时回退为 revision。直接 `go run` 的临时缓存可执行文件可能不带 VCS 信息，此时 commit 为 `unknown`；需验证完整构建元数据时使用 Makefile target。
+- **build_time 渲染**：注入值为 UTC RFC3339（发布构建 stamp），显示时转本机时区、空格分隔（`YYYY-MM-DD HH:MM:SS`）；无法按 RFC3339 解析的值原样显示。
+- **本地构建版本显示**：在打了 tag 的检出上直接 `go build` 时，`Main.Version` 是 Go 伪版本（如 `v0.1.8-0.20260908085159-1280e3f00e99`），显示归一为 `v0.1.8-dev`（base 指向该检出目标发布的版本，精确 commit 见 commit 行）；首个 tag 之前的检出显示 `v0.0.0-dev`。`-dev` 显示与字面 `dev` 共享 update 守卫语义：`update` 拒绝之，需 `update --force` 才能切换到官方 Release 资产。
 - 纯静态命令：不读配置、不开数据库、不初始化日志、不访问网络。
 - 根 `--help` 同时展示 `version` 子命令与可见的 `-v, --version` flag。
 
@@ -823,7 +824,7 @@ token-usage update --force
 | `update` | 更新到最新稳定 Release。若当前二进制同目录存在一次中断的 POSIX 更新留下的受限事务 journal，先完成恢复；之后仅当目标严格高于当前版本且当前来源可信时才继续新替换：下载资产、与 `SHA256SUMS` 清单比对 SHA256、stage `--version` 二次校验、替换二进制。更新前正在运行的 daemon 会用新二进制自动重启；原本已停止的 daemon 保持停止，成功输出会提示 `token-usage start`。 |
 | `update --check` | 只读检查；不创建任何本地文件（不创建配置目录/锁/日志/数据库/服务定义）。 |
 | `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | 更新（或加 `--check` 后仅检查）指定精确版本 tag。`--version` 接受严格 Release tag（`v` 前缀、`MAJOR.MINOR.PATCH`、可选 `-rc.N`、无前导零）；非法值在任何网络请求前即报错。 |
-| `update --force` | 当前二进制来源非官方 Release 资产时仍强制覆盖，仅限两种豁免：与所报告版本官方资产 hash 不一致（按安装指引重签过的二进制、或 `go install pkg@vX.Y.Z` 产物），以及 dev 本地构建（`Version = dev`；直接构建的伪版本会被规范化为 `dev`）。全部结构检查与目标资产的 SHA256 / stage `--version` 校验照常执行；软链副本与非官方 tag 不可被 force。 |
+| `update --force` | 当前二进制来源非官方 Release 资产时仍强制覆盖，仅限两种豁免：与所报告版本官方资产 hash 不一致（按安装指引重签过的二进制、或 `go install pkg@vX.Y.Z` 产物），以及 dev 本地构建（`Version = dev`，或直接构建伪版本归一显示的 `vX.Y.Z-dev`——两种形态同判）。全部结构检查与目标资产的 SHA256 / stage `--version` 校验照常执行；软链副本与非官方 tag 不可被 force。 |
 
 `--check` 与 `--version` 可组合，如 `update --check --version vX.Y.Z-rc.N` 只检查候选版。`--force` 不能与 `--check` 组合（该组合被显式拒绝）。
 
@@ -843,7 +844,7 @@ token-usage update --force
 
 ### 补全迁移提示
 
-`update` 成功跨越补全自动配置功能的引入版本——当前版本低于该版本（不可解析的 `Version = dev` 视为低于）且目标为该版本或更高——时，成功输出追加一条一次性迁移提示，按平台给出官方安装命令。重跑一次安装脚本即可自动配置补全（zsh 会交互确认）。Windows 后台替换（Deferred）出口的提示要求先用 `token-usage version` 确认最终版本再重跑安装脚本，避免两者竞争同一二进制。提示无状态：每次跨越门槛都会打印，显式 `--version` 降级后再升级会再次出现。`update --check`、全部失败与拒绝分支、以及中断事务恢复（Recovered）出口均不打印。
+`update` 成功跨越补全自动配置功能的引入版本——当前版本低于该版本（不可解析的本地构建版本——`dev` 或 `vX.Y.Z-dev` 显示——视为低于）且目标为该版本或更高——时，成功输出追加一条一次性迁移提示，按平台给出官方安装命令。重跑一次安装脚本即可自动配置补全（zsh 会交互确认）。Windows 后台替换（Deferred）出口的提示要求先用 `token-usage version` 确认最终版本再重跑安装脚本，避免两者竞争同一二进制。提示无状态：每次跨越门槛都会打印，显式 `--version` 降级后再升级会再次出现。`update --check`、全部失败与拒绝分支、以及中断事务恢复（Recovered）出口均不打印。
 
 ### 信任与来源校验
 
@@ -856,7 +857,7 @@ token-usage update --force
 拒绝携带 `--force` 出口，但仅限两种豁免：
 
 - **hash 失配**（当前版本存在官方 Release 与清单，但本地内容不一致）：用 `--force` 再次执行即用官方资产覆盖，自动更新恢复正常；
-- **dev 本地构建**（`Version = dev`；直接构建的伪版本会被规范化为 `dev`，这是 `update --force` 唯一接受的 dev 形态；不存在可比的官方 Release 与清单，从未发生 hash 比较）：`update --force` 把安装切换为官方 Release 资产。
+- **dev 本地构建**（`Version = dev`，或直接构建伪版本归一显示的 `vX.Y.Z-dev`——两种形态 `update --force` 同等接受；不存在可比的官方 Release 与清单，从未发生 hash 比较）：`update --force` 把安装切换为官方 Release 资产。
 
 软链副本与非官方 tag 不可被 force——其余一切拒绝原因都只能手动安装。`--force` 不跳过任何检查：结构前置仍然把关，目标资产仍要下载、与 `SHA256SUMS` 比对 SHA256、并经 stage `--version` 二次校验后才可能替换当前二进制。`--force` 安装完成以注明 `--force` 的成功提示退出 0；绝不谎报来源可信。
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
@@ -273,7 +274,7 @@ func (s *Service) Check(ctx context.Context, opts CheckOptions) (CheckResult, er
 	}
 
 	// dev + force：dev 无版本语义，可被任何合法目标替换，不做版本序比较。
-	if s.CurrentVersion == "dev" {
+	if isDevVersion(s.CurrentVersion) {
 		return CheckResult{
 			CurrentTag:      "dev",
 			TargetTag:       target.Tag,
@@ -899,8 +900,25 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 // （返回零值 Version，由调用方按 CurrentVersion=="dev" 走专用分支）。
 // dev 非 force 的错误文本携带 --force 出口：这是 dev 用户唯一能看到 force 提示的
 // 落点（该分支在渲染分流之前就中断），提示用完整命令避免与 --check 组合歧义。
+// isDevVersion 报告当前版本是否为本地开发形态：显式 "dev"，或 buildinfo 对
+// 本地伪版本的短显示——剥离 "-dev" 后须通过 ParseVersion 严格校验
+// （vMAJOR.MINOR.PATCH[-rc.N]，如 v0.1.8-dev、v0.1.8-rc.1-dev）。该合同
+// 保证任意非法串（如 vnot-a-release-dev）不会被误判为 dev 而绕过
+// 「非官方 tag 不可 force」的限制；两类形态都无法通过官方 provenance 校验，
+// --force 时按 dev-build 豁免放行。
+func isDevVersion(v string) bool {
+	if v == "dev" {
+		return true
+	}
+	if !strings.HasSuffix(v, "-dev") {
+		return false
+	}
+	_, err := ParseVersion(strings.TrimSuffix(v, "-dev"))
+	return err == nil
+}
+
 func (s *Service) parseCurrent(force bool) (Version, error) {
-	if s.CurrentVersion == "dev" {
+	if isDevVersion(s.CurrentVersion) {
 		if force {
 			return Version{}, nil
 		}

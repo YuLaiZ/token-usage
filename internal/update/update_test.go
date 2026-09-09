@@ -165,6 +165,59 @@ func TestCheck_CurrentDevRejected(t *testing.T) {
 	}
 }
 
+// TestIsDevVersion_StrictContract：isDevVersion 仅接受字面 "dev" 与剥离
+// "-dev" 后能通过 ParseVersion 的短显示；非法 "-dev" 串必须判 false，
+// 防止携带 --force 的任意非官方版本绕过「非官方 tag 不可 force」合同。
+func TestIsDevVersion_StrictContract(t *testing.T) {
+	cases := []struct {
+		v    string
+		want bool
+	}{
+		{"dev", true},
+		{"v0.1.8-dev", true},
+		{"v0.1.8-rc.1-dev", true},
+		{"vnot-a-release-dev", false},
+		{"v0.1.8.1-dev", false},
+		{"v01.2.3-dev", false},
+		{"random-dev", false},
+		{"v0.1.8", false},
+		{"v0.1.8-rc.1", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isDevVersion(tc.v); got != tc.want {
+			t.Errorf("isDevVersion(%q) = %v, want %v", tc.v, got, tc.want)
+		}
+	}
+}
+
+// TestCheck_CurrentIllegalDevSuffixRejected：非法 "-dev" 串不是 dev——
+// Check 阶段按非法版本拒绝（而非走 dev 分支），force 也不豁免。
+func TestCheck_CurrentIllegalDevSuffixRejected(t *testing.T) {
+	svc := makeService(t)
+	svc.CurrentVersion = "vnot-a-release-dev"
+
+	if got, err := svc.Check(context.Background(), CheckOptions{Force: true}); err == nil {
+		t.Fatalf("非法 -dev 串即使携带 force 也应返回错误，got=%+v", got)
+	}
+}
+
+// TestCheck_CurrentDevShortDisplayRejected：buildinfo 伪版本短显示
+// （v0.1.8-dev）与显式 "dev" 同语义 → Check 阶段短路拒绝。
+func TestCheck_CurrentDevShortDisplayRejected(t *testing.T) {
+	svc := makeService(t)
+	svc.CurrentVersion = "v0.1.8-dev"
+
+	got, err := svc.Check(context.Background(), CheckOptions{})
+	if err == nil {
+		t.Fatalf("v0.1.8-dev 应返回错误，got=%+v", got)
+	}
+	rc := svc.ReleaseClient.(*fakeReleaseClient)
+	if len(rc.fetches) != 0 {
+		t.Fatalf("dev 短路不应查询目标 Release，fetches=%v", rc.fetches)
+	}
+}
+
 // TestCheck_NoStableRelease：latest 端点无稳定版 → 结果携带 NoStableRelease 标记。
 func TestCheck_NoStableRelease(t *testing.T) {
 	svc := makeService(t)

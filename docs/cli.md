@@ -101,7 +101,7 @@ token-usage version          # multi-line detailed output
 
 | Form | Output |
 |------|------|
-| `--version` (`-v`) | One line: `token-usage <version>\n`; local development shows `token-usage dev`. |
+| `--version` (`-v`) | One line: `token-usage <version>\n`; local development shows `token-usage v0.1.8-dev` (normalized pseudo-version display). |
 | `version` | Strict five-line detailed output (with a trailing newline): `token-usage <version>` / `commit: <hash>` / `build_time: <time>` / `go: <go-version>` / `platform: <os>/<arch>`. |
 
 Example detailed output from a release build:
@@ -109,7 +109,7 @@ Example detailed output from a release build:
 ```text
 token-usage <version>
 commit: 59a8d55a1b2c
-build_time: 2026-07-30T10:00:00Z
+build_time: 2026-07-30 18:00:00
 go: go1.26.4
 platform: darwin/arm64
 ```
@@ -117,7 +117,8 @@ platform: darwin/arm64
 - `commit` displays the first 12 characters of the full revision; a modified worktree (`vcs.modified=true`) appends `-dirty`.
 - **Version-source precedence**: (1) Makefile `ldflags -X` injected `Version` → (2) `debug.ReadBuildInfo().Main.Version` under `go install @version` → (3) local default `dev`.
 - **Commit source**: (1) injected `Commit` → (2) `vcs.revision` in `debug.BuildInfo` → (3) `unknown`. **`build_time` does not use `vcs.time`**, because that is commit time rather than build time; it only uses the injected value and is `unknown` when none is injected.
-- For a direct `go build` without injected ldflags, version is `dev`, build time is `unknown`, and commit falls back to the Go VCS revision when it is embedded. The temporary cached executable used by direct `go run` may not contain VCS metadata, in which case commit is `unknown`; use a Makefile target to validate complete build metadata.
+- **`build_time` rendering**: the injected value is UTC RFC3339 (stamped by the release build); it is displayed in the local timezone as `YYYY-MM-DD HH:MM:SS`. Values that do not parse as RFC3339 are shown verbatim.
+- **Local-build version display**: for a direct `go build` from a tagged checkout, `debug.ReadBuildInfo().Main.Version` is a Go pseudo-version such as `v0.1.8-0.20260908085159-1280e3f00e99`; it is normalized to `v0.1.8-dev` for display (the base version indicates the release this checkout is heading toward, and the `commit` line keeps the exact revision). Checkouts before the first tag display `v0.0.0-dev`. The `-dev` display shares the semantics of the literal `dev` with the update guard: `update` refuses it and `update --force` is required to switch to an official release asset.
 - This is a purely static command: it does not read configuration, open the database, initialize logging, or access the network.
 - Root `--help` shows both the `version` subcommand and the visible `-v, --version` flag.
 
@@ -823,7 +824,7 @@ token-usage update --force
 | `update` | Updates to the latest stable Release. If a restricted transaction journal from an interrupted POSIX update exists beside this binary, it is recovered first; a new replacement then proceeds only when the target is strictly higher than the current version and the current source is trusted. It downloads the asset, verifies its SHA256 against the `SHA256SUMS` manifest, stages a `--version` second check, and replaces the binary. A daemon that was running before the update is restarted automatically on the new binary; a daemon that was stopped stays stopped, and the success output points to `token-usage start`. |
 | `update --check` | Read-only check; creates no local files (no configuration directory, lock, log, database, or service definition). |
 | `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | Updates (or, with `--check`, only checks) the specified exact Release tag. `--version` accepts a strict Release tag (`v` prefix, `MAJOR.MINOR.PATCH`, optional `-rc.N`, no leading zeros); an invalid value errors before any network request. |
-| `update --force` | Overwrites the current binary even when its source is not an official Release asset, for exactly two exemptions: a hash mismatch against the official asset of the reported version (a binary re-signed per the install guide, or `go install pkg@vX.Y.Z`), and a dev local build (`Version = dev`; plain-build pseudo-versions are normalized to `dev`). All structural checks and the target asset's SHA256 / staged `--version` verification still run; symlinked copies and non-official tags cannot be forced. |
+| `update --force` | Overwrites the current binary even when its source is not an official Release asset, for exactly two exemptions: a hash mismatch against the official asset of the reported version (a binary re-signed per the install guide, or `go install pkg@vX.Y.Z`), and a dev local build (`Version = dev`, or the normalized `vX.Y.Z-dev` display of a plain-build pseudo-version — both dev forms `update --force` accepts). All structural checks and the target asset's SHA256 / staged `--version` verification still run; symlinked copies and non-official tags cannot be forced. |
 
 `--check` and `--version` may be combined; for example, `update --check --version vX.Y.Z-rc.N` checks a release candidate only. `--force` cannot be combined with `--check` (that combination is rejected explicitly).
 
@@ -843,7 +844,7 @@ When the local version is strictly newer than the requested or latest release �
 
 ### Completion Migration Notice
 
-When a successful `update` crosses the version that introduced automatic shell-completion setup — the current version is below it (an unparseable `Version = dev` counts as below) and the target is that version or any later one — the success output appends a one-time migration notice with the official installer command for your platform. Re-running the installer sets up completion automatically (on zsh it asks interactively). The Windows background-replacement (deferred) outcome asks you to confirm the final version with `token-usage version` before re-running the installer, so the two never race on the binary. The notice is stateless: it is printed on every threshold crossing, so an explicit `--version` downgrade followed by a later upgrade prints it again. `update --check`, every failure and refusal branch, and the interrupted-transaction recovery outcome never print it.
+When a successful `update` crosses the version that introduced automatic shell-completion setup — the current version is below it (an unparseable local-build version — `dev` or a `vX.Y.Z-dev` display — counts as below) and the target is that version or any later one — the success output appends a one-time migration notice with the official installer command for your platform. Re-running the installer sets up completion automatically (on zsh it asks interactively). The Windows background-replacement (deferred) outcome asks you to confirm the final version with `token-usage version` before re-running the installer, so the two never race on the binary. The notice is stateless: it is printed on every threshold crossing, so an explicit `--version` downgrade followed by a later upgrade prints it again. `update --check`, every failure and refusal branch, and the interrupted-transaction recovery outcome never print it.
 
 ### Trust and Source Verification
 
@@ -856,7 +857,7 @@ When a successful `update` crosses the version that introduced automatic shell-c
 The refusal carries a `--force` escape hatch for exactly two exemptions:
 
 - **hash mismatch** (the current version has an official Release and manifest, but the local content differs): re-running with `--force` overwrites the binary with the official asset, so automatic updates resume;
-- **dev build** (`Version = dev`; plain-build pseudo-versions are normalized to `dev`, so this is the only dev form `update --force` accepts; no comparable official Release or manifest exists, so no hash comparison ever happened): `update --force` switches the installation to the official Release asset.
+- **dev build** (`Version = dev`, or the normalized `vX.Y.Z-dev` display of a plain-build pseudo-version — both dev forms `update --force` accepts; no comparable official Release or manifest exists, so no hash comparison ever happened): `update --force` switches the installation to the official Release asset.
 
 Symlinked copies and non-official tags cannot be forced — every other refusal reason always requires manual installation. `--force` never skips any check: structural checks still gate the replacement, and the target asset is still downloaded, SHA256-verified against `SHA256SUMS`, and stage-checked with `--version` before it may replace the current binary. A `--force` run is reported as successful with a `--force` note and exits 0; it is never reported as trusted.
 

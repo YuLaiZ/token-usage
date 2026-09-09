@@ -154,7 +154,7 @@ type ProvenanceResult struct {
 //     豁免（赋值与 force 无关），darwin 上先做签名探测以细化提示文案。
 func VerifyProvenance(ctx context.Context, deps ProvenanceDeps, currentVersion string, rc ReleaseClient, opts ProvenanceOptions) (ProvenanceResult, error) {
 	// 第 1 步：解析当前版本。dev 或非法 tag 直接判不可信（短路，不触网/不读盘）。
-	if currentVersion == "dev" {
+	if isDevVersion(currentVersion) {
 		if !opts.Force {
 			return untrusted(ui.Bi(
 				"current version is dev (local build); official provenance cannot be verified, please install manually",

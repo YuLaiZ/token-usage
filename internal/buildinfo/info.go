@@ -11,9 +11,11 @@ package buildinfo
 
 import (
 	"fmt"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"time"
 )
 
 // 程序展示名称，Short/Detail 输出固定前缀。
@@ -93,11 +95,16 @@ func resolve(in versionVars, bi *debug.BuildInfo, goVer, goos, goarch string) In
 //
 // 优先级：
 //  1. 注入的非空且非 "dev" 值；
-//  2. debug.BuildInfo.Main.Version，排除空值、"(devel)" 与本地构建的伪版本号；
+//  2. debug.BuildInfo.Main.Version，排除空值与 "(devel)"；本地构建的伪版本
+//     号在基础 tag 合同内（稳定版或 rc.N）时归一为短显示 <base>-dev
+//     （如 v0.1.8-dev、v0.1.8-rc.1-dev，保留目标版本提示）；
 //  3. 回退 "dev"。
 //
-// 第 2 优先级仅用于捕获 go install pkg@v0.1.0 注入的真实 SemVer 模块版本，
-// 本地 go build / make build 产生的伪版本号一律排除并回退到 "dev"。
+// 第 2 优先级仅用于捕获 go install pkg@v0.1.0 注入的真实 SemVer 模块版本；
+// 本地 go build / make build 产生的伪版本号不代表真实发布版本：合同内基线
+// 归一为 <base>-dev 短形态（与 update 守卫的 isDevVersion 识别配套——剥离
+// "-dev" 后能通过 ParseVersion）；基础为其他预发布（如 beta）或无法解析的
+// 伪版本回退字面 "dev"，避免显示 updater 无法识别的形态。
 //
 // 不自动补 "v" 前缀，不把 commit 转成版本号。
 func resolveVersion(injected string, bi *debug.BuildInfo) string {
@@ -105,7 +112,15 @@ func resolveVersion(injected string, bi *debug.BuildInfo) string {
 		return injected
 	}
 	if bi != nil {
-		if mv := bi.Main.Version; mv != "" && mv != "(devel)" && !isPseudoVersion(mv) {
+		if mv := bi.Main.Version; mv != "" && mv != "(devel)" {
+			if m := pseudoRe.FindStringSubmatch(mv); m != nil {
+				if base := m[1]; tagContractRe.MatchString(base) {
+					return base + "-dev"
+				}
+				// 基础 tag 不在正式合同内（如 beta 预发布）：无可提示的
+				// 目标版本，回退字面 dev。
+				return "dev"
+			}
 			return mv
 		}
 	}
@@ -146,6 +161,20 @@ func resolveBuildTime(injected string) string {
 	return "unknown"
 }
 
+// displayBuildTime 把注入的构建时间渲染为本机时区、空格分隔的展示形态：
+// "2026-09-08T09:24:43Z" → "2026-09-08 17:24:43"（注入合同为 UTC 的
+// RFC3339，由 Makefile stamp）。空串渲染为 "unknown"；无法按 RFC3339 解析
+// 的自定义值原样返回（向后兼容，不吞用户注入的任意串）。
+func displayBuildTime(raw string) string {
+	if raw == "" {
+		return "unknown"
+	}
+	if ts, err := time.Parse(time.RFC3339, raw); err == nil {
+		return ts.Local().Format(time.DateTime)
+	}
+	return raw
+}
+
 // resolveGoVersion 归一化 Go 工具链版本。
 //
 // 优先取 debug.BuildInfo.GoVersion；缺失时回退 runtime version。
@@ -179,13 +208,31 @@ func readSetting(settings []debug.BuildSetting, key string) string {
 // isPseudoVersion 判断是否为 Go 模块伪版本号。
 //
 // 本地直接 go build / make build 时，debug.ReadBuildInfo().Main.Version
-// 为伪版本号（形如 v0.0.0-20260730061846-59a8d5538012+dirty），既非空值
-// 也非 "(devel)"，但不是真实的 SemVer 模块版本。此判断用于把这类伪版本
-// 排除，使其回退到默认的 "dev"，与"本地默认版本为 dev"的设计一致。
-// go install pkg@v0.1.0 时 Main.Version 为真实 SemVer（如 v0.1.0），不会被误判。
+// 为伪版本号。两种形态都识别：打首个 tag 前的 v0.0.0-YYYYMMDDHHMMSS-hash
+// 与打 tag 后指向下一版本的 vX.Y.Z-0.YYYYMMDDHHMMSS-hash（本仓库 v0.1.7
+// 之后本地构建即后者）。它们既非空值也非 "(devel)"，但不是真实的 SemVer
+// 模块版本。go install pkg@v0.1.0 时 Main.Version 为真实 SemVer
+// （如 v0.1.0），不会被误判；+dirty 后缀容忍（脏工作区形态）。
 func isPseudoVersion(v string) bool {
-	return strings.HasPrefix(v, "v0.0.0-")
+	return pseudoRe.MatchString(v)
 }
+
+// 三种合法形态：① 打首个 tag 前 v0.0.0-时间戳-hash（无计数段）；② 基础
+// 稳定 tag vX.Y.Z-N.时间戳-hash；③ 基础预发布 tag vX.Y.Z-pre.M.时间戳-hash
+// （预发布标识可含 "."，如 beta；②③ 的计数段自基础 tag 起算，与时间戳以
+// "." 分隔，仅 ① 完全省略计数段）。+dirty 容忍脏工作区形态。base 捕获组
+// 保留预发布基础 tag；是否可归一为 <base>-dev 由调用方按正式 tag 合同门控
+// （见 resolveVersion——beta 等其他预发布基线不在 tag 合同内）。
+var pseudoRe = regexp.MustCompile(
+	`^(v\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)` +
+		`(?:-(?:\d+\.)?\d{14}|\.\d+\.\d{14})-[0-9a-f]+(\+dirty)?$`)
+
+// tagContractRe 是本项目正式 tag 的合同形态：vMAJOR.MINOR.PATCH[-rc.N]，
+// 数值分量无前导零、rc 编号 >=1（与 update 包 ParseVersion 的接受集合一致）。
+// 伪版本基线只有落在该合同内，归一出的 <base>-dev 显示才能被 update 守卫
+// 的 isDevVersion 识别。
+var tagContractRe = regexp.MustCompile(
+	`^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-rc\.[1-9]\d*)?$`)
 
 // Short 返回单行短版本字符串，格式为 "<progName> <version>\n"。
 func (i Info) Short() string {
@@ -206,10 +253,7 @@ func (i Info) Detail() string {
 		version = "dev"
 	}
 	commit := displayCommit(i.Commit, i.Modified)
-	buildTime := i.BuildTime
-	if buildTime == "" {
-		buildTime = "unknown"
-	}
+	buildTime := displayBuildTime(i.BuildTime)
 	goVer := i.GoVersion
 	if goVer == "" {
 		goVer = "unknown"

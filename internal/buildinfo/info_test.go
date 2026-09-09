@@ -47,6 +47,7 @@ func TestResolve_注入的版本提交构建时间全部生效(t *testing.T) {
 	if got.Commit != "abcdef123456" {
 		t.Errorf("Commit = %q, want abcdef123456", got.Commit)
 	}
+	// resolve 层保留注入原串（本机时区渲染在 Detail 层的 displayBuildTime）。
 	if got.BuildTime != "2026-07-30T10:00:00Z" {
 		t.Errorf("BuildTime = %q, want 2026-07-30T10:00:00Z", got.BuildTime)
 	}
@@ -115,21 +116,27 @@ func TestResolve_MainVersion为空或Devel时回退dev(t *testing.T) {
 	}
 }
 
-// ---- 用例 4b: Main.Version 为本地构建伪版本号时回退 dev ----
+// ---- 用例 4b: Main.Version 为本地构建伪版本号时归一为 <base>-dev ----
 //
 // 本地直接 go build / make build 时，Go 工具链会把 Main.Version 填成
-// 伪版本号（形如 v0.0.0-YYYYMMDDHHMMSS-hash[+dirty]）。它既非空值也非
-// "(devel)"，但不是真实的 SemVer 模块版本，必须排除并回退到 "dev"。
-// 只有 go install pkg@v0.1.0 这类经模块代理下载的真实 SemVer 才允许回填。
+// 伪版本号。三种形态的归一：打首个 tag 前的 v0.0.0-…、打 tag 后指向下一
+// 版本的 vX.Y.Z-0.…（本仓库 v0.1.7 之后即为后者）、预发布 tag 基线的
+// vX.Y.Z-rc.N.0.…（→ vX.Y.Z-rc.N-dev）；基础为其他预发布（如 beta）不在
+// 正式 tag 合同内的伪版本回退字面 "dev"。只有 go install pkg@v0.1.0
+// 这类经模块代理下载的真实 SemVer 才允许回填。
 
-func TestResolve_MainVersion为伪版本号时回退dev(t *testing.T) {
+func TestResolve_MainVersion为伪版本号时归一为短dev显示(t *testing.T) {
 	cases := []struct {
 		name    string
 		mainVer string
 		want    string
 	}{
-		{"伪版本号含dirty后缀", "v0.0.0-20260730061846-59a8d5538012+dirty", "dev"},
-		{"伪版本号不含dirty后缀", "v0.0.0-20260730061846-59a8d5538012", "dev"},
+		{"伪版本号含dirty后缀", "v0.0.0-20260730061846-59a8d5538012+dirty", "v0.0.0-dev"},
+		{"伪版本号不含dirty后缀", "v0.0.0-20260730061846-59a8d5538012", "v0.0.0-dev"},
+		{"打tag后的下一版本伪版本", "v0.1.8-0.20260908085159-1280e3f00e99", "v0.1.8-dev"},
+		{"打tag后预发布基线伪版本", "v0.1.8-rc.1.0.20260908085159-1280e3f00e99", "v0.1.8-rc.1-dev"},
+		{"beta基线回退字面dev", "v0.1.8-beta.1.0.20260908085159-1280e3f00e99", "dev"},
+		{"真实SemVer预发布不误伤", "v0.1.8-rc.1", "v0.1.8-rc.1"},
 		{"真实SemVer不误伤", "v0.1.0", "v0.1.0"},
 		{"devel标记仍回退", "(devel)", "dev"},
 		{"空值仍回退", "", "dev"},
@@ -344,7 +351,7 @@ func TestDetail_严格五行带末尾换行(t *testing.T) {
 	wantLines := []string{
 		progName + " v0.1.0",
 		"commit: 59a8d55a1b2c",
-		"build_time: 2026-07-30T10:00:00Z",
+		"build_time: " + displayBuildTime("2026-07-30T10:00:00Z"),
 		"go: " + testGoVersion,
 		"platform: " + testGOOS + "/" + testGOARCH,
 	}
@@ -394,7 +401,7 @@ func TestDetail_Release示例逐字一致(t *testing.T) {
 	}
 	want := "token-usage v0.1.0\n" +
 		"commit: 59a8d55a1b2c\n" +
-		"build_time: 2026-07-30T10:00:00Z\n" +
+		"build_time: " + displayBuildTime("2026-07-30T10:00:00Z") + "\n" +
 		"go: " + testGoVersion + "\n" +
 		"platform: " + testGOOS + "/" + testGOARCH + "\n"
 	if got := info.Detail(); got != want {
