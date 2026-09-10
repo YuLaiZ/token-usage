@@ -119,7 +119,7 @@ func TestRunCollectRetry_DisabledClient(t *testing.T) {
 }
 
 // TestRunCollectRetryCmd_CLIRejectsUnknownClient CLI 层 validateClientExists 拦截：
-// --client unknown（不在配置中）应在 loadCollectRuntime 之后、runCollectRetry 之前
+// --client unknown（不在配置中）应在配置加载之后、runCollectRetry 之前
 // 被 CLI 层校验拦截，返回"未知客户端"。沿用 runCollectDefault / runCollectAllCmd 的校验时机。
 func TestRunCollectRetryCmd_CLIRejectsUnknownClient(t *testing.T) {
 	home := t.TempDir()

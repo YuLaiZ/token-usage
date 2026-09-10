@@ -67,8 +67,8 @@ func loadConfig() (*config.Config, error) {
 // 返回 cleanup，调用方须 defer cleanup() 以关闭 DB 与日志。
 // 消除 collect/run 命令 RunE 中逐字重复的三段装配代码（加载配置/初始化日志/打开数据库）。
 //
-// 注意：本函数会直接打开 DB；凡需在打开 DB 前做 daemon 预检的 collect 路径
-// 应使用 loadCollectRuntime（preflight 在 DB 打开之前）。
+// 注意：本函数会直接打开 DB；collect 变体路径不做 daemon 预检（由
+// loadCollectConfig 完成预检后才调用 openCollectRuntime 打开 DB）。
 func loadRuntime() (*runtime, func(), error) {
 	cfg, err := loadConfig()
 	if err != nil {

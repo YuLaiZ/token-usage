@@ -147,22 +147,6 @@ func openCollectRuntime(cfg *config.Config) (log *slog.Logger, usageDB *db.DB, c
 	return log, usageDB, cleanup, nil
 }
 
-// loadCollectRuntime 保留为共用装配 helper；需要校验命令参数的调用方应先用
-// loadCollectConfig，校验后再调用 openCollectRuntime。
-// 任一阶段失败立即返回；preflight 通过后才打开 DB / 初始化 logger。
-// 返回 (cfg, log, usageDB, cleanup)，调用方须 defer cleanup()。
-func loadCollectRuntime(force bool) (cfg *config.Config, log *slog.Logger, usageDB *db.DB, cleanup func(), err error) {
-	cfg, err = loadCollectConfig(force)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	log, usageDB, cleanup, err = openCollectRuntime(cfg)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	return cfg, log, usageDB, cleanup, nil
-}
-
 // validateClientExists 校验 --client 指定的客户端在配置中存在且 enabled。
 // 不存在 → "未知客户端"；存在但 disabled → "已禁用"。
 func validateClientExists(cfg *config.Config, client string) error {
