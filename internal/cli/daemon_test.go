@@ -8,7 +8,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -836,5 +839,158 @@ func TestRunRestart_RealFailureReturnsContextError(t *testing.T) {
 	}
 	if errOut.String() != "" {
 		t.Errorf("命令不得手写 stderr（由 cobra 统一输出）: %q", errOut.String())
+	}
+}
+
+// ---- daemon status --format json ----
+
+// 未运行（隔离 HOME + 空数据目录）：running=false、pid=0、startup_phase=null、
+// autostart.status=disabled（无定义残留），summary 字段与 table 输出一致。
+func TestDaemonStatus_FormatJSON_NotRunning(t *testing.T) {
+	dataDir := t.TempDir()
+	setupHomeConfig(t, `data_dir = "`+filepath.ToSlash(dataDir)+`"
+[daemon]
+poll_interval = 45
+`)
+	cmd := newDaemonStatusCmd()
+	cmd.SetArgs([]string{"--format", "json"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("daemon status --format json: %v", err)
+	}
+
+	var doc struct {
+		Running             bool            `json:"running"`
+		PID                 int             `json:"pid"`
+		StartupPhase        *map[string]any `json:"startup_phase"`
+		DataDir             string          `json:"data_dir"`
+		PollIntervalSeconds int             `json:"poll_interval_seconds"`
+		Autostart           struct {
+			Status string `json:"status"`
+		} `json:"autostart"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("输出必须是合法 JSON: %v\n%s", err, out.String())
+	}
+	if doc.Running {
+		t.Error("无 daemon 时 running 应为 false")
+	}
+	if doc.PID != 0 {
+		t.Errorf("无 daemon 时 pid 应为 0，实际 %d", doc.PID)
+	}
+	if doc.StartupPhase != nil {
+		t.Errorf("无 daemon 时 startup_phase 应为 null，实际 %+v", doc.StartupPhase)
+	}
+	if doc.DataDir != filepath.ToSlash(dataDir) && doc.DataDir != dataDir {
+		t.Errorf("data_dir 应为 %q，实际 %q", dataDir, doc.DataDir)
+	}
+	if doc.PollIntervalSeconds != 45 {
+		t.Errorf("poll_interval_seconds 应为 45，实际 %d", doc.PollIntervalSeconds)
+	}
+	// autostart 期望值按平台分派：macOS/Windows 有自启管理器，未启用且无
+	// 定义 → disabled；Linux 平台不支持自启管理（unsupported），检测失败
+	// 诚实降级为 unknown（detect_failed=true），与 table 输出同一语义。
+	want := "disabled"
+	if goruntime.GOOS == "linux" {
+		want = "unknown"
+	}
+	if doc.Autostart.Status != want {
+		t.Errorf("autostart.status 应为 %s，实际 %q", want, doc.Autostart.Status)
+	}
+}
+
+// --format xml 在执行任何检查之前被拒绝（不开库、不触碰 control.Manager）。
+func TestDaemonStatus_FormatJSON_InvalidFormatRejected(t *testing.T) {
+	dataDir := t.TempDir()
+	setupHomeConfig(t, `data_dir = "`+filepath.ToSlash(dataDir)+`"
+[daemon]
+poll_interval = 30
+`)
+	cmd := newDaemonStatusCmd()
+	cmd.SetArgs([]string{"--format", "xml"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("非法 --format 应报错")
+	}
+	if !strings.Contains(err.Error(), "xml") {
+		t.Errorf("错误应回显非法值，实际: %v", err)
+	}
+}
+
+// resolveAutostart 五态分类与 printAutoStartStatus 的展示分支一一对应。
+func TestResolveAutostart_FiveStates(t *testing.T) {
+	cases := []struct {
+		name      string
+		autostart bool
+		exists    bool
+		specMatch bool
+		want      string
+	}{
+		{"enabled", true, true, true, "enabled"},
+		{"missing", true, false, false, "missing"},
+		{"drift", true, true, false, "drift"},
+		{"residual", false, true, false, "residual"},
+		{"disabled", false, false, false, "disabled"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := cfgWithAutostart(tc.autostart)
+			mgr := &stubAutoStartManager{statusResult: service.AutoStartStatus{Exists: tc.exists, SpecMatches: tc.specMatch}}
+			got := resolveAutostart(cfg, mgr)
+			if got.Status != tc.want {
+				t.Errorf("status=%q want %q（configured=%v exists=%v spec=%v）",
+					got.Status, tc.want, got.Configured, got.DefinitionExists, got.SpecMatches)
+			}
+			if got.Configured != tc.autostart || got.DefinitionExists != tc.exists || got.SpecMatches != tc.specMatch {
+				t.Errorf("结构化字段与输入不符: %+v", got)
+			}
+		})
+	}
+	// 平台检测失败：DetectFailed=true 且 status=unknown。
+	mgr := &stubAutoStartManager{statusErr: service.ErrPlatformUnsupported}
+	got := resolveAutostart(cfgWithAutostart(true), mgr)
+	if !got.DetectFailed || got.Status != "unknown" {
+		t.Errorf("检测失败应 DetectFailed=true/status=unknown，实际 %+v", got)
+	}
+}
+
+// resolveStartupPhase 对 RuntimeState 各形态的归纳（catch_up 未知值降级 unknown）。
+func TestResolveStartupPhase_Mappings(t *testing.T) {
+	// 未运行：nil。
+	if got := resolveStartupPhase(control.RuntimeState{Running: false}); got != nil {
+		t.Errorf("未运行应返回 nil，实际 %+v", got)
+	}
+	// 阶段不可用且 PID 可读。
+	got := resolveStartupPhase(control.RuntimeState{Running: true, PID: 7, PhaseAvailable: false})
+	if got.Available || got.CatchUp != "unknown" || got.MonitorReady {
+		t.Errorf("PhaseAvailable=false 应 available=false/catch_up=unknown，实际 %+v", got)
+	}
+	// 监听未就绪：阶段可用（PhaseAvailable=true）但 monitor 尚未就绪，
+	// catch_up 保留 runtime-state 原值。
+	got = resolveStartupPhase(control.RuntimeState{Running: true, PID: 7, PhaseAvailable: true, MonitorReady: false, CatchUp: "pending"})
+	if !got.Available || got.MonitorReady || got.CatchUp != "pending" {
+		t.Errorf("monitor_ready=false 应 available=true/monitor_ready=false/catch_up=pending，实际 %+v", got)
+	}
+	// 补采进行中。
+	got = resolveStartupPhase(control.RuntimeState{Running: true, PID: 7, PhaseAvailable: true, MonitorReady: true, CatchUp: "running", CatchUpFailures: 0})
+	if got.CatchUp != "running" {
+		t.Errorf("catch_up 应透传 running，实际 %q", got.CatchUp)
+	}
+	// 补采成功透传 succeeded（table 无输出行、json 有值的差异化用例）。
+	got = resolveStartupPhase(control.RuntimeState{Running: true, PID: 7, PhaseAvailable: true, MonitorReady: true, CatchUp: "succeeded"})
+	if got.CatchUp != "succeeded" || got.CatchUpFailures != 0 {
+		t.Errorf("succeeded 应原样透传，实际 %+v", got)
+	}
+	// 补采失败携带失败数。
+	got = resolveStartupPhase(control.RuntimeState{Running: true, PID: 7, PhaseAvailable: true, MonitorReady: true, CatchUp: "failed", CatchUpFailures: 3})
+	if got.CatchUp != "failed" || got.CatchUpFailures != 3 {
+		t.Errorf("failed 应透传失败数 3，实际 %+v", got)
+	}
+	// 未知 catch_up 值降级 unknown。
+	got = resolveStartupPhase(control.RuntimeState{Running: true, PID: 7, PhaseAvailable: true, MonitorReady: true, CatchUp: "mystery"})
+	if got.CatchUp != "unknown" {
+		t.Errorf("未知 catch_up 应降级 unknown，实际 %q", got.CatchUp)
 	}
 }

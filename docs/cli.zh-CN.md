@@ -580,7 +580,10 @@ macOS 取舍：stop 会尝试 bootout 当前 job，随后以 detached 方式 sta
 
 ```text
 token-usage daemon status
+token-usage daemon status --format json
 ```
+
+`--format json` 把同一份快照输出为单个机器可读的 JSON 文档：来自 daemon lock 的 `running`/`pid`、`startup_phase`（未运行时为 `null`；含 `available`、`monitor_ready`、`catch_up`——runtime-state 的未知值降级为 `unknown`——与 `catch_up_failures`）、`data_dir`、`poll_interval_seconds`，以及 `autostart`（`configured`、`definition_exists`、`spec_matches`、布尔 `detect_failed`、携带原因的 `detect_error`，`status` 取封闭值域：`enabled`/`missing`/`drift`/`residual`/`disabled`，检测不可行时为 `unknown`）。`startup_phase` 中阶段元数据不可得（`available=false`）与未知 `catch_up` 值都会降级为 `catch_up: "unknown"`。
 
 只读（`Inspect` 不抢进程控制锁，仅以 daemon lock 判活），返回一致快照：
 

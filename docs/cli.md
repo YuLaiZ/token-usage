@@ -580,7 +580,10 @@ macOS tradeoff: the stop phase attempts to `bootout` the current job and then th
 
 ```text
 token-usage daemon status
+token-usage daemon status --format json
 ```
+
+With `--format json`, the same snapshot is emitted as a single machine-readable JSON document: `running`/`pid` from the daemon lock, `startup_phase` (`null` when not running; `available`, `monitor_ready`, `catch_up` — unknown runtime-state values degrade to `unknown` — and `catch_up_failures`), `data_dir`, `poll_interval_seconds`, and `autostart` (`configured`, `definition_exists`, `spec_matches`, boolean `detect_failed`, `detect_error` carrying the reason, and `status` in a closed set: `enabled`/`missing`/`drift`/`residual`/`disabled`, or `unknown` when detection is unavailable). In `startup_phase`, unavailable phase metadata (`available=false`) and unknown `catch_up` values both degrade to `catch_up: "unknown"`.
 
 Read-only: `Inspect` does not acquire the process-control lock and determines liveness only from the daemon lock. It returns a consistent snapshot containing:
 

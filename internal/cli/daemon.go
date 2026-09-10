@@ -163,26 +163,41 @@ func runStart(cmd *cobra.Command) error {
 
 // newDaemonStatusCmd 查看守护进程运行状态与配置摘要。
 func newDaemonStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show daemon status and config summary / 查看守护进程运行状态与配置摘要",
 		Long: ui.Bi("Show daemon status and a config summary.\n\n"+
 			"\"Running status\" reflects whether the current daemon (the live collection/analysis monitor) is running,\n"+
 			"separate from the autostart definition: autostart reflects \"whether it auto-starts on next login/reboot\",\n"+
-			"decided by daemon.autostart in config, independent of whether it is currently running.",
+			"decided by daemon.autostart in config, independent of whether it is currently running. With `--format json` the same state is emitted as a machine-readable document (stable fields, closed status vocabularies).",
 			"查看守护进程运行状态与配置摘要。\n\n"+
 				"「运行状态」反映当前守护进程（采集/分析的实时监控进程）是否在运行，\n"+
 				"与开机自启定义分离：开机自启反映「下次登录/重启是否自动启动」，\n"+
-				"由 config 的 daemon.autostart 决定，与当前是否运行相互独立。"),
+				"由 config 的 daemon.autostart 决定，与当前是否运行相互独立。`--format json` 把同一份状态输出为机器可读的文档（字段稳定、状态取封闭值域）。"),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runStatus(cmd)
 		},
 	}
+	cmd.Flags().String("format", "table", ui.Bi(
+		"Output format: table (human-readable report) or json (machine-readable status document)",
+		"输出格式：table（人读报告）或 json（机器可读的状态文档）",
+	))
+	return cmd
 }
 
 // runStatus 抽出便于测试。
 func runStatus(cmd *cobra.Command) error {
+	format, _ := cmd.Flags().GetString("format")
+	switch format {
+	case "", "table", "json":
+	default:
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("invalid --format %q (allowed: table, json)", format),
+			fmt.Sprintf("无效的 --format %q（允许：table、json）", format),
+		))
+	}
+
 	out := cmd.OutOrStdout()
 
 	cfg, err := loadConfig()
@@ -198,6 +213,25 @@ func runStatus(cmd *cobra.Command) error {
 	st, err := mgr.Inspect(cmdContext(cmd), cfg)
 	if err != nil {
 		return err
+	}
+
+	if format == "json" {
+		// 结构化状态仅 json 模式构造（resolveAutostart 会做一次只读定义检测，
+		// table 路径由 printAutoStartStatus 自行完成，避免重复执行）。
+		report := daemonStatusReport{
+			Running:             st.Running,
+			PID:                 st.PID,
+			StartupPhase:        resolveStartupPhase(st),
+			DataDir:             cfg.DataDir,
+			PollIntervalSeconds: cfg.Daemon.PollInterval,
+			Autostart:           resolveAutostart(cfg, service.NewAutoStartManager()),
+		}
+		payload, jsonErr := marshalExportJSON(report)
+		if jsonErr != nil {
+			return fmt.Errorf("%s: %w", ui.Bi("failed to encode daemon status as JSON", "daemon 状态 JSON 编码失败"), jsonErr)
+		}
+		_, jsonErr = io.WriteString(out, payload)
+		return jsonErr
 	}
 
 	if st.Running {
@@ -432,4 +466,101 @@ func runRestart(cmd *cobra.Command) error {
 
 	fmt.Fprintf(out, "✓ %s（PID %d → %d）\n", ui.Bi("daemon restarted", "守护进程已重启"), res.OldPID, res.NewPID)
 	return nil
+}
+
+// ---- daemon status --format json ----
+
+// daemonStatusReport 是 `daemon status --format json` 的结构化载荷:字段与
+// table 报告同源(同一 Inspect 快照与 autostart 漂移判定),startup_phase 仅在
+// running=true 时非 null。
+type daemonStatusReport struct {
+	Running             bool                `json:"running"`
+	PID                 int                 `json:"pid"`
+	StartupPhase        *daemonStartupPhase `json:"startup_phase"`
+	DataDir             string              `json:"data_dir"`
+	PollIntervalSeconds int                 `json:"poll_interval_seconds"`
+	Autostart           daemonAutostart     `json:"autostart"`
+}
+
+// daemonStartupPhase 归纳 runtime-state 的启动阶段:Available=false 表示阶段
+// 不可信(runtime-state 缺失/非法/instanceID 不匹配);CatchUp 为 runtime-state
+// 的原值,未知值降级为 unknown(与 table 的「启动阶段: 未知」同一保守策略)。
+type daemonStartupPhase struct {
+	Available       bool   `json:"available"`
+	MonitorReady    bool   `json:"monitor_ready"`
+	CatchUp         string `json:"catch_up"`
+	CatchUpFailures int    `json:"catch_up_failures"`
+}
+
+// daemonAutostart 是 autostart 定义层与配置的对照结果:Status 取封闭值域
+// enabled/missing/drift/residual/disabled(五态分类与 printAutoStartStatus 的
+// 展示分支一一对应),检测不可行时为 unknown 并置 DetectFailed。
+type daemonAutostart struct {
+	Configured       bool   `json:"configured"`
+	DefinitionExists bool   `json:"definition_exists"`
+	SpecMatches      bool   `json:"spec_matches"`
+	DetectFailed     bool   `json:"detect_failed"`
+	Status           string `json:"status"`
+	DetectErr        string `json:"detect_error,omitempty"`
+}
+
+// resolveAutostart 只读判定 autostart 五态(不触发 service.Sync,与
+// printAutoStartStatus 同一漂移分类语义)。executableForStatus 与 mgr.Status
+// 的失败统一按 detect_failed/unknown 报告,不视为配置错误。
+func resolveAutostart(cfg *config.Config, mgr service.AutoStartManager) daemonAutostart {
+	out := daemonAutostart{Configured: cfg.Daemon.AutoStart}
+	bin, err := executableForStatus()
+	if err != nil {
+		out.DetectFailed = true
+		out.Status = "unknown"
+		out.DetectErr = ui.Bi("failed to get current executable path", "获取当前可执行文件路径") + ": " + err.Error()
+		return out
+	}
+	opts := service.Options{Label: service.Label, BinPath: bin, DataDir: cfg.DataDir,
+		LogDir: service.EffectiveLogDir(cfg), Args: []string{"_run"}}
+	st, err := mgr.Status(opts)
+	if err != nil {
+		out.DetectFailed = true
+		out.Status = "unknown"
+		out.DetectErr = err.Error()
+		return out
+	}
+	out.DefinitionExists = st.Exists
+	out.SpecMatches = st.SpecMatches
+	switch {
+	case cfg.Daemon.AutoStart && st.Exists && st.SpecMatches:
+		out.Status = "enabled"
+	case cfg.Daemon.AutoStart && !st.Exists:
+		out.Status = "missing"
+	case cfg.Daemon.AutoStart && st.Exists && !st.SpecMatches:
+		out.Status = "drift"
+	case !cfg.Daemon.AutoStart && st.Exists:
+		out.Status = "residual"
+	default:
+		out.Status = "disabled"
+	}
+	return out
+}
+
+// resolveStartupPhase 把 RuntimeState 归纳为结构化启动阶段;未运行返回 nil
+// (运行态字段已在顶层)。未知 CatchUp 值降级 unknown,不猜测新阶段。
+func resolveStartupPhase(st control.RuntimeState) *daemonStartupPhase {
+	if !st.Running {
+		return nil
+	}
+	phase := &daemonStartupPhase{
+		Available:       st.PhaseAvailable,
+		MonitorReady:    st.MonitorReady,
+		CatchUp:         st.CatchUp,
+		CatchUpFailures: st.CatchUpFailures,
+	}
+	if !st.PhaseAvailable {
+		phase.CatchUp = "unknown"
+	}
+	switch phase.CatchUp {
+	case "pending", "running", "succeeded", "failed":
+	default:
+		phase.CatchUp = "unknown"
+	}
+	return phase
 }
