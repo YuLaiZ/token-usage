@@ -864,20 +864,21 @@ func TestApplyConfig_DataDirMigration_DaemonStopped_CleanupCalled(t *testing.T) 
 func TestApplyConfig_TempCleanupFailurePropagates(t *testing.T) {
 	home := t.TempDir()
 	configDir := filepath.Join(home, ".token-usage")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// 放一个文件但不给目录读权限 → CleanupKnownTempFiles 失败。
-	// 用一个不可读的子目录模拟：创建只读目录会让 ReadDir 失败。
-	// 更简单：把 .token-usage 改为不可读（仅 Unix）。
-	if err := os.Chmod(configDir, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chmod(configDir, 0o755)
 
 	ctrl := &fakeControlPort{inspectState: control.RuntimeState{Running: false}}
 	as := &fakeAutoStart{status: service.AutoStartStatus{Exists: false}, platform: "launchd"}
 	app := newApp(t, home, ctrl, as)
+
+	// 把 .token-usage 替换为普通文件而非目录 → CleanupKnownTempFiles 的
+	// ReadDir 失败（ENOTDIR）。不用「目录 chmod 0000」注入：该方式依赖
+	// 权限模型拒绝访问，容器/CI 的 root 会绕过权限位导致注入失效。替换
+	// 必须发生在 newApp 建好目录结构之后、ApplyConfig 之前。
+	if err := os.RemoveAll(configDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configDir, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := app.ApplyConfig(context.Background(), missingFileSentinel, basicConfig("/d"), false)
 	if err == nil {
