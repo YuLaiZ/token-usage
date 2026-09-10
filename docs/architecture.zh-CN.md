@@ -26,7 +26,7 @@
 |------|------|
 | `cmd/token-usage/` | 程序入口（`main.go`，仅装配 root cmd 并 `Execute`；error → 退出码 1） |
 | `internal/buildinfo/` | 规范化版本与构建元数据（`Current()`/`Info.Short()`/`Info.Detail()`，供 `version` 命令与 `--version` flag 复用同一份快照） |
-| `internal/cli/` | Cobra 命令组装配（config/collect/query/errors/export/top/chart/forecast/compare/watch/report/serve/update/doctor/start/status/stop/restart/version、内置 help/completion + Hidden `_run`/`_update-helper`/`_update-cleanup`） |
+| `internal/cli/` | Cobra 命令组装配（config/collect/query/errors/watch/doctor/daemon/serve/update/version、内置 help/completion + Hidden `_run`/`_serve-run`/`_update-helper`/`_update-cleanup`） |
 | `internal/configapp/` | 配置应用层：`ApplyConfig` 在 control lock 内原子编排（revision 保护、写盘、自启同步、动作建议）；`AnalyzeConfigEffects` 影响矩阵 |
 | `internal/runtimecfg/` | 配置解析边界：`LoadEffectiveConfig`（展开 `~`、补默认值、补 registry 默认路径）、`ValidateUserConfig`、用户层 snapshot |
 | `internal/config/` | 用户配置读写、dotted key get/set、默认模板。`[query]` 段以 raw 载体原样保留（`RawQuery` 与互斥的 `RawQueryTopLevelIssues`），全局加载链不做 query 语义校验 |
@@ -44,9 +44,9 @@
 | `internal/analyzer/` | 守护进程实时监控（JSONL watcher、SQLite poller、debounce、串行化锁） |
 | `internal/querier/` | 查询引擎（从 messages 实时聚合） |
 | `internal/web/` | 只读本地仪表板 HTTP 服务，含内嵌静态资源与 JSON/SVG 接口 |
-| `internal/charts/` | `chart`、`report` 与 `serve` 共用的 SVG 图表渲染 |
-| `internal/querydef/` | 配置化查询视图与输出列布局的纯函数解析、校验 |
-| `internal/fmtx/` | compare/report/dashboard 变化值共用的显示格式化 |
+| `internal/charts/` | `serve` 仪表板共用的 SVG 图表渲染 |
+| `internal/fmtx/` | dashboard 变化值共用的显示格式化 |
+| `internal/ui/` | 双语输出助手（`Bi`）、按显示宽度对齐的框线表格，以及 `query`/`watch`/仪表板共用的查询输出列注册表 |
 | `internal/tui/` | 配置交互编辑 TUI（bubbletea；保存经 `ApplyConfig`） |
 | `internal/logger/` | 基于 log/slog，按天轮转，自动清理 |
 
@@ -91,7 +91,7 @@ graph TB
 - 全量采集（`collect all`）传入 `Dates=nil`，不使用 `collection_log` 的日期去重；`messages` 按 `(client, id)` UPSERT，因此可安全重复扫描。
 - collector 部分源失败时，已成功解析的消息、会话和 router 数据仍事务落库，但不写 `collection_log`、不解决历史错误、不推进 `sync_state`；后续普通采集或 retry 会按幂等 UPSERT 重放仍有缺口的区间。
 - 查询层（querier）直接 JOIN `messages`（+ `sessions` 元数据）实时聚合，无中间汇总表。全部分组视图共用一条维度化管线（维度 → 原始聚合 → alias 合并后的复合键 → 稳定排序 → 表格），末行输出同一日期范围独立聚合的 `Total / 总计`；会话明细与总览摘要不追加。供应商别名在组合键形成前合并行，不回写 `messages`。每张表的指标列由同一组按全局 `[query.output]` 布局解析出的有序指标描述符渲染（默认七列；`cache_create` 可选但默认隐藏）——表头、分组行、总计行与会话行遍历同一描述符，`cache_hit` 始终读取含 `cache_create` 的完整聚合值，布局只改显示，不改统计、排序与总计。
-- 裸 `query` 执行 `[query]` 配置的默认对象（未配置回退 client）；`query <name>` 在根命令上按位置参数分派到具名子查询/组合查询，与显式写法 `query custom <name>` 共用同一条具名执行链；`query list` 只依据已解析定义渲染配置视图，绝不打开数据库。定义名称为小写标识符，不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`day`/`month`/`hour`/`weekday`/`heatmap`/`custom`/`list` 冲突。语义校验只发生在这些路径（默认、直接/显式具名、list）与 TUI 保存前，由 `internal/querydef` 完成完整解析——无关的视图定义错误不阻塞九个受布局影响的静态表格命令，它们经隔离的 `ParseOutputLayout` 入口解析布局（合法布局仍生效；`query.output` 自身在开库前使它们失败；顶层 query 问题静默回退默认列）。`query summary` 不读取布局。query 配置无效不会阻塞采集、status、守护进程、`config set` 与 `config show`，它们继续透传并原样写回问题项。
+- 裸 `query` 执行 `[query]` 配置的默认对象（未配置回退 client）；`query <name>` 在根命令上按位置参数分派到具名子查询/组合查询，与显式写法 `query custom <name>` 共用同一条具名执行链；`query list` 只依据已解析定义渲染配置视图，绝不打开数据库。定义名称为小写标识符，不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`day`/`month`/`hour`/`weekday`/`heatmap`/`custom`/`list` 冲突。语义校验只发生在这些路径（默认、直接/显式具名、list）与 TUI 保存前，由 `internal/querydef` 完成完整解析——无关的视图定义错误不阻塞九个受布局影响的静态表格命令，它们经隔离的 `ParseOutputLayout` 入口解析布局（合法布局仍生效；`query.output` 自身在开库前使它们失败；顶层 query 问题静默回退默认列）。`query summary` 不读取布局。query 配置无效不会阻塞采集、`daemon status`、守护进程本体、`config set` 与 `config show`，它们继续透传并原样写回问题项。
 - Codex rollout 解析器仅在事件含有效 `total_token_usage` 时，以同一 `limit_id` 最近签名或紧邻 token 事件的完整 `(total,last)` 签名识别重播；不做全表去重，以保留合法计数器重置。去重只影响本次内存解析，不会自动清理既有数据库中的历史重复消息。
 
 ## 数据库表
@@ -128,7 +128,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 | 模块 | 职责 | 关键接口 |
 |------|------|----------|
 | `buildinfo/` | 规范化版本与构建元数据：注入变量 → `debug.BuildInfo`/VCS 降级 → `dev`/`unknown`；供 version 子命令与 `--version` flag 复用 | `Current()`, `Info.Short()`, `Info.Detail()` |
-| `cli/` | Cobra 命令组装配（含 version/config show）；start/stop/status/restart 经 `control.Manager`，config set/TUI 经 `configapp.Application` | `NewRootCmd()` |
+| `cli/` | Cobra 命令组装配（含 version/config show）；`daemon` 组经 `control.Manager`，`serve` 组管理仪表板生命周期，config set/TUI 经 `configapp.Application` | `NewRootCmd()` |
 | `configapp/` | 配置应用层：`ApplyConfig` 锁内原子编排（revision 保护、写盘、自启同步、stale 清理、动作建议）；`AnalyzeConfigEffects` 影响矩阵 | `Application.ApplyConfig()`, `AnalyzeConfigEffects()`, `Revision()` |
 | `runtimecfg/` | 配置解析边界：effective 解析、校验、registry 默认路径、用户层 snapshot | `LoadEffectiveConfig()`, `ResolveEffectiveConfig()`, `ValidateUserConfig()`, `ConfigPath()` |
 | `control/` | 进程控制层：固定 control lock + Start/Stop/Restart/Inspect + 父子 lease | `Manager.Start/Stop/Restart/Inspect()`, `WithLock()`, `ParseParentLease()` |
@@ -144,9 +144,9 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 | `engine/` | 采集编排：依赖装配、主循环、事务化写入、重试、结果校验 | `NewDeps()`, `RunCollect()`, `RunRetryWithDeps()`, `RunRouterBackfill()`, `ValidateResult()` |
 | `analyzer/` | 守护进程监控：ChangedFile/Incremental/router source 触发采集，debounce 合并，串行化锁 | `NewFromConfig()`, `JSONLWatcher`, `SQLitePoller` |
 | `querier/` | 从 messages 实时聚合查询，格式化输出 | `ByClient()`, `ByModel()`, `ByProject()`, `ByHour()`, `ByWeekday()`, `Heatmap()`, `HeatmapMatrix()`, `RunDimensionView()`, `Sessions()`, `Summary()`, `StatsBetween()` |
-| `web/` | serve 命令的本地只读仪表板服务：go:embed 内嵌 HTML 页面（深色计量仪表台，图表由前端按数值行自绘）、JSON 接口（`/api/meta`、`/api/dashboard`）与单维度 SVG 接口；单请求全部查询在同一读事务快照完成 | `NewServer()` |
-| `charts/` | SVG 图表唯一实现，chart/report/web 三入口共用：柱状、折线、饼图与星期×小时热力矩阵（深色取色、完整等宽字体栈、悬停 `<title>`） | `BuildDimensionSVG()`, `Heatmap()`, `BarSVG()`, `LineSVG()`, `PieSVG()` |
-| `querydef/` | query 视图词表：内置维度常量、内置视图名与保留名清单，由 cli 的 query/watch/export 视图名解析共用 | `BuiltinDimensionNames()`, `IsReservedName()` |
+| `web/` | serve 命令组的本地只读仪表板服务：go:embed 内嵌 HTML 页面（深色计量仪表台，图表由前端按数值行自绘）、JSON 接口（`/api/meta`、`/api/dashboard`）与单维度 SVG 接口；单请求全部查询在同一读事务快照完成 | `NewServer()` |
+| `charts/` | SVG 图表唯一实现，web 单入口共用：柱状、折线、饼图与星期×小时热力矩阵（深色取色、完整等宽字体栈、悬停 `<title>`） | `BuildDimensionSVG()`, `Heatmap()`, `BarSVG()`, `LineSVG()`, `PieSVG()` |
+| `querydef/` | query 视图词表：内置维度常量、内置视图名与保留名清单，由 cli 的 query/watch 视图名解析共用 | `BuiltinDimensionNames()`, `IsReservedName()` |
 | `fmtx/` | 跨命令共享的显示格式化助手：千分位、带符号 K/M/B、差值着色 class 与变化百分比 | `Thousands()`, `SignedTokens()`, `CountChange()`, `ChangeClass()`, `ChangePercent()` |
 | `tui/` | 配置交互编辑 TUI（双模型 edit/display + 手动保存经 `ApplyConfig` + 自启 toggle） | `Run()` |
 | `logger/` | 基于 log/slog，按天轮转，自动清理 | `Init()` |
@@ -159,7 +159,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 用户执行命令 → 加载配置 → 执行采集/查询/配置编辑 → 输出结果 → 退出
 ```
 
-命令组：`version`（多行详细输出）、Cobra 内置 `help`/`completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`heatmap`/`session`/`summary`，另加 `custom <name>` 与只读的 `list`）、`export`（聚合视图的 CSV/JSON stdout 导出）、`errors`、`start`、`status`、`stop`、`restart`、`doctor`（只读健康自检）、`forecast`（按近期日均估算未来用量）、`compare`（对比两个时间段的用量）、`top`（总用量最重的会话排行）、`chart`（SVG 图表：按日/按维度柱状图、趋势折线、占比饼图与星期×小时热力图）、`watch`（定间隔刷新的 `query` 输出）、`report`（生成到目录的完整用量报告包）、`serve`（本地只读仪表板服务：前台运行，`start`/`status`/`stop`/`restart` 管理后台实例）、`update`（自更新到最新或指定版本），以及 Hidden 内部命令 `_run`/`_update-helper`/`_update-cleanup`。根命令另带 `-v, --version` flag（单行短输出）。
+命令组：`version`（五行详细输出）、Cobra 内置 `help`/`completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`heatmap`/`session`/`summary`，另加 `custom <name>` 与只读的 `list`）、`errors`、`watch`（定间隔刷新的 `query` 输出）、`doctor`（只读健康自检）、`daemon` 命令组（`start`/`status`/`stop`/`restart` 管理采集守护进程）、`serve` 命令组（`start`/`status`/`stop`/`restart` 管理本地只读仪表板；裸 `serve` 只显示帮助）、`update`（自更新到最新或指定版本），以及 Hidden 内部命令 `_run`/`_serve-run`/`_update-helper`/`_update-cleanup`。根命令另带 `-v, --version` flag（单行短输出）。原顶层 `start`/`status`/`stop`/`restart` 与分析命令 `chart`/`compare`/`export`/`forecast`/`report`/`top` 已在命令面收敛中删除（见 [CLI 参考](cli.zh-CN.md)迁移章节）。
 
 直接执行 `token-usage`（不带任何参数）只会打印帮助信息，既不启动 TUI 也不启动守护进程。命令树、参数、标志、退出码与示例的完整参考见 [CLI 参考](cli.zh-CN.md)。
 
@@ -168,7 +168,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 ### 守护进程模式（实时监控）
 
 ```
-start spawn 拉起 _run → 父子 lease 授权 → child 获 daemon lock → 启动监控 goroutine
+`daemon start` spawn 拉起 `_run` → 父子 lease 授权 → child 获 daemon lock → 启动监控 goroutine
                             │                  + 启动 startupCoordinator
                             ├── fsnotify 监控 Claude JSONL（ChangedFile source）
                             ├── fsnotify 监控 Codex rollout JSONL（ChangedFile source）
@@ -191,7 +191,7 @@ start spawn 拉起 _run → 父子 lease 授权 → child 获 daemon lock → �
 
 WorkBuddy 的 SQLite 仅用于 title 查询，不建 poller。
 
-**并发保护**：CLI 的 collect 与守护进程通过 daemon lock（`<data_dir>/token-usage.lock`）互斥，避免同时写 SQLite——collect 在打开数据库前预检 daemon lock，运行中则拒绝采集；守护进程内串行化锁保证所有采集顺序执行。start/stop/restart/config set 则通过 control lock 串行化控制操作（见下文）。
+**并发保护**：CLI 的 collect 与守护进程通过 daemon lock（`<data_dir>/token-usage.lock`）互斥，避免同时写 SQLite——collect 在打开数据库前预检 daemon lock，运行中则拒绝采集；守护进程内串行化锁保证所有采集顺序执行。daemon start/daemon stop/daemon restart/config set 则通过 control lock 串行化控制操作（见下文）。
 
 ## 进程控制架构
 
@@ -201,7 +201,7 @@ WorkBuddy 的 SQLite 仅用于 title 查询，不建 poller。
 
 | 锁 | 路径 | 持有期 | 用途 |
 |----|------|--------|------|
-| **control lock** | 固定 `~/.token-usage/token-usage.control.lock` | 短期（数百毫秒~秒级） | 串行化 start/stop/restart/`ApplyConfig` 等控制操作；路径固定不随 `data_dir` 变化，控制信号与数据目录解耦 |
+| **control lock** | 固定 `~/.token-usage/token-usage.control.lock` | 短期（数百毫秒~秒级） | 串行化 daemon start/stop/restart 与 `ApplyConfig` 等控制操作；路径固定不随 `data_dir` 变化，控制信号与数据目录解耦 |
 | **daemon lock** | `<data_dir>/token-usage.lock` | 长期（守护进程生命周期） | 守护进程**存活唯一真相源**；持有即「在运行」 |
 
 二者是不同概念，不在同一进程中直接嵌套抢锁：
@@ -210,11 +210,11 @@ WorkBuddy 的 SQLite 仅用于 title 查询，不建 poller。
 - `_run` 子进程在 daemon lock commit 后才视为启动成功；control lock 的获取/释放与 daemon lock 分离。
 - control lock 抢锁等待上限 15s（100ms 轮询）；context 主动取消返回 `Canceled`，超时（自身或传入 context 的 deadline）统一映射为 `ErrControlLockTimeout`，便于调用方统一判断。
 
-### 父子 control lease（避免 start 死锁）
+### 父子 control lease（避免 daemon start 死锁）
 
-`start`/`restart` spawn `_run` 时，父进程持 control lock（约 5s 等 ready），若 child 也需获取 control lock 会形成死锁。父子 lease 解决该问题：
+`daemon start`/`daemon restart` spawn `_run` 时，父进程持 control lock（约 5s 等 ready），若 child 也需获取 control lock 会形成死锁。父子 lease 解决该问题：
 
-- 父进程（`start`/`restart`）在持 control lock 时生成一次性 `instanceID`，创建匿名单向 pipe；父持 write end，child 继承 read end（POSIX 经 `os/exec` 的 `ExtraFiles` 传递 fd，Windows 经可继承 handle）。pipe 不传业务数据，read end 的 EOF 只表示「父级 control lease 已消失」。
+- 父进程（`daemon start`/`daemon restart`）在持 control lock 时生成一次性 `instanceID`，创建匿名单向 pipe；父持 write end，child 继承 read end（POSIX 经 `os/exec` 的 `ExtraFiles` 传递 fd，Windows 经可继承 handle）。pipe 不传业务数据，read end 的 EOF 只表示「父级 control lease 已消失」。
 - `instanceID` + read end 标识经三个内部环境变量传递（`TOKEN_USAGE_START_INSTANCE` + POSIX `TOKEN_USAGE_LEASE_FD` / Windows `TOKEN_USAGE_LEASE_HANDLE`）；spawn 前会先从 child env 过滤这些内部变量，避免残留误判。
 - child 启动 lease watcher 阻塞读 read end；watcher 与 daemon-lock 获取路径经同一互斥状态机（`LeaseStateMachine`）提交：
   - EOF 先发生且 daemon lock 未获得 → child 取消启动，不写 PID/runtime-state，退出码 0（`ErrParentLeaseLost`）。
@@ -222,7 +222,7 @@ WorkBuddy 的 SQLite 仅用于 title 查询，不建 poller。
 
 两条 `_run` 启动路径都满足不变量「从读取 effective config 到获取 daemon lock 期间始终存在 control lease」：
 
-- **父 lease 路径**（`start` spawn 的 `_run`）：父进程持 control lock 授权 child，child 不抢锁。
+- **父 lease 路径**（`daemon start` spawn 的 `_run`）：父进程持 control lock 授权 child，child 不抢锁。
 - **独立路径**（launchd/注册表直接拉起）：无合法父 lease 时自行获取 control lock（15s 超时）；超时则成功退出码 0 不进入主循环，避免与正在进行的控制操作冲突，并在 macOS 上避免 launchd KeepAlive 立即重拉。
 
 ### 双文件元数据（PID + runtime-state）
@@ -248,15 +248,15 @@ daemon lock 是存活唯一真相源，PID/runtime-state 是**可降级**的定�
 
 该契约覆盖：PID 文件、runtime-state、`config.toml`（`ApplyConfig` 写盘）。残留 temp（如崩溃）由 `CleanupKnownTempFiles` 按**精确 basename 前缀**清理（不删近似名/目录/symlink target），在持锁路径调用。
 
-### 运行态（`start`/`stop`/`restart`/`status`）
+### 运行态（`daemon start`/`daemon stop`/`daemon restart`/`daemon status`）
 
-`start`：control lock 内 load config → 以 daemon lock 判活 → 已运行幂等返回 PID → 未运行 detached spawn `_run`（含父 lease）→ 等六项 ready 条件（PID 文件的 PID/instanceID、daemon lock、runtime-state 的 PID/instanceID/monitor_ready）全部成立（5s 轮询）→ 成功；超时尽力终止本次子进程，仅在 lock 已释放且归属仍匹配时清理元数据。
+`daemon start`：control lock 内 load config → 以 daemon lock 判活 → 已运行幂等返回 PID → 未运行 detached spawn `_run`（含父 lease）→ 等六项 ready 条件（PID 文件的 PID/instanceID、daemon lock、runtime-state 的 PID/instanceID/monitor_ready）全部成立（5s 轮询）→ 成功；超时尽力终止本次子进程，仅在 lock 已释放且归属仍匹配时清理元数据。
 
-`stop`：control lock 内 load config → daemon lock 判活 → 未运行幂等返回 → 运行中按平台停止（macOS：始终先幂等尝试当前 label 的 bootout，lock 仍持有时再对准确 PID 发 SIGTERM；Windows：taskkill 精确 PID）→ **以 daemon lock 释放**为成功条件（5s 轮询），不靠删 PID 文件伪装成功。
+`daemon stop`：control lock 内 load config → daemon lock 判活 → 未运行幂等返回 → 运行中按平台停止（macOS：始终先幂等尝试当前 label 的 bootout，lock 仍持有时再对准确 PID 发 SIGTERM；Windows：taskkill 精确 PID）→ **以 daemon lock 释放**为成功条件（5s 轮询），不靠删 PID 文件伪装成功。
 
-`restart`：单次 control lock 内 stop 旧 + start 新；未运行返回 `ErrRestartNotRunning`（提示用 `start`）。macOS 取舍：bootout 后新进程以 detached 方式运行，本次登录会话失去 KeepAlive；plist 仍保留，并在下次登录时重新加载。重新保存配置只维护定义文件，不会主动 bootstrap 当前 job。
+`daemon restart`：单次 control lock 内 stop 旧 + start 新；未运行返回 `ErrRestartNotRunning`（提示用 `daemon start`）。macOS 取舍：bootout 后新进程以 detached 方式运行，本次登录会话失去 KeepAlive；plist 仍保留，并在下次登录时重新加载。重新保存配置只维护定义文件，不会主动 bootstrap 当前 job。
 
-`status`：只读（`Inspect` 不抢 control lock），返回一致快照：运行状态 + 启动阶段 + 数据目录/轮询间隔 + 开机自启漂移检测（5 态）。
+`daemon status`：只读（`Inspect` 不抢 control lock），返回一致快照：运行状态 + 启动阶段 + 数据目录/轮询间隔 + 开机自启漂移检测（5 态）。
 
 ### 自启态（定义层与运行层解耦）
 
@@ -265,11 +265,11 @@ daemon lock 是存活唯一真相源，PID/runtime-state 是**可降级**的定�
 - **定义层**（`SyncWith` / `AutoStartManager.Status`）：只写/删服务定义文件，**绝不碰当前进程**。
   - macOS：`~/Library/LaunchAgents/` 下的 LaunchAgent plist（不调 `launchctl bootstrap`，登录时自动加载）。
   - Windows：注册表 `HKCU\...\Run` 键值（不 spawn，Disable 不 taskkill）。
-- **运行层**（`start` / `stop` / `restart`）：只管控当前进程——`start` 显式 detached spawn，`stop` 显式停止（保留定义）。
+- **运行层**（`daemon start` / `daemon stop` / `daemon restart`）：只管控当前进程——`daemon start` 显式 detached spawn，`daemon stop` 显式停止（保留定义）。
 
-`config set daemon.autostart` 与 TUI 保存都经 `ApplyConfig` 触发幂等收敛 `service.SyncWith`，**不会因翻转自启开关而启停当前守护进程**：开启只写定义（当前不变，下次登录生效），关闭只删定义（当前继续运行，下次不再自启）。要让当前会话生效需手动 `stop` + `start`（或 `restart`）。
+`config set daemon.autostart` 与 TUI 保存都经 `ApplyConfig` 触发幂等收敛 `service.SyncWith`，**不会因翻转自启开关而启停当前守护进程**：开启只写定义（当前不变，下次登录生效），关闭只删定义（当前继续运行，下次不再自启）。要让当前会话生效需手动 `daemon stop` + `daemon start`（或 `daemon restart`）。
 
-**漂移检测**：`status` 只读对比配置（autostart 开/关）与服务实际状态（`Exists` + `SpecMatches`），区分「已启用 / autostart=开但定义缺失 / 内容不一致 / autostart=关但定义残留 / 未启用」5 态，只提示「建议重新保存配置」，不触发任何写操作。
+**漂移检测**：`daemon status` 只读对比配置（autostart 开/关）与服务实际状态（`Exists` + `SpecMatches`），区分「已启用 / autostart=开但定义缺失 / 内容不一致 / autostart=关但定义残留 / 未启用」5 态，只提示「建议重新保存配置」，不触发任何写操作。
 
 ### ApplyConfig（配置应用编排）
 
@@ -279,18 +279,18 @@ daemon lock 是存活唯一真相源，PID/runtime-state 是**可降级**的定�
 
 - client disabled→enabled / 路径变化 → `collect all --client X`（新版 `collect all` 已含 router 阶段，同一 client 不重复进 router 列表）。
 - client router 变化（空→R 或 R1→R2）或 router db_path 变化 → 受影响已启用且配 router 的 client 执行 `collect router --client X`。`provider_aliases` 变化仅影响查询展示，不触发采集或 router 回填。
-- daemon poll_interval / log 字段 / 任一 client-router-path 变化（不含纯 autostart）→ `RuntimeChanged`（运行中需 restart）。
+- daemon poll_interval / log 字段 / 任一 client-router-path 变化（不含纯 autostart）→ `RuntimeChanged`（运行中需 daemon restart）。
 - 仅 `daemon.autostart` 变化 → **不算** runtime changed（只影响下次登录定义）。
 
-**动作建议**（按运行态合并）：daemon 运行中且有 collect → `stop` → 全部 collect → `start`；运行中仅 RuntimeChanged → `restart`。警告（旧路径历史不删、router 重绑旧关联不清理等）作为说明输出。
+**动作建议**（按运行态合并）：daemon 运行中且有 collect → `daemon stop` → 全部 collect → `daemon start`；运行中仅 RuntimeChanged → `daemon restart`。警告（旧路径历史不删、router 重绑旧关联不清理等）作为说明输出。
 
 **stdout/stderr 合同**：成功稳定行 `✓ <key> = <value>` 写 stdout；动作建议、说明、warning 写 stderr。revision 冲突（stdout 不写成功行、退出非零，重试自动重读）与部分失败（配置已落盘但同步/清理失败，stdout 仍写成功行、stderr 写失败、退出非零）均按合同输出。data_dir 迁移需 `--confirm-migrate` 且旧 daemon 已停。
 
 **只读 effective 读取链路**：`config show` 复用 `cli.loadConfig()` → `runtimecfg.LoadEffectiveConfig`（即 `LoadUserConfigSnapshot` → `ValidateUserConfig` → `ResolveEffectiveConfig` 的单一解析边界），序列化为 TOML 写 stdout。它不复制默认值逻辑，只读、零运行时副作用——不创建 config/DB/日志/daemon 元数据、不抢进程锁、不同步自启。`config get` 则只读用户配置层原值（不展开 `~`、不补默认值），与 `config show` 的 effective 解析路径区分。
 
-### startup catch-up（关闭 stop→collect→start 数据窗口）
+### startup catch-up（关闭 daemon stop→collect→daemon start 数据窗口）
 
-`daemon.startupCoordinator` 串联 monitor ready → runtime-state → catch-up，保证 stop→collect→start 之间产生的增量数据不遗漏：
+`daemon.startupCoordinator` 串联 monitor ready → runtime-state → catch-up，保证 daemon stop→collect→daemon start 之间产生的增量数据不遗漏：
 
 1. 等待 analyzer 所有 monitor 就绪（ready barrier）；ctx 取消则不写 state、不 catch-up。
 2. 写 ready state（`monitor_ready=true, catch_up=pending`）；失败回传 fatal，daemon 立即取消 analyzer。
@@ -298,7 +298,7 @@ daemon lock 是存活唯一真相源，PID/runtime-state 是**可降级**的定�
 4. 顺序 Submit catch-up（经 analyzer 串行化锁，与实时触发同一路径）：按已启用 client 名升序，每个 client 先发 client-source 请求（opencode/zcode 增量 cursor；claude/workbuddy/autoclaw 无日期扫现存 JSONL；codex 先 state 增量再 rollout 全扫），再发该 client 的 router 增量请求（若配置）。任一失败只累计该请求一次，不跳过后续。
 5. 写 final state：0 失败 = `succeeded`，否则 = `failed` + 准确失败数；失败不停 daemon。
 
-catch-up 覆盖「最后一次手工 collect 到监听 ready」的窗口，因此只要 daemon 成功启动并完成 catch-up，期间产生的增量会被补采。catch-up 部分失败会在 `status`（`catch_up=failed`）与 `errors` 中体现。
+catch-up 覆盖「最后一次手工 collect 到监听 ready」的窗口，因此只要 daemon 成功启动并完成 catch-up，期间产生的增量会被补采。catch-up 部分失败会在 `daemon status`（`catch_up=failed`）与 `errors` 中体现。
 
 ## 自更新架构
 
@@ -341,7 +341,7 @@ Windows staged replacement 已实现（代码经 `update.NewWindowsInstaller()` 
 ```text
 cmd/token-usage → cli
 
-cli → control / configapp / runtimecfg / daemon / config / querier / engine / collector / db / logger / buildinfo / update / charts / fmtx / querydef / web / ui
+cli → control / configapp / runtimecfg / daemon / config / querier / engine / collector / analyzer / model / service / fileutil / db / logger / buildinfo / update / querydef / web / tui / ui
 tui → configapp / runtimecfg / config
 configapp → control / runtimecfg / service / fileutil / config
 control → daemon / runmeta / runtimecfg / config
@@ -377,12 +377,13 @@ fileutil → 标准库（+ Windows 经 golang.org/x/sys）
 | `collect` / `collect all` / `collect router` / `collect retry` | `internal/cli/collect*.go` |
 | `query` / `query <name>` / `query custom <name>` / `query list` | `internal/cli/query.go`（维度聚合在 `internal/querier`，视图定义在 `internal/querydef`） |
 | `errors` | `internal/cli/errors.go` |
-| `config` / `config show` / `config get` / `config set` / `config init` | `internal/cli/config_tui.go` / `config_show.go` / `config_get.go` / `config_set.go` / `init.go` |
-| `start` / `stop` / `restart` / `status` | `internal/cli/{start,stop,restart,status}.go` |
+| `config` / `config show` / `config get` / `config set` / `config init` | `internal/cli/config_cmd.go` / `config_tui.go` / `config_show.go` / `config_get.go` / `config_set.go` / `init.go` |
+| `daemon` / `daemon start` / `daemon status` / `daemon stop` / `daemon restart` | `internal/cli/daemon.go` |
 | `update` / `update --check` / `update --version` / `update --force` | `internal/cli/update.go`（核心在 `internal/update`；隐藏的 `_update-helper`/`_update-cleanup` 在 `internal/cli/update_helper*.go`） |
-| `_run`（Hidden） | `internal/cli/run_internal.go` |
+| `serve` / `serve start` / `serve status` / `serve stop` / `serve restart` | `internal/cli/serve*.go`（后台主体 `_serve-run` 在 `serve_run.go`；HTTP 数据面在 `internal/web`） |
+| `_run`（Hidden）/ `_serve-run`（Hidden） | `internal/cli/run_internal.go` / `internal/cli/serve_run.go` |
 
-> 历史变更：原 `token-usage run --daemon` 命令已删除，由 `start` + Hidden `_run` 取代。旧版用户脚本需迁移至 `token-usage start`。
+> 历史变更：原 `token-usage run --daemon` 命令已删除，由 `start` + Hidden `_run` 取代（即今天的 `token-usage daemon start`）。旧版用户脚本需迁移至 `token-usage daemon start`。
 
 ## 配置
 

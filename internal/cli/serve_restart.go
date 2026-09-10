@@ -7,9 +7,9 @@ package cli
 // 复用既有实现，不引入新的锁序——stop 段只持/释 state 锁，start 段取
 // serve-start.lock 并在 spawn 前释放 state 锁，段间无重叠持有。
 //
-// 语义要点：restart 的最终形态永远是后台实例——前台 Ctrl+C 会话同样会被
-// stop 段以 SIGTERM 优雅停掉，再由 start 段拉起 detached 子进程接管；未运行
-// 时等价于 serve start。stop 段失败（探活判定的实例管不住）时以非零错误中止，
+// 语义要点：restart 的最终形态永远是后台实例——stop 段以探活为判据，任何
+// 运行中的记录实例都会被优雅停掉，再由 start 段拉起 detached 子进程接管；
+// 未运行时等价于 serve start。stop 段失败（探活判定的实例管不住）时以非零错误中止，
 // 绝不带着仍占用端口的旧实例进入 start 段。
 
 import (
@@ -28,8 +28,8 @@ func newServeRestartCmd(load func() (*config.Config, error)) *cobra.Command {
 		Use:   "restart",
 		Short: ui.Bi("Restart the dashboard server in the background", "后台重启仪表板服务"),
 		Long: ui.Bi(
-			"Restart the dashboard server in the background: first stop any running instance with exactly the same orchestration as `serve stop` (probe-verified — a foreground Ctrl+C session is stopped gracefully as well), then start a fresh background instance exactly like `serve start`. With no instance running it simply starts one. The --addr and --open flags apply to the freshly started background instance. If the running instance cannot be stopped (it still answers after the SIGKILL fallback), restart aborts with a non-zero error and the old instance keeps serving; use `token-usage serve stop` to inspect that case. Stopping and starting are the same orchestrations as the standalone commands, so all their guarantees — probe-verified stop, stale/corrupt state cleanup, start serialization — apply unchanged.\n\nExamples:\n  token-usage serve restart\n  token-usage serve restart --addr 127.0.0.1:9000\n  token-usage serve restart --open",
-			"以后台方式重启仪表板服务：先以与 `serve stop` 完全相同的编排停止运行中的实例（以探活为判据——前台 Ctrl+C 会话同样会被优雅停止），再以与 `serve start` 完全相同的方式拉起全新的后台实例；当前没有实例在运行时等价于直接启动。--addr 与 --open 作用于新启动的后台实例。若运行中的实例无法停止（SIGKILL 兜底后仍在响应），重启以非零错误中止，旧实例继续服务；此类场景请用 `token-usage serve stop` 排查。停止与启动两段就是独立命令的原编排，全部保证——探活判停、陈旧/损坏状态清理、启动串行化——原样生效。\n\n示例：\n  token-usage serve restart\n  token-usage serve restart --addr 127.0.0.1:9000\n  token-usage serve restart --open",
+			"Restart the dashboard server in the background: first stop any running instance with exactly the same orchestration as `serve stop` (probe-verified — any recorded running instance is stopped gracefully, regardless of how it was started), then start a fresh background instance exactly like `serve start`. With no instance running it simply starts one. The --addr and --open flags apply to the freshly started background instance. If the running instance cannot be stopped (it still answers after the SIGKILL fallback), restart aborts with a non-zero error and the old instance keeps serving; use `token-usage serve stop` to inspect that case. Stopping and starting are the same orchestrations as the standalone commands, so all their guarantees — probe-verified stop, stale/corrupt state cleanup, start serialization — apply unchanged.\n\nExamples:\n  token-usage serve restart\n  token-usage serve restart --addr 127.0.0.1:9000\n  token-usage serve restart --open",
+			"以后台方式重启仪表板服务：先以与 `serve stop` 完全相同的编排停止运行中的实例（以探活为判据——任何运行中的记录实例都会被优雅停止），再以与 `serve start` 完全相同的方式拉起全新的后台实例；当前没有实例在运行时等价于直接启动。--addr 与 --open 作用于新启动的后台实例。若运行中的实例无法停止（SIGKILL 兜底后仍在响应），重启以非零错误中止，旧实例继续服务；此类场景请用 `token-usage serve stop` 排查。停止与启动两段就是独立命令的原编排，全部保证——探活判停、陈旧/损坏状态清理、启动串行化——原样生效。\n\n示例：\n  token-usage serve restart\n  token-usage serve restart --addr 127.0.0.1:9000\n  token-usage serve restart --open",
 		),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

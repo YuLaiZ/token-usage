@@ -29,7 +29,7 @@ import (
 var ErrControlLockTimeout = errors.New(ui.Bi("timed out waiting for process control lock", "等待进程控制锁超时"))
 
 // ErrRestartNotRunning 在 restart 时守护进程未运行（未持有 daemon lock）时返回。
-var ErrRestartNotRunning = errors.New(ui.Bi("daemon is not running, run token-usage start", "守护进程未运行，请使用 token-usage start"))
+var ErrRestartNotRunning = errors.New(ui.Bi("daemon is not running, run token-usage daemon start", "守护进程未运行，请使用 token-usage daemon start"))
 
 // errNonAbsoluteHome NewManager 校验 home 时的内部错误，便于包内测试断言。
 var errNonAbsoluteHome = errors.New(ui.Bi("home must be an absolute path", "home 必须是绝对路径"))

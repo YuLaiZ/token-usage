@@ -45,7 +45,7 @@ import (
 func newInternalRunCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:    "_run",
-		Short:  ui.Bi("Internal command (daemon body, spawned by start/launchd; do not invoke directly)", "内部命令（守护进程主体，由 start/launchd 拉起，不直接调用）"),
+		Short:  ui.Bi("Internal command (daemon body, spawned by daemon start/launchd; do not invoke directly)", "内部命令（守护进程主体，由 daemon start/launchd 拉起，不直接调用）"),
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

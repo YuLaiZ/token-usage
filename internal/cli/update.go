@@ -313,7 +313,7 @@ func runUpdateApply(ctx context.Context, cmd *cobra.Command, svc UpdateService, 
 //     并返回 errUpdateSourceUntrusted；两者均非 0 退出；
 //   - Installed=true：POSIX 已同步完成替换；主标题按替换前 daemon 运行态分流——
 //     原本运行提示「已更新并恢复 daemon」，原本未运行提示「已更新」并追加
-//     `token-usage start` 启动提示（既有次行全部保留），退出 0；
+//     `token-usage daemon start` 启动提示（既有次行全部保留），退出 0；
 //   - Deferred=true（含 --force 变体）：Windows helper 已排队，提示用户稍后验证；
 //     daemon 原本未运行时追加「确认后台替换完成后再 start」提示（立即启动会被
 //     helper 判定为停止后意外运行而放弃替换），退出 0；
@@ -421,8 +421,8 @@ func printDaemonStartHint(out io.Writer, res update.ApplyResult) {
 		return
 	}
 	fmt.Fprintln(out, ui.Bi(
-		"The daemon was not running before the update; run `token-usage start` to start it.",
-		"daemon 更新前未在运行；如需启动请运行 `token-usage start`。",
+		"The daemon was not running before the update; run `token-usage daemon start` to start it.",
+		"daemon 更新前未在运行；如需启动请运行 `token-usage daemon start`。",
 	))
 }
 
@@ -434,8 +434,8 @@ func printDaemonStartHintAfterReplacement(out io.Writer, res update.ApplyResult)
 		return
 	}
 	fmt.Fprintln(out, ui.Bi(
-		"The daemon was not running before the update; after the background replacement completes (confirm with `token-usage version`), run `token-usage start` to start it.",
-		"daemon 更新前未在运行；待后台替换完成（用 `token-usage version` 确认）后，如需启动请运行 `token-usage start`。",
+		"The daemon was not running before the update; after the background replacement completes (confirm with `token-usage version`), run `token-usage daemon start` to start it.",
+		"daemon 更新前未在运行；待后台替换完成（用 `token-usage version` 确认）后，如需启动请运行 `token-usage daemon start`。",
 	))
 }
 

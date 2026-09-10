@@ -190,7 +190,7 @@ go build -o token-usage ./cmd/token-usage
 
 Uninstalling leaves no system-wide leftovers:
 
-1. Stop the daemon if it is running: `token-usage stop`.
+1. Stop the daemon if it is running: `token-usage daemon stop`.
 2. If autostart was ever enabled, first run `token-usage config set daemon.autostart false`. This removes the autostart definition (the `~/Library/LaunchAgents/<label>.plist` file on macOS, the Registry Run entry on Windows) so it does not keep pointing at a deleted binary and fail at every login.
 3. Delete the application directory: `rm -rf ~/.token-usage` (Windows: `Remove-Item -Recurse -Force $env:USERPROFILE\.token-usage`). The current terminal may still have the deleted binary cached; run `hash -r` and confirm `token-usage` no longer resolves, or simply open a new terminal and confirm.
 4. Remove the PATH configuration.

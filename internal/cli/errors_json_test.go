@@ -74,7 +74,7 @@ func TestErrorsCmd_EndToEnd_JSON(t *testing.T) {
 	usageDB := seedErrorsJSONFixture(t)
 
 	// table 参照输出先于 json Execute 生成：RunE 的 defer Close 会关闭注入的
-	// 共享内存库（同 compare E2E 的约束：注入库不跨多次执行复用）。
+	// 共享内存库（注入库不跨多次执行复用）。
 	var tbuf bytes.Buffer
 	if err := runErrors(usageDB, &tbuf, db.ErrorFilter{Dates: []string{"2026-07-21"}}); err != nil {
 		t.Fatalf("table run failed: %v", err)
@@ -234,7 +234,7 @@ func TestErrorsCmd_RejectsFormat(t *testing.T) {
 	}
 }
 
-// TestErrorsCmd_FormatFlagDefault --format 缺省 table，描述双语对齐 compare。
+// TestErrorsCmd_FormatFlagDefault --format 缺省 table，描述双语并列。
 func TestErrorsCmd_FormatFlagDefault(t *testing.T) {
 	flag := newErrorsCmd().Flags().Lookup("format")
 	if flag == nil {

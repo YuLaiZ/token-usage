@@ -61,7 +61,7 @@ func TestRunConfigSet_Success_StdoutStableLine_StderrSuggestions(t *testing.T) {
 		Saved:          true,
 		ConfigApplied:  true,
 		SuccessMessage: "配置已保存",
-		SuggestedSteps: []string{"token-usage restart"},
+		SuggestedSteps: []string{"token-usage daemon restart"},
 		ExplanatoryNotes: []string{
 			"自启定义已关闭，下次登录/开机不再启动；当前 daemon 状态不变",
 		},
@@ -81,7 +81,7 @@ func TestRunConfigSet_Success_StdoutStableLine_StderrSuggestions(t *testing.T) {
 		t.Errorf("stdout 应恰好为 %q，实际: %q", wantLine, got)
 	}
 	// 动作建议与说明写 stderr
-	if !strings.Contains(stderr, "token-usage restart") {
+	if !strings.Contains(stderr, "token-usage daemon restart") {
 		t.Errorf("stderr 应含动作建议，实际: %q", stderr)
 	}
 	if !strings.Contains(stderr, "自启定义已关闭") {
@@ -251,7 +251,7 @@ func TestRunConfigSet_AutoStartOn_DaemonNotRunning_NoteNextLogin(t *testing.T) {
 			DefinitionNow: true,
 		},
 		ExplanatoryNotes: []string{
-			"自启定义已启用，下次登录/开机生效；当前未运行，如需现在运行可执行 token-usage start",
+			"自启定义已启用，下次登录/开机生效；当前未运行，如需现在运行可执行 token-usage daemon start",
 		},
 	}, nil)
 

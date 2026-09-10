@@ -854,7 +854,7 @@ func TestApplyConfig_DataDirMigration_DaemonStopped_CleanupCalled(t *testing.T) 
 	if res.Effects.DataDirMigration == nil {
 		t.Error("应有 DataDirMigration")
 	}
-	if !reflect.DeepEqual(res.SuggestedSteps, []string{"token-usage start"}) {
+	if !reflect.DeepEqual(res.SuggestedSteps, []string{"token-usage daemon start"}) {
 		t.Errorf("迁移完成后应建议显式启动，got %v", res.SuggestedSteps)
 	}
 }
@@ -970,7 +970,7 @@ func TestApplyConfig_ActionMerging_DaemonRunningOnlyPollLog_Restart(t *testing.T
 	if err != nil {
 		t.Fatalf("ApplyConfig: %v", err)
 	}
-	if len(res.SuggestedSteps) != 1 || res.SuggestedSteps[0] != "token-usage restart" {
+	if len(res.SuggestedSteps) != 1 || res.SuggestedSteps[0] != "token-usage daemon restart" {
 		t.Errorf("daemon 运行+仅 poll/log 变化应只生成 restart, got %v", res.SuggestedSteps)
 	}
 }
@@ -1005,9 +1005,9 @@ func TestApplyConfig_ActionMerging_DaemonRunningWithCollect_StopCollectStart(t *
 		t.Fatalf("应至少 3 步(stop/collect/start), got %v", res.SuggestedSteps)
 	}
 	wantSteps := []string{
-		"token-usage stop",
+		"token-usage daemon stop",
 		"token-usage collect all --client claude",
-		"token-usage start",
+		"token-usage daemon start",
 	}
 	if !reflect.DeepEqual(res.SuggestedSteps, wantSteps) {
 		t.Errorf("动作应是可直接执行的完整命令，got %v want %v", res.SuggestedSteps, wantSteps)

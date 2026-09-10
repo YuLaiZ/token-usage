@@ -11,13 +11,17 @@ import (
 )
 
 // TestRootCommand_HasSubcommands 收口：root 必须列出且仅列出
-// collect/config/doctor/errors/export/query/restart/start/status/stop/update/version/help/completion/forecast/compare/top/chart/watch/report/serve
-// 二十一个用户可见子命令。
+// collect/config/daemon/doctor/errors/query/watch/serve/update/version/help/completion
+// 十二个用户可见子命令。
 //
 // 这是 strict 集合断言：多余或缺失任一项均失败。newRootCmd 现在显式
 // InitDefaultHelpCmd/InitDefaultCompletionCmd（为改写双语 Short），因此
-// help/completion 恒在集合内。Hidden 的 _run 不计入
-// （用户侧 CLI 表面无 run），由 TestRootCommand_HiddenInternalRun 单独覆盖。
+// help/completion 恒在集合内。Hidden 的 _run/_serve-run/_update-helper/
+// _update-cleanup 不计入（用户侧 CLI 表面无这些入口），由
+// TestRootCommand_HiddenInternalRun 等单独覆盖。
+//
+// 顶层 start/status/stop/restart 与六个分析命令（chart/compare/export/
+// forecast/report/top）已在命令面收敛中删除，出现在此集合即失败。
 func TestRootCommand_HasSubcommands(t *testing.T) {
 	cmd := NewRootCmd()
 
@@ -25,20 +29,11 @@ func TestRootCommand_HasSubcommands(t *testing.T) {
 		"config":     true,
 		"collect":    true,
 		"query":      true,
-		"export":     true,
+		"daemon":     true,
 		"doctor":     true,
-		"forecast":   true,
-		"compare":    true,
-		"top":        true,
-		"chart":      true,
 		"watch":      true,
-		"report":     true,
 		"serve":      true,
 		"errors":     true,
-		"start":      true,
-		"status":     true,
-		"stop":       true,
-		"restart":    true,
 		"update":     true,
 		"version":    true,
 		"help":       true,
@@ -47,7 +42,7 @@ func TestRootCommand_HasSubcommands(t *testing.T) {
 
 	got := map[string]bool{}
 	for _, sub := range cmd.Commands() {
-		// Hidden 命令（_run）不计入用户可见集合。
+		// Hidden 命令（_run/_serve-run 等）不计入用户可见集合。
 		if sub.Hidden {
 			continue
 		}
@@ -61,9 +56,48 @@ func TestRootCommand_HasSubcommands(t *testing.T) {
 	}
 	for name := range got {
 		if !want[name] {
-			t.Errorf("unexpected user-visible subcommand %q at root (收口集合为 config/collect/query/export/doctor/forecast/compare/top/chart/watch/report/serve/errors/start/status/stop/restart/update/version/help/completion)", name)
+			t.Errorf("unexpected user-visible subcommand %q at root (收口集合为 config/collect/query/daemon/doctor/errors/watch/serve/update/version/help/completion)", name)
 		}
 	}
+}
+
+// TestRootCommand_NoRemovedCommands 负向回归守卫：命令面收敛删除的十个命令
+// （顶层 start/status/stop/restart 与六个分析命令）必须不存在，且不得以
+// hidden/deprecated 别名形式偷偷保留。若有人加回来，本测试立即失败。
+func TestRootCommand_NoRemovedCommands(t *testing.T) {
+	removed := []string{
+		"start", "status", "stop", "restart",
+		"chart", "compare", "export", "forecast", "report", "top",
+	}
+	root := NewRootCmd()
+	for _, sub := range root.Commands() {
+		for _, name := range removed {
+			if sub.Name() == name {
+				t.Errorf("已删除命令 %q 不应出现在命令树（含 hidden 形态）；采集守护进程动作已迁入 daemon 命令组", name)
+			}
+		}
+	}
+}
+
+// TestDaemonRestartMounted 正向守卫：restart 必须挂载到 daemon 命令组且用户
+// 可见（非 Hidden）——原顶层 restart 删除后由 `token-usage daemon restart` 承接。
+func TestDaemonRestartMounted(t *testing.T) {
+	root := NewRootCmd()
+	for _, sub := range root.Commands() {
+		if sub.Name() == "daemon" {
+			for _, action := range sub.Commands() {
+				if action.Name() == "restart" {
+					if action.Hidden {
+						t.Error("daemon restart 应为用户可见命令（非 Hidden）")
+					}
+					return
+				}
+			}
+			t.Error("daemon 命令组应注册 restart 动作")
+			return
+		}
+	}
+	t.Error("root 应注册 daemon 命令组")
 }
 
 // TestRootCommand_NoTopLevelRouter 旧语法负向回归守卫：
@@ -76,21 +110,6 @@ func TestRootCommand_NoTopLevelRouter(t *testing.T) {
 			t.Errorf("顶层不应再有 router 命令（已子命令化为 `collect router`）；旧 `token-usage router backfill` 路径已移除")
 		}
 	}
-}
-
-// TestRootCommand_RestartMounted 正向守卫（翻转自 的负向守卫）：
-// 已实现 control.Restart，restart 必须挂载到 root 且用户可见（非 Hidden）。
-func TestRootCommand_RestartMounted(t *testing.T) {
-	root := NewRootCmd()
-	for _, sub := range root.Commands() {
-		if sub.Name() == "restart" {
-			if sub.Hidden {
-				t.Error("restart 应为用户可见命令（非 Hidden）")
-			}
-			return
-		}
-	}
-	t.Error("restart 应已挂载到 root（实现 control.Restart 后必须添加）")
 }
 
 // TestRootCommand_HiddenInternalRun _run 是 daemon 子进程入口，必须 Hidden。
@@ -155,8 +174,11 @@ func TestHelpOutputBilingualLongAndFlagsButEnglishSkeleton(t *testing.T) {
 		args          []string
 		wantBilingual []string // 双语断言片段：英文与中文各取代表
 	}{
-		{[]string{"start", "--help"}, []string{"returns immediately", "后台启动守护进程"}},
+		{[]string{"daemon", "start", "--help"}, []string{"returns immediately", "后台启动守护进程"}},
 		{[]string{"collect", "--help"}, []string{"client X limits to one client", "限定单客户端"}},
+		// help 命令带参与 -h 短 flag 两条帮助路径与 --help 等价。
+		{[]string{"help", "daemon"}, []string{"Bare `token-usage daemon` only prints this help", "裸执行 `token-usage daemon` 只显示本帮助"}},
+		{[]string{"daemon", "-h"}, []string{"only prints this help", "不启动任何进程"}},
 	}
 	han := regexp.MustCompile(`\p{Han}`)
 	for _, tc := range cases {
@@ -191,7 +213,7 @@ func TestHelpOutputBilingualLongAndFlagsButEnglishSkeleton(t *testing.T) {
 	}
 }
 
-// TestFailureCausePrintedOnce 收口：start/stop/restart/update 失败时，cause
+// TestFailureCausePrintedOnce 收口：daemon start/stop/restart/update 失败时，cause
 // 文本在完整 cobra 输出（含 Error: 行与 usage）中恰好出现一次——命令不得
 // 手写 stderr 后再返回同一错误（双打）。
 func TestFailureCausePrintedOnce(t *testing.T) {
@@ -215,9 +237,9 @@ func TestFailureCausePrintedOnce(t *testing.T) {
 		args  []string
 		cause string
 	}{
-		{"start", []string{"start"}, "start boom"},
-		{"stop", []string{"stop"}, "stop boom"},
-		{"restart", []string{"restart"}, "restart boom"},
+		{"daemon start", []string{"daemon", "start"}, "start boom"},
+		{"daemon stop", []string{"daemon", "stop"}, "stop boom"},
+		{"daemon restart", []string{"daemon", "restart"}, "restart boom"},
 		{"update invalid version", []string{"update", "--version", "invalid"}, "missing the v prefix"},
 		{"update check failure", []string{"update", "--check"}, "update check boom"},
 	} {

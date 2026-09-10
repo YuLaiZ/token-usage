@@ -220,7 +220,7 @@ func serveStartRun(cfg *config.Config, addr string, autoOpen bool, out, errOut i
 	}
 
 	url := "http://" + realAddr
-	// 交互终端下同样用 OSC 8 链接包裹 URL（与前台启动行一致的降级逻辑）。
+	// 交互终端下用 OSC 8 链接包裹 URL，支持单击打开（非 TTY 自动降级纯文本）。
 	linked := hyperlinkURL(url, writerIsTerminal(out))
 	fmt.Fprintf(out, "%s\n", ui.Bi(
 		fmt.Sprintf("dashboard started in background at %s (pid %d)", linked, pid),

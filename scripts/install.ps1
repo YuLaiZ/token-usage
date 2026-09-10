@@ -157,7 +157,7 @@ try {
         try {
             $probe = [System.IO.File]::Open($TargetPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
         } catch {
-            throw "错误：目标文件被占用（$TargetPath）。token-usage 正在运行，请先执行 token-usage stop（或 & `"$TargetPath`" stop，PATH 未生效的旧终端用绝对路径形态）后重试；若未在运行，请检查文件占用/权限后重试。"
+            throw "错误：目标文件被占用（$TargetPath）。token-usage 正在运行，请先执行 token-usage daemon stop（或 & `"$TargetPath`" daemon stop，PATH 未生效的旧终端用绝对路径形态）后重试；若未在运行，请检查文件占用/权限后重试。"
         } finally {
             if ($probe) { $probe.Dispose() }
         }
@@ -519,11 +519,11 @@ switch (Get-TUProfileCompletionState $PROFILE) {
 # 按与自启迁移提示相同的 PATH 生效维度分派：PATH 未写入时任何终端都解析不到裸 token-usage，
 # 须给绝对路径形态；广播失败时新终端要注销重登后才有 PATH。
 if (-not $pathPersisted) {
-    Write-Output "若此前 token-usage 在运行（如本次安装前执行过 stop），重装后如需继续实时采集，请执行 & `"$TargetPath`" start（PATH 未写入，须用绝对路径形态）。"
+    Write-Output "若此前 token-usage 在运行（如本次安装前执行过 daemon stop），重装后如需继续实时采集，请执行 & `"$TargetPath`" daemon start（PATH 未写入，须用绝对路径形态）。"
 } elseif (-not $needRelogon) {
-    Write-Output "若此前 token-usage 在运行（如本次安装前执行过 stop），重装后如需继续实时采集，请在新终端执行 token-usage start。"
+    Write-Output "若此前 token-usage 在运行（如本次安装前执行过 daemon stop），重装后如需继续实时采集，请在新终端执行 token-usage daemon start。"
 } else {
-    Write-Output "若此前 token-usage 在运行（如本次安装前执行过 stop），重装后如需继续实时采集，请在注销重登后（PATH 生效后）执行 token-usage start。"
+    Write-Output "若此前 token-usage 在运行（如本次安装前执行过 daemon stop），重装后如需继续实时采集，请在注销重登后（PATH 生效后）执行 token-usage daemon start。"
 }
 
 # 旧安装残留检测：旧版教程曾在 %LOCALAPPDATA%\Microsoft\WindowsApps 建 mklink 软链，

@@ -52,8 +52,8 @@ var errDataDirMigrationNotConfirmed = errors.New(ui.Bi(
 
 // errDataDirMigrationRunning data_dir 变化但旧 daemon 仍在运行。
 var errDataDirMigrationRunning = errors.New(ui.Bi(
-	"data_dir changed but the old daemon is still running; run token-usage stop first",
-	"data_dir 变化但旧 daemon 仍在运行，请先 token-usage stop",
+	"data_dir changed but the old daemon is still running; run token-usage daemon stop first",
+	"data_dir 变化但旧 daemon 仍在运行，请先 token-usage daemon stop",
 ))
 
 // missingFileSentinel 是「配置文件不存在」的固定 revision（区别于空文件的 sha256）。
@@ -426,10 +426,10 @@ func (a *Application) buildActionsAndNotes(
 	if daemonRunning {
 		if hasCollect {
 			// stop → 全部 collect → start。
-			steps = append(steps, "token-usage stop")
+			steps = append(steps, "token-usage daemon stop")
 		} else if effects.RuntimeChanged {
 			// 仅运行时配置变化（poll/log 等）→ restart。
-			steps = append(steps, "token-usage restart")
+			steps = append(steps, "token-usage daemon restart")
 		}
 	}
 	// 收集动作（稳定顺序：full 先，再未被 full 去重的 router；已排序）。
@@ -440,11 +440,11 @@ func (a *Application) buildActionsAndNotes(
 		steps = append(steps, fmt.Sprintf("token-usage collect router --client %s", c))
 	}
 	if daemonRunning && hasCollect {
-		steps = append(steps, "token-usage start")
+		steps = append(steps, "token-usage daemon start")
 	} else if !daemonRunning && effects.DataDirMigration != nil {
 		// data_dir 迁移要求旧 daemon 已停止；用户完成持久数据搬运后需要显式启动，
 		// 因此把完整命令作为最后一步返回，而不是只在说明文字中隐含提及。
-		steps = append(steps, "token-usage start")
+		steps = append(steps, "token-usage daemon start")
 	}
 
 	// ---- raw 变化但 effective 相同（纯写法规范化）→ 明确说明，不生成 restart/collect ----
@@ -476,13 +476,13 @@ func (a *Application) buildActionsAndNotes(
 	if !daemonRunning && hasCollect {
 		if currentAutoStart {
 			notes = append(notes, ui.Bi(
-				"run token-usage start after collection; autostart is enabled and takes effect at next login, but it will not start implicitly this time",
-				"采集后可执行 token-usage start 启动；自启已开启，下次登录会自动启动，但本次不会隐式启动",
+				"run token-usage daemon start after collection; autostart is enabled and takes effect at next login, but it will not start implicitly this time",
+				"采集后可执行 token-usage daemon start 启动；自启已开启，下次登录会自动启动，但本次不会隐式启动",
 			))
 		} else {
 			notes = append(notes, ui.Bi(
-				"run token-usage start after collection to launch the daemon",
-				"采集后可执行 token-usage start 启动守护进程",
+				"run token-usage daemon start after collection to launch the daemon",
+				"采集后可执行 token-usage daemon start 启动守护进程",
 			))
 		}
 	}
@@ -601,8 +601,8 @@ func (a *Application) appendAutoStartNotes(
 			))
 		} else {
 			*notes = append(*notes, ui.Bi(
-				"autostart definition enabled, taking effect at next login/boot; not running now, run token-usage start if you need it now",
-				"自启定义已启用，下次登录/开机生效；当前未运行，如需现在运行可执行 token-usage start",
+				"autostart definition enabled, taking effect at next login/boot; not running now, run token-usage daemon start if you need it now",
+				"自启定义已启用，下次登录/开机生效；当前未运行，如需现在运行可执行 token-usage daemon start",
 			))
 		}
 		if outcome.DriftRepaired {

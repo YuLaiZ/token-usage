@@ -21,19 +21,14 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/daemon"
-	"github.com/YuLaiZ/token-usage/internal/db"
 )
 
 // serveFamilyFixture 构造完整 serve 命令族（子命令继承 persistent flags），
-// load 注入临时 DataDir，open 为不应被调用的哨兵。
+// load 注入临时 DataDir。
 func serveFamilyFixture(t *testing.T, dataDir string) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	cmd := newServeCmdWithDeps(
 		func() (*config.Config, error) { return &config.Config{DataDir: dataDir}, nil },
-		func(string) (*db.DB, error) {
-			t.Error("serve start 不应打开数据库")
-			return nil, errors.New("unexpected db open")
-		},
 		"test-version",
 	)
 	var out, errBuf bytes.Buffer
@@ -51,9 +46,9 @@ func stubServeSpawnAndWait(t *testing.T, fn func(cfg *config.Config, addr, logPa
 }
 
 func TestServeStartCmd_AlreadyRunningIdempotent(t *testing.T) {
-	// 这是交错序列「前台在先，start 在后」的回归：seeded 状态 + 探活等价于
-	// 前台 serve 写出的 serve.json（serveDashboard 的守卫放行后写出），
-	// start 必须同样幂等拒绝——单实例契约对启动方向对称。
+	// 这是「已有运行实例（seeded 状态 + 探活响应，等价于 serveDashboard
+	// 守卫放行后写出的 serve.json）时再次 start」的回归：start 必须幂等
+	// 拒绝——单实例契约对已运行实例一视同仁。
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))

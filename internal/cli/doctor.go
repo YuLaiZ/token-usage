@@ -26,14 +26,14 @@ func newDoctorCmd() *cobra.Command {
 }
 
 // newDoctorCmdWithDeps 构造 doctor 命令;load/open 可注入供包内测试真实 RunE
-// 接线(生产路径传入 loadConfig 与 dbOpener,与 query/export 命令一致)。
+// 接线(生产路径传入 loadConfig 与 dbOpener)。
 func newDoctorCmdWithDeps(load func() (*config.Config, error), open func(string) (*db.DB, error)) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Run health checks and report problems / 运行健康检查并报告问题",
 		Long: ui.Bi(
-			"Run read-only health checks and print one line per check (OK/WARN/FAIL) with a final summary. Checks: config, data directory (the writability probe creates exactly one temporary file and removes it immediately), database (SQLite quick_check plus message count), enabled clients, last successful collection, data freshness (WARN when the last collection is more than seven days old), date consistency (WARN when stored dates disagree with the local dates recomputed from message timestamps; report-only, no auto-fix), unresolved collection errors, query view definitions (subqueries/groups/default semantic validity, warnings only), and an informational pointer to `token-usage status` for daemon state. No business data is written: opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own; it never starts, stops, or restarts the daemon, and never modifies configuration. FAIL/WARN are report-only; the exit code is always 0 in v1.",
-			"运行只读健康检查,逐项输出检查结果(OK/WARN/FAIL)并给出汇总。检查项:配置、数据目录(可写探针仅创建一个临时文件并立即删除)、数据库(SQLite quick_check 与消息行数)、已启用客户端、最近成功采集、数据新鲜度(最近采集距今超过七天告警)、日期一致性(date 列与按 ts 毫秒重算的本地日期不一致时告警,仅报告不自动修复)、未解决采集异常、查询视图定义(subqueries/groups/default 的语义合法性,仅警告),以及指向 `token-usage status` 的守护进程状态提示。不写业务数据:打开数据库的行为(journal 模式设置与 schema 迁移)与其它读取类命令一致,doctor 自身不执行任何特有的写操作;绝不启动/停止/重启守护进程,绝不修改配置。FAIL/WARN 仅体现在输出,v1 退出码恒为 0。",
+			"Run read-only health checks and print one line per check (OK/WARN/FAIL) with a final summary. Checks: config, data directory (the writability probe creates exactly one temporary file and removes it immediately), database (SQLite quick_check plus message count), enabled clients, last successful collection, data freshness (WARN when the last collection is more than seven days old), date consistency (WARN when stored dates disagree with the local dates recomputed from message timestamps; report-only, no auto-fix), unresolved collection errors, query view definitions (subqueries/groups/default semantic validity, warnings only), and an informational pointer to `token-usage daemon status` for daemon state. No business data is written: opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own; it never starts, stops, or restarts the daemon, and never modifies configuration. FAIL/WARN are report-only; the exit code is always 0 in v1.",
+			"运行只读健康检查,逐项输出检查结果(OK/WARN/FAIL)并给出汇总。检查项:配置、数据目录(可写探针仅创建一个临时文件并立即删除)、数据库(SQLite quick_check 与消息行数)、已启用客户端、最近成功采集、数据新鲜度(最近采集距今超过七天告警)、日期一致性(date 列与按 ts 毫秒重算的本地日期不一致时告警,仅报告不自动修复)、未解决采集异常、查询视图定义(subqueries/groups/default 的语义合法性,仅警告),以及指向 `token-usage daemon status` 的守护进程状态提示。不写业务数据:打开数据库的行为(journal 模式设置与 schema 迁移)与其它读取类命令一致,doctor 自身不执行任何特有的写操作;绝不启动/停止/重启守护进程,绝不修改配置。FAIL/WARN 仅体现在输出,v1 退出码恒为 0。",
 		),
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
@@ -373,8 +373,8 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	// doctor「绝不修改/写副作用」铁律或语义不清,故不探测,指向 status。
 	// 本项不依赖配置,任何场景都输出。
 	doctorLine(out, ui.Bi("Daemon", "守护进程"), statusInfo, ui.Bi(
-		"run `token-usage status` for daemon state (this command never probes or controls the daemon)",
-		"使用 `token-usage status` 查看守护进程状态(本命令绝不探测或操作守护进程)",
+		"run `token-usage daemon status` for daemon state (this command never probes or controls the daemon)",
+		"使用 `token-usage daemon status` 查看守护进程状态(本命令绝不探测或操作守护进程)",
 	))
 
 	// 汇总行:FAIL 优先于 WARN;两者皆无才是一切正常。

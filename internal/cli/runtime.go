@@ -16,7 +16,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
-// cmdContext 返回 cobra 命令的 context；若命令未挂到根（如单测直接 newStartCmd().RunE），
+// cmdContext 返回 cobra 命令的 context；若命令未挂到根（如单测直接 newDaemonStartCmd().RunE），
 // cmd.Context() 返回 nil，此处回退到 context.Background()，避免 nil 解引用。
 func cmdContext(cmd interface{ Context() context.Context }) context.Context {
 	if c := cmd.Context(); c != nil {

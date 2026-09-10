@@ -1,12 +1,11 @@
 // internal/cli/serve_dashboard.go
 package cli
 
-// serve_dashboard.go 持有前台 `serve` 与后台 `_serve-run` 共用的仪表板服务
-// 生命周期：单实例守卫（serve.json + 探活拒绝、serve.lock 生命周期锁）→
-// 监听 → 写 serve.json → 宣告启动 →（可选开浏览器）→ Serve → 信号优雅关停 →
-// 自清理 serve.json。两条路径只差输出 writer 与 autoOpen：
-// OSC 8 链接随 writerIsTerminal 自动降级（后台日志 writer 非 TTY 输出纯文本），
-// 无需按前台/后台特判。
+// serve_dashboard.go 持有后台 `_serve-run` 的仪表板服务生命周期：单实例
+// 守卫（serve.json + 探活拒绝、serve.lock 生命周期锁）→ 监听 → 写 serve.json
+// → 宣告启动 → Serve → 信号优雅关停 → 自清理 serve.json。本函数只由
+// _serve-run 调用（`serve start` 拉起）；serve.log 的 writer 非 TTY，
+// OSC 8 链接随 writerIsTerminal 自动降级为纯文本。
 
 import (
 	"context"
@@ -30,8 +29,11 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/web"
 )
 
+// serveShutdownTimeout 是收到 SIGINT/SIGTERM 后等待在途请求完成的宽限期。
+const serveShutdownTimeout = 3 * time.Second
+
 // serveLifecycleGuard 是 serveDashboard 的单实例守卫，在监听之前执行单实例
-// 契约：任意时刻至多一个服务实例（前台或后台）。依次判定：
+// 契约：任意时刻至多一个服务实例（serve start/restart 拉起的后台主体）。依次判定：
 //
 //  1. serve-state 状态迁移锁内的状态分诊（「读-判定-删」整段在锁内，杜绝判定
 //     与删除之间新实例接管导致的误删）。损坏的 serve.json → 删除残留后继续
@@ -109,19 +111,18 @@ func serveLifecycleGuard(dataDir string, out io.Writer, probeTimeout time.Durati
 	}
 }
 
-// serveDashboard 完成一次前台或后台的仪表板服务生命周期：单实例守卫（serve.json
+// serveDashboard 完成一次后台仪表板服务生命周期：单实例守卫（serve.json
 // + 探活幂等拒绝第二实例；serve.lock 生命周期锁交由本函数持有至退出）→ 接收
 // 已打开的只读数据库（调用方负责打开与 Close）→ 监听 addr → 写 serve.json →
-// 宣告启动 → （autoOpen 时开浏览器）→ Serve → SIGINT/SIGTERM 优雅关停（3s
-// Shutdown 宽限）→ 自清理 serve.json。
+// 宣告启动 → Serve → SIGINT/SIGTERM 优雅关停（3s Shutdown 宽限）→ 自清理
+// serve.json。
 //
-// 状态文件由前台与后台共用：监听成功即写出（PID 为本进程），任何退出路径
-// 都在 defer 中删除；SIGKILL/崩溃留下的陈旧文件由 serve status/stop 与下一次
-// 启动的守卫探活陈旧清理兜底。本进程对状态文件的全部写/删都在 serve-state
-// 状态迁移锁内、以持有的 serve.lock 为先（锁序 serve.lock → state.lock）。
-// 启动行的 OSC 8 链接与 autoOpen 语义与抽取前的
-// 前台 RunE 逐字节一致。
-func serveDashboard(cfg *config.Config, usageDB *db.DB, version, addr string, out, errOut io.Writer, autoOpen bool) error {
+// 状态文件由 serve start/status/stop 与服务主体共用：监听成功即写出（PID 为
+// 本进程），任何退出路径都在 defer 中删除；SIGKILL/崩溃留下的陈旧文件由
+// serve status/stop 与下一次启动的守卫探活陈旧清理兜底。本进程对状态文件的
+// 全部写/删都在 serve-state 状态迁移锁内、以持有的 serve.lock 为先（锁序
+// serve.lock → state.lock）。
+func serveDashboard(cfg *config.Config, usageDB *db.DB, version, addr string, out, errOut io.Writer) error {
 	// 单实例守卫先于监听：第二个实例无论请求哪个端口、以哪种形态启动都会在
 	// 这里被拒绝或报错，serve.json 永远只描述唯一实例。守卫放行时交出的
 	// 生命周期锁持有至本函数退出（defer 顺序：先删状态文件，再释放锁；
@@ -215,15 +216,6 @@ func serveDashboard(cfg *config.Config, usageDB *db.DB, version, addr string, ou
 		fmt.Sprintf("dashboard served at %s (Ctrl+C to stop)", linked),
 		fmt.Sprintf("仪表板已启动 %s（Ctrl+C 停止）", linked),
 	))
-	if autoOpen {
-		// 打开浏览器失败不致命:打印警告后继续服务,URL 已在上方输出。
-		if err := openBrowser(url); err != nil {
-			fmt.Fprintf(errOut, "%s\n", ui.Bi(
-				fmt.Sprintf("failed to open browser: %v", err),
-				fmt.Sprintf("打开浏览器失败：%v", err),
-			))
-		}
-	}
 
 	select {
 	case err := <-serveErr:

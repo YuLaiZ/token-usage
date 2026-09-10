@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -22,7 +23,7 @@ func newErrorsCmd() *cobra.Command {
 }
 
 // newErrorsCmdWithDeps 构造 errors 命令；load/open 可注入供包内测试走真实
-// 调用链或在开库前断言拒绝（与 compare/chart 同模式）。
+// 调用链或在开库前断言拒绝。
 func newErrorsCmdWithDeps(load func() (*config.Config, error), open func(string) (*db.DB, error)) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "errors [DATE|DATE-DATE]",
@@ -37,7 +38,7 @@ func newErrorsCmdWithDeps(load func() (*config.Config, error), open func(string)
 				return err
 			}
 
-			// --format 白名单同样先于配置加载与数据库打开校验（句式与 compare 一致）。
+			// --format 白名单先于配置加载与数据库打开校验。
 			format, err := cmd.Flags().GetString("format")
 			if err != nil {
 				return err
@@ -164,10 +165,20 @@ type errorsJSONRecord struct {
 	Resolved   bool   `json:"resolved"`
 }
 
+// marshalExportJSON 以两空格缩进序列化并追加尾随换行。map 键由 encoding/json
+// 按字母序输出：JSON 对象本无序，键集合与输出列名一致且同一数据输出确定。
+func marshalExportJSON(v any) (string, error) {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data) + "\n", nil
+}
+
 // renderErrorsJSON 把错误记录渲染为机器可读 JSON：stdout 纯数据，无统计头与
 // 重试提示行；空记录初始化为空切片以输出 [] 而非 null；两空格缩进与尾随换行
-// 复用 marshalExportJSON（与 export/compare 的机器输出约定一致）；记录的过滤
-// 与排序和 table 模式同源（同一 GetErrorsContext 结果）。
+// 复用 marshalExportJSON 的机器输出约定；记录的过滤与排序和 table 模式同源
+// （同一 GetErrorsContext 结果）。
 func renderErrorsJSON(errs []model.CollectionError, out io.Writer) error {
 	records := make([]errorsJSONRecord, 0, len(errs))
 	for _, e := range errs {
@@ -188,8 +199,7 @@ func renderErrorsJSON(errs []model.CollectionError, out io.Writer) error {
 	return err
 }
 
-// errorsFormatError 非法 --format 取值:在加载配置与开库之前拒绝(句式与
-// compare 的同名错误一致)。
+// errorsFormatError 非法 --format 取值：在加载配置与开库之前拒绝。
 func errorsFormatError(value string) error {
 	return fmt.Errorf("%s", ui.Bi(
 		fmt.Sprintf("invalid --format %q (allowed: table, json)", value),

@@ -15,8 +15,7 @@ import (
 // 366 天上限同口径(恰好容纳一个闰年)。
 const rangeDaysLimit = 366
 
-// dashboardSessionLimit 是仪表板 Top sessions 的截断行数,与 top 命令的
-// --limit 缺省值一致。
+// dashboardSessionLimit 是仪表板 Top sessions 的截断行数。
 const dashboardSessionLimit = 10
 
 // dashboardDimensions 是仪表板固定聚合的 8 个维度:顺序即聚合次序,JSON
@@ -255,7 +254,7 @@ func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		// 会话排行与 top 命令同口径:排序后截前 10 行。
+		// 会话排行按总量排序后截前 10 行。
 		resp.Sessions = toSessionRows(querier.TruncateTopRows(querier.SortTopRows(sessions), dashboardSessionLimit))
 		// 活动热力矩阵在同一事务内取数,与 totals/dimensions/sessions 同快照。
 		hm, err := tq.HeatmapMatrix(ctx, dates)
@@ -382,12 +381,11 @@ func toSessionRows(rows []querier.SessionRow) []sessionRowJSON {
 	return out
 }
 
-// buildCompareJSON 推导环比基线窗口、取基线总量并预构造 8 行对比行,行序
-// 与 cli compare 命令的 renderCompare 及静态报告页完全一致。基线窗口经
-// querier.CompareBaseWindow 区间模式推导(等长窗口结束于开始日前一天;
-// from==to 的单日区间自然退化为前一天,与单日粒度结果一致),与 compare/
-// report 命令同一口径。显示串与着色 class 走 fmtx 共享助手(计数行千分位、
-// token 行 K/M/B 缩写、基线为 0 时变化% 为 "--"),前端零逻辑直绘。
+// buildCompareJSON 推导环比基线窗口、取基线总量并预构造 8 行对比行。基线
+// 窗口经 querier.CompareBaseWindow 区间模式推导(等长窗口结束于开始日前
+// 一天;from==to 的单日区间自然退化为前一天,与单日粒度结果一致)。
+// 显示串与着色 class 走 fmtx 共享助手(计数行千分位、token 行 K/M/B 缩写、
+// 基线为 0 时变化% 为 "--"),前端零逻辑直绘。
 func buildCompareJSON(ctx context.Context, tq *querier.Querier, fromT, toT time.Time, cur querier.RangeStats) (compareJSON, error) {
 	baseStartT, baseEndT := querier.CompareBaseWindow(fromT, toT, 0)
 	baseStats, err := tq.StatsBetween(ctx, baseStartT.Format("2006-01-02"), baseEndT.Format("2006-01-02"))
@@ -462,8 +460,8 @@ func buildCompareJSON(ctx context.Context, tq *querier.Querier, fromT, toT time.
 	return c, nil
 }
 
-// buildForecastJSON 镜像 cli forecast 命令的完整口径:today so far 取今天
-// 区间(now 由 handler 在请求入口统一取,无 report 的确定性约束);回看窗口
+// buildForecastJSON 构造预测面板数据:today so far 取今天区间(now 由
+// handler 在请求入口统一取);回看窗口
 // last7=[今天-7, 今天-1]、last30=[今天-30, 今天-1] 均不含今天(今天尚未
 // 结束,计入会低估日均)。avg = TotalTokens/ActiveDays 整数除法,预估 =
 // avg×未来天数(假设未来保持同等活跃强度)。窗口固定回看,与仪表板

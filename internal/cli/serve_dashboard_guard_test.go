@@ -20,9 +20,9 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/daemon"
 )
 
-// TestServeDashboard_SingleInstanceGuard_StaleProbeAlive 覆盖交错序列
-// 「后台在先，前台在后」：状态文件指向存活的 /api/meta（模拟后台实例），
-// 前台 serve 的守卫必须幂等拒绝且不触碰现状。
+// TestServeDashboard_SingleInstanceGuard_StaleProbeAlive 覆盖单实例守卫的
+// 存活幂等拒绝分支：状态文件指向存活的 /api/meta（模拟运行中的实例），
+// 守卫必须幂等拒绝且不触碰现状。
 func TestServeDashboard_SingleInstanceGuard_StaleProbeAlive(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

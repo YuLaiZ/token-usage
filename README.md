@@ -10,8 +10,8 @@ A local LLM usage analytics CLI. It collects token usage from the AI clients you
 - Message/API-request-level accounting, including accurate attribution across dates, models, branches, and rewinds.
 - Collectors for Claude Code/Desktop, OpenCode, Codex, WorkBuddy, ZCode, and Zhipu-AutoClaw.
 - CC-Switch router attribution for the Claude family and Codex, backfilling the actual provider and model from proxy logs.
-- One-off commands or a real-time background monitoring daemon, with macOS launchd and Windows Registry autostart.
-- **Visual analytics built in.** Hourly and weekday distributions, a weekday-by-hour heat matrix, SVG bar/pie/line/heat charts, usage forecasts from recent averages, period-over-period comparisons, top-session rankings, a live watch mode, a one-shot report bundle, and a local dashboard server (`token-usage serve`) with an embedded interactive HTML dashboard (client-rendered charts, a weekday-by-hour heat matrix, one-click CSV export, and drill-down range picking).
+- One-off commands or a real-time background monitoring daemon (`token-usage daemon start`), with macOS launchd and Windows Registry autostart.
+- **Visual analytics built in.** Hourly and weekday distributions, a weekday-by-hour heat matrix, and a live watch mode, plus a local dashboard server (`token-usage serve start`) with an embedded interactive HTML dashboard — client-rendered SVG charts, usage forecasts, period-over-period comparisons, top-session rankings, one-click CSV export, and drill-down range picking — served over a read-only HTTP data surface.
 - A pure-Go, single-binary CLI for macOS and Windows.
 
 ![token-usage serve dashboard](docs/images/dashboard.png)
@@ -62,7 +62,7 @@ token-usage update --check          # check only; makes no local changes
 token-usage update --version vX.Y.Z # a specific Release
 ```
 
-`update` prints its progress step by step — version check, current/target version, download, verify, install, daemon switch — and on an interactive terminal the download shows a live single-line indicator (percentage, transferred/total bytes, average speed); redirected output keeps only the step lines. A daemon that was running before the update is stopped and restarted automatically on the new binary; a daemon that was stopped stays stopped (the success output points to `token-usage start`).
+`update` prints its progress step by step — version check, current/target version, download, verify, install, daemon switch — and on an interactive terminal the download shows a live single-line indicator (percentage, transferred/total bytes, average speed); redirected output keeps only the step lines. A daemon that was running before the update is stopped and restarted automatically on the new binary; a daemon that was stopped stays stopped (the success output points to `token-usage daemon start`).
 
 For a re-signed official asset, a source build (`Version = dev`), or `go install` of a tagged release, run `token-usage update --force` once to replace it with an official Release asset; later updates work normally. Symlinked copies and non-official tags cannot be converted this way.
 
@@ -87,7 +87,7 @@ token-usage collect all
 `collect all` scans all enabled clients and includes router attribution backfill where configured. It bypasses `collection_log` date deduplication and is safe to rerun because messages are upserted by `(client, id)`. To keep new data current, start the daemon:
 
 ```bash
-token-usage start
+token-usage daemon start
 ```
 
 ### 3. Query and Build Your Own Reports
@@ -128,7 +128,7 @@ token-usage query daily_stack 20260701-20260721
 token-usage query list
 ```
 
-`query list` reads only configuration and never opens the usage database, so it is a safe way to discover built-in and configured views. The optional `[query.output]` layout picks which metric columns appear — and in which order — in every query table (`cache_create` is available but hidden by default; `query summary` keeps its complete summary). The [CLI Reference](docs/cli.md#configurable-query-views) describes the validation rules and complete command contract.
+`query list` reads only configuration (the configuration file must exist — run `config init` first on a fresh machine) and never opens the usage database, so it is a safe way to discover built-in and configured views. The optional `[query.output]` layout picks which metric columns appear — and in which order — in every query table (`cache_create` is available but hidden by default; `query summary` keeps its complete summary). The [CLI Reference](docs/cli.md#configurable-query-views) describes the validation rules and complete command contract.
 
 ## Command Cheat Sheet
 
@@ -143,22 +143,27 @@ token-usage query list
 | `query client/model/provider/project/day/month/hour/weekday/heatmap/session/summary [date]` | Run a built-in report. |
 | `query <name> [date]` | Run a configured view or group. |
 | `query list` | List views without opening the usage database. |
-| `export [view] [date]` | Export usage data as CSV or JSON to stdout. |
 | `errors [date]` | Show collection failures for a date or range (`--format json` emits machine-readable output). |
-| `doctor` | Run read-only health checks. |
-| `forecast` | Estimate upcoming usage from recent daily averages (`--format json` emits machine-readable output). |
-| `compare <range> [range2]` | Compare usage between two periods (two positional periods compared chronologically: the earlier one is the baseline and argument order does not matter; `--base` overrides the granularity-derived baseline: previous day for a day, previous calendar month for a month, previous calendar year for a year, equal-length preceding window for a range; `--by` splits per dimension member, `--format json` emits machine-readable output). |
-| `top [date]` | Show the heaviest sessions by total tokens (`--limit`, default 10; `--format json` emits machine-readable output). |
-| `chart [date]` | Render usage as an SVG chart (`--by` dimension, `--pie`, `--line` for trend lines, `--heatmap`, `--out` to save). |
 | `watch [date]` | Refresh the `query` output at a fixed interval (`--once` for a single frame; view selection matches `query` — `--by` takes a built-in view or a configured view name, default view follows `query.default`). |
-| `report [date] --out <dir>` | Generate a full usage report bundle (summary, comparison, SVG charts, interactive HTML dashboard). |
-| `serve` | Start the local read-only dashboard server (foreground; `serve start/status/stop/restart` for background, `--open` to launch a browser). |
+| `doctor` | Run read-only health checks. |
+| `daemon start/status/stop/restart` | Manage the collection daemon: start in the background, inspect status, stop, restart. |
+| `serve start/status/stop/restart` | Manage the local read-only dashboard server in the background (`serve start --open` launches a browser; bare `serve` only prints help). |
 | `version` / `--version` | Show detailed / one-line version information. |
-| `start` / `status` / `stop` / `restart` | Control the background daemon. |
 | `completion <shell>` | Print a Bash, Zsh, Fish, or PowerShell completion script. |
 | `update` | Self-update an official Release asset in place; use `update --force` once to switch an eligible re-signed, source-built, or `go install` binary. |
 
-Run `token-usage --help` for a command overview, or read the [CLI Reference](docs/cli.md) for flags, exit codes, side-effect boundaries, configuration behavior, and daemon lifecycle.
+### Migrating from v0.1.8
+
+v0.1.9 is a deliberate breaking CLI change (details in the [CLI Reference](docs/cli.md#migrating-from-v018-breaking-changes)). The chart, compare, export, forecast, report, and top commands have been removed. The visual analytics (SVG charts, usage forecasts, period comparisons, top-session rankings) live on in the `serve` dashboard over its read-only HTTP data surface — including page-scoped CSV export there — and `query` / `watch` remain the terminal reports. The machine-readable CLI export contract and the offline HTML report bundle were removed intentionally and have no full replacement. The top-level `start`/`status`/`stop`/`restart` commands have moved into the `daemon` group, and bare `serve` no longer runs a foreground server.
+
+| v0.1.8 | now |
+|---|---|
+| `token-usage start` / `status` / `stop` / `restart` | `token-usage daemon start` / `daemon status` / `daemon stop` / `daemon restart` |
+| `token-usage serve` (foreground) | `token-usage serve start` (background) |
+| `token-usage chart` / `forecast` / `compare` / `top` | `token-usage serve start`, then open the dashboard |
+| `token-usage export` / `report` | Terminal queries stay on `query` / `watch`; the dashboard offers page-scoped CSV export. The machine-readable CLI export and the offline report bundle are gone without a full replacement. |
+
+Run `token-usage --help` for a command overview, or read the [CLI Reference](docs/cli.md) for flags, exit codes, side-effect boundaries, configuration behavior, and both service lifecycles.
 
 ## Shell Completion
 

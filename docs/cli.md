@@ -28,17 +28,16 @@ token-usage
 │   ├── summary [DATE|DATE-DATE]   # overview summary
 │   ├── custom <name> [DATE|DATE-DATE] # explicit configured-view form
 │   └── list                        # list configured views (config only; no database)
-├── export [view] [DATE|DATE-DATE] # export usage data as CSV or JSON (--format csv|json)
 ├── errors [DATE|DATE-DATE]
-├── doctor                                # read-only health check (config, data directory, database, clients, collection, errors)
-├── forecast                              # estimate future usage from recent daily averages
-├── compare <range> [range2]              # compare usage between two periods (two positional periods compared chronologically, earlier as baseline; --base overrides the baseline, --by per member)
-├── top [DATE|DATE-DATE]                  # heaviest sessions by total tokens (--limit, default 10)
-├── chart [DATE|DATE-DATE]                # render usage as an SVG chart (--by dimension, --pie, --line, --heatmap)
 ├── watch [DATE|DATE-DATE]                # refresh the query output at a fixed interval (view selection matches query)
-├── report [DATE|DATE-DATE] --out <dir>   # generate a full usage report bundle
-├── serve                                 # local read-only dashboard HTTP server (default 127.0.0.1:8619; foreground; --open, --addr)
-│   ├── start                             # run the same dashboard in the background (nginx-style; logs to serve.log)
+├── doctor                                # read-only health check (config, data directory, database, clients, collection, errors)
+├── daemon                                # manage the collection daemon (bare command only prints help)
+│   ├── start                             # start the daemon in the background (nginx-style; spawns _run)
+│   ├── status                            # show daemon status and config summary
+│   ├── stop                              # stop the daemon
+│   └── restart                           # stop the old daemon and start a new one under one lock
+├── serve                                 # manage the local read-only dashboard HTTP server (bare command only prints help)
+│   ├── start                             # run the dashboard in the background (nginx-style; logs to serve.log)
 │   ├── status                            # show whether the background dashboard is running
 │   ├── stop                              # stop the background dashboard
 │   └── restart                           # stop the running dashboard and start a fresh background instance
@@ -47,12 +46,9 @@ token-usage
 │   ├── get <key>
 │   ├── set <key> <value>
 │   └── init
-├── start
-├── restart
-├── status
-├── stop
 ├── update                                # self-update from official GitHub Releases (--check / --version / --force)
-└── _run                                  # hidden; started by start/launchd/the Registry; do not invoke directly
+├── _run                                  # hidden; started by daemon start/launchd/the Registry; do not invoke directly
+└── _serve-run                            # hidden; background dashboard body spawned by serve start; do not invoke directly
 ```
 
 Design points:
@@ -65,13 +61,28 @@ Design points:
 - `completion` is Cobra's built-in command. It writes bash/zsh/fish/PowerShell completion scripts to standard output and reads neither configuration nor the database.
 - `update` is a top-level self-update command (flags `--check`, `--version`, and `--force`); it is the only command that rewrites the running binary. By default it does so only when the current binary is an official Release asset; `--force` opts in to overwriting a re-signed official asset, a `go install` of a tagged version, or a dev build. See [update](#update).
 
+## Migrating from v0.1.8 (Breaking Changes)
+
+The command surface was deliberately consolidated; scripts written against v0.1.8 must be updated:
+
+- The six analysis commands `chart`, `compare`, `export`, `forecast`, `report`, and `top` were **removed** (no compatibility aliases). The visual analytics — SVG charts, usage forecasts, period comparisons, top-session rankings — live on in the `serve` dashboard over its read-only HTTP data surface, including page-scoped CSV export there; terminal reports remain `query` and `watch`. The machine-readable CLI export contract and the offline HTML report bundle were removed intentionally and have no full replacement.
+- The top-level lifecycle commands moved into the `daemon` group: `token-usage start` → `token-usage daemon start`, likewise `status`, `stop`, and `restart`.
+- `token-usage serve` no longer runs a foreground server: bare `serve` only prints the command-group help, and the dashboard is started with `serve start` / `serve restart`.
+
+| v0.1.8 | now |
+|---|---|
+| `token-usage start` / `status` / `stop` / `restart` | `token-usage daemon start` / `daemon status` / `daemon stop` / `daemon restart` |
+| `token-usage serve` (foreground) | `token-usage serve start` (background) |
+| `token-usage chart` / `forecast` / `compare` / `top` | `token-usage serve start`, then open the dashboard |
+| `token-usage export` / `report` | Terminal queries stay on `query` / `watch`; the dashboard offers page-scoped CSV export. The machine-readable CLI export and the offline report bundle are gone without a full replacement. |
+
 ## General Conventions
 
 ### Date Argument Format
 
 | Command | Accepted form | Default |
 |------|----------|------|
-| `collect`, `query` (with subcommands), `export`, and `watch` | `DATE` (day `YYYYMMDD`, month `YYYYMM`, or year `YYYY`; year as a single arg only) or `DATE-DATE` (inclusive day/month endpoints) | Today |
+| `collect`, `query` (with subcommands), and `watch` | `DATE` (day `YYYYMMDD`, month `YYYYMM`, or year `YYYY`; year as a single arg only) or `DATE-DATE` (inclusive day/month endpoints) | Today |
 | `errors` | `DATE` or `DATE-DATE` (same forms as `collect`/`query`) | With neither a date nor `--source`, only unresolved errors are shown. |
 
 `YYYYMMDD` is an eight-digit compact format (for example, `20260701`); `YYYYMM` selects a calendar month and `YYYY` a calendar year (the year form is accepted only as a single arg). `YYYY-MM-DD`, extra positional arguments, a year used as a range endpoint, and an end date before the start date all fail with an error and command examples. A single arg or a range normalizes to an inclusive per-day list capped at 366 days (one leap year); split longer ranges into multiple runs.
@@ -80,7 +91,7 @@ Design points:
 
 `token-usage` maps a command error to an exit code in `main`:
 
-- `0`: success, including idempotent results such as `start` when the daemon is already running and `stop` when it is not.
+- `0`: success, including idempotent results such as `daemon start` when the daemon is already running and `daemon stop` when it is not.
 - `1`: any error (argument validation failure, collection/query failure, daemon-control failure, revision conflict, partial failure, and so on).
 
 The stdout/stderr contract for success and failure is described in each command section.
@@ -89,8 +100,7 @@ The stdout/stderr contract for success and failure is described in each command 
 
 - `--client`: a **PersistentFlag** of `collect`, inherited by its `all`, `router`, and `retry` subcommands.
 - `--force`: a **LocalFlag** of `collect`, **not** inherited by subcommands (passing it to a subcommand returns an unknown-flag error).
-- `errors` `--source` / `--unresolved`: LocalFlags of `errors`.
-- `export` `--format`: a **LocalFlag** of `export` (`csv` or `json`, default `csv`).
+- `errors` `--source` / `--unresolved` / `--format`: LocalFlags of `errors`.
 - Root `-v, --version`: a root-level flag that outputs the one-line short version.
 
 ## version
@@ -121,7 +131,7 @@ platform: darwin/arm64
 - **Version-source precedence**: (1) Makefile `ldflags -X` injected `Version` → (2) `debug.ReadBuildInfo().Main.Version` under `go install @version` → (3) local default `dev`.
 - **Commit source**: (1) injected `Commit` → (2) `vcs.revision` in `debug.BuildInfo` → (3) `unknown`. **`build_time` does not use `vcs.time`**, because that is commit time rather than build time; it only uses the injected value and is `unknown` when none is injected.
 - **`build_time` rendering**: the injected value is UTC RFC3339 (stamped by the release build); it is displayed in the local timezone as `YYYY-MM-DD HH:MM:SS`. Values that do not parse as RFC3339 are shown verbatim.
-- **Local-build version display**: for a direct `go build` from a tagged checkout, `debug.ReadBuildInfo().Main.Version` is a Go pseudo-version such as `v0.1.8-0.20260908085159-1280e3f00e99`; it is normalized to `v0.1.8-dev` for display (the base version indicates the release this checkout is heading toward, and the `commit` line keeps the exact revision). Checkouts before the first tag display `v0.0.0-dev`. The `-dev` display shares the semantics of the literal `dev` with the update guard: `update` refuses it and `update --force` is required to switch to an official release asset.
+- **Local-build version display**: for a direct `go build` from a tagged checkout, `debug.ReadBuildInfo().Main.Version` is a Go pseudo-version such as `v0.1.8-0.20260908085159-1280e3f00e99`; it is normalized to `v0.1.8-dev` for display (the base version indicates the release this checkout is heading toward, and the `commit` line keeps the exact revision). Checkouts before the first tag display `v0.0.0-dev`. Two boundary forms keep the toolchain value verbatim instead of normalizing to `-dev`: building exactly on a tag commit shows `v<tag>` (e.g. `v0.1.8`), and the same with a modified worktree shows `v<tag>+dirty` (e.g. `v0.1.8+dirty`). The `-dev` display shares the semantics of the literal `dev` with the update guard: `update` refuses it and `update --force` is required to switch to an official release asset.
 - This is a purely static command: it does not read configuration, open the database, initialize logging, or access the network.
 - Root `--help` shows both the `version` subcommand and the visible `-v, --version` flag.
 
@@ -262,7 +272,7 @@ Every grouped view (the nine built-in views and every custom multi-dimensional t
 
 `query day`, `query month`, `query hour`, `query weekday`, and every view containing the `day`, `month`, `hour`, or `weekday` dimension present a time-ordered timeline: rows are ordered by the time dimension ascending (`YYYY-MM-DD` days, `YYYY-MM` months, `00:00`..`23:00` hourly ticks, or weekday names in ISO week order, not by total; when several time dimensions coexist, the first declared one is the sort axis), and a `Trend / 趋势` bar column compares each row's total against the busiest row in the range. The pure `day` and `month` views insert a zero-value row for each day or month without data within the requested range, whereas the pure `hour` view always presents the fixed 24 hourly ticks of the day and the pure `weekday` view always presents the fixed 7 weekday ticks in ISO week order (Monday first), each with zero-value rows for hours or weekdays without data, independent of the requested date range (hours and weekdays are folded from message timestamps to local time, the same timezone semantics as the date column), so the timeline has no gaps.
 
-`query heatmap` renders a weekday-by-hour matrix: rows are the seven weekdays in ISO order (Monday first), columns are the 24 hours `00`..`23` (both folded from message timestamps to local time, the same timezone semantics as the date column). Each cell is a density character (` .:-=+*#%@`, 0..9) scaled against the busiest cell of the table, the trailing column totals each day, and the trailing `Total / 总计` row totals each hour plus the whole range. The matrix does not take part in the `[query.output.columns]` layout, and `heatmap` is a reserved view name — like `session` and `summary` it is not referable from `query.default`, subqueries, groups, or `export`.
+`query heatmap` renders a weekday-by-hour matrix: rows are the seven weekdays in ISO order (Monday first), columns are the 24 hours `00`..`23` (both folded from message timestamps to local time, the same timezone semantics as the date column). Each cell is a density character (` .:-=+*#%@`, 0..9) scaled against the busiest cell of the table, the trailing column totals each day, and the trailing `Total / 总计` row totals each hour plus the whole range. The matrix does not take part in the `[query.output.columns]` layout, and `heatmap` is a reserved view name — like `session` and `summary` it is not referable from `query.default`, subqueries, or groups.
 
 `query summary` renders a fixed vertical summary: `Clients / 客户端数`, `Total requests / 请求总数`, `Active days / 活跃天数` (days with data inside the range), one line per token column (`Input` through `Total`, always including `Cache Create`), and, when the range contains at least one day with data, `Peak day / 单日峰值` (the date with the highest source total, ties broken by earliest date) and `Daily average / 日均总量` (range total divided by active days, integer division rounded down). Those last two lines are omitted when the range has no data.
 
@@ -310,14 +320,14 @@ columns = ["requests", "input", "output", "total", "cache_hit"]
 | `total` | Total / 总计 | source total tokens |
 | `cache_hit` | Cache Hit / 缓存命中 | cache_read / (fresh input + cache_read + cache_create) |
 
-- **Scope**: the layout applies to `query client`, `model`, `provider`, `project`, `day`, `month`, `hour`, `weekday`, `session`, and every table of the bare query, named views (`query <name>` / `query custom <name>`), and groups, plus the matching `watch` frames (their view tables run the same execution chain as `query`; `watch --by summary` keeps the complete vertical summary). `query summary` is not covered — it keeps its complete vertical summary, including Cache Create; `query list` renders no data table; `export` deliberately ignores the layout (fixed machine schema). Dimension columns are always shown on the left of each table (the session table always shows Client/Project/Title/Duration first) and never take part in the layout.
+- **Scope**: the layout applies to `query client`, `model`, `provider`, `project`, `day`, `month`, `hour`, `weekday`, `session`, and every table of the bare query, named views (`query <name>` / `query custom <name>`), and groups, plus the matching `watch` frames (their view tables run the same execution chain as `query`; `watch --by summary` keeps the complete vertical summary). `query summary` is not covered — it keeps its complete vertical summary, including Cache Create; `query list` renders no data table. Dimension columns are always shown on the left of each table (the session table always shows Client/Project/Title/Duration first) and never take part in the layout.
 - **Default**: when `[query.output]` or `columns` is missing, the seven columns `requests, input, output, cache_read, reasoning, total, cache_hit` are used, so existing configs and outputs stay identical after an upgrade. `cache_create` is the first metric that is selectable but hidden by default; it always counts toward the Cache Hit denominator, so hiding or showing it never changes any statistic, sort order, or total.
 - **Validation**: `query.output` must be a table whose only key is `columns`; the array must be non-empty, its elements strings from the table above, without duplicates (whitespace around an element is trimmed). An empty array is not "restore defaults" — remove `query.output` (or `query.output.columns`) to restore the default layout. Errors are reported with the full config path and the offending value. `config set` cannot write `query.output.columns`; use the TUI Output columns page or edit the TOML by hand.
 - **Error boundary**: unrelated view-definition errors (`subqueries`/`groups`/`default`) never block the nine layout-affected static table commands — a valid layout still applies. An invalid `query.output` itself fails those nine commands before the database is opened. A top-level query problem (`[query]` alongside `[Query]`, or a non-table root) silently falls back to the default seven columns for the static table commands, while the bare query, named views, and `query list` keep failing with the existing localized errors. TUI saves always run the full query validation.
 
 `query provider` (and the provider dimension of any custom view) prefers router attribution, then the collector's provider value. Historical empty values remain unattributed; the query does not infer a provider from the client. `provider_aliases` is applied before composite keys are formed: aliases with the same value are combined into one row in every view, without changing `usage.db`.
 
-Query configuration is display-only. Semantic errors (broken references, malformed CSV, unknown keys, top-level conflicts such as `[query]` alongside `[Query]`, or a non-table root like `query = "x"`) make the default path (bare `query` and `query <date>`), every named invocation (`query <name>` / `query custom <name>`), `query list`, and TUI saves fail with the offending key; the nine layout-affected static table commands (`client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`session`) fall back to the default seven columns on a top-level problem and otherwise keep their layout when only unrelated view definitions are broken, `query summary` is unaffected, and `collect`, `status`, `start`, the daemon, `config set`, and `config show` keep working and preserve the offending entries. `watch` and `export` follow the same split: their default-view and configured-view paths fail with the same localized diagnostics as the bare `query`, while an explicit built-in view name (`watch --by client`, `export client`) ignores unrelated view-definition errors like the static table commands. In the TUI, `v` on the main menu opens the **Query** page with three entries — **Views** (custom subqueries, groups, default behavior), **Output columns** (the global metric layout, with `d` to restore the default), and **Provider aliases** — each showing a recovery list when its own part of the raw section cannot be parsed. Before downgrading to a version without query-view support, remove the whole `[query]`, `[query.subqueries]`, `[query.groups]`, and `[query.output]` sections: older versions reject any non-empty query section.
+Query configuration is display-only. Semantic errors (broken references, malformed CSV, unknown keys, top-level conflicts such as `[query]` alongside `[Query]`, or a non-table root like `query = "x"`) make the default path (bare `query` and `query <date>`), every named invocation (`query <name>` / `query custom <name>`), `query list`, and TUI saves fail with the offending key; the nine layout-affected static table commands (`client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`session`) fall back to the default seven columns on a top-level problem and otherwise keep their layout when only unrelated view definitions are broken, `query summary` is unaffected, and `collect`, `daemon status`, `daemon start`, the daemon itself, `config set`, and `config show` keep working and preserve the offending entries. `watch` follows the same split: its default-view and configured-view paths fail with the same localized diagnostics as the bare `query`, while an explicit built-in view name (`watch --by client`) ignores unrelated view-definition errors like the static table commands. In the TUI, `v` on the main menu opens the **Query** page with three entries — **Views** (custom subqueries, groups, default behavior), **Output columns** (the global metric layout, with `d` to restore the default), and **Provider aliases** — each showing a recovery list when its own part of the raw section cannot be parsed. Before downgrading to a version without query-view support, remove the whole `[query]`, `[query.subqueries]`, `[query.groups]`, and `[query.output]` sections: older versions reject any non-empty query section.
 
 Examples:
 
@@ -329,56 +339,6 @@ token-usage query mpc                # today, the mpc multi-dimensional table (d
 token-usage query custom group_q 20260701  # explicit spelling: four tables in declared order
 token-usage query summary 20260701   # single-day overview
 token-usage query list               # list configured views without touching the database
-```
-
-## export
-
-Exports aggregated usage data as machine-readable CSV or JSON to standard output. Aggregation is computed directly from `messages` (plus `sessions` metadata) and shares one aggregation core with the corresponding `query` views, so row sets and ordering match exactly.
-
-```text
-token-usage export [view] [DATE|DATE-DATE] [--format csv|json]
-```
-
-| View | Key column(s) | Content |
-|---|---|---|
-| *(no view)* | — | the default view (`query.default`, built-in fallback `client`) |
-| `client` | `client` | group by client |
-| `model` | `model` | group by model |
-| `provider` | `provider` | group by provider (router attribution first; `provider_aliases` merge rows exactly like `query provider`; an empty provider exports as `(unattributed) / (未归因)`, matching the query display) |
-| `project` | `project` | group by project (an empty project exports as `(uncategorized) / (未分类)`, matching the query display) |
-| `day` | `date` | usage by day, date ascending, days without data inserted as zero rows |
-| `month` | `month` | usage by month, month ascending, months without data inserted as zero rows |
-| `hour` | `hour` | usage by hour in local time, hour ascending, all 24 hourly ticks present with zero rows for hours without data |
-| `weekday` | `weekday` | usage by weekday in local time, ISO week order (Monday first), all 7 weekday ticks present with zero rows for weekdays without data |
-| `session` | `client`, `project`, `title`, `duration_ms` | session details in the same order as `query session`; `project`/`title` keep their raw source values — an empty project stays an empty string, unlike the grouped views which substitute the placeholder; `duration_ms` is the session's request span (last minus first message timestamp, in milliseconds) |
-| configured subquery | one key column per dimension, in declaration order | one row per dimension combination; column names follow the same `day` → `date` mapping as the built-in views |
-| configured group | varies per member | members exported in declaration order (see below) |
-
-`summary` and `heatmap` have no row schema and are deliberately not exportable. Configured views from `query.subqueries` / `query.groups` are supported: a **subquery** exports as one row per dimension combination with one key column per dimension; a **group** exports its member views — as CSV sections in declaration order, separated by a blank line (each section carries its own header, whose key columns match the member's view type), or as a JSON object mapping member names to their row arrays (keys serialized in alphabetical order, the same JSON map semantics as single-view objects). An unknown view is rejected with the dynamic allowed set (built-in views plus configured names) after the configuration loads and before the database opens; a view name that resolves to a broken view definition fails with the same localized diagnostics as `query`, while an explicit built-in view name ignores unrelated view-definition errors exactly like the static `query` subcommands.
-
-The date argument accepts the same forms as `query`: `DATE` is a day (`YYYYMMDD`), month (`YYYYMM`), or year (`YYYY`; single arg only), and `DATE-DATE` is an inclusive range whose endpoints are days or months; with no date it defaults to today (see [Date Argument Format](#date-argument-format)). Positional dispatch mirrors `query`: a digit-leading single argument is a date applied to the default view, and with two positional args the first must be a view name (`token-usage export client 20260901`).
-
-`--format` selects `csv` (default) or `json`. Invalid format values are rejected before the configuration is loaded and the database is opened.
-
-Fixed machine-schema contract:
-
-- Columns are fixed and ordered — the key column(s) above followed by `requests, input, output, cache_read, cache_create, reasoning, total` — and the `[query.output.columns]` layout is deliberately not applied: exports keep one stable schema regardless of display configuration.
-- All metric values are raw integers (int64 in decimal); there is no K/M/B abbreviation.
-- There is no `Total` row.
-- CSV: `encoding/csv` quoting (fields containing commas or quotes are escaped), LF line endings, UTF-8 without BOM.
-- JSON: an array of objects whose keys match the CSV column names; integers are JSON numbers, all other fields are strings; two-space indentation with a trailing newline.
-- stdout carries pure data only: the statistics header is not printed, and collection-error warnings go to stderr instead — redirect stdout to save the file.
-
-For the same views rendered as human-readable tables (statistics header, K/M/B abbreviations, total rows), see [query](#query).
-
-Examples:
-
-```bash
-token-usage export day 20260901-20260907 > usage.csv
-token-usage export session --format json | jq .
-token-usage export 20260701                # default view (query.default) for one day
-token-usage export provider --format json  # provider view as JSON on stdout
-token-usage export <configured-view>       # a subquery or group from query.subqueries / query.groups
 ```
 
 ## errors
@@ -444,7 +404,7 @@ token-usage doctor
 | `Date consistency / 日期一致性` | every stored local date matches the local date recomputed from its millisecond timestamp; prints the total message count | N messages with date inconsistent with timestamp; check whether the system timezone changed or data was modified directly; warnings only — no auto-fix | query failure |
 | `Unresolved errors / 未解决异常` | none | count with pointers to `token-usage errors` and `token-usage collect retry` | query failure |
 | `Query definitions / 查询视图` | configured subqueries/groups/default are semantically valid (also OK when none are configured) | issue count with the first diagnostic path and a pointer to `token-usage query list`; warnings only — broken view definitions never block collection or the static table commands | config failed to load |
-| `Daemon / 守护进程` | informational only: points to `token-usage status`; doctor never probes or controls the daemon (probing would create lock/config-directory files) | | |
+| `Daemon / 守护进程` | informational only: points to `token-usage daemon status`; doctor never probes or controls the daemon (probing would create lock/config-directory files) | | |
 
 - Checks that cannot run because an upstream check failed print `SKIPPED / 跳过` and add no new count (the upstream FAIL already counts): config failure skips every config-dependent check; a missing or broken database skips the collection, freshness, date-consistency, and error checks; when the last-collection query fails, data freshness is skipped as `unavailable / 无法获取` because last collection already FAILs; with no collection recorded at all, data freshness is skipped because last collection already warns.
 - The summary line (`Result / 结果`) is `OK / 一切正常`, `N warnings / N 项警告`, or `N problems / N 项失败` (FAIL takes precedence over WARN).
@@ -468,7 +428,7 @@ token-usage config set <key> <value>   # write one configuration value
 token-usage config init                # initialize the configuration file and database
 ```
 
-> `config get` and `config show` have distinct roles. The former reads a raw user-configuration value without expanding `~` or filling defaults; the latter outputs complete effective TOML after expanding `~` and filling defaults/default paths. Prefer `config show` to inspect runtime-effective configuration; `status` and the TUI are human-readable summaries only.
+> `config get` and `config show` have distinct roles. The former reads a raw user-configuration value without expanding `~` or filling defaults; the latter outputs complete effective TOML after expanding `~` and filling defaults/default paths. Prefer `config show` to inspect runtime-effective configuration; `daemon status` and the TUI are human-readable summaries only.
 
 ### config (TUI)
 
@@ -494,7 +454,7 @@ token-usage config show
 
 Reads one configuration value by dotted key, such as `daemon.poll_interval` or `clients.claude.enabled`.
 
-It reads the **raw user-configuration value**: the value explicitly written in the configuration file, without expanding `~`, filling default paths, or clamping numeric values. Therefore, fields that are not explicitly written return their zero value (for example, an absent `poll_interval` returns `0`). Use `config show` to inspect the full effective runtime configuration with expanded paths and defaults; `status` and the TUI are human-readable summaries only.
+It reads the **raw user-configuration value**: the value explicitly written in the configuration file, without expanding `~`, filling default paths, or clamping numeric values. Therefore, fields that are not explicitly written return their zero value (for example, an absent `poll_interval` returns `0`). Use `config show` to inspect the full effective runtime configuration with expanded paths and defaults; `daemon status` and the TUI are human-readable summaries only.
 
 ### config set
 
@@ -547,7 +507,7 @@ token-usage config set 'provider_aliases."Zhipu AI Coding Plan"' 'Zhipu GLM'
 - Enabling autostart writes the definition and leaves the current daemon unchanged; the new definition loads at the next login/boot.
 - Disabling autostart deletes the definition and leaves the current daemon running; it no longer starts at the next login/boot.
 
-To apply it in the current session, manually run `stop` then `start` (or `restart`). See [Daemon Lifecycle](#daemon-lifecycle) for the full explanation of this decoupling.
+To apply it in the current session, manually run `daemon stop` then `daemon start` (or `daemon restart`). See [daemon](#daemon) for the full explanation of this decoupling.
 
 ### config init
 
@@ -567,53 +527,53 @@ token-usage config set daemon.autostart true
 token-usage config set clients.zcode.enabled true
 ```
 
-## Daemon Lifecycle
+## daemon
 
-`start` / `stop` / `restart` / `status` manage only the **currently running daemon** (the real-time collection/analysis monitor) and are fully decoupled from the **autostart definition** (whether it starts automatically at the next login/boot).
+The `daemon` command group manages the **collection/analysis daemon** — the background process that watches AI client session logs and keeps usage data current. Its four actions manage only the **currently running daemon** and are fully decoupled from the **autostart definition** (whether it starts automatically at the next login/boot). The dashboard service is a separate program instance managed by the [serve](#serve) group; the two share no PID, lock, state file, log, or port, and stopping or restarting one never affects the other. Bare `token-usage daemon` only prints the command-group help: it starts nothing and creates no state files.
 
 | Command | Purpose | Touches the autostart definition? |
 |------|------|--------------------------|
-| `start` | Starts the daemon in the background and returns after the monitor-ready handshake; if already running, idempotently returns the current PID. | No |
-| `stop` | Stops the current daemon without deleting the plist/Registry definition; idempotent when not running. | No |
-| `restart` | Stops the old daemon and starts a new one under one process-control lock; fails and suggests `start` when none is running. | No |
-| `status` | Read-only runtime inspection plus five-state autostart drift detection. | No (read-only) |
+| `daemon start` | Starts the daemon in the background and returns after the monitor-ready handshake; if already running, idempotently returns the current PID. | No |
+| `daemon stop` | Stops the current daemon without deleting the plist/Registry definition; idempotent when not running. | No |
+| `daemon restart` | Stops the old daemon and starts a new one under one process-control lock; fails and suggests `daemon start` when none is running. | No |
+| `daemon status` | Read-only runtime inspection plus five-state autostart drift detection. | No (read-only) |
 
 > None of these commands modifies configuration, a plist, or the Registry. The autostart definition converges through `config set daemon.autostart` or a TUI save.
 
-### start
+### daemon start
 
 ```text
-token-usage start
+token-usage daemon start
 ```
 
 Through `control.Manager.Start`: load configuration under the process-control lock → determine liveness from the daemon lock → if already running, return the current PID without spawning again (exit code 0) → otherwise detached-spawn `_run` → wait up to five seconds for six readiness conditions (PID/instanceID in the PID file, the daemon lock, PID/instanceID/`monitor_ready=true` in runtime-state) → print a success line containing the PID. On timeout, it tries to terminate only the new child and cleans metadata only when the daemon lock is released and the metadata still belongs to this generation, avoiding deletion of a live process or another generation's files.
 
 stdout contains success lines, including the idempotent already-running result; stderr contains actual failures.
 
-### stop
+### daemon stop
 
 ```text
-token-usage stop
+token-usage daemon stop
 ```
 
 Through `control.Manager.Stop`: load configuration under the process-control lock → determine liveness from the daemon lock → if not running, return the idempotent not-running result → if running, stop by platform (macOS always first idempotently tries `bootout` for the current label; if the daemon lock remains held, sends SIGTERM to the exact read PID; Windows uses `taskkill` on the exact PID) → define success as **daemon lock released** (polling for five seconds), never by deleting a PID file to simulate success.
 
-`stop` **does not delete** the plist/Registry definition: the current session stops, while the next login follows the autostart configuration. Disable autostart with `config set daemon.autostart false`.
+`daemon stop` **does not delete** the plist/Registry definition: the current session stops, while the next login follows the autostart configuration. Disable autostart with `config set daemon.autostart false`.
 
-### restart
+### daemon restart
 
 ```text
-token-usage restart
+token-usage daemon restart
 ```
 
-Through `control.Manager.Restart`, it stops the old daemon and starts a new one under one process-control lock. If the daemon is **not running**, it returns `ErrRestartNotRunning`, writes a suggestion to use `token-usage start` to stderr, and exits nonzero.
+Through `control.Manager.Restart`, it stops the old daemon and starts a new one under one process-control lock. If the daemon is **not running**, it returns `ErrRestartNotRunning`, writes a suggestion to use `token-usage daemon start` to stderr, and exits nonzero.
 
-macOS tradeoff: `stop` attempts to `bootout` the current job and then `start` runs it detached; the plist definition remains, but launchd KeepAlive no longer manages it for the current login session. Because saving configuration only maintains the definition file and does not proactively bootstrap it, KeepAlive resumes when the definition is loaded at the next login.
+macOS tradeoff: the stop phase attempts to `bootout` the current job and then the start phase runs the daemon detached; the plist definition remains, but launchd KeepAlive no longer manages it for the current login session. Because saving configuration only maintains the definition file and does not proactively bootstrap it, KeepAlive resumes when the definition is loaded at the next login.
 
-### status
+### daemon status
 
 ```text
-token-usage status
+token-usage daemon status
 ```
 
 Read-only: `Inspect` does not acquire the process-control lock and determines liveness only from the daemon lock. It returns a consistent snapshot containing:
@@ -625,9 +585,9 @@ Read-only: `Inspect` does not acquire the process-control lock and determines li
 
 Autostart expresses only whether the daemon starts at the next login/reboot and is independent from whether the current daemon is running. The current runtime state is displayed separately; neither is inferred from the other.
 
-### Startup Catch-Up (Closes the stop → collect → start Data Window)
+### Startup Catch-Up (Closes the daemon stop → collect → daemon start Data Window)
 
-After monitoring is established by `start`, the daemon performs **startup catch-up** to collect data created between the last manual `collect`/`collect all` and monitor readiness, closing the stop → collect → start data window.
+After monitoring is established by `daemon start`, the daemon performs **startup catch-up** to collect data created between the last manual `collect`/`collect all` and monitor readiness, closing the daemon stop → collect → daemon start data window.
 
 Ordering contract (`daemon.startupCoordinator`):
 
@@ -637,103 +597,14 @@ Ordering contract (`daemon.startupCoordinator`):
 4. Submit catch-up requests in order: enabled client names ascend; each client first gets a client-source request (opencode/zcode use incremental cursors; claude/workbuddy/autoclaw scan existing JSONL without a date; Codex does state incremental collection first and then a full rollout scan), then receives its router incremental request if configured.
 5. Write final state: zero failures means `succeeded`; otherwise `failed` with the exact failure count.
 
-Catch-up is submitted through the analyzer serialization lock (the same path as real-time triggers, guaranteeing ordering and mutual exclusion). Therefore, if the daemon starts successfully and completes catch-up, incremental data generated between stop → collect → start is collected and is not missed because monitoring was not ready. Partial catch-up failures appear in `status` and `errors`.
+Catch-up is submitted through the analyzer serialization lock (the same path as real-time triggers, guaranteeing ordering and mutual exclusion). Therefore, if the daemon starts successfully and completes catch-up, incremental data generated between daemon stop → collect → daemon start is collected and is not missed because monitoring was not ready. Partial catch-up failures appear in `daemon status` and `errors`.
 
 ### _run (Hidden)
 
-An internal command started by `start` through detached spawn or directly by launchd / a Windows Registry Run key. It executes the daemon main loop and must not be invoked by users (it is absent from `--help`). Both startup paths satisfy the invariant that “a control lease exists continuously from reading effective configuration through acquiring the daemon lock”:
+An internal command started by `daemon start` through detached spawn or directly by launchd / a Windows Registry Run key. It executes the daemon main loop and must not be invoked by users (it is absent from `--help`). Both startup paths satisfy the invariant that “a control lease exists continuously from reading effective configuration through acquiring the daemon lock”:
 
-- Parent-lease path (`_run` spawned by `start`): the parent holds the process-control lock and authorizes the child through a pipe lease; the child does not acquire the lock.
+- Parent-lease path (`_run` spawned by `daemon start`): the parent holds the process-control lock and authorizes the child through a pipe lease; the child does not acquire the lock.
 - Independent path (started directly by launchd/the Registry): without a valid parent lease, it acquires the process-control lock itself (15-second timeout). On timeout it exits successfully with code 0 rather than entering the main loop, avoiding conflict with an in-progress control operation and preventing launchd KeepAlive from immediately relaunching it on macOS.
-
-## forecast
-
-Estimates upcoming usage from recent daily averages. Windows exclude today (an unfinished day would understate the average); today is shown separately as its running total.
-
-```text
-token-usage forecast
-token-usage forecast --format json
-```
-
-- `Last 7 days / 最近 7 天` and `Last 30 days / 最近 30 天` show each window's total, the daily average (window total divided by **active** days — days with data — using integer division), and the active-day fraction of the window.
-- `Next 7 days / 未来 7 天` and `Next 30 days / 未来 30 天` project that average linearly over the coming natural days, assuming activity continues at the same intensity. A window with no data shows `no data / 无数据` and its projection is omitted.
-- The command is read-only and prints the same K/M/B abbreviations as query.
-- `--format` selects `table` (default, unchanged) or `json`; invalid values are rejected before the configuration is loaded and the database is opened. The JSON contract aligns with `export --format json`: raw integers, two-space indentation with a trailing newline, and structs serialized in a stable field order. The top level carries `today_so_far` (`requests` and `total_tokens` only), `windows` (always two entries, `last_7_days` then `last_30_days`, each with `window`, `days`, `active_days`, `requests`, `total_tokens`, and `avg_per_active_day`; a window with no data reports `active_days: 0` and `avg_per_active_day: 0`), and `projections` (`next_7_days` then `next_30_days`, each with `window`, `days`, `based_on`, `avg_per_active_day`, and `estimate_tokens`, the average multiplied by the coming days). Window semantics match the table point for point: windows exclude today, and entries whose source window has no data are omitted from `projections` — when neither window has data, `projections` prints `[]`.
-
-## compare
-
-Compares token usage between two periods: a five-column framed table (Metric / Current / Base / Change / Change %) over active days, requests, and every token metric. `--format json` switches to machine-readable JSON output.
-
-```text
-token-usage compare <range> [range2] [--base <range>] [--format table|json]
-token-usage compare 202607 202608
-token-usage compare 20260901-20260907
-token-usage compare 202609 --base 202608
-token-usage compare 20260901-20260907 --by model
-token-usage compare 20260901-20260907 --format json
-```
-
-`<range>` and `[range2]` accept the same forms as `--base` listed below. `<range2>` cannot be combined with `--base`: with two positional periods the windows are ordered chronologically and the earlier one becomes the baseline, so argument order does not matter — `token-usage compare 202607 202608` compares 2026-08 with 2026-07, the same as `token-usage compare 202608 --base 202607`. Equal or overlapping windows are allowed, and a year is accepted as one of the two periods. Note that a dashed range like `202607-202608` is a single two-month window, not a two-period comparison.
-
-With a single positional period (or `--base`), each form is:
-
-| `<range>` / `[range2]` / `--base` form | Meaning |
-|------|---------|
-| `YYYYMMDD` | A single day; the auto base is the previous day. |
-| `YYYYMM` | A calendar month; the auto base is the previous calendar month. |
-| `YYYY` | A calendar year (not usable as a range endpoint, but valid as one of two positional periods); the auto base is the previous calendar year. |
-| `A-B` | Inclusive range whose endpoints are days or months (they may be mixed); the auto base is an equal-length window ending the day before A. |
-
-Behavior:
-
-- With a single positional period and no `--base`, the baseline window is derived from its granularity as listed above (leap months handled; e.g. `20260701-20260710` compares `2026-06-21..2026-06-30`).
-- `--base <range>` accepts the same forms and is parsed independently of the current window's granularity; it may overlap the current window. Dashed ISO forms such as `2026-08-01` and an end date before the start date are rejected.
-- There is no 366-day cap (unlike `query`/`collect`): without `--by`, the command does not expand days — each window is read with a single `BETWEEN` aggregate, so multi-year ranges work.
-- Rows: active days and requests show signed integer changes (`%+d`); token rows reuse the K/M/B abbreviations with `+`/`-` signed changes; `Change %` shows `--` when the base value is 0. Headers avoid ambiguous-width characters (such as Δ) to preserve table borders under CJK terminals.
-- `--by <dimension>` compares per member of a non-temporal dimension (`client`, `model`, `provider`, `project`) across the two windows instead of whole-period totals: one row per member, members seen in only one period compared against 0, sorted by the sum of both periods' total tokens descending (ties broken by display key), ending with a `Total / 总计` row taken from each window's whole-range aggregates (the source of truth, not the sum of member rows). `Change %` shows `--` when the baseline member total is 0. Temporal dimensions (`day`, `month`, `hour`, `weekday`) and unknown values are rejected before the database opens — trends belong in `token-usage chart --line`, and plain two-period totals are compared without `--by`. When both windows have no members and zero totals, only a `no data / 无数据` line is printed. The `provider` dimension applies the `[provider_aliases]` config (same as `query`/`export`). Long ranges are queried internally in 366-day chunks merged across chunks — transparent to the output, and there is still no 366-day cap.
-- `--format` selects `table` (default, unchanged) or `json`; invalid values are rejected before the configuration is loaded and the database is opened. The JSON contract aligns with `export --format json`: raw integers without K/M abbreviation, two-space indentation with a trailing newline, and structs serialized in a stable field order. The top level carries `windows` (`current` and `base`, each with `from`/`to` matching the table's Current/Base lines). Without `--by`, it also carries `metrics`: one object per table row in table order, with `metric` set to `active_days` (compare-specific) and the stable output-metric IDs `requests`, `input`, `output`, `cache_read`, `cache_create`, `reasoning`, `total`; each row holds raw-integer `current`/`base`/`change` and `change_percent` rounded to 1 decimal place — `null` when the base value is 0, the same semantics as the table's `--`. A near-zero negative percentage may serialize as `-0` (numerically equal to zero). With `--by`, it instead carries `dimension`, `members` (one object per member in the same order as the table: `key` plus the same raw-integer fields and `change_percent` semantics) and `totals` whose `current`/`base` sides expose the stable-ID fields `requests`, `input`, `output`, `cache_read`, `cache_create`, `reasoning`, `total`, taken from each window's whole-range aggregates (the source of truth). JSON output has no `no data` early exit: members are an empty array and totals are still emitted.
-- Strictly read-only: it never touches the daemon.
-
-## top
-
-Shows the heaviest sessions by total tokens: one framed table ranking sessions with rank number, Title, Client, Project, Duration, Requests, and Total.
-
-```text
-token-usage top [DATE|DATE-DATE] [--limit N] [--format table|json]
-token-usage top
-token-usage top 20260901-20260907
-token-usage top 202609 --limit 20
-token-usage top 202609 --format json
-```
-
-Behavior:
-
-- The date argument accepts the same forms as `query` (a day `YYYYMMDD`, a month `YYYYMM`, a year `YYYY` as a single arg, or an inclusive day/month range) and defaults to today; like `query`, the expansion is capped at 366 days.
-- Sessions are ranked by TotalTokens descending; ties are broken by Client ascending, then Title ascending, and full ties are ordered by the session's first message timestamp ascending, so the order is deterministic regardless of the order the database returns rows in.
-- `--limit` is the number of sessions to show, default 10, with no upper bound; values below 1 are rejected before the configuration is loaded and the database is opened.
-- `--format` selects `table` (default, unchanged) or `json`; invalid values are rejected before the configuration is loaded and the database is opened. The JSON contract aligns with `export --format json`: a top-level JSON array of session records in the same order as the table rows (after sorting and `--limit` truncation), two-space indentation with a trailing newline, and structs serialized in a stable field order. Each record carries `rank` (1-based, matching the table's rank column), the raw source values `client`/`project`/`title` (an empty `project` stays `""` — the `(uncategorized)` mapping is a table-rendering concern only), `first_ts`/`last_ts` as Unix-millisecond timestamps with `duration_ms` as their difference, and all seven raw-integer metrics `requests`, `fresh_input`, `output`, `cache_read`, `cache_create`, `reasoning`, `total` — a superset of the table's Requests/Total columns, with no K/M abbreviation. An empty result prints `[]` (JSON output has no `no data` early exit).
-- Duration is the session's request span — the difference between the last and first message timestamps within the range — rendered in the same format as the `query session` table (`<1s`, `5m 0s`, `1h 1m`, `2d 3h`).
-- An empty Project is displayed as `(uncategorized) / (未分类)`; Total reuses the same K/M/B abbreviations as query; the Title column is truncated at a 30 display-width cap like `query session`.
-- When there is no data, only the `Top sessions / 会话排行` title line and a `no data / 无数据` line are printed.
-- Strictly read-only: it never touches the daemon.
-
-## chart
-
-Renders usage as standalone SVG charts — bars by default (per-day or per `--by` dimension), plus trend lines, share pies, and the weekday-by-hour heatmap (no external dependencies, opens in any browser or image viewer).
-
-```bash
-token-usage chart 20260901-20260930                # write the SVG to stdout
-token-usage chart 202609 --out september.svg       # atomic write to a file
-token-usage chart 20260901-20260930 --line         # daily trend as a line chart (default --by day)
-```
-
-- By default bars are per-day source totals in ascending date order; days without data are zero-height, and each bar carries a native `<title>` hover tooltip with the day's tokens and requests.
-- `--by <dimension>` switches the aggregation to another built-in dimension (`client`, `model`, `provider`, `project`, `day`, `month`, `hour`, `weekday`); non-temporal dimensions are ordered by total descending.
-- `--pie` renders a share pie instead of a bar chart and requires `--by` with a non-temporal dimension (day splits would be unreadable); slices use a fixed 10-colour palette with a percentage legend, and a 100% share degrades to a full circle.
-- `--heatmap` renders a weekday-by-hour matrix (ISO weekday rows, 24 hour columns, 11-step deep-blue-to-cyan fill on a dark ground scaled against the busiest cell, hover tooltips per cell) instead of a bar chart; it shares the same data source as `query heatmap` and is mutually exclusive with `--pie` and `--line`.
-- `--line` renders a token trend line instead of a bar chart and requires `--by` with a temporal dimension (`day`, `month`, `hour`, `weekday`); connecting unrelated categories would imply a misleading trend. Points carry hover tooltips for up to 60 points, denser series draw the line only; mutually exclusive with `--pie` and `--heatmap`.
-- The header shows the range and its total tokens/requests; the bar-chart Y axis is labelled with K/M/B abbreviations at three equal gridlines.
-- `--out <file>` writes atomically (temporary file then rename) instead of stdout; the date argument accepts the same forms as `query`/`collect`.
 
 ## watch
 
@@ -752,38 +623,22 @@ token-usage watch --once               # render a single frame and exit (pipe-fr
 - Interactive loops clear the screen between frames (Windows consoles get virtual-terminal processing enabled automatically); `--once` renders exactly one frame with no escape sequences, so redirected output stays plain.
 - Strictly read-only: the same opening semantics as every other read command, no daemon interaction, and Ctrl+C leaves no state behind.
 
-## report
-
-Generates a complete usage report bundle into a directory: a text summary, a usage comparison (`compare.txt`) whose default baseline is derived from the date argument's granularity exactly like `compare` (previous day for a day, previous calendar month for a month, previous calendar year for a year, equal-length preceding window for a range), per-dimension SVG charts (daily/hourly/weekday/monthly bars, client/model/provider/project pies), the weekday-by-hour SVG heat matrix, and `index.html`, a self-contained interactive bilingual report page (KPI overview, two-period comparison, all embedded charts, top sessions, per-dimension data tables, sortable tables, one-click CSV export per data table (current row order, exact integers, UTF-8 BOM), anchor navigation) with zero external resources — it opens offline with a double click and is the browsing entry point of the bundle. All charts share the same aggregation core as the corresponding `query`/`chart` views.
-
-```bash
-token-usage report 20260901-20260930 --out september-report
-```
-
-- `--out <dir>` is required; the directory is created when missing and each file is written atomically.
-- Files: `summary.txt`, `compare.txt`, `daily.svg`, `hourly.svg`, `weekday.svg`, `monthly.svg`, `by-client.svg`, `by-model.svg`, `by-provider.svg`, `by-project.svg`, `heatmap.svg`, `index.html`.
-- The date argument accepts the same forms as `query`/`collect` (defaults to today). The bundle does not include forecast projections — run `token-usage forecast` separately. Strictly read-only apart from writing the report bundle.
-
 ## serve
 
-Starts a read-only local HTTP server that serves the built-in dashboard: the embedded HTML page at `/`, JSON endpoints (`/api/meta`, `/api/dashboard`), and SVG charts (`/api/chart/{kind}.svg`) rendered by the same chart core as the `chart`/`report` commands (identical titles, subtitles, and hover text). The server binds to `127.0.0.1:8619` by default and stops with Ctrl+C. Its HTTP data surface is strictly read-only — no CORS headers and no database or configuration writes; `serve.json` is the shared lifecycle state, `serve.log` is used for background runs, and `serve.lock`, `serve-state.lock`, and `serve-start.lock` coordinate the lifecycle. The same dashboard can also run in the background via `serve start` / `serve status` / `serve stop` (see the end of this section).
+Manages the read-only local HTTP server that serves the built-in dashboard: the embedded HTML page at `/`, JSON endpoints (`/api/meta`, `/api/dashboard`), and SVG charts (`/api/chart/{kind}.svg`) rendered by the same chart core as the embedded page (identical titles, subtitles, and hover text). The dashboard **always runs in the background**: `serve start` spawns a detached server process and returns, `serve status` / `serve stop` inspect and stop it, and `serve restart` replaces a running instance with a fresh background one. Bare `token-usage serve` only prints the command-group help — it listens on no port, starts no process, and creates no state files. The collection daemon is a separate program instance managed by the [daemon](#daemon) group; the two share no PID, lock, state file, log, or port.
 
-```bash
-token-usage serve
-token-usage serve --open
-token-usage serve --addr 127.0.0.1:9000
-```
+The HTTP data surface is strictly read-only — no CORS headers and no database or configuration writes; `serve.json` is the shared lifecycle state, `serve.log` is used for background runs, and `serve.lock`, `serve-state.lock`, and `serve-start.lock` coordinate the lifecycle.
 
-- `--addr` changes the listen address (default `127.0.0.1:8619`). Binding a public address such as `0.0.0.0` **exposes your usage data to the local network** — the service is read-only but unauthenticated — so keep it on the loopback interface.
-- `--open` opens the dashboard in the default browser after startup; a failure to launch the browser is printed as a warning and the server keeps running.
-- Foreground and background runs share the same `serve.json` state file; if writing it fails at startup (e.g. a read-only data directory), the server exits with an error instead of serving untracked.
+- `--addr` changes the listen address (default `127.0.0.1:8619`); it applies to the freshly started instance of `serve start` / `serve restart`. Binding a public address such as `0.0.0.0` **exposes your usage data to the local network** — the service is read-only but unauthenticated — so keep it on the loopback interface.
+- `--open` opens the dashboard in the default browser after `serve start` / `serve restart` have confirmed the background server is up; a failure to launch the browser is printed as a warning and the server keeps running.
+- If writing the `serve.json` state file fails at startup (e.g. a read-only data directory), the server exits with an error instead of serving untracked.
 - All data queries for one request share a single read snapshot, so totals, per-dimension rows, and session rows are mutually consistent under concurrent collection writes.
 - The embedded page renders everything client-side from these numeric rows: KPI cards with delta chips against the baseline window, a metric strip aligned with the configured query output columns (the token-kind columns except requests/total/cache-hit, which are elevated to KPI cards — with the default layout that means input / output / cache read / reasoning, and a cache-create column appears only when the layout includes it), stacked/single-series bar charts (click a day or month bar to focus that range; beyond 92 days the day bars roll up to ISO weeks with drill-down disabled), donut share charts four per row, the weekday-by-hour heat matrix with row and column totals (mirroring the `query heatmap` trailing totals), top sessions with token bars and CSV export, per-dimension data tables with sorting and one-click CSV export (current row order, exact integers), a full-width compare row (daily-totals chart on the left, the metric table on the right) and a full-width forecast row, range presets plus custom `from`/`to` (defaulting to Today on first visit, remembered across reloads), and auto-refresh. A range with fewer than two day buckets hides the per-day chart, fewer than two month buckets hides the per-month chart, a single-day range shows only the hour chart (the weekday view is meaningless for one day) and hides the comparison table — single-bucket forms carry no information — while the KPI delta chips still compare against the baseline window (the previous day for a single day).
 
 | Endpoint | Parameters | Returns |
 |------|------|---------|
 | `GET /api/meta` | — | version, `min_date`/`max_date` (whole database), `data_through`, `last_collection`; the last three are `null` when absent |
-| `GET /api/dashboard` | `from`, `to` (`YYYY-MM-DD`; defaults to the 30 days ending today; span at most 366 days) | range, totals (integers, including `active_days`), compare (baseline window derived as in the `compare` command's range mode — an equal-length window ending the day before the range starts, or the previous day for a single-day range; carries base totals plus 8 pre-computed rows with display strings, signed changes, pos/neg change classes, and change % shown as `--` when the baseline is 0; and `daily` — the base window's day rows (gap-filled to the window length, keys are dates, plain integers) feeding the client-side current-vs-base daily chart), forecast (fixed look-back windows mirroring the `forecast` command: `today_so_far` plus always 2 rows for the last 7/30 days — windows exclude today, averages divide by active days, estimates multiply the average by future days; display strings pre-computed, cells show `—` when a window has no data; independent of the `from`/`to` range), 8 fixed dimension row arrays (`day`/`hour`/`weekday`/`month`/`client`/`model`/`provider`/`project`), top 10 sessions, and `heatmap` — a 7×24 token matrix (`weekdays` in ISO order with Monday first, `hours` as `00:00`..`23:00`, `values` as a 7×24 array with `0` for empty cells) read inside the same snapshot as the totals, so a single refresh cannot mix snapshots; the embedded page renders all charts client-side from these numeric rows, while `GET /api/chart/{kind}.svg` remains available for standalone retrieval |
+| `GET /api/dashboard` | `from`, `to` (`YYYY-MM-DD`; defaults to the 30 days ending today; span at most 366 days) | range, totals (integers, including `active_days`), compare (baseline window derived from the requested range — an equal-length window ending the day before the range starts, or the previous day for a single-day range; carries base totals plus 8 pre-computed rows with display strings, signed changes, pos/neg change classes, and change % shown as `--` when the baseline is 0; and `daily` — the base window's day rows (gap-filled to the window length, keys are dates, plain integers) feeding the client-side current-vs-base daily chart), forecast (fixed look-back windows: `today_so_far` plus always 2 rows for the last 7/30 days — windows exclude today, averages divide by active days, estimates multiply the average by future days; display strings pre-computed, cells show `—` when a window has no data; independent of the `from`/`to` range), 8 fixed dimension row arrays (`day`/`hour`/`weekday`/`month`/`client`/`model`/`provider`/`project`), top 10 sessions, and `heatmap` — a 7×24 token matrix (`weekdays` in ISO order with Monday first, `hours` as `00:00`..`23:00`, `values` as a 7×24 array with `0` for empty cells) read inside the same snapshot as the totals, so a single refresh cannot mix snapshots; the embedded page renders all charts client-side from these numeric rows, while `GET /api/chart/{kind}.svg` remains available for standalone retrieval |
 | `GET /api/chart/{kind}.svg` | same date parameters as `/api/dashboard`; `kind` ∈ `day`/`hour`/`weekday`/`month` (bars), `client`/`model`/`provider`/`project` (pies), `heatmap` | one SVG document (`image/svg+xml`) |
 | `GET /`, `GET /assets/…` | — | embedded HTML page and static assets (`Cache-Control: no-store`) |
 
@@ -792,7 +647,7 @@ token-usage serve --addr 127.0.0.1:9000
 
 ### serve start / serve status / serve stop / serve restart (background, nginx-style)
 
-The same dashboard can also run in the background, nginx-style: `serve start` spawns a detached child process and returns once the child reports ready, `serve status` inspects it, and `serve stop` stops it. The foreground `serve` command and the background child share the same state file and both remove it on graceful stop, so `status`/`stop` apply to either instance.
+`serve start` spawns a detached child process and returns once the child reports ready, `serve status` inspects it, and `serve stop` stops it. These are the only ways to run the dashboard.
 
 ```bash
 token-usage serve start
@@ -803,14 +658,14 @@ token-usage serve stop
 token-usage serve restart
 ```
 
-- State file: `serve.json` in the data directory (`~/.token-usage/serve.json` by default), written atomically as `{"pid":…,"addr":…,"started_at":…}` as soon as the server finishes listening (the recorded `addr` is what is actually bound). It is removed automatically on graceful stop (Ctrl+C for the foreground, `serve stop` for the background); a file left behind by a crash or `SIGKILL` is cleaned up by the stale-state probes in `status`/`stop` and by the single-instance guard of the next `serve`/`serve start`. State transitions are serialized by a `serve-state.lock` file lock in the data directory, and stale cleanup is a conditional delete: a stale state is only removed while it still matches what was judged — if a new instance has already taken over, its fresh `serve.json` is never removed.
+- State file: `serve.json` in the data directory (`~/.token-usage/serve.json` by default), written atomically as `{"pid":…,"addr":…,"started_at":…}` as soon as the server finishes listening (the recorded `addr` is what is actually bound). It is removed automatically on graceful stop (`serve stop`, or restart's stop phase); a file left behind by a crash or `SIGKILL` is cleaned up by the stale-state probes in `serve status`/`serve stop` and by the single-instance guard of the next `serve start`. State transitions are serialized by a `serve-state.lock` file lock in the data directory, and stale cleanup is a conditional delete: a stale state is only removed while it still matches what was judged — if a new instance has already taken over, its fresh `serve.json` is never removed.
 - Log file: `serve.log` in the data directory (`~/.token-usage/serve.log` by default). Each `serve start` truncates it; the child's stdout and stderr both go there, in plain text (no terminal hyperlinks). A failed start attaches the last 10 log lines to the error message.
 - `serve start` reports and returns idempotently with exit code 0 when the recorded state still answers on `/api/meta` (already running — stop it first with `token-usage serve stop`, or use `token-usage serve restart`); state that no longer answers (stale) or is corrupt is removed and start proceeds. If the child does not become ready within 5s, start fails and points at the log tail. Concurrent `serve start` invocations are serialized by a `serve-start.lock` file lock in the data directory (start coordination only — a running instance is described by `serve.json` and held via the `serve.lock` lifecycle lock); a second start while another is still in progress exits non-zero with a retry hint.
-- `serve status` exits 0 for every state outcome (only unexpected I/O failures exit non-zero): when `/api/meta` answers it reports the URL, PID, and start time; otherwise (no answer, or a corrupt state file) it removes the stale or corrupt file and reports not running. State transitions are serialized by `serve-state.lock`; when the lock stays held past the bounded retry (a concurrent `status`/`stop` probing), the command exits non-zero with a busy hint — simply retry.
+- `serve status` exits 0 for every state outcome (only unexpected I/O failures exit non-zero): when `/api/meta` answers it reports the URL, PID, and start time; otherwise (no answer, or a corrupt state file) it removes the stale or corrupt file and reports not running. State transitions are serialized by `serve-state.lock`; when the lock stays held past the bounded retry (a concurrent `serve status`/`serve stop` probing), the command exits non-zero with a busy hint — simply retry.
 - `serve stop` sends SIGTERM with a 3s graceful window and a SIGKILL fallback on Unix; on Windows it uses `taskkill /F` — Windows console processes have no cross-process graceful-stop channel, which is acceptable for a strictly read-only service. Success is judged solely by `/api/meta` no longer responding (the recorded PID may have been reused by an unrelated process, so the probe wins over the signal result — a failed signal delivery does not short-circuit the probe wait). The state file is removed only after the probe confirms shutdown (or when the server already fails to answer before signalling — stale or corrupt state is cleaned up). If the server still responds after the SIGKILL fallback (whether or not the kill itself reported an error), the command exits non-zero with the recorded URL and PID, keeps `serve.json` in place, and leaves the process/port for manual inspection. If a new instance takes over while the stop is in progress (the state file is replaced after the old instance went down), the command says so and routes the stop to the new instance instead of reporting the old one. Stopping an already-stopped server is an idempotent no-op that still exits 0.
-- `serve restart` stops the running instance with exactly the `serve stop` orchestration (probe-verified; a foreground Ctrl+C session is stopped gracefully as well) and then starts a fresh background instance with exactly the `serve start` orchestration (`--addr`/`--open` apply to the new instance). With no instance running it simply starts one. If the running instance still answers after the SIGKILL fallback, restart aborts with a non-zero error — the old instance keeps serving; inspect that case with `serve stop`.
-- Single-instance contract: at most one dashboard instance (foreground or background) runs at any time. A second `serve` — in either form, regardless of the address it asks for — is rejected by a single-instance guard before listening: it prints the running instance's URL and PID and exits 0 idempotently (stop it first with `token-usage serve stop`, or use `token-usage serve restart`); if another instance is caught mid-startup, the guard fails with a retry hint instead. The serving process holds a `serve.lock` lifecycle lock in the data directory for its whole lifetime. Because the guard runs before listening, a same-port conflict with a running instance never surfaces as a listen failure — a listen failure only remains possible when the requested port is occupied by a process that left no `serve.json` record (an unrelated process). `serve status` / `serve stop` therefore always manage the one and only instance.
-- `--open` is honored by all forms: the foreground opens the browser after startup; `serve start` and `serve restart` open it only after the background server is confirmed up (a failure to launch the browser is a warning either way).
+- `serve restart` stops the running instance with exactly the `serve stop` orchestration (probe-verified) and then starts a fresh background instance with exactly the `serve start` orchestration (`--addr`/`--open` apply to the new instance). With no instance running it simply starts one. If the running instance still answers after the SIGKILL fallback, restart aborts with a non-zero error — the old instance keeps serving; inspect that case with `serve stop`.
+- Single-instance contract: at most one dashboard instance runs at any time. A second `serve start` — regardless of the address it asks for — is rejected by a single-instance guard before listening: it prints the running instance's URL and PID and exits 0 idempotently (stop it first with `token-usage serve stop`, or use `token-usage serve restart`); if another instance is caught mid-startup, the guard fails with a retry hint instead. The serving process holds a `serve.lock` lifecycle lock in the data directory for its whole lifetime. Because the guard runs before listening, a same-port conflict with a running instance never surfaces as a listen failure — a listen failure only remains possible when the requested port is occupied by a process that left no `serve.json` record (an unrelated process). `serve status` / `serve stop` therefore always manage the one and only instance.
+- `--open` is honored by `serve start` and `serve restart`: the browser opens only after the background server is confirmed up (a failure to launch the browser is a warning).
 
 ## update
 
@@ -827,7 +682,7 @@ token-usage update --force
 
 | Form | Purpose |
 |------|---------|
-| `update` | Updates to the latest stable Release. If a restricted transaction journal from an interrupted POSIX update exists beside this binary, it is recovered first; a new replacement then proceeds only when the target is strictly higher than the current version and the current source is trusted. It downloads the asset, verifies its SHA256 against the `SHA256SUMS` manifest, stages a `--version` second check, and replaces the binary. A daemon that was running before the update is restarted automatically on the new binary; a daemon that was stopped stays stopped, and the success output points to `token-usage start`. |
+| `update` | Updates to the latest stable Release. If a restricted transaction journal from an interrupted POSIX update exists beside this binary, it is recovered first; a new replacement then proceeds only when the target is strictly higher than the current version and the current source is trusted. It downloads the asset, verifies its SHA256 against the `SHA256SUMS` manifest, stages a `--version` second check, and replaces the binary. A daemon that was running before the update is restarted automatically on the new binary; a daemon that was stopped stays stopped, and the success output points to `token-usage daemon start`. |
 | `update --check` | Read-only check; creates no local files (no configuration directory, lock, log, database, or service definition). |
 | `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | Updates (or, with `--check`, only checks) the specified exact Release tag. `--version` accepts a strict Release tag (`v` prefix, `MAJOR.MINOR.PATCH`, optional `-rc.N`, no leading zeros); an invalid value errors before any network request. |
 | `update --force` | Overwrites the current binary even when its source is not an official Release asset, for exactly two exemptions: a hash mismatch against the official asset of the reported version (a binary re-signed per the install guide, or `go install pkg@vX.Y.Z`), and a dev local build (`Version = dev`, or the normalized `vX.Y.Z-dev` display of a plain-build pseudo-version — both dev forms `update --force` accepts). All structural checks and the target asset's SHA256 / staged `--version` verification still run; symlinked copies and non-official tags cannot be forced. |

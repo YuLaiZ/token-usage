@@ -2,11 +2,12 @@
 
 package cli
 
-// serve_hyperlink_e2e_test.go 在类 Unix 平台验证 serve 启动行的超链接降级
-// 合同：测试输出 buffer 不是终端，默认 writerIsTerminal 判定非 TTY，启动行
-// 必须是纯文本（不含 OSC 转义序列）。serve 会阻塞等待信号，因此用自进程
-// SIGINT 驱动优雅停止；guard 通道先于 serve 注册，保证测试进程不被信号的
-// 默认终止行为杀掉。
+// serve_hyperlink_e2e_test.go 在类 Unix 平台验证后台仪表板服务主体
+// （serveDashboard，由 _serve-run 调用）启动行的超链接降级合同：测试输出
+// buffer 不是终端，默认 writerIsTerminal 判定非 TTY，启动行必须是纯文本
+// （不含 OSC 转义序列）。serveDashboard 阻塞等待信号，因此用自进程 SIGINT
+// 驱动优雅停止；guard 通道先于服务注册，保证测试进程不被信号的默认终止行为
+// 杀掉。
 
 import (
 	"bytes"
@@ -23,7 +24,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/db"
 )
 
-// lockedBuffer 是并发安全的输出缓冲：Execute 在后台 goroutine 写入，
+// lockedBuffer 是并发安全的输出缓冲：服务在后台 goroutine 写入，
 // 主测试 goroutine 轮询读取。
 type lockedBuffer struct {
 	mu  sync.Mutex
@@ -42,29 +43,31 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
-func TestServeCmd_StartupLinePlainTextWhenNotTTY(t *testing.T) {
+func TestServeDashboard_StartupLinePlainTextWhenNotTTY(t *testing.T) {
 	guard := make(chan os.Signal, 1)
 	signal.Notify(guard, os.Interrupt, syscall.SIGTERM)
-	// 测试结束注销 guard 即可,不发兜底信号:正常路径 serve 已自行退出;
+	// 测试结束注销 guard 即可,不发兜底信号:正常路径服务已自行退出;
 	// 失败路径的悬挂 goroutine 不阻碍测试进程结束。若在注销 guard 前后
 	// 向自进程发信号,存在交付与注销竞态,信号可能走默认行为终止整个
 	// 测试进程,故严禁在此兜底发信号。
 	t.Cleanup(func() { signal.Stop(guard) })
 
-	cmd := newServeCmdWithDeps(
-		func() (*config.Config, error) { return &config.Config{DataDir: t.TempDir()}, nil },
-		func(string) (*db.DB, error) { return db.Open(":memory:") },
-		"test-version",
-	)
-	cmd.SetArgs([]string{"--addr", "127.0.0.1:0"})
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = usageDB.Close() }()
+
+	cfg := &config.Config{DataDir: t.TempDir()}
 	out := &lockedBuffer{}
-	cmd.SetOut(out)
-	cmd.SetErr(io.Discard)
+	errOut := io.Discard
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- cmd.Execute() }()
+	go func() {
+		errCh <- serveDashboard(cfg, usageDB, "test-version", "127.0.0.1:0", out, errOut)
+	}()
 
-	// 轮询等待启动行出现;启动行打印前 serve 已注册信号监听,此后发信号必达。
+	// 轮询等待启动行出现;启动行打印前服务已注册信号监听,此后发信号必达。
 	deadline := time.Now().Add(10 * time.Second)
 	for !strings.Contains(out.String(), "dashboard served at") {
 		if time.Now().After(deadline) {
@@ -87,10 +90,10 @@ func TestServeCmd_StartupLinePlainTextWhenNotTTY(t *testing.T) {
 	select {
 	case err := <-errCh:
 		if err != nil {
-			t.Fatalf("serve 应正常退出,实际错误: %v", err)
+			t.Fatalf("服务应正常退出,实际错误: %v", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("serve 未在超时内退出")
+		t.Fatal("服务未在超时内退出")
 	}
 	if !strings.Contains(out.String(), "dashboard stopped") {
 		t.Errorf("停止后应输出停止行,实际 %q", out.String())

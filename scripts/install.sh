@@ -1456,9 +1456,9 @@ fi
 # 守护进程检测：经新装二进制查询运行状态；查询失败一律视为未运行（仅默认布局，
 # 覆盖安装目录时命令指向由用户自行管理，不做运行态提示）。
 if [ "${is_default_layout}" -eq 1 ]; then
-  daemon_output="$("${BIN_PATH}" status 2>/dev/null || true)"
+  daemon_output="$("${BIN_PATH}" daemon status 2>/dev/null || true)"
   if printf '%s\n' "${daemon_output}" | grep -qF '守护进程运行中'; then
-    echo "提示：检测到守护进程正在运行（将保持旧版本直到重启），请执行 token-usage restart 切换到新版本（若上方打印了 export 命令、hash -r 提示或旧副本清理指引，请先完成后再执行）。"
+    echo "提示：检测到守护进程正在运行（将保持旧版本直到重启），请执行 token-usage daemon restart 切换到新版本（若上方打印了 export 命令、hash -r 提示或旧副本清理指引，请先完成后再执行）。"
   fi
 
   # 指向确认依赖新终端 PATH 已配置：仅在 rc 写入成功且 shell 已识别（zsh/bash）时提示，

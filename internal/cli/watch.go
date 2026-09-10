@@ -196,8 +196,7 @@ func queryBuiltinView(name string) (queryView, bool) {
 }
 
 // configuredViewNames 渲染「内置视图名 + 已配置视图名(subqueries 与 groups,
-// 各自字节序)」的动态允许集合;builtinNames 由调用方传入(export 与 watch
-// 的内置集合不同)。
+// 各自字节序)」的动态允许集合;builtinNames 由调用方传入。
 func configuredViewNames(builtinNames []string, defs *querydef.QueryDefinitions) string {
 	names := make([]string, 0, len(builtinNames)+len(defs.Subqueries)+len(defs.Groups))
 	names = append(names, builtinNames...)

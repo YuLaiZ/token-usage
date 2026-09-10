@@ -153,8 +153,7 @@ func TestWatchCmd_ByConfiguredGroup(t *testing.T) {
 	}
 }
 
-// --by 内置视图:时间维度 day 同样合法(与 query day 等静态子命令一致),
-// 旧的「时间维度拒绝」合同由 chart --line 承接。
+// --by 内置视图:时间维度 day 同样合法(与 query day 等静态子命令一致)。
 func TestWatchCmd_ByBuiltinDayFrame(t *testing.T) {
 	today := time.Date(2026, 9, 7, 9, 30, 0, 0, time.Local)
 	usageDB := seedWatchDB(t, today)

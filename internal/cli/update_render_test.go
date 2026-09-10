@@ -18,11 +18,11 @@ import (
 // daemonStartHintLine 是未运行提示的完整行（双语恒显）——仅用于替换已同步
 // 完成的 Installed 分支；Deferred 分支必须使用确认优先提示（helper 会中止
 // 「停止后意外运行」的 daemon 的替换，立即 start 会诱导失败）。
-const daemonStartHintLine = "The daemon was not running before the update; run `token-usage start` to start it. / daemon 更新前未在运行；如需启动请运行 `token-usage start`。"
+const daemonStartHintLine = "The daemon was not running before the update; run `token-usage daemon start` to start it. / daemon 更新前未在运行；如需启动请运行 `token-usage daemon start`。"
 
 // daemonStartHintAfterReplacementLine 是 Deferred 分支的未运行提示完整行
 // （先确认后台替换完成，再启动）。
-const daemonStartHintAfterReplacementLine = "The daemon was not running before the update; after the background replacement completes (confirm with `token-usage version`), run `token-usage start` to start it. / daemon 更新前未在运行；待后台替换完成（用 `token-usage version` 确认）后，如需启动请运行 `token-usage start`。"
+const daemonStartHintAfterReplacementLine = "The daemon was not running before the update; after the background replacement completes (confirm with `token-usage version`), run `token-usage daemon start` to start it. / daemon 更新前未在运行；待后台替换完成（用 `token-usage version` 确认）后，如需启动请运行 `token-usage daemon start`。"
 
 // TestRenderApplyResultDaemonStateMatrix 覆盖四个成功出口（普通/--force × Installed/Deferred）
 // × 替换前 daemon 运行态的全 8 格。
@@ -128,7 +128,7 @@ func TestRenderApplyResultDaemonStateMatrix(t *testing.T) {
 				} else if !strings.Contains(got, daemonStartHintLine) {
 					t.Errorf("Installed 未运行格应追加即时启动提示，got:\n%s", got)
 				}
-			} else if strings.Contains(got, "token-usage start") {
+			} else if strings.Contains(got, "token-usage daemon start") {
 				t.Errorf("daemon 原本运行时不应有启动提示，got:\n%s", got)
 			}
 		})

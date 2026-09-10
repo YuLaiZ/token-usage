@@ -28,17 +28,16 @@ token-usage
 │   ├── summary [DATE|DATE-DATE]   # 总览摘要
 │   ├── custom <name> [DATE|DATE-DATE] # 显式运行已配置视图
 │   └── list                        # 列出已配置视图（只读配置，不开数据库）
-├── export [view] [DATE|DATE-DATE] # 以 CSV 或 JSON 导出使用数据（--format csv|json）
 ├── errors [DATE|DATE-DATE]
-├── doctor                                # 只读健康自检（配置、数据目录、数据库、客户端、采集、异常）
-├── forecast                              # 按近期日均估算未来用量
-├── compare <range> [range2]              # 对比两个时间段的用量（两个位置参数按时间先后对比、早者为基线；--base 显式指定基线，--by 按维度成员对比）
-├── top [DATE|DATE-DATE]                  # 显示总用量最重的会话排行（--limit，默认 10）
-├── chart [DATE|DATE-DATE]                # 将用量渲染为 SVG 图表（--by 维度、--pie、--line、--heatmap）
 ├── watch [DATE|DATE-DATE]                # 以固定间隔刷新 query 输出（视图选择与 query 一致）
-├── report [DATE|DATE-DATE] --out <dir>   # 生成完整用量报告包
-├── serve                                 # 本地只读仪表板 HTTP 服务（默认 127.0.0.1:8619；前台运行；--open、--addr）
-│   ├── start                             # 同一仪表板转入后台运行（nginx 风格；日志写入 serve.log）
+├── doctor                                # 只读健康自检（配置、数据目录、数据库、客户端、采集、异常）
+├── daemon                                # 管理采集守护进程（裸执行只显示帮助）
+│   ├── start                             # 后台启动守护进程（nginx 风格；拉起 _run）
+│   ├── status                            # 查看守护进程运行状态与配置摘要
+│   ├── stop                              # 停止守护进程
+│   └── restart                           # 在单把进程控制锁内停旧起新
+├── serve                                 # 管理本地只读仪表板 HTTP 服务（裸执行只显示帮助）
+│   ├── start                             # 后台运行仪表板（nginx 风格；日志写入 serve.log）
 │   ├── status                            # 查看后台仪表板运行状态
 │   ├── stop                              # 停止后台仪表板
 │   └── restart                           # 停止运行中的仪表板并拉起全新后台实例
@@ -47,12 +46,9 @@ token-usage
 │   ├── get <key>
 │   ├── set <key> <value>
 │   └── init
-├── start
-├── restart
-├── status
-├── stop
 ├── update                                # 从官方 GitHub Release 自更新（--check / --version / --force）
-└── _run                                  # Hidden，由 start/launchd/注册表拉起，勿直接调用
+├── _run                                  # Hidden，由 daemon start/launchd/注册表拉起，勿直接调用
+└── _serve-run                            # Hidden，serve start 拉起的后台仪表板服务主体，勿直接调用
 ```
 
 设计要点：
@@ -65,13 +61,28 @@ token-usage
 - `completion` 是 Cobra 提供的内置命令，只向标准输出生成 bash/zsh/fish/PowerShell 补全脚本，不读取配置或数据库。
 - `update` 是顶层自更新命令（标志 `--check`、`--version` 与 `--force`）；它是唯一会改写当前运行二进制的命令。默认仅当当前二进制是官方 Release 资产时才执行；`--force` 可显式覆盖已重签的官方资产、指定 tag 的 `go install` 产物或 dev 本地构建。详见下文「[update](#update)」。
 
+## 从 v0.1.8 迁移（破坏性变更）
+
+本次命令面做了有意的收敛，面向 v0.1.8 编写的脚本需要更新：
+
+- 六个分析命令 `chart`、`compare`、`export`、`forecast`、`report`、`top` 已**删除**（无兼容别名）。可视化分析——SVG 图表、用量预测、两期对比、最重会话排行——由 `serve` 仪表板经只读 HTTP 数据面延续，含页面范围内的 CSV 导出；终端查询继续由 `query` 与 `watch` 承担。机器可读的 CLI export 合同与离线 HTML 报告包已有意移除，没有完整直接替代。
+- 顶层生命周期命令已移入 `daemon` 命令组：`token-usage start` → `token-usage daemon start`，`status`、`stop`、`restart` 同理。
+- `token-usage serve` 不再前台启动服务：裸 `serve` 只打印命令组帮助，仪表板用 `serve start` / `serve restart` 启动。
+
+| v0.1.8 | 现在 |
+|---|---|
+| `token-usage start` / `status` / `stop` / `restart` | `token-usage daemon start` / `daemon status` / `daemon stop` / `daemon restart` |
+| `token-usage serve`（前台） | `token-usage serve start`（后台） |
+| `token-usage chart` / `forecast` / `compare` / `top` | `token-usage serve start`，然后打开仪表板 |
+| `token-usage export` / `report` | 终端查询继续用 `query` / `watch`；仪表板提供页面范围内的 CSV 导出。机器可读 CLI export 与离线报告包已移除，无完整直接替代 |
+
 ## 通用约定
 
 ### 日期参数格式
 
 | 命令 | 接受形式 | 缺省 |
 |------|----------|------|
-| `collect`、`query`（含子命令）、`export`、`watch` | `DATE`（日 `YYYYMMDD`、月 `YYYYMM` 或年 `YYYY`，年仅单独使用）或 `DATE-DATE`（日/月端点，闭区间） | 今天 |
+| `collect`、`query`（含子命令）、`watch` | `DATE`（日 `YYYYMMDD`、月 `YYYYMM` 或年 `YYYY`，年仅单独使用）或 `DATE-DATE`（日/月端点，闭区间） | 今天 |
 | `errors` | `DATE` 或 `DATE-DATE`（与 `collect`/`query` 相同形态） | 无日期且无 `--source` 时只看未解决 |
 
 `YYYYMMDD` 为 8 位紧凑格式（如 `20260701`）；`YYYYMM` 表示一个自然月，`YYYY` 表示一个自然年（年形态仅单独使用）。`YYYY-MM-DD`、多余位置参数、年做区间端点、结束早于开始均报错并给出命令示例。单参数或区间统一归一化为逐日列表（含两端），上限 366 天（一个闰年），更长范围请拆分多次执行。
@@ -80,7 +91,7 @@ token-usage
 
 `token-usage` 在 `main` 中把命令返回的 error 映射为退出码：
 
-- `0`：成功（含幂等结果，如 start 时守护进程已在运行、stop 时未运行）。
+- `0`：成功（含幂等结果，如 `daemon start` 时守护进程已在运行、`daemon stop` 时未运行）。
 - `1`：任意 error（参数校验失败、采集/查询失败、守护进程控制失败、revision 冲突、部分失败等）。
 
 成功与失败的标准输出/标准错误合同见各命令章节。
@@ -89,8 +100,7 @@ token-usage
 
 - `--client`：`collect` 的 **PersistentFlag**，被 `all`/`router`/`retry` 三个子命令继承。
 - `--force`：`collect` 的 **LocalFlag**，子命令**不继承**（子命令传 `--force` 会报 unknown flag）。
-- `errors` 的 `--source`/`--unresolved`：`errors` 的 LocalFlag。
-- `export` 的 `--format`：`export` 的 **LocalFlag**（`csv` 或 `json`，缺省 `csv`）。
+- `errors` 的 `--source`/`--unresolved`/`--format`：`errors` 的 LocalFlag。
 - 根命令的 `-v, --version`：根级 flag，输出单行短版本。
 
 ## version
@@ -121,7 +131,7 @@ platform: darwin/arm64
 - **版本来源优先级**：① Makefile `ldflags -X` 注入的 `Version` → ② `go install @version` 时 `debug.ReadBuildInfo().Main.Version` → ③ 本地默认 `dev`。
 - **commit 来源**：① 注入的 `Commit` → ② `debug.BuildInfo` 的 `vcs.revision` → ③ `unknown`。**build_time 不使用 `vcs.time`**（那是 commit 时间，非构建时间），仅取注入值，未注入为 `unknown`。
 - **build_time 渲染**：注入值为 UTC RFC3339（发布构建 stamp），显示时转本机时区、空格分隔（`YYYY-MM-DD HH:MM:SS`）；无法按 RFC3339 解析的值原样显示。
-- **本地构建版本显示**：在打了 tag 的检出上直接 `go build` 时，`Main.Version` 是 Go 伪版本（如 `v0.1.8-0.20260908085159-1280e3f00e99`），显示归一为 `v0.1.8-dev`（base 指向该检出目标发布的版本，精确 commit 见 commit 行）；首个 tag 之前的检出显示 `v0.0.0-dev`。`-dev` 显示与字面 `dev` 共享 update 守卫语义：`update` 拒绝之，需 `update --force` 才能切换到官方 Release 资产。
+- **本地构建版本显示**：在打了 tag 的检出上直接 `go build` 时，`Main.Version` 是 Go 伪版本（如 `v0.1.8-0.20260908085159-1280e3f00e99`），显示归一为 `v0.1.8-dev`（base 指向该检出目标发布的版本，精确 commit 见 commit 行）；首个 tag 之前的检出显示 `v0.0.0-dev`。两种边界形态原样保留工具链值、不归一为 `-dev`：恰好在 tag 提交上构建显示 `v<tag>`（如 `v0.1.8`），同提交但工作树有修改显示 `v<tag>+dirty`（如 `v0.1.8+dirty`）。`-dev` 显示与字面 `dev` 共享 update 守卫语义：`update` 拒绝之，需 `update --force` 才能切换到官方 Release 资产。
 - 纯静态命令：不读配置、不开数据库、不初始化日志、不访问网络。
 - 根 `--help` 同时展示 `version` 子命令与可见的 `-v, --version` flag。
 
@@ -262,7 +272,7 @@ Last successful collection / 最近成功采集: 2026-07-22 08:15:03
 
 `query day`、`query month`、`query hour`、`query weekday` 及任何含 `day`、`month`、`hour` 或 `weekday` 时间维度的视图按时间升序呈现时间轴：行按时间维度升序排列（日 `YYYY-MM-DD`、月 `YYYY-MM`、小时 `00:00`..`23:00` 或 ISO 周序的星期名，而非按总量降序；多个时间维度并存时按声明首个为排序主轴），`Trend / 趋势` 条形列以区间内最繁忙的行为基准对比各行总量。纯 `day` 与 `month` 视图为请求区间内无数据的日期/月份插入零值行；纯 `hour` 与 `weekday` 视图按本机时区折算小时/星期（与 date 列同一时区语义），任一请求区间都呈现整日 24 小时固定刻度与 ISO 周序（周一在首）的整周 7 天固定刻度，为无数据小时/星期补零值行，时间轴不留缺口。
 
-`query heatmap` 渲染星期×小时矩阵：行为 ISO 周序（周一在首）的 7 个星期，列为 `00`..`23` 的 24 个小时（均按本机时区折算，与 date 列同一时区语义）。单元格为该交点 total 相对全表最大值的密度字符（` .:-=+*#%@`，0..9 级），尾列合计各星期，尾行 `Total / 总计` 合计各小时与全表。矩阵不参与 `[query.output.columns]` 布局；`heatmap` 是保留视图名——与 `session`、`summary` 一样，不可被 `query.default`、子查询、组合查询或 `export` 引用。
+`query heatmap` 渲染星期×小时矩阵：行为 ISO 周序（周一在首）的 7 个星期，列为 `00`..`23` 的 24 个小时（均按本机时区折算，与 date 列同一时区语义）。单元格为该交点 total 相对全表最大值的密度字符（` .:-=+*#%@`，0..9 级），尾列合计各星期，尾行 `Total / 总计` 合计各小时与全表。矩阵不参与 `[query.output.columns]` 布局；`heatmap` 是保留视图名——与 `session`、`summary` 一样，不可被 `query.default`、子查询或组合查询引用。
 
 `query summary` 输出固定的纵向摘要：`Clients / 客户端数`、`Total requests / 请求总数`、`Active days / 活跃天数`（区间内有数据的天数）、每个 token 列一行（`Input` 至 `Total`，恒含 `Cache Create`）；区间内至少有一天有数据时，追加 `Peak day / 单日峰值`（源 total 最高的日期，同分取日期最早者）与 `Daily average / 日均总量`（区间总量除以活跃天数，整数除法向下取整）。区间内无数据时最后两行不渲染。
 
@@ -310,14 +320,14 @@ columns = ["requests", "input", "output", "total", "cache_hit"]
 | `total` | Total / 总计 | 源 total tokens |
 | `cache_hit` | Cache Hit / 缓存命中 | cache_read / (fresh input + cache_read + cache_create) |
 
-- **适用范围**：布局作用于 `query client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday`、`session`，以及裸 query、具名视图（`query <name>` / `query custom <name>`）与组合查询展开的每张表，外加对应的 `watch` 帧（其视图表与 `query` 走同一执行链；`watch --by summary` 保持完整纵向摘要）。`query summary` 不适用——它保持完整纵向摘要（含 Cache Create）；`query list` 不渲染数据表；`export` 有意不应用布局（固定机器 schema）。维度列始终显示在每张表左侧（session 表固定先显示 Client/Project/Title/Duration），不参与布局。
+- **适用范围**：布局作用于 `query client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday`、`session`，以及裸 query、具名视图（`query <name>` / `query custom <name>`）与组合查询展开的每张表，外加对应的 `watch` 帧（其视图表与 `query` 走同一执行链；`watch --by summary` 保持完整纵向摘要）。`query summary` 不适用——它保持完整纵向摘要（含 Cache Create）；`query list` 不渲染数据表。维度列始终显示在每张表左侧（session 表固定先显示 Client/Project/Title/Duration），不参与布局。
 - **默认值**：缺失 `[query.output]` 或缺失 `columns` 时使用 `requests, input, output, cache_read, reasoning, total, cache_hit` 七列，升级后既有配置与输出保持不变。`cache_create` 是首个可选但默认隐藏的指标；它始终计入缓存命中率分母，显示或隐藏都不改变任何统计值、排序与总计。
 - **校验规则**：`query.output` 必须是表且只允许 `columns` 一个子键；数组非空、元素为上表中的字符串、不得重复（元素首尾空格自动去除）。空数组不是「恢复默认」——恢复默认应删除 `query.output`（或 `query.output.columns`）。错误会报出完整配置路径与具体值。`config set` 不支持写入 `query.output.columns`，请使用 TUI 的 Output columns 页或手工编辑 TOML。
 - **错误边界**：无关的视图定义错误（`subqueries`/`groups`/`default`）不阻断九个受布局影响的静态表格命令——合法布局仍生效。`query.output` 自身不合法时，这九个命令在打开数据库前失败。顶层 query 问题（`[query]` 与 `[Query]` 并存、根值非表）下静态表格命令静默回退默认七列，裸 query、具名视图与 `query list` 仍按既有定位错误失败。TUI 保存始终执行完整 query 校验。
 
 `query provider`（以及任何自定义视图中的 provider 维度）优先使用路由归因，其次使用采集器的供应商值；历史空值保持未归因，查询不会依据客户端推断供应商。`provider_aliases` 在组合键形成前生效：相同别名在每个视图中合并为同一行，且不会修改 `usage.db`。
 
-query 配置是纯展示配置。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突、`query = "x"` 根值非表）只会使默认路径（裸 `query` 与 `query <日期>`）、全部具名调用（`query <name>` / `query custom <name>`）、`query list` 与 TUI 保存失败并定位具体配置键；九个受布局影响的静态表格命令（`client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`session`）在顶层问题态回退默认七列、仅无关视图定义损坏时保持合法布局，`query summary` 不受影响，`collect`、`status`、`start`、守护进程、`config set`、`config show` 不受影响且原样保留问题项。`watch` 与 `export` 遵循同一分界：其缺省视图与配置视图路径与裸 `query` 同样以本地化诊断失败，而显式内置视图名（`watch --by client`、`export client`）与静态表格命令一致，忽略无关的视图定义错误。TUI 主菜单按 `v` 进入 **Query** 页，含三个平级入口——**Views / 查询视图**（自定义子查询、组合查询、默认行为）、**Output columns / 输出列**（全局指标布局，`d` 恢复默认）、**Provider aliases / 供应商别名**——各自的部分无法解析时先显示自己的恢复列表。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]`、`[query.output]` 段：旧版本会拒绝任何非空 query 段。
+query 配置是纯展示配置。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突、`query = "x"` 根值非表）只会使默认路径（裸 `query` 与 `query <日期>`）、全部具名调用（`query <name>` / `query custom <name>`）、`query list` 与 TUI 保存失败并定位具体配置键；九个受布局影响的静态表格命令（`client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`session`）在顶层问题态回退默认七列、仅无关视图定义损坏时保持合法布局，`query summary` 不受影响，`collect`、`daemon status`、`daemon start`、守护进程本体、`config set`、`config show` 不受影响且原样保留问题项。`watch` 遵循同一分界：其缺省视图与配置视图路径与裸 `query` 同样以本地化诊断失败，而显式内置视图名（`watch --by client`）与静态表格命令一致，忽略无关的视图定义错误。TUI 主菜单按 `v` 进入 **Query** 页，含三个平级入口——**Views / 查询视图**（自定义子查询、组合查询、默认行为）、**Output columns / 输出列**（全局指标布局，`d` 恢复默认）、**Provider aliases / 供应商别名**——各自的部分无法解析时先显示自己的恢复列表。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]`、`[query.output]` 段：旧版本会拒绝任何非空 query 段。
 
 示例：
 
@@ -329,56 +339,6 @@ token-usage query mpc                # 今日，mpc 多维表（直接简写）
 token-usage query custom group_q 20260701  # 显式写法：按声明顺序输出四张表
 token-usage query summary 20260701   # 单日总览
 token-usage query list               # 列出已配置视图，不触碰数据库
-```
-
-## export
-
-将用量聚合数据以机器可读的 CSV 或 JSON 导出到标准输出。聚合直接从 `messages`（含 `sessions` 元数据）实时计算，并与对应 `query` 视图共用同一条聚合核，行集合与排序完全一致。
-
-```text
-token-usage export [view] [DATE|DATE-DATE] [--format csv|json]
-```
-
-| 视图 | 键列 | 内容 |
-|---|---|---|
-| *（不带视图）* | — | 默认视图（`query.default`，内置回退 `client`） |
-| `client` | `client` | 按客户端分组 |
-| `model` | `model` | 按模型分组 |
-| `provider` | `provider` | 按供应商分组（路由归因优先；`provider_aliases` 合并行，行为与 `query provider` 一致；空 provider 导出为 `(unattributed) / (未归因)`，与 query 显示一致） |
-| `project` | `project` | 按项目分组（空 project 导出为 `(uncategorized) / (未分类)`，与 query 显示一致） |
-| `day` | `date` | 按天用量，日期升序，无数据日期补零值行 |
-| `month` | `month` | 按月用量，月份升序，无数据月份按月前缀补零值行 |
-| `hour` | `hour` | 按小时用量，本机时区折算，小时升序，整日 24 小时刻度全量呈现，无数据小时补零值行 |
-| `weekday` | `weekday` | 按星期用量，本机时区折算，ISO 周序（周一在首），整周 7 天刻度全量呈现，无数据星期补零值行 |
-| `session` | `client`、`project`、`title`、`duration_ms` | 会话明细，顺序与 `query session` 一致；`project`/`title` 保留源字段原值——空 project 就是空串，与分组视图替换占位文案不同；`duration_ms` 为该会话的请求跨度（末条减首条消息时间戳，毫秒） |
-| 已配置子查询 | 每维度一列键列，按声明顺序 | 每个维度组合一行；键列名沿用与内置视图相同的 `day` → `date` 映射 |
-| 已配置组合查询 | 随成员而异 | 成员视图按声明顺序导出（见下） |
-
-`summary` 与 `heatmap` 没有行 schema，明确不可导出。`query.subqueries` / `query.groups` 中的已配置视图受支持：**子查询**按维度组合逐行导出，每个维度一列键列；**组合查询**导出成员视图——CSV 为多段、按声明顺序排列（段间空行分隔，各段自带表头，键列随成员视图类型），JSON 为成员名到行数组的对象映射（键按字母序输出，与单视图对象的 JSON map 语义一致）。未知视图在加载配置之后、打开数据库之前按动态允许集合（内置视图 + 已配置名称）拒绝；解析到坏视图定义的名称与 `query` 同样以本地化诊断失败，而显式内置视图名与 `query` 静态子命令一致，忽略无关的视图定义错误。
-
-日期参数与 `query` 相同：`DATE` 为日（`YYYYMMDD`）、月（`YYYYMM`）或年（`YYYY`，仅单独使用），`DATE-DATE` 为闭区间（端点为日或月）；缺省日期为今天（见「[日期参数格式](#日期参数格式)」）。位置参数分派与 `query` 一致：数字开头的单参数是作用于默认视图的日期；两个位置参数时第一个必须是视图名（`token-usage export client 20260901`）。
-
-`--format` 选择 `csv`（默认）或 `json`。非法取值在加载配置与打开数据库之前拒绝。
-
-固定机器 schema 合同：
-
-- 列固定且有序——上方键列后接 `requests, input, output, cache_read, cache_create, reasoning, total`——且有意不应用 `[query.output.columns]` 输出布局：无论显示配置如何，导出保持同一稳定 schema。
-- 所有指标值为原始整数（int64 十进制），不做 K/M/B 缩写。
-- 没有 `Total / 总计` 行。
-- CSV：`encoding/csv` 引号转义（含逗号或双引号的字段自动转义）、LF 行尾、UTF-8 无 BOM。
-- JSON：对象数组，键名与 CSV 列名一致；整数为 JSON number，其余字段为 string；两空格缩进加尾随换行。
-- stdout 只有纯数据：不打印统计信息区，采集异常警告改走 stderr——可用重定向保存文件。
-
-同一批视图的人类可读表格形态（统计信息区、K/M/B 缩写、总计行）见「[query](#query)」。
-
-示例：
-
-```bash
-token-usage export day 20260901-20260907 > usage.csv
-token-usage export session --format json | jq .
-token-usage export 20260701                # 单日默认视图（query.default）
-token-usage export provider --format json  # provider 视图，JSON 输出到 stdout
-token-usage export <已配置视图名>           # query.subqueries / query.groups 中的子查询或组合查询
 ```
 
 ## errors
@@ -444,7 +404,7 @@ token-usage doctor
 | `Date consistency / 日期一致性` | 全部消息行的 date 与按 ts 毫秒重算的本地日期一致，显示消息总数 | N 条消息日期与时间戳不一致；请检查系统时区是否变更或数据是否被直接修改；仅警告不失败——无自动修复 | 查询失败 |
 | `Unresolved errors / 未解决异常` | 无 | 数量，并提示 `token-usage errors` 与 `token-usage collect retry` | 查询失败 |
 | `Query definitions / 查询视图` | 已配置的子查询/组合查询/默认行为语义合法（未配置时同样 OK） | 问题计数、首个诊断路径并指向 `token-usage query list`；仅警告——坏视图定义不会阻断采集与静态表格命令 | 配置加载失败 |
-| `Daemon / 守护进程` | 纯提示：指向 `token-usage status`;doctor 绝不探测或操作守护进程（探测会创建锁文件/配置目录） | | |
+| `Daemon / 守护进程` | 纯提示：指向 `token-usage daemon status`;doctor 绝不探测或操作守护进程（探测会创建锁文件/配置目录） | | |
 
 - 因上游检查失败而无法执行的检查项输出 `SKIPPED / 跳过`，不重复计数（上游 FAIL 已计数）：配置失败跳过全部依赖配置的检查项；数据库缺失或损坏跳过采集、数据新鲜度、日期一致性与异常四项；最近采集查询失败时数据新鲜度以「无法获取」跳过（最近采集一项已失败）；完全无采集记录时数据新鲜度跳过（最近采集一项已告警）。
 - 汇总行（`Result / 结果`）为 `OK / 一切正常`、`N warnings / N 项警告` 或 `N problems / N 项失败`（FAIL 优先于 WARN）。
@@ -468,7 +428,7 @@ token-usage config set <key> <value>   # 写入单项配置
 token-usage config init                # 初始化配置文件与数据库
 ```
 
-> `config get` 与 `config show` 职责不同：前者读用户配置层原值（不展开 `~`、不补默认值），后者输出完整 effective TOML（展开 `~`、补默认值/默认路径）。要查看运行时生效配置请优先用 `config show`；`status`/TUI 只作为人机可读摘要。
+> `config get` 与 `config show` 职责不同：前者读用户配置层原值（不展开 `~`、不补默认值），后者输出完整 effective TOML（展开 `~`、补默认值/默认路径）。要查看运行时生效配置请优先用 `config show`；`daemon status`/TUI 只作为人机可读摘要。
 
 ### config（TUI）
 
@@ -494,7 +454,7 @@ token-usage config show
 
 读取单项配置（dotted key，如 `daemon.poll_interval`、`clients.claude.enabled`）。
 
-读取的是**用户配置层原值**：即配置文件中显式写入的值，不展开 `~`、不补默认路径、不 clamp 数值。因此未在文件中显式配置的字段返回零值（如未写的 `poll_interval` 返回 `0`）。要查看运行时实际生效值（展开 `~`、补默认值/默认路径的完整配置）请用 `config show`；`status` 与 TUI 仅作人机可读摘要。
+读取的是**用户配置层原值**：即配置文件中显式写入的值，不展开 `~`、不补默认路径、不 clamp 数值。因此未在文件中显式配置的字段返回零值（如未写的 `poll_interval` 返回 `0`）。要查看运行时实际生效值（展开 `~`、补默认值/默认路径的完整配置）请用 `config show`；`daemon status` 与 TUI 仅作人机可读摘要。
 
 ### config set
 
@@ -547,7 +507,7 @@ token-usage config set 'provider_aliases."Zhipu AI Coding Plan"' 'Zhipu GLM'
 - 开启 autostart：写自启定义，当前 daemon 状态不变；下次登录/开机按新定义加载。
 - 关闭 autostart：删自启定义，当前 daemon 继续运行；下次登录/开机不再自启。
 
-要让当前会话生效，需手动 `stop` + `start`（或 `restart`）。二者彻底解耦的详细说明见「[守护进程生命周期](#守护进程生命周期)」。
+要让当前会话生效，需手动 `daemon stop` + `daemon start`（或 `daemon restart`）。二者彻底解耦的详细说明见「[daemon](#daemon)」。
 
 ### config init
 
@@ -567,53 +527,53 @@ token-usage config set daemon.autostart true
 token-usage config set clients.zcode.enabled true
 ```
 
-## 守护进程生命周期
+## daemon
 
-`start` / `stop` / `restart` / `status` 只管控**当前运行的守护进程**（采集/分析的实时监控进程），与**开机自启定义**（下次登录/开机是否自动启动）彻底解耦。
+`daemon` 命令组管理**采集/分析守护进程**——后台监控各 AI 客户端会话日志、持续保持用量数据更新的进程。它的四个动作只管控**当前运行的守护进程**，与**开机自启定义**（下次登录/开机是否自动启动）彻底解耦。仪表板服务是另一个独立程序实例，由 [serve](#serve) 命令组单独管理；两者不共享 PID、锁、状态文件、日志与端口，停止或重启其中一个绝不影响另一个。裸执行 `token-usage daemon` 只打印命令组帮助：不启动任何进程，也不创建状态文件。
 
 | 命令 | 作用 | 是否触碰 autostart 定义 |
 |------|------|--------------------------|
-| `start` | 后台启动守护进程，完成监听 ready 握手后返回；已在运行则幂等返回当前 PID | 否 |
-| `stop` | 停止当前守护进程（不删 plist/注册表）；未运行则幂等返回 | 否 |
-| `restart` | 在单次进程控制锁内停旧起新；未运行报错并提示用 `start` | 否 |
-| `status` | 只读查看运行状态 + 开机自启漂移检测（5 态分类） | 否（只读） |
+| `daemon start` | 后台启动守护进程，完成监听 ready 握手后返回；已在运行则幂等返回当前 PID | 否 |
+| `daemon stop` | 停止当前守护进程（不删 plist/注册表）；未运行则幂等返回 | 否 |
+| `daemon restart` | 在单次进程控制锁内停旧起新；未运行报错并提示用 `daemon start` | 否 |
+| `daemon status` | 只读查看运行状态 + 开机自启漂移检测（5 态分类） | 否（只读） |
 
-> 三者均不修改 config、plist 或注册表。autostart 定义由 `config set daemon.autostart` 或 TUI 保存触发收敛。
+> 这些命令均不修改 config、plist 或注册表。autostart 定义由 `config set daemon.autostart` 或 TUI 保存触发收敛。
 
-### start
+### daemon start
 
 ```text
-token-usage start
+token-usage daemon start
 ```
 
 经 `control.Manager.Start`：在进程控制锁内加载配置 → 以 daemon lock 判活 → 已运行返回当前 PID（不重复 spawn，退出码 0）→ 未运行 detached spawn `_run` 子进程 → 在 5 秒内等待六项 ready 条件（PID 文件的 PID/instanceID、daemon lock、runtime-state 的 PID/instanceID/`monitor_ready=true`）→ 输出 `✓ 守护进程已启动（PID N）`。超时会尽力终止本次子进程；仅在 daemon lock 已释放且元数据仍属于本代时清理，避免误删活进程或其他代次的文件。
 
 stdout：成功行（含幂等的「已在运行」）；stderr：真实失败。
 
-### stop
+### daemon stop
 
 ```text
-token-usage stop
+token-usage daemon stop
 ```
 
 经 `control.Manager.Stop`：进程控制锁内加载配置 → daemon lock 判活 → 未运行幂等返回「守护进程未运行」→ 运行中按平台停止（macOS：始终先尝试对当前 label 执行幂等 `bootout`，若 daemon lock 仍持有再对已读取的准确 PID 发 SIGTERM；Windows：taskkill 精确 PID）→ 以 **daemon lock 释放**为成功条件（轮询 5s），不靠删 PID 文件伪装成功。
 
 stop **不删除** plist/注册表定义：当前会话停止，下次登录仍按 autostart 配置启动。关闭自启请用 `config set daemon.autostart false`。
 
-### restart
+### daemon restart
 
 ```text
-token-usage restart
+token-usage daemon restart
 ```
 
-经 `control.Manager.Restart`：单次进程控制锁内 stop 旧 + start 新。守护进程**未运行**时返回 `ErrRestartNotRunning`（stderr 含「请使用 token-usage start」），退出非零。
+经 `control.Manager.Restart`：单次进程控制锁内 stop 旧 + start 新。守护进程**未运行**时返回 `ErrRestartNotRunning`（stderr 含「请使用 token-usage daemon start」），退出非零。
 
 macOS 取舍：stop 会尝试 bootout 当前 job，随后以 detached 方式 start；plist 定义保留，但本次登录会话不再由 launchd KeepAlive 托管。由于保存配置只维护定义文件、不会主动 bootstrap，KeepAlive 会在下次登录加载该定义时恢复。
 
-### status
+### daemon status
 
 ```text
-token-usage status
+token-usage daemon status
 ```
 
 只读（`Inspect` 不抢进程控制锁，仅以 daemon lock 判活），返回一致快照：
@@ -625,9 +585,9 @@ token-usage status
 
 autostart 只表达「下次登录/重启是否自动启动」，与当前 daemon 是否运行相互独立；当前 daemon 状态单独展示，两者不互相推断。
 
-### startup catch-up（关闭 stop→collect→start 数据窗口）
+### startup catch-up（关闭 daemon stop→collect→daemon start 数据窗口）
 
-`start` 建立监听后，守护进程会执行一次 **startup catch-up**，补齐「最后一次手工 `collect`/`collect all`」到「监听 ready」之间新增的数据，从而关闭 stop→collect→start 的数据窗口。
+`daemon start` 建立监听后，守护进程会执行一次 **startup catch-up**，补齐「最后一次手工 `collect`/`collect all`」到「监听 ready」之间新增的数据，从而关闭 daemon stop→collect→daemon start 的数据窗口。
 
 顺序契约（`daemon.startupCoordinator`）：
 
@@ -637,103 +597,14 @@ autostart 只表达「下次登录/重启是否自动启动」，与当前 daemo
 4. 顺序 Submit catch-up 请求：按已启用 client 名升序，每个 client 先发 client-source 请求（opencode/zcode 走增量 cursor；claude/workbuddy/autoclaw 无日期扫现存 JSONL；codex 先 state 增量再 rollout 全扫），再发该 client 的 router 增量请求（若配置）。
 5. 写 final state：0 失败 = `succeeded`，否则 = `failed` + 准确失败数。
 
-catch-up 经 analyzer 的串行化锁 Submit（与实时触发同一路径，保证顺序与互斥）。因此只要 daemon 成功启动并完成 catch-up，stop→collect→start 之间产生的增量数据会被补采，不会因「监听未就绪」而遗漏。catch-up 部分失败会在 `status` 与 `errors` 中体现。
+catch-up 经 analyzer 的串行化锁 Submit（与实时触发同一路径，保证顺序与互斥）。因此只要 daemon 成功启动并完成 catch-up，daemon stop→collect→daemon start 之间产生的增量数据会被补采，不会因「监听未就绪」而遗漏。catch-up 部分失败会在 `daemon status` 与 `errors` 中体现。
 
 ### _run（Hidden）
 
-内部命令，由 `start` detached spawn、或 launchd / Windows 注册表 Run 键直接拉起，执行守护进程主循环。用户不应直接调用（`--help` 不可见）。两条启动路径都满足不变量「从读取 effective config 到获取 daemon lock 期间始终存在 control lease」：
+内部命令，由 `daemon start` detached spawn、或 launchd / Windows 注册表 Run 键直接拉起，执行守护进程主循环。用户不应直接调用（`--help` 不可见）。两条启动路径都满足不变量「从读取 effective config 到获取 daemon lock 期间始终存在 control lease」：
 
-- 父 lease 路径（`start` spawn 的 `_run`）：父进程持进程控制锁并通过 pipe lease 授权 child，child 不抢锁。
+- 父 lease 路径（`daemon start` spawn 的 `_run`）：父进程持进程控制锁并通过 pipe lease 授权 child，child 不抢锁。
 - 独立路径（launchd/注册表直接拉起）：无合法父 lease 时自行获取进程控制锁（15s 超时；超时则成功退出码 0 不进入主循环，避免与正在进行的控制操作冲突，并在 macOS 上避免 launchd KeepAlive 立即重拉）。
-
-## forecast
-
-按近期日均估算即将到来的用量。窗口不含今天（未结束的一天会拉低日均）；今天单独以「至今」累计量呈现。
-
-```text
-token-usage forecast
-token-usage forecast --format json
-```
-
-- `Last 7 days / 最近 7 天` 与 `Last 30 days / 最近 30 天`：显示各窗口总量、日均（窗口总量除以**活跃**天数——有数据的天数，整数除法向下取整）与窗口内活跃天占比。
-- `Next 7 days / 未来 7 天` 与 `Next 30 days / 未来 30 天`：以该日均乘以未来自然天数得出估算，假设未来保持同等活跃强度。窗口内无数据时显示 `no data / 无数据` 并省略对应预测行。
-- 命令只读，K/M/B 缩写口径与 query 一致。
-- `--format` 选择 `table`（默认，行为不变）或 `json`；非法值在加载配置与打开数据库之前即被拒绝。JSON 契约与 `export --format json` 对齐：原始整数、两空格缩进加尾随换行、struct 序列化保证字段顺序稳定。顶层为 `today_so_far`（仅 `requests` 与 `total_tokens`）、`windows`（恒 2 条，先 `last_7_days` 后 `last_30_days`，各含 `window`、`days`、`active_days`、`requests`、`total_tokens` 与 `avg_per_active_day`；无数据窗口 `active_days` 为 0、`avg_per_active_day` 为 0）与 `projections`（先 `next_7_days` 后 `next_30_days`，各含 `window`、`days`、`based_on`、`avg_per_active_day` 与 `estimate_tokens`，即日均乘以未来自然天数）。窗口语义与表格逐点一致：窗口不含今天，依据窗口无数据的条目从 `projections` 中省略——两窗口均无数据时 `projections` 输出 `[]`。
-
-## compare
-
-对比两个时间段的用量：输出一张 5 列框线表（指标 / 当前 / 基线 / 变化 / 变化%），覆盖活跃天、请求数与全部 token 指标。`--format json` 切换为机器可读 JSON 输出。
-
-```text
-token-usage compare <range> [range2] [--base <range>] [--format table|json]
-token-usage compare 202607 202608
-token-usage compare 20260901-20260907
-token-usage compare 202609 --base 202608
-token-usage compare 20260901-20260907 --by model
-token-usage compare 20260901-20260907 --format json
-```
-
-`<range>` 与 `[range2]` 接受与下表 `--base` 相同的形态。`[range2]` 不可与 `--base` 同用：两个位置参数的窗口按时间先后排序，较早者为基线，参数顺序不影响结果——`token-usage compare 202607 202608` 对比 2026-08 与 2026-07，与 `token-usage compare 202608 --base 202607` 相同。允许等值或重叠窗口，年也可做两个位置参数之一。注意 `202607-202608` 这类破折号区间是单个跨两月的窗口，不是两期对比。
-
-单个位置参数（或 `--base`）时各形态含义如下：
-
-| `<range>` / `[range2]` / `--base` 形态 | 含义 |
-|------|---------|
-| `YYYYMMDD` | 单日；缺省基线为前一天。 |
-| `YYYYMM` | 一个自然月；缺省基线为上一个日历月。 |
-| `YYYY` | 一个自然年（不可做区间端点，但可做两个位置参数之一）；缺省基线为上一个日历年。 |
-| `A-B` | 闭区间，端点为日或月（可混用）；缺省基线为结束于 A 前一天的等长窗口。 |
-
-行为要点：
-
-- 单个位置参数且缺省 `--base` 时按上表粒度自动推导基线（含闰月；如 `20260701-20260710` 对比 `2026-06-21..2026-06-30`）。
-- `--base <range>` 接受相同形态，与当前窗口的粒度解耦解析，允许与当前窗口重叠。拒绝 `2026-08-01` 这类 ISO 破折号形态；结束早于开始也报错。
-- 不设 366 天上限（与 `query`/`collect` 不同）：不带 `--by` 时本命令不做逐日展开——每个窗口用一条 `BETWEEN` 聚合读取，跨多年区间同样可用。
-- 行文案：活跃天与请求数显示带符号整数变化（`%+d`）；token 行沿用 K/M/B 缩写并带 `+`/`-` 符号；基线值为 0 时变化% 显示 `--`。表头不使用 Δ 等 ambiguous 宽度字符，保证 CJK 终端下框线对齐。
-- `--by <维度>` 按非时间维度（`client`、`model`、`provider`、`project`）的成员对比两期用量而非两期总量：每个成员一行，只在一期出现的成员与 0 对比；行按两期 total tokens 之和降序（同值按显示键升序）；末行 `Total / 总计` 取各窗口的全量聚合（真相源，不由成员行累加）。基线成员总量为 0 时变化% 显示 `--`。时间维度（`day`、`month`、`hour`、`weekday`）与未知值在打开数据库之前即被拒绝——趋势图请用 `token-usage chart --line`，两期总量对比用不带 `--by` 的 compare。双窗口均无成员且两期总量均为 0 时只输出 `no data / 无数据` 一行。provider 维度应用 `[provider_aliases]` 配置（与 `query`/`export` 一致）。超长区间内部分 366 天块查询后跨块合并——对输出透明，仍然没有 366 天上限。
-- `--format` 选择 `table`（默认，行为不变）或 `json`；非法值在加载配置与打开数据库之前即被拒绝。JSON 契约与 `export --format json` 对齐：原始整数（不做 K/M 缩写）、两空格缩进加尾随换行、struct 序列化保证字段顺序稳定。顶层为 `windows`（`current` 与 `base`，各自的 `from`/`to` 与表格 Current/Base 行同源）。不带 `--by` 时另有 `metrics`：与表格行同序、每行一个对象，`metric` 取 `active_days`（compare 特有）与稳定输出指标 ID `requests`、`input`、`output`、`cache_read`、`cache_create`、`reasoning`、`total`；每行含原始整数 `current`/`base`/`change` 与四舍五入到 1 位小数的 `change_percent`——基线值为 0 时为 `null`，与表格 `--` 同语义。近零负百分比可能序列化为 `-0`（数值等价于 0）。带 `--by` 时改为输出 `dimension`、`members`（与表格同序、每成员一个对象：`key` 加同样的原始整数字段与 `change_percent` 语义）与 `totals`（`current`/`base` 两侧暴露稳定 ID 字段 `requests`、`input`、`output`、`cache_read`、`cache_create`、`reasoning`、`total`，取各窗口的全量聚合真相源）。JSON 输出没有 no data 早退：members 为空数组、totals 照常输出。
-- 严格只读：不触碰守护进程。
-
-## top
-
-显示总用量最重的会话排行：输出一张框线表，按名次列出会话的标题、客户端、项目、时长、请求数与总量。
-
-```text
-token-usage top [DATE|DATE-DATE] [--limit N] [--format table|json]
-token-usage top
-token-usage top 20260901-20260907
-token-usage top 202609 --limit 20
-token-usage top 202609 --format json
-```
-
-行为要点：
-
-- 日期参数与 `query` 同形态（日 `YYYYMMDD`、月 `YYYYMM`、年 `YYYY`（仅单独使用）或日/月闭区间），缺省时默认今天；与 `query` 一样展开上限 366 天。
-- 会话按 TotalTokens 降序排列；同值按 Client 升序、再按 Title 升序决序，全并列时按会话首条消息时间戳升序，与数据库返回行序无关，排名确定。
-- `--limit` 为显示的会话数量，默认 10，无上限；小于 1 的取值在加载配置与打开数据库之前即被拒绝。
-- `--format` 选择 `table`（默认，行为不变）或 `json`；非法值在加载配置与打开数据库之前即被拒绝。JSON 契约与 `export --format json` 对齐：顶层为会话记录数组，顺序与表格行一致（排序与 `--limit` 截断之后），两空格缩进加尾随换行、struct 序列化保证字段顺序稳定。每条记录含 `rank`（从 1 起，与表格名次列同源）、源字段原值 `client`/`project`/`title`（空 `project` 保持 `""`——「未分类」映射仅是表格渲染方的显示形态）、Unix 毫秒时间戳 `first_ts`/`last_ts` 与二者之差 `duration_ms`，以及 7 字段全量原始整数指标 `requests`、`fresh_input`、`output`、`cache_read`、`cache_create`、`reasoning`、`total`——为表格 Requests/Total 两列的超集，不做 K/M 缩写。空结果输出 `[]`（JSON 不做表格的 no data 早退）。
-- Duration 是会话的请求跨度——区间内末条与首条消息时间戳之差——渲染口径与 `query session` 表格一致（`<1s`、`5m 0s`、`1h 1m`、`2d 3h`）。
-- 空 Project 显示为 `(uncategorized) / (未分类)`；Total 沿用与 query 相同的 K/M/B 缩写；Title 列与 `query session` 同款按 30 显示宽上限截断。
-- 无数据时只输出 `Top sessions / 会话排行` 标题行与 `no data / 无数据` 一行。
-- 严格只读：不触碰守护进程。
-
-## chart
-
-将用量渲染为独立的 SVG 图表——默认为柱状图（按日或按 `--by` 维度），另有趋势折线、占比饼图与星期×小时热力图（无外部依赖，任意浏览器或图片查看器可打开）。
-
-```bash
-token-usage chart 20260901-20260930                # SVG 写到标准输出
-token-usage chart 202609 --out september.svg       # 原子写入文件
-token-usage chart 20260901-20260930 --line         # 日趋势折线图（默认 --by day）
-```
-
-- 默认柱为逐日源 total，按日期升序；无数据日高度为零，每根柱带原生 `<title>` 悬停提示（当日 tokens 与请求数）。
-- `--by <维度>` 切换聚合维度（`client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday`）；非时间维度按总量降序。
-- `--pie` 渲染占比饼图而非柱状图，需 `--by` 指定非时间维度（按天切分饼图不可读）；扇区使用固定 10 色取色序列与百分比图例，100% 占比退化为整圆。
-- `--heatmap` 渲染星期×小时热力矩阵（ISO 周序 7 行、24 小时列、11 级深蓝到浅青取色（深色底）按最繁忙交点缩放、每格悬停提示）而非柱状图；数据源与 `query heatmap` 相同，与 `--pie`、`--line` 互斥。
-- `--line` 渲染 tokens 趋势折线而非柱状图，需 `--by` 指定时间维度（`day`、`month`、`hour`、`weekday`）；把无关类别用线段连接会产生误导性趋势。点数不超过 60 时逐点带悬停提示，更密的序列只画折线；与 `--pie`、`--heatmap` 互斥。
-- 头部显示区间及其 total tokens / 请求数；柱状图 Y 轴按三条等分网格以 K/M/B 缩写标注。
-- `--out <文件>` 原子写入（先写临时文件再换名）而非标准输出；日期参数与 `query`/`collect` 同形态。
 
 ## watch
 
@@ -752,37 +623,22 @@ token-usage watch --once               # 只渲染一帧后退出（对管道友
 - 交互式循环在每帧之间清屏（Windows 控制台会自动启用虚拟终端处理）；`--once` 只渲染一帧且不含转义序列，重定向输出保持纯文本。
 - 严格只读：与其他读取类命令相同的开库语义，不与守护进程交互，Ctrl+C 不残留任何状态。
 
-## report
-
-将完整用量报告包生成到目录：文本摘要、用量对比文本 `compare.txt`（缺省基线与 `compare` 命令一样按日期参数粒度推导：单日对前一天、单月对上一个日历月、单年对上一个日历年、区间对前置等长窗口）、各维度 SVG 图表（日/小时/星期/月柱状图，客户端/模型/供应商/项目占比饼图）、星期×小时 SVG 热力矩阵，以及 `index.html`——自包含交互式双语报告页（KPI 总览、两期对比、内嵌全部图表、Top sessions、逐维度数据表、表格排序、逐表一键导出 CSV（按当前行序、精确整数、UTF-8 BOM）、锚点导航），零外部资源可离线双击打开，是报告包的浏览入口。所有图表与对应的 `query`/`chart` 视图共用同一聚合核。
-
-```bash
-token-usage report 20260901-20260930 --out september-report
-```
-
-- `--out <目录>` 必填；目录不存在时自动创建，每个文件均为原子写入。
-- 文件：`summary.txt`、`compare.txt`、`daily.svg`、`hourly.svg`、`weekday.svg`、`monthly.svg`、`by-client.svg`、`by-model.svg`、`by-provider.svg`、`by-project.svg`、`heatmap.svg`、`index.html`。
-- 日期参数与 `query`/`collect` 同形态（默认今天）。报告包不含 forecast 用量预测，请单独执行 `token-usage forecast`。除写入报告包外严格只读。
-
 ## serve
 
-启动只读的本地 HTTP 服务，提供内嵌仪表板：`/` 的内嵌 HTML 页面、JSON 接口（`/api/meta`、`/api/dashboard`）与 SVG 图表（`/api/chart/{kind}.svg`），图表与 `chart`/`report` 命令共用同一构建核（标题、副标题与悬停文案完全一致）。默认仅绑定 `127.0.0.1:8619`，按 Ctrl+C 停止。HTTP 数据面严格只读——不设 CORS 头、不写数据库与配置；`serve.json` 是前后台共用的生命周期状态，`serve.log` 用于后台日志，`serve.lock`、`serve-state.lock` 与 `serve-start.lock` 负责生命周期协调。同一仪表板也可通过 `serve start` / `serve status` / `serve stop` 转入后台运行（见本节末尾）。
+管理提供内嵌仪表板的只读本地 HTTP 服务：`/` 的内嵌 HTML 页面、JSON 接口（`/api/meta`、`/api/dashboard`）与 SVG 图表（`/api/chart/{kind}.svg`），图表与内嵌页面共用同一构建核（标题、副标题与悬停文案完全一致）。仪表板**始终以后台方式运行**：`serve start` 拉起 detached 服务进程后返回，`serve status` / `serve stop` 查看与停止，`serve restart` 以全新后台实例接管运行中的实例。裸执行 `token-usage serve` 只打印命令组帮助——不监听端口、不启动进程、不创建状态文件。采集守护进程是另一个独立程序实例，由 [daemon](#daemon) 命令组单独管理；两者不共享 PID、锁、状态文件、日志与端口。
 
-```bash
-token-usage serve
-token-usage serve --open
-token-usage serve --addr 127.0.0.1:9000
-```
+HTTP 数据面严格只读——不设 CORS 头、不写数据库与配置；`serve.json` 是共用的生命周期状态，`serve.log` 用于后台日志，`serve.lock`、`serve-state.lock` 与 `serve-start.lock` 负责生命周期协调。
 
-- `--addr` 修改监听地址（默认 `127.0.0.1:8619`）。绑定 `0.0.0.0` 等公网地址会**把统计数据暴露给局域网**——服务只读但无鉴权——请保持在回环接口上。
-- `--open` 在启动后用默认浏览器打开仪表板；打开失败仅打印警告，服务继续运行。
-- 单次请求的全部数据查询共享同一读快照，并发采集写入下 totals、各维度行与会话行互相一致。
-- 内嵌页面全部由前端按这些数值行自绘：KPI 卡（相对基线窗口的增减 chips）、对齐所配置 query 输出列的指标条（除已升格 KPI 卡的 requests/total/cache-hit 外的 token 类别列——默认布局即新输入/输出/缓存读/推理，布局含缓存写时才会出现该列）、堆叠/单系列柱状图（点击按天/按月柱条即聚焦对应区间；超过 92 天按天柱自动按 ISO 周聚合并停用钻取）、占比环形图一行四张、带行列合计的星期×小时热力矩阵（对齐 `query heatmap` 的尾行/尾列合计）、带 token 占比条与 CSV 导出的会话排行、逐维度数据表（可排序、一键导出 CSV——按当前行序、精确整数）、整行环比对比（左侧逐日对比曲线、右侧指标表）与整行预估、范围预设与自定义起止日期（首次进入默认 Today、跨刷新记忆）以及自动刷新。按天桶不足 2 个时隐藏按天维度图、按月桶不足 2 个时隐藏按月维度图，单日选区只保留按小时图（星期视图对单日无意义）并隐藏环比对比表——单桶形态不携带信息——KPI 增减 chips 仍指向基线窗口（单日即前一日）。
+- `--addr` 修改监听地址（默认 `127.0.0.1:8619`），作用于 `serve start` / `serve restart` 新启动的实例。绑定 `0.0.0.0` 等公网地址**会把用量数据暴露给局域网**——服务只读但无鉴权——请保持回环绑定。
+- `--open` 在 `serve start` / `serve restart` 确认后台服务就绪后用默认浏览器打开仪表板；打开浏览器失败只是警告，服务继续运行。
+- 启动时写 `serve.json` 状态文件失败（如数据目录只读）服务即报错退出，不做无状态运行。
+- 同一请求的全部数据查询共享一个读快照，并发采集写入下 totals、维度行与会话行相互一致。
+- 内嵌页面全部由前端按这些数值行自绘：KPI 卡（相对基线窗口的增减 chips）、对齐所配置 query 输出列的指标条（除已升格 KPI 卡的 requests/total/cache-hit 外的 token 类别列——默认布局即输入/输出/缓存读/推理，布局含缓存写时才会出现该列）、堆叠/单系列柱状图（点击按天/按月柱条即聚焦对应区间；超过 92 天按天柱自动按 ISO 周聚合并停用钻取）、占比环形图一行四张、带行列合计的星期×小时热力矩阵（对齐 `query heatmap` 的尾行/尾列合计）、带 token 占比条与 CSV 导出的会话排行、逐维度数据表（可排序、一键导出 CSV——按当前行序、精确整数）、整行环比对比（左侧逐日对比曲线、右侧指标表）与整行预估、范围预设与自定义起止日期（首次进入默认 Today、跨刷新记忆）以及自动刷新。按天桶不足 2 个时隐藏按天维度图、按月桶不足 2 个时隐藏按月维度图，单日选区只保留按小时图（星期视图对单日无意义）并隐藏环比对比表——单桶形态不携带信息——KPI 增减 chips 仍指向基线窗口（单日即前一日）。
 
 | 接口 | 参数 | 返回 |
 |------|------|------|
 | `GET /api/meta` | — | 版本、`min_date`/`max_date`（全库）、`data_through`、`last_collection`；后三项缺数据时为 `null` |
-| `GET /api/dashboard` | `from`、`to`（`YYYY-MM-DD`；缺省为截至今天的 30 天；跨度至多 366 天） | 统计区间、totals（整数，含 `active_days`）、compare（基线窗口按 `compare` 命令区间模式推导——结束于区间开始日前一天的等长窗口，单日区间退化为前一天；含基线 totals、8 行预计算行（显示串、带符号变化、pos/neg 着色 class，基线为 0 时变化% 显示 `--`），以及 `daily`——基线窗口逐日行（按窗口缺口填充、键即日期、纯整数，供前端绘制当前 vs 基线逐日对比曲线））、forecast（与 `forecast` 命令同口径的固定回看窗口：`today_so_far` 与恒 2 行的最近 7/30 天——窗口不含今天，日均按活跃天整数除法，预估为日均×未来天数；显示串预计算，窗口无数据时各格显示 `—`；不随 `from`/`to` 选区变化）、8 个固定维度行数组（`day`/`hour`/`weekday`/`month`/`client`/`model`/`provider`/`project`）、前 10 条会话，以及 `heatmap`——7×24 的 token 矩阵（`weekdays` 为 ISO 周序周一在首、`hours` 为 `00:00`..`23:00`、`values` 为 7×24 数组，空交点为 `0`），与总量同一读快照读取，单次刷新不可能混用快照；内嵌页面全部图表由前端按这些数值行自绘，`GET /api/chart/{kind}.svg` 仍可独立取图 |
+| `GET /api/dashboard` | `from`、`to`（`YYYY-MM-DD`；缺省为截至今天的 30 天；跨度至多 366 天） | 统计区间、totals（整数，含 `active_days`）、compare（基线窗口按所选区间推导——结束于区间开始日前一天的等长窗口，单日区间退化为前一天；含基线 totals、8 行预计算行（显示串、带符号变化、pos/neg 着色 class，基线为 0 时变化% 显示 `--`），以及 `daily`——基线窗口逐日行（按窗口缺口填充、键即日期、纯整数，供前端绘制当前 vs 基线逐日对比曲线））、forecast（固定回看窗口：`today_so_far` 与恒 2 行的最近 7/30 天——窗口不含今天，日均按活跃天整数除法，预估为日均×未来天数；显示串预计算，窗口无数据时各格显示 `—`；不随 `from`/`to` 选区变化）、8 个固定维度行数组（`day`/`hour`/`weekday`/`month`/`client`/`model`/`provider`/`project`）、前 10 条会话，以及 `heatmap`——7×24 的 token 矩阵（`weekdays` 为 ISO 周序周一在首、`hours` 为 `00:00`..`23:00`、`values` 为 7×24 数组，空交点为 `0`），与总量同一读快照读取，单次刷新不可能混用快照；内嵌页面全部图表由前端按这些数值行自绘，`GET /api/chart/{kind}.svg` 仍可独立取图 |
 | `GET /api/chart/{kind}.svg` | 日期参数与 `/api/dashboard` 一致；`kind` ∈ `day`/`hour`/`weekday`/`month`（柱状）、`client`/`model`/`provider`/`project`（饼图）、`heatmap` | 一份 SVG 文档（`image/svg+xml`） |
 | `GET /`、`GET /assets/…` | — | 内嵌 HTML 页面与静态资产（`Cache-Control: no-store`） |
 
@@ -791,7 +647,7 @@ token-usage serve --addr 127.0.0.1:9000
 
 ### serve start / serve status / serve stop / serve restart（后台，nginx 风格）
 
-同一仪表板也可以 nginx 风格在后台运行：`serve start` 拉起一个 detached 子进程并在其报告就绪后返回，`serve status` 查看状态，`serve stop` 停止。前台 `serve` 与后台子进程共用同一状态文件，且都在优雅停止时删除它，因此 `status`/`stop` 对两种实例一视同仁。
+`serve start` 拉起一个 detached 子进程并在其报告就绪后返回，`serve status` 查看状态，`serve stop` 停止——这是运行仪表板的唯一方式。
 
 ```bash
 token-usage serve start
@@ -802,15 +658,14 @@ token-usage serve stop
 token-usage serve restart
 ```
 
-- 状态文件：数据目录下的 `serve.json`（默认 `~/.token-usage/serve.json`），在服务完成监听时原子写出 `{"pid":…,"addr":…,"started_at":…}`（记录的 `addr` 为实际绑定的地址）。优雅停止时自动删除（前台按 Ctrl+C、后台经 `serve stop`）；崩溃或 `SIGKILL` 遗留的文件由 `status`/`stop` 的陈旧探活与下一次 `serve`/`serve start` 的单实例守卫兜底删除。状态迁移由数据目录下的 `serve-state.lock` 文件锁串行化，陈旧清理为条件删除：只有与判定所据内容仍一致的陈旧状态才会被移除——若新实例已接管，其新写出的 `serve.json` 绝不会被误删。
+- 状态文件：数据目录下的 `serve.json`（默认 `~/.token-usage/serve.json`），在服务完成监听时原子写出 `{"pid":…,"addr":…,"started_at":…}`（记录的 `addr` 为实际绑定的地址）。优雅停止时自动删除（`serve stop`，或 restart 的停止段）；崩溃或 `SIGKILL` 遗留的文件由 `serve status`/`serve stop` 的陈旧探活与下一次 `serve start` 的单实例守卫兜底删除。状态迁移由数据目录下的 `serve-state.lock` 文件锁串行化，陈旧清理为条件删除：只有与判定所据内容仍一致的陈旧状态才会被移除——若新实例已接管，其新写出的 `serve.json` 绝不会被误删。
 - 日志文件：数据目录下的 `serve.log`（默认 `~/.token-usage/serve.log`）。每次 `serve start` 都会截断；子进程的 stdout 与 stderr 都写入其中，为纯文本（无终端超链接）。启动失败时错误信息会附带日志末尾 10 行。
 - `serve start` 在已记录状态于 `/api/meta` 上仍有响应时报告已在运行并以退出码 0 幂等返回（要重启请用 `token-usage serve restart`，或先 `token-usage serve stop` 停止）；不再响应的陈旧状态与损坏的状态文件会被删除并照常启动。子进程 5s 内未就绪则启动失败，并指向日志末尾。并发的 `serve start` 由数据目录下的 `serve-start.lock` 文件锁串行化（仅用于启动协调——运行中的实例由 `serve.json` 描述、以 `serve.lock` 生命周期锁持有）：另一个 start 尚在执行时，第二个以非零退出码报错并提示稍后重试。
-- `serve status` 的所有状态结论均以退出码 0 返回（只有意外的 I/O 失败才非零）：`/api/meta` 有响应时报告 URL、PID 与启动时间；无响应（或状态文件损坏无法辨识）时删除陈旧/损坏文件并报告未运行。状态迁移由 `serve-state.lock` 串行化；锁被并发的 `status`/`stop` 持有超过带界重试窗口时，命令以非零退出并提示稍后重试。
+- `serve status` 的所有状态结论均以退出码 0 返回（只有意外的 I/O 失败才非零）：`/api/meta` 有响应时报告 URL、PID 与启动时间；无响应（或状态文件损坏无法辨识）时删除陈旧/损坏文件并报告未运行。状态迁移由 `serve-state.lock` 串行化；锁被并发的 `serve status`/`serve stop` 持有超过带界重试窗口时，命令以非零退出并提示稍后重试。
 - `serve stop` 在 Unix 上发送 SIGTERM 并给 3s 优雅窗口，超时以 SIGKILL 兜底；在 Windows 上使用 `taskkill /F`——Windows 控制台进程没有跨进程的优雅停止通道，对严格只读的服务可接受。是否停止成功仅以 `/api/meta` 不再响应为准（记录的 PID 可能已被无关进程复用，探活的结论优先于信号发送结果——信号投递失败也不会短路探活等待）。只有探活确认下线（或信号发送前就无响应——陈旧/损坏状态被清理）才会删除状态文件。若强杀兜底后服务仍在响应（无论强杀本身是否报错），命令以非零退出码报错并列出记录的 URL 与 PID，保留 `serve.json` 供人工检查进程/端口。若停止进行期间有新实例接管（旧实例下线后状态文件被改写），命令会如实说明并转而停止新实例，而不是报告旧实例已停止。对已停止的服务重复执行是幂等空操作，退出码仍为 0。
-- `serve restart` 以与 `serve stop` 完全相同的编排停止运行中的实例（以探活为判据；前台 Ctrl+C 会话同样会被优雅停止），随后以与 `serve start` 完全相同的编排拉起全新后台实例（`--addr`/`--open` 作用于新实例）。当前没有实例在运行时等价于直接启动。若运行中的实例在 SIGKILL 兜底后仍在响应，重启以非零错误中止——旧实例继续服务，此类场景请用 `serve stop` 排查。
-- 单实例契约：任意时刻至多一个仪表板实例（前台或后台）在运行。第二个 `serve`——无论前台后台、无论请求哪个地址——都会在监听之前被单实例守卫拒绝：打印运行中实例的 URL 与 PID 并以退出码 0 幂等返回（要重启请用 `token-usage serve restart`，或先 `token-usage serve stop` 停止）；若撞上另一实例正在启动的窗口，守卫报错并提示稍后重试。服务主体在其整个生命周期持有数据目录下的 `serve.lock` 生命周期锁。由于守卫先于监听执行，与运行中实例的同端口冲突不会再表现为监听失败——监听失败只剩「请求的端口被一个没有留下 `serve.json` 记录的无关进程占用」这一种场景。因此 `serve status` / `serve stop` 始终管理唯一实例。
-- 前台与后台共用状态文件：启动时写入失败（如数据目录只读）服务即报错退出，不做无状态运行。
-- 三种形态都支持 `--open`：前台在启动后打开浏览器；`serve start` / `serve restart` 仅在确认后台服务就绪后打开（无论哪种形态，打开浏览器失败都只是警告）。
+- `serve restart` 以与 `serve stop` 完全相同的编排停止运行中的实例（以探活为判据），随后以与 `serve start` 完全相同的编排拉起全新后台实例（`--addr`/`--open` 作用于新实例）。当前没有实例在运行时等价于直接启动。若运行中的实例在 SIGKILL 兜底后仍在响应，重启以非零错误中止——旧实例继续服务，此类场景请用 `serve stop` 排查。
+- 单实例契约：任意时刻至多一个仪表板实例在运行。第二个 `serve start`——无论请求哪个地址——都会在监听之前被单实例守卫拒绝：打印运行中实例的 URL 与 PID 并以退出码 0 幂等返回（要重启请用 `token-usage serve restart`，或先 `token-usage serve stop` 停止）；若撞上另一实例正在启动的窗口，守卫报错并提示稍后重试。服务主体在其整个生命周期持有数据目录下的 `serve.lock` 生命周期锁。由于守卫先于监听执行，与运行中实例的同端口冲突不会再表现为监听失败——监听失败只剩「请求的端口被一个没有留下 `serve.json` 记录的无关进程占用」这一种场景。因此 `serve status` / `serve stop` 始终管理唯一实例。
+- `--open` 由 `serve start` 与 `serve restart` 支持：仅在确认后台服务就绪后打开浏览器（打开失败只是警告）。
 
 ## update
 
@@ -827,7 +682,7 @@ token-usage update --force
 
 | 形式 | 作用 |
 |------|------|
-| `update` | 更新到最新稳定 Release。若当前二进制同目录存在一次中断的 POSIX 更新留下的受限事务 journal，先完成恢复；之后仅当目标严格高于当前版本且当前来源可信时才继续新替换：下载资产、与 `SHA256SUMS` 清单比对 SHA256、stage `--version` 二次校验、替换二进制。更新前正在运行的 daemon 会用新二进制自动重启；原本已停止的 daemon 保持停止，成功输出会提示 `token-usage start`。 |
+| `update` | 更新到最新稳定 Release。若当前二进制同目录存在一次中断的 POSIX 更新留下的受限事务 journal，先完成恢复；之后仅当目标严格高于当前版本且当前来源可信时才继续新替换：下载资产、与 `SHA256SUMS` 清单比对 SHA256、stage `--version` 二次校验、替换二进制。更新前正在运行的 daemon 会用新二进制自动重启；原本已停止的 daemon 保持停止，成功输出会提示 `token-usage daemon start`。 |
 | `update --check` | 只读检查；不创建任何本地文件（不创建配置目录/锁/日志/数据库/服务定义）。 |
 | `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | 更新（或加 `--check` 后仅检查）指定精确版本 tag。`--version` 接受严格 Release tag（`v` 前缀、`MAJOR.MINOR.PATCH`、可选 `-rc.N`、无前导零）；非法值在任何网络请求前即报错。 |
 | `update --force` | 当前二进制来源非官方 Release 资产时仍强制覆盖，仅限两种豁免：与所报告版本官方资产 hash 不一致（按安装指引重签过的二进制、或 `go install pkg@vX.Y.Z` 产物），以及 dev 本地构建（`Version = dev`，或直接构建伪版本归一显示的 `vX.Y.Z-dev`——两种形态同判）。全部结构检查与目标资产的 SHA256 / stage `--version` 校验照常执行；软链副本与非官方 tag 不可被 force。 |
@@ -884,7 +739,7 @@ token-usage update --force
 
 ### Windows 异步替换
 
-Windows 上替换运行中的 `.exe` 受限，自更新把替换交给后台 helper 后返回。helper 成功启动后，命令会明确说明「后台替换已排队」，以 `0` 退出，并提示稍后运行 `token-usage version` 或 `token-usage update --check` 确认最终版本，**不声称已完成**。更新前 daemon 已停止时，输出会要求先确认替换完成再运行 `token-usage start`——提前启动会使 helper 放弃替换（daemon 运行期间它拒绝改动二进制）。macOS/POSIX 为同步原子替换（同目录 backup + rename + fsync，失败回滚 + 下一次 `update` 调用按 journal 恢复）。
+Windows 上替换运行中的 `.exe` 受限，自更新把替换交给后台 helper 后返回。helper 成功启动后，命令会明确说明「后台替换已排队」，以 `0` 退出，并提示稍后运行 `token-usage version` 或 `token-usage update --check` 确认最终版本，**不声称已完成**。更新前 daemon 已停止时，输出会要求先确认替换完成再运行 `token-usage daemon start`——提前启动会使 helper 放弃替换（daemon 运行期间它拒绝改动二进制）。macOS/POSIX 为同步原子替换（同目录 backup + rename + fsync，失败回滚 + 下一次 `update` 调用按 journal 恢复）。
 
 ## 配置文件
 

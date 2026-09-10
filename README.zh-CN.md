@@ -10,8 +10,8 @@
 - 按消息/API 请求统计，准确处理跨日、多模型、分支与 rewind 的归因。
 - 支持 Claude Code/Desktop、OpenCode、Codex、WorkBuddy、ZCode 与 Zhipu-AutoClaw。
 - 支持 Claude 系列与 Codex 的 CC-Switch router 归因：通过代理日志回填实际 provider/model。
-- 可单次执行，也可使用实时后台监控守护进程；支持 macOS launchd 与 Windows 注册表自启。
-- 内建可视化分析：按小时/星期分布、星期×小时热力矩阵、SVG 柱状/折线/饼图/热力图、按近期日均估算未来用量、两期环比对比、最重会话排行、实时监视模式、一键报告包，以及本地仪表板服务（`token-usage serve`，内嵌交互式 HTML 仪表板：前端自绘图表、星期×小时热力矩阵、一键 CSV 导出、点击柱条即聚焦对应区间）。
+- 可单次执行，也可使用实时后台监控守护进程（`token-usage daemon start`）；支持 macOS launchd 与 Windows 注册表自启。
+- 内建可视化分析：按小时/星期分布、星期×小时热力矩阵、实时监视模式，以及本地仪表板服务（`token-usage serve start`，只读 HTTP 数据面上内嵌交互式 HTML 仪表板：前端自绘 SVG 图表、未来用量预测、两期环比对比、最重会话排行、一键 CSV 导出、点击柱条即聚焦对应区间）。
 - 纯 Go 单二进制 CLI，支持 macOS 和 Windows。
 
 ![token-usage serve 仪表板](docs/images/dashboard.png)
@@ -62,7 +62,7 @@ token-usage update --check          # 只检查，不修改本地文件
 token-usage update --version vX.Y.Z # 更新指定 Release
 ```
 
-`update` 会逐步输出过程——检查更新、当前/目标版本、下载、校验、安装、daemon 切换；交互终端上下载还会显示单行实时进度（百分比、已传输/总字节数、平均速度），输出被重定向时只保留步骤行。更新前正在运行的 daemon 会自动停止并用新二进制重启；原本已停止的 daemon 保持停止（成功输出会提示 `token-usage start`）。
+`update` 会逐步输出过程——检查更新、当前/目标版本、下载、校验、安装、daemon 切换；交互终端上下载还会显示单行实时进度（百分比、已传输/总字节数、平均速度），输出被重定向时只保留步骤行。更新前正在运行的 daemon 会自动停止并用新二进制重启；原本已停止的 daemon 保持停止（成功输出会提示 `token-usage daemon start`）。
 
 已重签的官方资产、源码构建产物（`Version = dev`）或通过 `go install` 安装的 Release tag 产物，需要先执行一次 `token-usage update --force`，将其替换为官方 Release 资产；之后即可正常更新。软链接副本和非官方 tag 不能通过这种方式转换。
 
@@ -87,7 +87,7 @@ token-usage collect all
 `collect all` 会扫描所有已启用客户端；配置了 router 时也会完成归因回填。它不使用 `collection_log` 的日期去重，消息按 `(client, id)` UPSERT，可安全重复执行。要持续更新数据，启动守护进程：
 
 ```bash
-token-usage start
+token-usage daemon start
 ```
 
 ### 3. 查询并创建专属报表
@@ -128,7 +128,7 @@ token-usage query daily_stack 20260701-20260721
 token-usage query list
 ```
 
-`query list` 仅读取配置、不打开 usage 数据库，适合安全查看内置和已配置视图。可选的 `[query.output]` 布局决定每张 query 表格显示哪些指标列及其顺序（`cache_create` 可选但默认隐藏；`query summary` 保持完整摘要）。校验规则和完整命令契约见 [CLI 参考](docs/cli.zh-CN.md#可配置查询视图)。
+`query list` 仅读取配置（配置文件必须存在——全新机器请先执行 `config init`）、不打开 usage 数据库，适合安全查看内置和已配置视图。可选的 `[query.output]` 布局决定每张 query 表格显示哪些指标列及其顺序（`cache_create` 可选但默认隐藏；`query summary` 保持完整摘要）。校验规则和完整命令契约见 [CLI 参考](docs/cli.zh-CN.md#可配置查询视图)。
 
 ## 命令速查
 
@@ -143,22 +143,27 @@ token-usage query list
 | `query client/model/provider/project/day/month/hour/weekday/heatmap/session/summary [date]` | 运行内置报表。 |
 | `query <name> [date]` | 运行已配置视图或报表组合。 |
 | `query list` | 不打开 usage 数据库，列出视图。 |
-| `export [view] [date]` | 将使用数据以 CSV 或 JSON 导出到 stdout。 |
 | `errors [日期]` | 查看某日期或区间的采集失败（`--format json` 输出机器可读结果）。 |
-| `doctor` | 运行只读健康检查。 |
-| `forecast` | 按近期日均估算即将到来的用量（`--format json` 输出机器可读结果）。 |
-| `compare <range> [range2]` | 对比两个时间段的用量（两个位置参数按时间先后对比：早者为基线、参数顺序不影响结果；`--base` 显式指定基线，缺省按参数粒度自动推导：单日对前一天、单月对上一个日历月、单年对上一个日历年、区间对前置等长窗口；`--by` 按维度成员对比，`--format json` 输出机器可读结果）。 |
-| `top [日期]` | 显示总用量最重的会话排行（`--limit`，默认 10；`--format json` 输出机器可读结果）。 |
-| `chart [日期]` | 将用量渲染为 SVG 图表（`--by` 维度、`--pie`、`--line` 趋势线、`--heatmap`、`--out` 保存）。 |
 | `watch [日期]` | 以固定间隔刷新 `query` 输出（`--once` 单帧；视图选择与 `query` 一致——`--by` 接受内置视图或已配置视图名，缺省跟随 `query.default`）。 |
-| `report [日期] --out <目录>` | 生成完整用量报告包（摘要、对比 + SVG 图表 + 交互式 HTML 仪表板）。 |
-| `serve` | 启动本地只读仪表板服务（前台运行；`serve start/status/stop/restart` 管理后台实例，`--open` 自动开浏览器）。 |
+| `doctor` | 运行只读健康检查。 |
+| `daemon start/status/stop/restart` | 管理采集守护进程：后台启动、查看状态、停止、重启。 |
+| `serve start/status/stop/restart` | 后台管理本地只读仪表板服务（`serve start --open` 自动开浏览器；裸 `serve` 只显示帮助）。 |
 | `version` / `--version` | 查看多行详细 / 单行简要的版本信息。 |
-| `start` / `status` / `stop` / `restart` | 控制后台守护进程。 |
 | `completion <shell>` | 输出 Bash、Zsh、Fish 或 PowerShell 的补全脚本。 |
 | `update` | 对官方 Release 资产原地自更新；符合条件的已重签、源码构建或通过 `go install` 安装的二进制，可先用一次 `update --force` 转换。 |
 
-运行 `token-usage --help` 查看命令概览；标志、退出码、副作用边界、配置行为与守护进程生命周期见 [CLI 参考](docs/cli.zh-CN.md)。
+### 从 v0.1.8 迁移
+
+v0.1.9 是一次有意的破坏性 CLI 收敛（详见 [CLI 参考](docs/cli.zh-CN.md#从-v018-迁移破坏性变更)）。`chart`、`compare`、`export`、`forecast`、`report`、`top` 六个命令已删除。可视化分析（SVG 图表、用量预测、两期对比、最重会话排行）由 `serve` 仪表板经只读 HTTP 数据面延续——含页面范围内的一键 CSV 导出；终端查询继续由 `query` 与 `watch` 承担。机器可读的 CLI export 合同与离线 HTML 报告包已有意移除，没有完整直接替代。顶层 `start`/`status`/`stop`/`restart` 已移入 `daemon` 命令组，裸 `serve` 不再前台启动服务。
+
+| v0.1.8 | 现在 |
+|---|---|
+| `token-usage start` / `status` / `stop` / `restart` | `token-usage daemon start` / `daemon status` / `daemon stop` / `daemon restart` |
+| `token-usage serve`（前台） | `token-usage serve start`（后台） |
+| `token-usage chart` / `forecast` / `compare` / `top` | `token-usage serve start`，然后打开仪表板 |
+| `token-usage export` / `report` | 终端查询继续用 `query` / `watch`；仪表板提供页面范围内的 CSV 导出。机器可读 CLI export 与离线报告包已移除，无完整直接替代 |
+
+运行 `token-usage --help` 查看命令概览；标志、退出码、副作用边界、配置行为与两个服务的生命周期见 [CLI 参考](docs/cli.zh-CN.md)。
 
 ## Shell 补全
 

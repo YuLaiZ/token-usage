@@ -21,8 +21,8 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
-// configLoaderForServeRun 是 _serve-run 的配置加载 seam：生产路径与 foreground
-// 一致走 loadConfig；测试注入临时 DataDir，避免依赖真实用户目录。
+// configLoaderForServeRun 是 _serve-run 的配置加载 seam：生产路径走
+// loadConfig；测试注入临时 DataDir，避免依赖真实用户目录。
 var configLoaderForServeRun = loadConfig
 
 func newServeRunCmd(version string) *cobra.Command {
@@ -51,9 +51,8 @@ func newServeRunCmd(version string) *cobra.Command {
 			}
 			defer usageDB.Close()
 
-			// 后台路径：autoOpen 恒 false（--open 由 serve start 父进程在确认
-			// 启动成功后执行），输出全部落入 serve.log。
-			return serveDashboard(cfg, usageDB, version, addr, cmd.OutOrStdout(), cmd.ErrOrStderr(), false)
+			// 输出全部落入 serve.log（writer 非 TTY，启动行自动降级纯文本）。
+			return serveDashboard(cfg, usageDB, version, addr, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	cmd.Flags().String("addr", "", ui.Bi(

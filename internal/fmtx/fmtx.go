@@ -1,7 +1,7 @@
-// Package fmtx 提供 compare 口径的数字与百分比格式化助手,供 cli(compare/
-// report 命令与静态报告页)与 web(serve 仪表板 compare 区块)共用,保证
-// 各入口的显示串与着色 class 单一来源。包名 fmtx 取「format extensions」:
-// 依赖 querier.FormatTokens 的缩写口径,故不并入 ui(ui 不得反向依赖 querier)。
+// Package fmtx 提供环比对比口径的数字与百分比格式化助手,供 web(serve
+// 仪表板 compare 区块)使用,保证显示串与着色 class 单一来源。包名 fmtx
+// 取「format extensions」:依赖 querier.FormatTokens 的缩写口径,故不并入
+// ui(ui 不得反向依赖 querier)。
 package fmtx
 
 import (

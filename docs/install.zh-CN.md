@@ -188,7 +188,7 @@ go build -o token-usage ./cmd/token-usage
 
 卸载后无系统级残留：
 
-1. 若守护进程正在运行，先停止：`token-usage stop`。
+1. 若守护进程正在运行，先停止：`token-usage daemon stop`。
 2. 若开启过开机自启，先执行 `token-usage config set daemon.autostart false`：移除自启定义（macOS 的 `~/Library/LaunchAgents/<label>.plist` 文件、Windows 的注册表 Run 值），避免删除目录后定义继续指向已不存在的二进制、每次登录触发启动失败。
 3. 删除应用目录：`rm -rf ~/.token-usage`（Windows 为 `Remove-Item -Recurse -Force $env:USERPROFILE\.token-usage`）。当前终端的命令缓存可能仍指向已删二进制，执行 `hash -r` 后确认 `token-usage` 已不可用，或直接新开终端确认。
 4. 移除 PATH 配置。

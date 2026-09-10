@@ -11,8 +11,7 @@ import (
 )
 
 // chartBarKinds 是柱状图维度(时间维度);chartPieKinds 是饼图维度(占比类)。
-// 时间维度切饼图不可读(day 366 扇区、hour 24 项图例溢出),与 chart 命令
-// 的 --pie 拒绝集合同口径。
+// 时间维度不提供饼图形态(day 366 扇区、hour 24 项图例溢出,不可读)。
 var (
 	chartBarKinds = map[string]bool{"day": true, "hour": true, "weekday": true, "month": true}
 	chartPieKinds = map[string]bool{"client": true, "model": true, "provider": true, "project": true}
@@ -57,7 +56,7 @@ func (s *server) handleChart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, *perr)
 		return
 	}
-	// 图表区间标签与 chart 命令同形态:单日仅日期,区间用 " ~ " 连接。
+	// 图表区间标签:单日仅日期,区间用 " ~ " 连接。
 	rangeLabel := from
 	if from != to {
 		rangeLabel = from + " ~ " + to

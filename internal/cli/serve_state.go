@@ -2,8 +2,8 @@
 package cli
 
 // serve_state.go 实现 `token-usage serve` 的运行状态文件 serve.json：记录当前
-// 仪表板服务进程的 PID、监听地址与启动时间，供 serve start/status/stop 与前台
-// serve 共用（前台 serve 也写/删同一状态文件，status 对两者一视同仁）。
+// 仪表板服务进程的 PID、监听地址与启动时间，供 serve start/status/stop 与
+// 后台服务主体 _serve-run 共用（服务主体写/删同一状态文件，status 据此判定）。
 // 本文件同时定义 serve 家族在 DataDir 下的三把文件锁固定名（角色分工见常量
 // 注释）与状态迁移锁的获取/释放 helper、条件删除原语 removeServeStateIfSame。
 //
@@ -56,8 +56,8 @@ const serveLogFile = "serve.log"
 // serveLifecycleLockFile、serveStartLockFile 与 serveStateLockFile 是 DataDir
 // 下的三把文件锁固定名（gofrs/flock 跨平台），共同支撑 serve 的单实例契约，
 // 角色分工如下：
-//   - serve.lock 是生命周期锁：由服务主体（前台 serve 进程或后台 _serve-run
-//     子进程）经 serveDashboard 的单实例守卫获取，在整个服务生命周期持有。
+//   - serve.lock 是生命周期锁：由后台服务主体（_serve-run 子进程）经
+//     serveDashboard 的单实例守卫获取，在整个服务生命周期持有。
 //     它挡住「另一个实例正在启动」的瞬时竞态；「已有实例在运行」的稳态由
 //     serve.json + /api/meta 探活判定。
 //   - serve-start.lock 是 start 串行化锁：仅 serve start 父进程在预检 → spawn →

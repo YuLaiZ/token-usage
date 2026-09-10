@@ -26,7 +26,7 @@
 |------|------|
 | `cmd/token-usage/` | Program entry point (`main.go` only assembles the root command and calls `Execute`; an error maps to exit code 1). |
 | `internal/buildinfo/` | Normalizes version and build metadata (`Current()`/`Info.Short()`/`Info.Detail()`); the `version` command and `--version` flag share the same snapshot. |
-| `internal/cli/` | Cobra command assembly (config/collect/query/errors/export/top/chart/forecast/compare/watch/report/serve/update/doctor/start/status/stop/restart/version, built-in help and completion, and hidden `_run`/`_update-helper`/`_update-cleanup`). |
+| `internal/cli/` | Cobra command assembly (config/collect/query/errors/watch/doctor/daemon/serve/update/version, built-in help and completion, and hidden `_run`/`_serve-run`/`_update-helper`/`_update-cleanup`). |
 | `internal/configapp/` | Configuration application layer: `ApplyConfig` atomically orchestrates revision protection, writing, autostart synchronization, and action suggestions under the control lock; `AnalyzeConfigEffects` is the impact matrix. |
 | `internal/runtimecfg/` | Configuration parsing boundary: `LoadEffectiveConfig` expands `~`, fills defaults and registry paths; also provides `ValidateUserConfig` and user-layer snapshots. |
 | `internal/config/` | User-configuration read/write, dotted-key get/set, and the default template. Keeps the raw `[query]` section as an opaque carrier (`RawQuery` plus mutually exclusive `RawQueryTopLevelIssues`) so query semantics are never validated on the global load path. |
@@ -44,9 +44,9 @@
 | `internal/analyzer/` | Daemon real-time monitoring: JSONL watcher, SQLite poller, debounce, and serialization lock. |
 | `internal/querier/` | Query engine that aggregates directly from `messages`. |
 | `internal/web/` | Read-only local dashboard HTTP server, including embedded static assets and JSON/SVG endpoints. |
-| `internal/charts/` | Shared SVG chart rendering for `chart`, `report`, and `serve`. |
-| `internal/querydef/` | Pure parser and validator for configured query views and output-column layouts. |
-| `internal/fmtx/` | Shared display formatting for compare/report/dashboard change values. |
+| `internal/charts/` | Shared SVG chart rendering for the `serve` dashboard. |
+| `internal/fmtx/` | Shared display formatting for dashboard change values. |
+| `internal/ui/` | Bilingual message helpers (`Bi`), framed tables with display-width alignment, and the query output-column registry shared by `query`, `watch`, and the dashboard. |
 | `internal/tui/` | Interactive configuration-editing TUI (bubbletea; saves through `ApplyConfig`). |
 | `internal/logger/` | Built on log/slog, with daily rotation and automatic cleanup. |
 
@@ -91,7 +91,7 @@ graph TB
 - Full collection (`collect all`) passes `Dates=nil`, so it does not consult `collection_log` date deduplication. Repeated scans remain safe because `messages` uses `(client, id)` UPSERT.
 - When part of a collector's sources fail, successfully parsed messages, sessions, and router data are still committed transactionally. However, it does not write `collection_log`, resolve historical errors, or advance `sync_state`; a later normal collection or retry idempotently replays the incomplete range with UPSERT.
 - The query layer (`querier`) directly joins `messages` (plus `sessions` metadata) and aggregates in real time; there is no intermediate summary table. All grouped views share one dimension-based pipeline (`dimensions → raw aggregates → alias-merged composite keys → stable sort → table`) and end with a `Total / 总计` row aggregated separately over the same date range; session details and the summary are exempt. Provider aliases merge rows before composite keys are formed, without rewriting `messages`. Every table renders its metric columns through one ordered set of metric descriptors resolved from the global `[query.output]` layout (default seven columns; `cache_create` selectable but hidden) — headers, group rows, total rows, and session rows all walk the same descriptors, and `cache_hit` always reads the full aggregate including `cache_create`, so the layout changes display only, never statistics, sorting, or totals.
-- The bare `query` runs the target configured in `[query]` (`default` falls back to client when unconfigured); `query <name>` dispatches positional args on the root command to a named subquery or group, sharing one execution chain with the explicit `query custom <name>`; `query list` renders configured views from the parsed definitions only and never opens the database. Definition names are lowercase identifiers that must not collide with `client`/`model`/`provider`/`project`/`session`/`summary`/`day`/`month`/`hour`/`weekday`/`heatmap`/`custom`/`list`. Semantic validation happens only on these paths (default, direct/custom name, list) and on TUI saves, via `internal/querydef` (full parse) — unrelated view-definition errors never block the nine layout-affected static table commands, which resolve the layout with the isolated `ParseOutputLayout` entry (a valid layout still applies; an invalid `query.output` fails them before the database opens; a top-level query problem silently falls back to the default columns). `query summary` never reads the layout. Invalid query configuration never blocks collection, status, daemon, `config set`, or `config show`, which keep propagating and rewriting the offending entries verbatim.
+- The bare `query` runs the target configured in `[query]` (`default` falls back to client when unconfigured); `query <name>` dispatches positional args on the root command to a named subquery or group, sharing one execution chain with the explicit `query custom <name>`; `query list` renders configured views from the parsed definitions only and never opens the database. Definition names are lowercase identifiers that must not collide with `client`/`model`/`provider`/`project`/`session`/`summary`/`day`/`month`/`hour`/`weekday`/`heatmap`/`custom`/`list`. Semantic validation happens only on these paths (default, direct/custom name, list) and on TUI saves, via `internal/querydef` (full parse) — unrelated view-definition errors never block the nine layout-affected static table commands, which resolve the layout with the isolated `ParseOutputLayout` entry (a valid layout still applies; an invalid `query.output` fails them before the database opens; a top-level query problem silently falls back to the default columns). `query summary` never reads the layout. Invalid query configuration never blocks collection, `daemon status`, the daemon, `config set`, or `config show`, which keep propagating and rewriting the offending entries verbatim.
 - The Codex rollout parser identifies a replay only when an event contains valid `total_token_usage`, using either the latest signature for the same `limit_id` or the complete `(total,last)` signature of the adjacent token event. It does not deduplicate the whole table, preserving legitimate counter resets. Deduplication only affects this in-memory parse and does not automatically clean historical duplicate messages already in the database.
 
 ## Database Tables
@@ -128,7 +128,7 @@ Queries directly SUM `fresh_input_tokens` and `total_tokens`: values come from t
 | Module | Responsibility | Key interfaces |
 |------|------|----------|
 | `buildinfo/` | Normalizes version/build metadata: injected values → `debug.BuildInfo`/VCS fallback → `dev`/`unknown`; shared by the version subcommand and `--version` flag. | `Current()`, `Info.Short()`, `Info.Detail()` |
-| `cli/` | Cobra command assembly, including version/config show; start/stop/status/restart use `control.Manager`, and config set/TUI use `configapp.Application`. | `NewRootCmd()` |
+| `cli/` | Cobra command assembly, including version/config show; the `daemon` group uses `control.Manager`, the `serve` group manages the dashboard lifecycle, and config set/TUI use `configapp.Application`. | `NewRootCmd()` |
 | `configapp/` | Configuration application layer: `ApplyConfig` atomically orchestrates revision protection, writing, autostart synchronization, stale cleanup, and action suggestions under a lock; `AnalyzeConfigEffects` is the impact matrix. | `Application.ApplyConfig()`, `AnalyzeConfigEffects()`, `Revision()` |
 | `runtimecfg/` | Configuration parsing boundary: effective parsing, validation, registry default paths, and user-layer snapshots. | `LoadEffectiveConfig()`, `ResolveEffectiveConfig()`, `ValidateUserConfig()`, `ConfigPath()` |
 | `control/` | Process-control layer: fixed control lock, Start/Stop/Restart/Inspect, and parent-child leases. | `Manager.Start/Stop/Restart/Inspect()`, `WithLock()`, `ParseParentLease()` |
@@ -144,9 +144,9 @@ Queries directly SUM `fresh_input_tokens` and `total_tokens`: values come from t
 | `engine/` | Collection orchestration: dependency assembly, main loop, transactional writing, retries, and result validation. | `NewDeps()`, `RunCollect()`, `RunRetryWithDeps()`, `RunRouterBackfill()`, `ValidateResult()` |
 | `analyzer/` | Daemon monitoring: ChangedFile/Incremental/router-source collection triggers, debounced merging, and a serialization lock. | `NewFromConfig()`, `JSONLWatcher`, `SQLitePoller` |
 | `querier/` | Real-time aggregation from messages and formatted output. | `ByClient()`, `ByModel()`, `ByProject()`, `ByHour()`, `ByWeekday()`, `Heatmap()`, `HeatmapMatrix()`, `RunDimensionView()`, `Sessions()`, `Summary()`, `StatsBetween()` |
-| `web/` | Local read-only dashboard server of the `serve` command: the embedded HTML page (dark metering-console theme; charts are rendered client-side from numeric rows), JSON endpoints (`/api/meta`, `/api/dashboard`), and the per-dimension SVG endpoint. All queries of one request share a single read-transaction snapshot. | `NewServer()` |
-| `charts/` | The single SVG chart implementation shared by chart/report/web: bars, lines, pies, and the weekday-by-hour heatmap (dark palette, full monospace font stack, hover `<title>`). | `BuildDimensionSVG()`, `Heatmap()`, `BarSVG()`, `LineSVG()`, `PieSVG()` |
-| `querydef/` | Query view vocabulary: builtin dimension constants, builtin view names, and the reserved-name list shared by the query/watch/export view-name parsing in `cli`. | `BuiltinDimensionNames()`, `IsReservedName()` |
+| `web/` | Local read-only dashboard server of the `serve` command group: the embedded HTML page (dark metering-console theme; charts are rendered client-side from numeric rows), JSON endpoints (`/api/meta`, `/api/dashboard`), and the per-dimension SVG endpoint. All queries of one request share a single read-transaction snapshot. | `NewServer()` |
+| `charts/` | The single SVG chart implementation shared by web: bars, lines, pies, and the weekday-by-hour heatmap (dark palette, full monospace font stack, hover `<title>`). | `BuildDimensionSVG()`, `Heatmap()`, `BarSVG()`, `LineSVG()`, `PieSVG()` |
+| `querydef/` | Query view vocabulary: builtin dimension constants, builtin view names, and the reserved-name list shared by the query/watch view-name parsing in `cli`. | `BuiltinDimensionNames()`, `IsReservedName()` |
 | `fmtx/` | Shared display-formatting helpers: thousands separators, signed K/M/B tokens, change coloring classes, and change percentages. | `Thousands()`, `SignedTokens()`, `CountChange()`, `ChangeClass()`, `ChangePercent()` |
 | `tui/` | Interactive configuration-editing TUI (dual edit/display models; manual saves use `ApplyConfig`; includes autostart toggle). | `Run()` |
 | `logger/` | Built on log/slog, with daily rotation and automatic cleanup. | `Init()` |
@@ -159,7 +159,7 @@ Queries directly SUM `fresh_input_tokens` and `total_tokens`: values come from t
 User runs a command → load configuration → collect/query/edit configuration → print results → exit
 ```
 
-Command groups: `version` (five-line detailed output), Cobra's built-in `help` and `completion`, `config` (interactive TUI with `show`/`init`/`get`/`set` subcommands), `collect` (with `all`/`router`/`retry`), `query` (with `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`heatmap`/`session`/`summary` plus `custom <name>` and the read-only `list`), `export` (CSV/JSON stdout export of the aggregated views), `errors`, `start`, `status`, `stop`, `restart`, `doctor` (read-only health check), `forecast` (usage estimation from recent daily averages), `compare` (usage comparison between two periods), `top` (heaviest sessions by total tokens), `chart` (SVG charts: daily or per-dimension bars, trend lines, share pies, and the weekday-by-hour heatmap), `watch` (interval-refreshed `query` output), `report` (full usage report bundle into a directory), `serve` (local read-only dashboard server: foreground run, with `start`/`status`/`stop`/`restart` managing a background instance), `update` (self-update to the latest or a given version), and the hidden internal `_run`, `_update-helper`, and `_update-cleanup`. The root command also has the `-v, --version` flag for one-line short output.
+Command groups: `version` (five-line detailed output), Cobra's built-in `help` and `completion`, `config` (interactive TUI with `show`/`init`/`get`/`set` subcommands), `collect` (with `all`/`router`/`retry`), `query` (with `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`heatmap`/`session`/`summary` plus `custom <name>` and the read-only `list`), `errors`, `watch` (interval-refreshed `query` output), `doctor` (read-only health check), the `daemon` group (`start`/`status`/`stop`/`restart` managing the collection daemon), the `serve` group (`start`/`status`/`stop`/`restart` managing the local read-only dashboard; bare `serve` only prints help), `update` (self-update to the latest or a given version), and the hidden internal `_run`, `_serve-run`, `_update-helper`, and `_update-cleanup`. The root command also has the `-v, --version` flag for one-line short output. The former top-level `start`/`status`/`stop`/`restart` commands and the analysis commands `chart`/`compare`/`export`/`forecast`/`report`/`top` were removed in the command-surface consolidation (see the [CLI Reference](cli.md) migration section).
 
 Running `token-usage` with no arguments only prints help; it neither starts the TUI nor the daemon. See the [CLI Reference](cli.md) for the full command tree, arguments, flags, exit codes, and examples.
 
@@ -168,7 +168,7 @@ Use cases: manual invocation, scheduled cron jobs, and script integration.
 ### Daemon Mode (Real-Time Monitoring)
 
 ```
-start spawns _run → parent-child lease grants authority → child obtains daemon lock → starts monitor goroutines
+daemon start spawns _run → parent-child lease grants authority → child obtains daemon lock → starts monitor goroutines
                                       │                         + starts startupCoordinator
                                       ├── fsnotify watches Claude JSONL (ChangedFile source)
                                       ├── fsnotify watches Codex rollout JSONL (ChangedFile source)
@@ -191,7 +191,7 @@ For a client with a router configured that supports attribution, every round (Ch
 
 WorkBuddy's SQLite database is used only to look up titles and has no poller.
 
-**Concurrency protection**: CLI collection and the daemon are mutually exclusive through the daemon lock (`<data_dir>/token-usage.lock`) so they cannot write SQLite simultaneously. Before opening the database, `collect` pre-checks the daemon lock and rejects collection when it is held; the daemon's serialization lock executes all collection work in order. `start`/`stop`/`restart`/`config set` instead serialize control operations through the control lock (described below).
+**Concurrency protection**: CLI collection and the daemon are mutually exclusive through the daemon lock (`<data_dir>/token-usage.lock`) so they cannot write SQLite simultaneously. Before opening the database, `collect` pre-checks the daemon lock and rejects collection when it is held; the daemon's serialization lock executes all collection work in order. `daemon start`/`daemon stop`/`daemon restart`/`config set` instead serialize control operations through the control lock (described below).
 
 ## Process-Control Architecture
 
@@ -201,7 +201,7 @@ Daemon control uses two locks, a parent-child lease protocol, two-file metadata,
 
 | Lock | Path | Held for | Purpose |
 |----|------|--------|------|
-| **control lock** | Fixed at `~/.token-usage/token-usage.control.lock` | Short term (hundreds of milliseconds to seconds) | Serializes control operations such as start/stop/restart/`ApplyConfig`; its fixed path does not change with `data_dir`, decoupling control signals from the data directory. |
+| **control lock** | Fixed at `~/.token-usage/token-usage.control.lock` | Short term (hundreds of milliseconds to seconds) | Serializes control operations such as daemon start/stop/restart and `ApplyConfig`; its fixed path does not change with `data_dir`, decoupling control signals from the data directory. |
 | **daemon lock** | `<data_dir>/token-usage.lock` | Long term (the daemon lifetime) | The **only source of truth for daemon liveness**; holding it means “running.” |
 
 They are different concepts and are never directly nested in one process:
@@ -210,11 +210,11 @@ They are different concepts and are never directly nested in one process:
 - The `_run` child is considered successfully started only after committing the daemon lock; acquiring and releasing the control lock is separate from the daemon lock.
 - Control-lock acquisition waits for at most 15 seconds (polling every 100ms). Proactive context cancellation returns `Canceled`; a timeout (from the operation or the supplied context deadline) is uniformly mapped to `ErrControlLockTimeout` so callers can handle it consistently.
 
-### Parent-Child Control Lease (Avoids `start` Deadlock)
+### Parent-Child Control Lease (Avoids `daemon start` Deadlock)
 
-When `start`/`restart` spawns `_run`, the parent holds the control lock while it waits roughly five seconds for readiness. If the child also needed that lock, a deadlock would occur. The parent-child lease solves this:
+When `daemon start`/`daemon restart` spawns `_run`, the parent holds the control lock while it waits roughly five seconds for readiness. If the child also needed that lock, a deadlock would occur. The parent-child lease solves this:
 
-- While holding the control lock, the parent (`start`/`restart`) creates a one-time `instanceID` and an anonymous unidirectional pipe. The parent holds the write end; the child inherits the read end (the file descriptor is passed through `os/exec` `ExtraFiles` on POSIX and an inheritable handle on Windows). The pipe carries no business data: EOF on its read end only means that the parent control lease has disappeared.
+- While holding the control lock, the parent (`daemon start`/`daemon restart`) creates a one-time `instanceID` and an anonymous unidirectional pipe. The parent holds the write end; the child inherits the read end (the file descriptor is passed through `os/exec` `ExtraFiles` on POSIX and an inheritable handle on Windows). The pipe carries no business data: EOF on its read end only means that the parent control lease has disappeared.
 - The `instanceID` plus read-end identifier are conveyed through three internal environment variables (`TOKEN_USAGE_START_INSTANCE` plus `TOKEN_USAGE_LEASE_FD` on POSIX or `TOKEN_USAGE_LEASE_HANDLE` on Windows). Before spawn, these internal variables are removed from the child environment to prevent stale values from being misinterpreted.
 - The child starts a lease watcher that blocks reading the read end. The watcher and the daemon-lock acquisition path commit through the same mutex state machine (`LeaseStateMachine`):
   - If EOF occurs first and the daemon lock was not acquired, the child cancels startup, writes neither PID nor runtime-state, and exits with code 0 (`ErrParentLeaseLost`).
@@ -222,12 +222,12 @@ When `start`/`restart` spawns `_run`, the parent holds the control lock while it
 
 Both `_run` startup paths meet the invariant that “a control lease exists continuously from reading effective configuration through acquiring the daemon lock”:
 
-- **Parent-lease path** (`_run` spawned by `start`): the parent authorizes the child while holding the control lock; the child does not acquire it.
+- **Parent-lease path** (`_run` spawned by `daemon start`): the parent authorizes the child while holding the control lock; the child does not acquire it.
 - **Independent path** (started directly by launchd/the Registry): without a valid parent lease, it acquires the control lock itself (15-second timeout). On timeout it exits successfully with code 0 instead of entering the main loop, avoiding conflict with an in-progress control operation and preventing launchd KeepAlive from immediately relaunching it on macOS.
 
 ### Two-File Metadata (PID + Runtime-State)
 
-The daemon lock is the sole liveness source of truth. PID/runtime-state are **best-effort** location/status metadata: when they cannot be read, callers degrade safely (`status` shows “PID metadata unavailable” / “startup phase unknown”; start/stop take the safe error path) and never return a half-ready “ready” state.
+The daemon lock is the sole liveness source of truth. PID/runtime-state are **best-effort** location/status metadata: when they cannot be read, callers degrade safely (`daemon status` shows “PID metadata unavailable” / “startup phase unknown”; daemon start/stop take the safe error path) and never return a half-ready “ready” state.
 
 | File | Path | Content |
 |------|------|------|
@@ -248,15 +248,15 @@ All persistent metadata/configuration writes use `fileutil.ReplaceCompleteFile`,
 
 This contract covers PID files, runtime-state, and `config.toml` (written by `ApplyConfig`). Remaining temporary files (for example after a crash) are removed by `CleanupKnownTempFiles` using an **exact basename prefix** only (never similar names, directories, or symlink targets), and only on a lock-held path.
 
-### Runtime State (`start`/`stop`/`restart`/`status`)
+### Runtime State (`daemon start`/`daemon stop`/`daemon restart`/`daemon status`)
 
-`start`: under the control lock, load configuration → determine liveness from the daemon lock → if already running, return its PID idempotently → otherwise detached-spawn `_run` with a parent lease → wait until all six readiness conditions hold (PID/instanceID in the PID file, daemon lock, and PID/instanceID/`monitor_ready` in runtime-state; poll for five seconds) → success. On timeout, it attempts to terminate only this child and cleans metadata only when the lock has been released and ownership still matches.
+`daemon start`: under the control lock, load configuration → determine liveness from the daemon lock → if already running, return its PID idempotently → otherwise detached-spawn `_run` with a parent lease → wait until all six readiness conditions hold (PID/instanceID in the PID file, daemon lock, and PID/instanceID/`monitor_ready` in runtime-state; poll for five seconds) → success. On timeout, it attempts to terminate only this child and cleans metadata only when the lock has been released and ownership still matches.
 
-`stop`: under the control lock, load configuration → determine liveness from the daemon lock → if not running, return idempotently → if running, stop by platform (macOS: always first idempotently try `bootout` for the current label, then send SIGTERM to the exact read PID if the lock remains held; Windows: `taskkill` the exact PID) → define success as **daemon lock released** (poll for five seconds), never by deleting a PID file to simulate success.
+`daemon stop`: under the control lock, load configuration → determine liveness from the daemon lock → if not running, return idempotently → if running, stop by platform (macOS: always first idempotently try `bootout` for the current label, then send SIGTERM to the exact read PID if the lock remains held; Windows: `taskkill` the exact PID) → define success as **daemon lock released** (poll for five seconds), never by deleting a PID file to simulate success.
 
-`restart`: stops the old daemon and starts a new one within one control-lock acquisition. If none is running, it returns `ErrRestartNotRunning` and suggests `start`. macOS tradeoff: after `bootout`, the new process runs detached and loses KeepAlive management for the current login session. The plist remains and reloads at the next login. Saving configuration only maintains the definition file; it does not proactively bootstrap the current job.
+`daemon restart`: stops the old daemon and starts a new one within one control-lock acquisition. If none is running, it returns `ErrRestartNotRunning` and suggests `daemon start`. macOS tradeoff: after `bootout`, the new process runs detached and loses KeepAlive management for the current login session. The plist remains and reloads at the next login. Saving configuration only maintains the definition file; it does not proactively bootstrap the current job.
 
-`status`: read-only (`Inspect` does not acquire the control lock). It returns a consistent snapshot of runtime state, startup phase, data directory/poll interval, and five-state autostart drift detection.
+`daemon status`: read-only (`Inspect` does not acquire the control lock). It returns a consistent snapshot of runtime state, startup phase, data directory/poll interval, and five-state autostart drift detection.
 
 ### Autostart State (Definition Layer Decoupled from Runtime Layer)
 
@@ -265,11 +265,11 @@ This contract covers PID files, runtime-state, and `config.toml` (written by `Ap
 - **Definition layer** (`SyncWith` / `AutoStartManager.Status`): only writes or deletes the service definition; it **never touches the current process**.
   - macOS: a LaunchAgent plist under `~/Library/LaunchAgents/` (does not call `launchctl bootstrap`; it loads automatically at login).
   - Windows: an `HKCU\...\Run` Registry value (does not spawn; Disable does not taskkill).
-- **Runtime layer** (`start` / `stop` / `restart`): only manages the current process—`start` explicitly performs a detached spawn and `stop` explicitly stops it while retaining the definition.
+- **Runtime layer** (`daemon start` / `daemon stop` / `daemon restart`): only manages the current process—`daemon start` explicitly performs a detached spawn and `daemon stop` explicitly stops it while retaining the definition.
 
-`config set daemon.autostart` and TUI saves both call `ApplyConfig`, which idempotently converges `service.SyncWith`. **Flipping autostart never starts or stops the current daemon**: enabling only writes the definition (the current process is unchanged; it takes effect next login), and disabling only deletes it (the current daemon keeps running; it does not start next login). Apply it in the current session manually with `stop` then `start` (or `restart`).
+`config set daemon.autostart` and TUI saves both call `ApplyConfig`, which idempotently converges `service.SyncWith`. **Flipping autostart never starts or stops the current daemon**: enabling only writes the definition (the current process is unchanged; it takes effect next login), and disabling only deletes it (the current daemon keeps running; it does not start next login). Apply it in the current session manually with `daemon stop` then `daemon start` (or `daemon restart`).
 
-**Drift detection**: `status` read-only compares configuration (autostart on/off) with the actual service state (`Exists` + `SpecMatches`) and distinguishes five states: enabled / autostart on but definition missing / content differs / autostart off but definition remains / not enabled. It only suggests saving configuration again; it never writes anything.
+**Drift detection**: `daemon status` read-only compares configuration (autostart on/off) with the actual service state (`Exists` + `SpecMatches`) and distinguishes five states: enabled / autostart on but definition missing / content differs / autostart off but definition remains / not enabled. It only suggests saving configuration again; it never writes anything.
 
 ### ApplyConfig (Configuration Application Orchestration)
 
@@ -282,15 +282,15 @@ This contract covers PID files, runtime-state, and `config.toml` (written by `Ap
 - daemon `poll_interval`, log fields, or any client/router/path change (excluding autostart alone) → `RuntimeChanged` (a running daemon needs restart).
 - only `daemon.autostart` changed → **not** a runtime change (it affects only the next-login definition).
 
-**Action suggestions** (merged by runtime state): if the daemon is running and collection is needed, use `stop` → all collection commands → `start`; if only `RuntimeChanged` applies while it is running, use `restart`. Warnings (historical data at the old path is not deleted; old router associations are not removed when rebinding, and so on) are printed as explanations.
+**Action suggestions** (merged by runtime state): if the daemon is running and collection is needed, use `daemon stop` → all collection commands → `daemon start`; if only `RuntimeChanged` applies while it is running, use `daemon restart`. Warnings (historical data at the old path is not deleted; old router associations are not removed when rebinding, and so on) are printed as explanations.
 
 **stdout/stderr contract**: the stable success line `✓ <key> = <value>` goes to stdout; action suggestions, explanations, and warnings go to stderr. A revision conflict writes no success line to stdout and exits nonzero (a retry automatically rereads); a partial failure writes the success line because configuration was persisted, writes failures to stderr, and exits nonzero. A `data_dir` migration requires `--confirm-migrate` and a stopped old daemon.
 
 **Read-only effective-reading path**: `config show` reuses `cli.loadConfig()` → `runtimecfg.LoadEffectiveConfig` (the single parsing boundary of `LoadUserConfigSnapshot` → `ValidateUserConfig` → `ResolveEffectiveConfig`) and serializes TOML to stdout. It does not duplicate defaulting logic; it is read-only with no runtime side effects—it creates no config/database/log/daemon metadata, acquires no process lock, and does not synchronize autostart. In contrast, `config get` reads only raw user-configuration values (without expanding `~` or filling defaults).
 
-### Startup Catch-Up (Closes the stop → collect → start Data Window)
+### Startup Catch-Up (Closes the daemon stop → collect → daemon start Data Window)
 
-`daemon.startupCoordinator` sequences monitor readiness → runtime-state → catch-up so incremental data created during stop → collect → start is not missed:
+`daemon.startupCoordinator` sequences monitor readiness → runtime-state → catch-up so incremental data created during daemon stop → collect → daemon start is not missed:
 
 1. Wait for every analyzer monitor to be ready (the ready barrier); if the context is canceled, write no state and perform no catch-up.
 2. Write ready state (`monitor_ready=true, catch_up=pending`); a failure is fatal, and the daemon immediately cancels the analyzer.
@@ -298,7 +298,7 @@ This contract covers PID files, runtime-state, and `config.toml` (written by `Ap
 4. Submit catch-up work in order through the analyzer serialization lock, following enabled client names in ascending order. For each client, send the client-source request first (opencode/zcode use incremental cursors; claude/workbuddy/autoclaw scan existing JSONL with no date; Codex does state increment first then a full rollout scan), then the client's router incremental request if configured. Any failure is counted once for that request and does not skip later work.
 5. Write final state: zero failures means `succeeded`; otherwise `failed` plus the exact failure count. Failures do not stop the daemon.
 
-Catch-up covers the window from the last manual collection until monitoring is ready. As long as the daemon starts successfully and finishes catch-up, incremental data created in that window is collected. Partial catch-up failure appears in `status` (`catch_up=failed`) and `errors`.
+Catch-up covers the window from the last manual collection until monitoring is ready. As long as the daemon starts successfully and finishes catch-up, incremental data created in that window is collected. Partial catch-up failure appears in `daemon status` (`catch_up=failed`) and `errors`.
 
 ## Self-Update Architecture
 
@@ -341,7 +341,7 @@ Dependencies flow from top to bottom; reverse dependencies are forbidden:
 ```text
 cmd/token-usage → cli
 
-cli → control / configapp / runtimecfg / daemon / config / querier / engine / collector / db / logger / buildinfo / update / charts / fmtx / querydef / web / ui
+cli → control / configapp / runtimecfg / daemon / config / querier / engine / collector / analyzer / model / service / fileutil / db / logger / buildinfo / update / querydef / web / tui / ui
 tui → configapp / runtimecfg / config
 configapp → control / runtimecfg / service / fileutil / config
 control → daemon / runmeta / runtimecfg / config
@@ -377,12 +377,13 @@ See the [CLI Reference](cli.md) for command-level details (arguments, flags, exi
 | `collect` / `collect all` / `collect router` / `collect retry` | `internal/cli/collect*.go` |
 | `query` / `query <name>` / `query custom <name>` / `query list` | `internal/cli/query.go` (dimension aggregation in `internal/querier`; view definitions in `internal/querydef`) |
 | `errors` | `internal/cli/errors.go` |
-| `config` / `config show` / `config get` / `config set` / `config init` | `internal/cli/config_tui.go` / `config_show.go` / `config_get.go` / `config_set.go` / `init.go` |
-| `start` / `stop` / `restart` / `status` | `internal/cli/{start,stop,restart,status}.go` |
+| `config` / `config show` / `config get` / `config set` / `config init` | `internal/cli/config_cmd.go` / `config_tui.go` / `config_show.go` / `config_get.go` / `config_set.go` / `init.go` |
+| `daemon` / `daemon start` / `daemon status` / `daemon stop` / `daemon restart` | `internal/cli/daemon.go` |
 | `update` / `update --check` / `update --version` / `update --force` | `internal/cli/update.go` (core in `internal/update`; the hidden `_update-helper`/`_update-cleanup` helpers live in `internal/cli/update_helper*.go`) |
-| `_run` (hidden) | `internal/cli/run_internal.go` |
+| `serve` / `serve start` / `serve status` / `serve stop` / `serve restart` | `internal/cli/serve*.go` (background body `_serve-run` in `serve_run.go`; HTTP data surface in `internal/web`) |
+| `_run` (hidden) / `_serve-run` (hidden) | `internal/cli/run_internal.go` / `internal/cli/serve_run.go` |
 
-> Historical change: the former `token-usage run --daemon` command was removed and replaced by `start` plus hidden `_run`. Scripts written for older versions must migrate to `token-usage start`.
+> Historical change: the former `token-usage run --daemon` command was removed and replaced by `start` plus hidden `_run` (today `token-usage daemon start`). Scripts written for older versions must migrate to `token-usage daemon start`.
 
 ## Configuration
 
