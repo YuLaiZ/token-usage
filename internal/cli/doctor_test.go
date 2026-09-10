@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -652,5 +653,200 @@ func TestDoctor_Dashboard_ReadFailure_Warn(t *testing.T) {
 	}
 	if !strings.Contains(out, "Result / 结果: 1 warnings / 1 项警告") {
 		t.Errorf("读失败应计 1 项警告:\n%s", out)
+	}
+}
+
+// ---- doctor --format json ----
+
+// runDoctorForTestArgs 带额外参数执行 doctor 并返回 stdout 全文。
+func runDoctorForTestArgs(t *testing.T, load func() (*config.Config, error), open func(string) (*db.DB, error), args ...string) string {
+	t.Helper()
+	cmd := newDoctorCmdWithDeps(load, open)
+	cmd.SetArgs(args)
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor Execute: %v", err)
+	}
+	return buf.String()
+}
+
+// --format json 输出合法 JSON：11 项检查的 id 集合完整、status 落在封闭值域、
+// 汇总与 table 模式一致（全绿基线 → result=ok，warnings/problems 均为 0）。
+func TestDoctor_FormatJSON_AllGreen(t *testing.T) {
+	dataDir := doctorDashboardBaseline(t)
+	out := runDoctorForTestArgs(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open, "--format", "json")
+
+	var doc struct {
+		Checks []struct {
+			ID     string `json:"id"`
+			Label  string `json:"label"`
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+		} `json:"checks"`
+		Summary struct {
+			Result   string `json:"result"`
+			Warnings int    `json:"warnings"`
+			Problems int    `json:"problems"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("输出必须是合法 JSON: %v\n%s", err, out)
+	}
+
+	wantIDs := []string{
+		"config", "data_directory", "database", "clients", "last_collection",
+		"data_freshness", "date_consistency", "unresolved_errors",
+		"query_definitions", "daemon", "dashboard",
+	}
+	gotIDs := map[string]bool{}
+	validStatus := map[string]bool{"ok": true, "warn": true, "fail": true, "skipped": true, "info": true}
+	for _, c := range doc.Checks {
+		gotIDs[c.ID] = true
+		if c.ID == "" || c.Label == "" || c.Detail == "" {
+			t.Errorf("检查项字段不得为空: %+v", c)
+		}
+		if !validStatus[c.Status] {
+			t.Errorf("status %q 不在封闭值域内: %+v", c.Status, c)
+		}
+	}
+	for _, id := range wantIDs {
+		if !gotIDs[id] {
+			t.Errorf("缺少检查项 %q，实际 ids: %v", id, gotIDs)
+		}
+	}
+	if len(doc.Checks) != len(wantIDs) {
+		t.Errorf("检查项应恰 %d 项，实际 %d", len(wantIDs), len(doc.Checks))
+	}
+	if doc.Summary.Result != "ok" || doc.Summary.Warnings != 0 || doc.Summary.Problems != 0 {
+		t.Errorf("全绿基线汇总应为 ok/0/0，实际 %+v", doc.Summary)
+	}
+	// status 与 table 模式逐项一致：daemon 与 dashboard 缺席时均为 info。
+	for _, c := range doc.Checks {
+		if c.ID == "daemon" && c.Status != "info" {
+			t.Errorf("daemon 恒为 info，实际 %q", c.Status)
+		}
+	}
+}
+
+// --format json 的警告计数与 table 模式的 Result 行一致：损坏 serve.json →
+// summary.warnings=1、result=warn，且对应检查项 status=warn。
+func TestDoctor_FormatJSON_WarnSummary(t *testing.T) {
+	dataDir := doctorDashboardBaseline(t)
+	writeServeStateFixture(t, dataDir, "{not-json")
+
+	out := runDoctorForTestArgs(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open, "--format", "json")
+	var doc struct {
+		Checks []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"checks"`
+		Summary struct {
+			Result   string `json:"result"`
+			Warnings int    `json:"warnings"`
+			Problems int    `json:"problems"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("输出必须是合法 JSON: %v\n%s", err, out)
+	}
+	if doc.Summary.Warnings != 1 || doc.Summary.Result != "warn" {
+		t.Errorf("损坏状态应 summary warn/1，实际 %+v", doc.Summary)
+	}
+	for _, c := range doc.Checks {
+		if c.ID == "dashboard" && c.Status != "warn" {
+			t.Errorf("dashboard 检查项应为 warn，实际 %q", c.Status)
+		}
+	}
+}
+
+// --format json 与 table 模式逐 id 状态一致（同数据两次执行）：按 table 行的
+// 「label: 状态词」逐行解析出状态，与 JSON 的 status 断言。
+func TestDoctor_FormatJSON_MatchesTableStatuses(t *testing.T) {
+	dataDir := doctorDashboardBaseline(t)
+	tableOut := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
+	jsonOut := runDoctorForTestArgs(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open, "--format", "json")
+
+	// id → table 行的 label 前缀与预期状态词（全绿基线：database 建库后文件
+	// 非空 → ok 而非 not-created warn；dashboard 无 serve.json → info）。
+	idLabel := map[string]string{
+		"config": "Config / 配置", "data_directory": "Data directory / 数据目录",
+		"database": "Database / 数据库", "clients": "Clients / 客户端",
+		"last_collection": "Last collection / 最近采集", "data_freshness": "Data freshness / 数据新鲜度",
+		"date_consistency": "Date consistency / 日期一致性", "unresolved_errors": "Unresolved errors / 未解决异常",
+		"query_definitions": "Query definitions / 查询视图", "daemon": "Daemon / 守护进程",
+		"dashboard": "Dashboard / 仪表板",
+	}
+	idWant := map[string]string{
+		"config": "ok", "data_directory": "ok", "database": "ok",
+		"clients": "ok", "last_collection": "ok", "data_freshness": "ok",
+		"date_consistency": "ok", "unresolved_errors": "ok",
+		"query_definitions": "ok", "daemon": "info", "dashboard": "info",
+	}
+	// 从 table 输出解析每行 label 与状态词（OK/WARN/FAIL/SKIPPED/INFO 之一）。
+	statusWord := map[string]string{"OK": "ok", "WARN": "warn", "FAIL": "fail", "SKIPPED": "skipped", "INFO": "info"}
+	tableStatus := map[string]string{}
+	for _, line := range strings.Split(tableOut, "\n") {
+		for id, label := range idLabel {
+			if !strings.HasPrefix(line, label+": ") {
+				continue
+			}
+			rest := strings.TrimPrefix(line, label+": ")
+			for word, code := range statusWord {
+				if strings.HasPrefix(rest, word+" / ") {
+					tableStatus[id] = code
+				}
+			}
+		}
+	}
+
+	var doc struct {
+		Checks []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Checks) != len(idLabel) {
+		t.Fatalf("json 检查项应 %d 项，实际 %d", len(idLabel), len(doc.Checks))
+	}
+	for _, c := range doc.Checks {
+		want, known := idWant[c.ID]
+		if !known {
+			t.Errorf("未知检查项 id %q", c.ID)
+			continue
+		}
+		if c.Status != want {
+			t.Errorf("json %q status=%q，预期 %q", c.ID, c.Status, want)
+		}
+		got, parsed := tableStatus[c.ID]
+		if !parsed {
+			t.Errorf("table 输出未解析到 %q 行", c.ID)
+			continue
+		}
+		if got != c.Status {
+			t.Errorf("状态不一致 %q: table=%q json=%q", c.ID, got, c.Status)
+		}
+	}
+}
+
+// 非法 --format 在执行任何检查之前被拒绝（输出既非 JSON 也非 table 报告）。
+func TestDoctor_FormatJSON_InvalidFormatRejected(t *testing.T) {
+	cmd := newDoctorCmdWithDeps(func() (*config.Config, error) {
+		return &config.Config{DataDir: t.TempDir()}, nil
+	}, db.Open)
+	cmd.SetArgs([]string{"--format", "xml"})
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("非法 --format 应报错")
+	}
+	if !strings.Contains(err.Error(), "xml") {
+		t.Errorf("错误应回显非法值，实际: %v", err)
 	}
 }

@@ -387,11 +387,14 @@ token-usage errors --format json | jq .  # machine-readable records
 
 ## doctor
 
-Runs read-only health checks and prints one line per check (`label: status description`, statuses `OK / 正常`, `WARN / 警告`, `FAIL / 失败`, plus `SKIPPED / 跳过` and one informational `INFO / 提示` line) followed by a summary. Strictly read-only: it **never starts, stops, or restarts the daemon and never modifies configuration; no business data is written** — opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own. The data-directory writability probe creates exactly one temporary file and removes it immediately.
+Runs read-only health checks and prints one line per check (`label: status description`, statuses `OK / 正常`, `WARN / 警告`, `FAIL / 失败`, plus `SKIPPED / 跳过` and informational `INFO / 提示` lines) followed by a summary. Strictly read-only: it **never starts, stops, or restarts the daemon and never modifies configuration; no business data is written** — opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own. The data-directory writability probe creates exactly one temporary file and removes it immediately.
 
 ```text
 token-usage doctor
+token-usage doctor --format json
 ```
+
+With `--format json`, the same checks and summary are emitted as a single machine-readable JSON document (two-space indentation, trailing newline): `checks` is an array of `{id, label, status, detail}` — `id` is a stable machine key (`config`, `data_directory`, `database`, `clients`, `last_collection`, `data_freshness`, `date_consistency`, `unresolved_errors`, `query_definitions`, `daemon`, `dashboard`), `status` is in a closed set (`ok`/`warn`/`fail`/`skipped`/`info`, same semantics as the table status words), and `label`/`detail` are the same bilingual strings as the table lines. `summary` carries `result` (`ok`/`warn`/`fail`, FAIL over WARN), `warnings`, and `problems`. An invalid `--format` value is rejected before any check runs.
 
 | Check | OK | WARN | FAIL |
 |---|---|---|---|
@@ -405,6 +408,9 @@ token-usage doctor
 | `Unresolved errors / 未解决异常` | none | count with pointers to `token-usage errors` and `token-usage collect retry` | query failure |
 | `Query definitions / 查询视图` | configured subqueries/groups/default are semantically valid (also OK when none are configured) | issue count with the first diagnostic path and a pointer to `token-usage query list`; warnings only — broken view definitions never block collection or the static table commands | config failed to load |
 | `Daemon / 守护进程` | informational only: points to `token-usage daemon status`; doctor never probes or controls the daemon (probing would create lock/config-directory files) | | |
+| `Dashboard / 仪表板` | `serve.json` present and `/api/meta` answers; prints the recorded URL and PID | corrupt or stale state (`serve.json` unreadable, or the recorded instance does not answer); suggests `token-usage serve status` to clean up | — |
+
+The `Dashboard / 仪表板` probe is read-only by construction: it reads `serve.json` and issues one `GET /api/meta` when the file exists (no request when it is absent). Unlike the daemon check it can probe safely — reading the state file and an HTTP GET create no locks or files — but doctor never removes a stale or corrupt state file itself; the WARN points at `token-usage serve status`, whose stale/corrupt cleanup deletes the residue under the state lock.
 
 - Checks that cannot run because an upstream check failed print `SKIPPED / 跳过` and add no new count (the upstream FAIL already counts): config failure skips every config-dependent check; a missing or broken database skips the collection, freshness, date-consistency, and error checks; when the last-collection query fails, data freshness is skipped as `unavailable / 无法获取` because last collection already FAILs; with no collection recorded at all, data freshness is skipped because last collection already warns.
 - The summary line (`Result / 结果`) is `OK / 一切正常`, `N warnings / N 项警告`, or `N problems / N 项失败` (FAIL takes precedence over WARN).

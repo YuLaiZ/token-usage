@@ -32,8 +32,8 @@ func newDoctorCmdWithDeps(load func() (*config.Config, error), open func(string)
 		Use:   "doctor",
 		Short: "Run health checks and report problems / 运行健康检查并报告问题",
 		Long: ui.Bi(
-			"Run read-only health checks and print one line per check (OK/WARN/FAIL) with a final summary. Checks: config, data directory (the writability probe creates exactly one temporary file and removes it immediately), database (SQLite quick_check plus message count), enabled clients, last successful collection, data freshness (WARN when the last collection is more than seven days old), date consistency (WARN when stored dates disagree with the local dates recomputed from message timestamps; report-only, no auto-fix), unresolved collection errors, query view definitions (subqueries/groups/default semantic validity, warnings only), a read-only dashboard probe (serve.json plus /api/meta liveness — INFO when not running, OK when answering, WARN for a stale or corrupt state file with cleanup pointed at `token-usage serve status`), and an informational pointer to `token-usage daemon status` for daemon state. No business data is written: opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own; it never starts, stops, or restarts the daemon, and never modifies configuration. FAIL/WARN are report-only; the exit code is always 0 in v1.",
-			"运行只读健康检查,逐项输出检查结果(OK/WARN/FAIL)并给出汇总。检查项:配置、数据目录(可写探针仅创建一个临时文件并立即删除)、数据库(SQLite quick_check 与消息行数)、已启用客户端、最近成功采集、数据新鲜度(最近采集距今超过七天告警)、日期一致性(date 列与按 ts 毫秒重算的本地日期不一致时告警,仅报告不自动修复)、未解决采集异常、查询视图定义(subqueries/groups/default 的语义合法性,仅警告)、只读仪表板探测(读 serve.json 并探活 /api/meta——未运行为 INFO、应答为 OK、陈旧或损坏状态为 WARN 并指向 `token-usage serve status` 清理),以及指向 `token-usage daemon status` 的守护进程状态提示。不写业务数据:打开数据库的行为(journal 模式设置与 schema 迁移)与其它读取类命令一致,doctor 自身不执行任何特有的写操作;绝不启动/停止/重启守护进程,绝不修改配置。FAIL/WARN 仅体现在输出,v1 退出码恒为 0。",
+			"Run read-only health checks and print one line per check (OK/WARN/FAIL) with a final summary. Checks: config, data directory (the writability probe creates exactly one temporary file and removes it immediately), database (SQLite quick_check plus message count), enabled clients, last successful collection, data freshness (WARN when the last collection is more than seven days old), date consistency (WARN when stored dates disagree with the local dates recomputed from message timestamps; report-only, no auto-fix), unresolved collection errors, query view definitions (subqueries/groups/default semantic validity, warnings only), a read-only dashboard probe (serve.json plus /api/meta liveness — INFO when not running, OK when answering, WARN for a stale or corrupt state file with cleanup pointed at `token-usage serve status`), and an informational pointer to `token-usage daemon status` for daemon state. No business data is written: opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own; it never starts, stops, or restarts the daemon, and never modifies configuration. With `--format json` the same checks and summary are emitted as a machine-readable JSON document (stable check ids, status in a closed set of ok/warn/fail/skipped/info, bilingual detail strings identical to the table lines). FAIL/WARN are report-only; the exit code is always 0 in v1.",
+			"运行只读健康检查,逐项输出检查结果(OK/WARN/FAIL)并给出汇总。检查项:配置、数据目录(可写探针仅创建一个临时文件并立即删除)、数据库(SQLite quick_check 与消息行数)、已启用客户端、最近成功采集、数据新鲜度(最近采集距今超过七天告警)、日期一致性(date 列与按 ts 毫秒重算的本地日期不一致时告警,仅报告不自动修复)、未解决采集异常、查询视图定义(subqueries/groups/default 的语义合法性,仅警告)、只读仪表板探测(读 serve.json 并探活 /api/meta——未运行为 INFO、应答为 OK、陈旧或损坏状态为 WARN 并指向 `token-usage serve status` 清理),以及指向 `token-usage daemon status` 的守护进程状态提示。不写业务数据:打开数据库的行为(journal 模式设置与 schema 迁移)与其它读取类命令一致,doctor 自身不执行任何特有的写操作;绝不启动/停止/重启守护进程,绝不修改配置。`--format json` 把同一批检查项与汇总输出为机器可读的 JSON 文档（稳定的检查项 id、取值封闭的 status（ok/warn/fail/skipped/info）、与 table 行一致的双语 detail）。FAIL/WARN 仅体现在输出,v1 退出码恒为 0。",
 		),
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
@@ -48,6 +48,10 @@ func newDoctorCmdWithDeps(load func() (*config.Config, error), open func(string)
 			return runDoctor(cmd, load, open)
 		},
 	}
+	cmd.Flags().String("format", "table", ui.Bi(
+		"Output format: table (human-readable report) or json (machine-readable checks plus summary)",
+		"输出格式：table（人读报告）或 json（机器可读的检查项与汇总）",
+	))
 	return cmd
 }
 
@@ -85,17 +89,38 @@ func doctorLine(out io.Writer, label, status, desc string) {
 // FAIL/WARN 只体现在报告里(RunE 返回 error 会被 cobra 冠以 Error: 前缀打到
 // stderr,语义是命令失败而非体检结论;os.Exit 又会跳过 defer 的 DB 关闭)。
 func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open func(string) (*db.DB, error)) error {
+	format, _ := cmd.Flags().GetString("format")
+	switch format {
+	case "", "table", "json":
+	default:
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("invalid --format %q (allowed: table, json)", format),
+			fmt.Sprintf("无效的 --format %q（允许：table、json）", format),
+		))
+	}
+	// checks 收集全部检查项的结构化结果:table 模式逐行渲染(与既有输出逐字节
+	// 一致),json 模式经 doctorReport 序列化(marshalExportJSON,两空格缩进)。
+	// statusXxx 显示串仅用于 table 渲染;emit 传入的是同名的 doctorStatus 常量。
+	var checks []doctorCheck
+	emit := func(id, label string, status doctorStatus, detail string) {
+		checks = append(checks, doctorCheck{ID: id, Label: label, Status: status, Detail: detail})
+	}
+	statusText := map[doctorStatus]string{
+		statusOK:   ui.Bi("OK", "正常"),
+		statusWarn: ui.Bi("WARN", "警告"),
+		statusFail: ui.Bi("FAIL", "失败"),
+		statusSkip: ui.Bi("SKIPPED", "跳过"),
+		statusInfo: ui.Bi("INFO", "提示"),
+	}
+
 	out := cmd.OutOrStdout()
 	ctx := cmdContext(cmd)
 
-	statusOK := ui.Bi("OK", "正常")
-	statusWarn := ui.Bi("WARN", "警告")
-	statusFail := ui.Bi("FAIL", "失败")
-	statusSkip := ui.Bi("SKIPPED", "跳过")
-	statusInfo := ui.Bi("INFO", "提示")
-
-	fmt.Fprintln(out, ui.Bi("Health check", "健康检查"))
-	fmt.Fprintln(out)
+	// 标题与空行仅属于 table 报告;json 载荷必须是可直连解析的纯 JSON。
+	if format != "json" {
+		fmt.Fprintln(out, ui.Bi("Health check", "健康检查"))
+		fmt.Fprintln(out)
+	}
 
 	var warnings, failures int
 
@@ -103,7 +128,7 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	cfg, cfgErr := load()
 	if cfgErr != nil {
 		failures++
-		doctorLine(out, ui.Bi("Config", "配置"), statusFail, cfgErr.Error())
+		emit("config", ui.Bi("Config", "配置"), statusFail, cfgErr.Error())
 	} else {
 		// 路径展示复用 loadConfig 同一解析边界(runtimecfg.ConfigPath(home)),
 		// 不在 doctor 内复制 ~ 展开逻辑;home 获取失败时仅缺省路径展示
@@ -112,13 +137,13 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 		if env, envErr := defaultResolveEnv(); envErr == nil {
 			desc = runtimecfg.ConfigPath(env.Home)
 		}
-		doctorLine(out, ui.Bi("Config", "配置"), statusOK, desc)
+		emit("config", ui.Bi("Config", "配置"), statusOK, desc)
 	}
 	configFailed := cfgErr != nil
 
 	// 2. Data directory / 数据目录
 	if configFailed {
-		doctorLine(out, ui.Bi("Data directory", "数据目录"), statusSkip, ui.Bi("config failed", "配置加载失败"))
+		emit("data_directory", ui.Bi("Data directory", "数据目录"), statusSkip, ui.Bi("config failed", "配置加载失败"))
 	} else {
 		// cfg.DataDir 已经 runtimecfg.LoadEffectiveConfig 展开 ~ 前缀,直接使用。
 		dataDir := cfg.DataDir
@@ -126,19 +151,16 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 		switch {
 		case statErr != nil:
 			failures++
-			doctorLine(out, ui.Bi("Data directory", "数据目录"), statusFail,
-				ui.Bi("directory does not exist", "目录不存在")+" "+dataDir)
+			emit("data_directory", ui.Bi("Data directory", "数据目录"), statusFail, ui.Bi("directory does not exist", "目录不存在")+" "+dataDir)
 		case !info.IsDir():
 			failures++
-			doctorLine(out, ui.Bi("Data directory", "数据目录"), statusFail,
-				ui.Bi("not a directory", "不是目录")+" "+dataDir)
+			emit("data_directory", ui.Bi("Data directory", "数据目录"), statusFail, ui.Bi("not a directory", "不是目录")+" "+dataDir)
 		default:
 			if probeErr := probeDataDirWritable(dataDir); probeErr != nil {
 				failures++
-				doctorLine(out, ui.Bi("Data directory", "数据目录"), statusFail,
-					ui.Bi("not writable", "不可写")+": "+probeErr.Error())
+				emit("data_directory", ui.Bi("Data directory", "数据目录"), statusFail, ui.Bi("not writable", "不可写")+": "+probeErr.Error())
 			} else {
-				doctorLine(out, ui.Bi("Data directory", "数据目录"), statusOK, dataDir)
+				emit("data_directory", ui.Bi("Data directory", "数据目录"), statusOK, dataDir)
 			}
 		}
 	}
@@ -151,7 +173,7 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	// dbState 分派,不会读到零值假象。
 	var messages int64
 	if configFailed {
-		doctorLine(out, ui.Bi("Database", "数据库"), statusSkip, ui.Bi("config failed", "配置加载失败"))
+		emit("database", ui.Bi("Database", "数据库"), statusSkip, ui.Bi("config failed", "配置加载失败"))
 	} else {
 		dbPath := filepath.Join(cfg.DataDir, "usage.db")
 		info, statErr := os.Stat(dbPath)
@@ -159,22 +181,20 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 		case statErr != nil:
 			warnings++
 			dbState = dbStateMissing
-			doctorLine(out, ui.Bi("Database", "数据库"), statusWarn,
-				ui.Bi("not created yet (run collect to generate)", "尚未创建(运行 collect 后生成)"))
+			emit("database", ui.Bi("Database", "数据库"), statusWarn, ui.Bi("not created yet (run collect to generate)", "尚未创建(运行 collect 后生成)"))
 		case info.Size() == 0:
 			// 0 字节文件是「文件已建但从未初始化 schema」的形态:与不存在同路径
 			// 记 WARN 且不打开——db.Open 会对其做 journal 模式设置与 schema 迁移
 			// (doctor 自身不特有的写操作),初始化留给 collect。
 			warnings++
 			dbState = dbStateMissing
-			doctorLine(out, ui.Bi("Database", "数据库"), statusWarn,
-				ui.Bi("empty database file (uninitialized); run collect to initialize", "空数据库文件(未初始化);运行 collect 后初始化"))
+			emit("database", ui.Bi("Database", "数据库"), statusWarn, ui.Bi("empty database file (uninitialized); run collect to initialize", "空数据库文件(未初始化);运行 collect 后初始化"))
 		default:
 			opened, openErr := open(dbPath)
 			if openErr != nil {
 				failures++
 				dbState = dbStateBroken
-				doctorLine(out, ui.Bi("Database", "数据库"), statusFail, openErr.Error())
+				emit("database", ui.Bi("Database", "数据库"), statusFail, openErr.Error())
 			} else {
 				usageDB = opened
 				defer usageDB.Close()
@@ -183,22 +203,20 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 				case quickErr != nil:
 					failures++
 					dbState = dbStateBroken
-					doctorLine(out, ui.Bi("Database", "数据库"), statusFail, quickErr.Error())
+					emit("database", ui.Bi("Database", "数据库"), statusFail, quickErr.Error())
 				case quick != "ok":
 					failures++
 					dbState = dbStateBroken
-					doctorLine(out, ui.Bi("Database", "数据库"), statusFail,
-						ui.Bi("quick_check failed", "quick_check 未通过")+": "+quick)
+					emit("database", ui.Bi("Database", "数据库"), statusFail, ui.Bi("quick_check failed", "quick_check 未通过")+": "+quick)
 				default:
 					if countErr := usageDB.QueryRowContext(ctx,
 						"SELECT COUNT(*) FROM messages").Scan(&messages); countErr != nil {
 						failures++
 						dbState = dbStateBroken
-						doctorLine(out, ui.Bi("Database", "数据库"), statusFail, countErr.Error())
+						emit("database", ui.Bi("Database", "数据库"), statusFail, countErr.Error())
 					} else {
 						dbState = dbStateOK
-						doctorLine(out, ui.Bi("Database", "数据库"), statusOK,
-							fmt.Sprintf("%s (quick_check: ok, %s: %d)", dbPath, ui.Bi("messages", "消息数"), messages))
+						emit("database", ui.Bi("Database", "数据库"), statusOK, fmt.Sprintf("%s (quick_check: ok, %s: %d)", dbPath, ui.Bi("messages", "消息数"), messages))
 					}
 				}
 			}
@@ -207,7 +225,7 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 
 	// 4. Clients / 客户端
 	if configFailed {
-		doctorLine(out, ui.Bi("Clients", "客户端"), statusSkip, ui.Bi("config failed", "配置加载失败"))
+		emit("clients", ui.Bi("Clients", "客户端"), statusSkip, ui.Bi("config failed", "配置加载失败"))
 	} else {
 		var enabled []string
 		for name, client := range cfg.Clients {
@@ -219,11 +237,9 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 		sort.Strings(enabled)
 		if len(enabled) == 0 {
 			warnings++
-			doctorLine(out, ui.Bi("Clients", "客户端"), statusWarn,
-				ui.Bi("no client enabled", "未启用任何客户端"))
+			emit("clients", ui.Bi("Clients", "客户端"), statusWarn, ui.Bi("no client enabled", "未启用任何客户端"))
 		} else {
-			doctorLine(out, ui.Bi("Clients", "客户端"), statusOK,
-				fmt.Sprintf("%d (%s)", len(enabled), strings.Join(enabled, ", ")))
+			emit("clients", ui.Bi("Clients", "客户端"), statusOK, fmt.Sprintf("%d (%s)", len(enabled), strings.Join(enabled, ", ")))
 		}
 	}
 
@@ -236,27 +252,25 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	freshKnown := false
 	switch {
 	case configFailed:
-		doctorLine(out, ui.Bi("Last collection", "最近采集"), statusSkip, ui.Bi("config failed", "配置加载失败"))
+		emit("last_collection", ui.Bi("Last collection", "最近采集"), statusSkip, ui.Bi("config failed", "配置加载失败"))
 	case dbState != dbStateOK:
 		// 数据库缺失或损坏时最近采集无从谈起,上游项已计 WARN/FAIL,此处跳过不重复计数。
-		doctorLine(out, ui.Bi("Last collection", "最近采集"), statusSkip, ui.Bi("database unavailable", "数据库不可用"))
+		emit("last_collection", ui.Bi("Last collection", "最近采集"), statusSkip, ui.Bi("database unavailable", "数据库不可用"))
 	default:
 		// 复用 querier.Freshness 的最近成功采集查询(dates 为空即只查
 		// collection_log 全库口径),时区语义与 query 统计信息区一致。
 		f, err := querier.New(usageDB).Freshness(ctx, nil)
 		if err != nil {
 			failures++
-			doctorLine(out, ui.Bi("Last collection", "最近采集"), statusFail, err.Error())
+			emit("last_collection", ui.Bi("Last collection", "最近采集"), statusFail, err.Error())
 		} else {
 			fresh = f
 			freshKnown = true
 			if fresh.LastCollection.IsZero() {
 				warnings++
-				doctorLine(out, ui.Bi("Last collection", "最近采集"), statusWarn,
-					ui.Bi("no successful collection recorded yet", "尚无成功采集记录"))
+				emit("last_collection", ui.Bi("Last collection", "最近采集"), statusWarn, ui.Bi("no successful collection recorded yet", "尚无成功采集记录"))
 			} else {
-				doctorLine(out, ui.Bi("Last collection", "最近采集"), statusOK,
-					fresh.LastCollection.Format(time.DateTime))
+				emit("last_collection", ui.Bi("Last collection", "最近采集"), statusOK, fresh.LastCollection.Format(time.DateTime))
 			}
 		}
 	}
@@ -265,27 +279,26 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	// 是否超过陈旧阈值(阈值取舍见 doctorStaleThreshold)。
 	switch {
 	case configFailed:
-		doctorLine(out, ui.Bi("Data freshness", "数据新鲜度"), statusSkip, ui.Bi("config failed", "配置加载失败"))
+		emit("data_freshness", ui.Bi("Data freshness", "数据新鲜度"), statusSkip, ui.Bi("config failed", "配置加载失败"))
 	case dbState != dbStateOK:
 		// 上游数据库项已计 WARN/FAIL,此处跳过不重复计数。
-		doctorLine(out, ui.Bi("Data freshness", "数据新鲜度"), statusSkip, ui.Bi("database unavailable", "数据库不可用"))
+		emit("data_freshness", ui.Bi("Data freshness", "数据新鲜度"), statusSkip, ui.Bi("database unavailable", "数据库不可用"))
 	case !freshKnown:
 		// Freshness 查询失败:上一项 Last collection 已 FAIL,此处按
 		// 「无法获取」跳过,不误报为无采集记录,也不重复计数。
-		doctorLine(out, ui.Bi("Data freshness", "数据新鲜度"), statusSkip, ui.Bi("unavailable", "无法获取"))
+		emit("data_freshness", ui.Bi("Data freshness", "数据新鲜度"), statusSkip, ui.Bi("unavailable", "无法获取"))
 	case fresh.LastCollection.IsZero():
 		// 无采集记录:上一项 Last collection 已 WARN,此处跳过不重复计数。
-		doctorLine(out, ui.Bi("Data freshness", "数据新鲜度"), statusSkip, ui.Bi("no collection recorded", "无采集记录"))
+		emit("data_freshness", ui.Bi("Data freshness", "数据新鲜度"), statusSkip, ui.Bi("no collection recorded", "无采集记录"))
 	case doctorFreshnessStale(time.Since(fresh.LastCollection)):
 		warnings++
 		days := int(time.Since(fresh.LastCollection).Hours() / 24)
-		doctorLine(out, ui.Bi("Data freshness", "数据新鲜度"), statusWarn, ui.Bi(
+		emit("data_freshness", ui.Bi("Data freshness", "数据新鲜度"), statusWarn, ui.Bi(
 			fmt.Sprintf("last collection %d d ago; run `token-usage collect` to refresh", days),
 			fmt.Sprintf("最近采集距今 %d 天；运行 `token-usage collect` 刷新", days),
 		))
 	default:
-		doctorLine(out, ui.Bi("Data freshness", "数据新鲜度"), statusOK,
-			doctorFreshnessDesc(time.Since(fresh.LastCollection)))
+		emit("data_freshness", ui.Bi("Data freshness", "数据新鲜度"), statusOK, doctorFreshnessDesc(time.Since(fresh.LastCollection)))
 	}
 
 	// 7. Date consistency / 日期一致性:messages.date 是采集时按本地时区归属
@@ -295,26 +308,26 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	// 的查询结果,单行只读计数仿检查 3 的写法。
 	switch {
 	case configFailed:
-		doctorLine(out, ui.Bi("Date consistency", "日期一致性"), statusSkip, ui.Bi("config failed", "配置加载失败"))
+		emit("date_consistency", ui.Bi("Date consistency", "日期一致性"), statusSkip, ui.Bi("config failed", "配置加载失败"))
 	case dbState != dbStateOK:
 		// 上游数据库项已计 WARN/FAIL,此处跳过不重复计数。
-		doctorLine(out, ui.Bi("Date consistency", "日期一致性"), statusSkip, ui.Bi("database unavailable", "数据库不可用"))
+		emit("date_consistency", ui.Bi("Date consistency", "日期一致性"), statusSkip, ui.Bi("database unavailable", "数据库不可用"))
 	default:
 		var mismatched int64
 		if scanErr := usageDB.QueryRowContext(ctx,
 			"SELECT COUNT(*) FROM messages WHERE date != strftime('%Y-%m-%d', ts/1000, 'unixepoch', 'localtime')",
 		).Scan(&mismatched); scanErr != nil {
 			failures++
-			doctorLine(out, ui.Bi("Date consistency", "日期一致性"), statusFail, scanErr.Error())
+			emit("date_consistency", ui.Bi("Date consistency", "日期一致性"), statusFail, scanErr.Error())
 		} else if mismatched == 0 {
 			// 总数分别内嵌进双语半句:若只在句首加 %d,中文半句会缺数字。
-			doctorLine(out, ui.Bi("Date consistency", "日期一致性"), statusOK, ui.Bi(
+			emit("date_consistency", ui.Bi("Date consistency", "日期一致性"), statusOK, ui.Bi(
 				fmt.Sprintf("%d messages consistent", messages),
 				fmt.Sprintf("%d 条消息日期一致", messages),
 			))
 		} else {
 			warnings++
-			doctorLine(out, ui.Bi("Date consistency", "日期一致性"), statusWarn, ui.Bi(
+			emit("date_consistency", ui.Bi("Date consistency", "日期一致性"), statusWarn, ui.Bi(
 				fmt.Sprintf("%d messages with date inconsistent with timestamp; check whether the system timezone changed or data was modified directly", mismatched),
 				fmt.Sprintf("%d 条消息日期与时间戳不一致；请检查系统时区是否变更或数据是否被直接修改", mismatched),
 			))
@@ -324,19 +337,19 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	// 8. Unresolved errors / 未解决异常
 	switch {
 	case configFailed:
-		doctorLine(out, ui.Bi("Unresolved errors", "未解决异常"), statusSkip, ui.Bi("config failed", "配置加载失败"))
+		emit("unresolved_errors", ui.Bi("Unresolved errors", "未解决异常"), statusSkip, ui.Bi("config failed", "配置加载失败"))
 	case dbState != dbStateOK:
-		doctorLine(out, ui.Bi("Unresolved errors", "未解决异常"), statusSkip, ui.Bi("database unavailable", "数据库不可用"))
+		emit("unresolved_errors", ui.Bi("Unresolved errors", "未解决异常"), statusSkip, ui.Bi("database unavailable", "数据库不可用"))
 	default:
 		errs, err := db.GetErrorsContext(ctx, usageDB, db.ErrorFilter{Unresolved: true})
 		if err != nil {
 			failures++
-			doctorLine(out, ui.Bi("Unresolved errors", "未解决异常"), statusFail, err.Error())
+			emit("unresolved_errors", ui.Bi("Unresolved errors", "未解决异常"), statusFail, err.Error())
 		} else if len(errs) == 0 {
-			doctorLine(out, ui.Bi("Unresolved errors", "未解决异常"), statusOK, ui.Bi("none", "无"))
+			emit("unresolved_errors", ui.Bi("Unresolved errors", "未解决异常"), statusOK, ui.Bi("none", "无"))
 		} else {
 			warnings++
-			doctorLine(out, ui.Bi("Unresolved errors", "未解决异常"), statusWarn, ui.Bi(
+			emit("unresolved_errors", ui.Bi("Unresolved errors", "未解决异常"), statusWarn, ui.Bi(
 				fmt.Sprintf("%d unresolved; run `token-usage errors` for details, `token-usage collect retry` to retry", len(errs)),
 				fmt.Sprintf("%d 条未解决;运行 `token-usage errors` 查看详情、`token-usage collect retry` 重试", len(errs)),
 			))
@@ -348,7 +361,7 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	// 配置是纯展示态,坏定义不阻断采集与其他静态命令。
 	switch {
 	case configFailed:
-		doctorLine(out, ui.Bi("Query definitions", "查询视图"), statusSkip, ui.Bi("config failed", "配置加载失败"))
+		emit("query_definitions", ui.Bi("Query definitions", "查询视图"), statusSkip, ui.Bi("config failed", "配置加载失败"))
 	default:
 		if _, qdErr := querydef.ParseViews(querydefInput(cfg)); qdErr != nil {
 			warnings++
@@ -357,12 +370,12 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 			if errors.As(qdErr, &ve) && len(ve.Issues) > 0 {
 				desc = fmt.Sprintf("%d %s: %s", len(ve.Issues), ui.Bi("issue(s)", "项问题"), ve.Issues[0].Message)
 			}
-			doctorLine(out, ui.Bi("Query definitions", "查询视图"), statusWarn, ui.Bi(
+			emit("query_definitions", ui.Bi("Query definitions", "查询视图"), statusWarn, ui.Bi(
 				fmt.Sprintf("%s; run `token-usage query list` for details", desc),
 				fmt.Sprintf("%s;运行 `token-usage query list` 查看详情", desc),
 			))
 		} else {
-			doctorLine(out, ui.Bi("Query definitions", "查询视图"), statusOK, ui.Bi("definitions valid", "定义合法"))
+			emit("query_definitions", ui.Bi("Query definitions", "查询视图"), statusOK, ui.Bi("definitions valid", "定义合法"))
 		}
 	}
 
@@ -372,7 +385,7 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	// 锁文件不存在时创建它、锁文件不可创建时又保守误判为运行中;两者均违背
 	// doctor「绝不修改/写副作用」铁律或语义不清,故不探测,指向 status。
 	// 本项不依赖配置,任何场景都输出。
-	doctorLine(out, ui.Bi("Daemon", "守护进程"), statusInfo, ui.Bi(
+	emit("daemon", ui.Bi("Daemon", "守护进程"), statusInfo, ui.Bi(
 		"run `token-usage daemon status` for daemon state (this command never probes or controls the daemon)",
 		"使用 `token-usage daemon status` 查看守护进程状态(本命令绝不探测或操作守护进程)",
 	))
@@ -386,37 +399,37 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	// serve stop/status 的判定语义);未运行是 INFO(仪表板可选,不构成健康问题)。
 	switch {
 	case configFailed:
-		doctorLine(out, ui.Bi("Dashboard", "仪表板"), statusSkip, ui.Bi("config failed", "配置加载失败"))
+		emit("dashboard", ui.Bi("Dashboard", "仪表板"), statusSkip, ui.Bi("config failed", "配置加载失败"))
 	default:
 		st, stErr := readServeState(cfg.DataDir)
 		switch {
 		case errors.Is(stErr, errServeStateCorrupt):
 			warnings++
-			doctorLine(out, ui.Bi("Dashboard", "仪表板"), statusWarn, ui.Bi(
+			emit("dashboard", ui.Bi("Dashboard", "仪表板"), statusWarn, ui.Bi(
 				"corrupt serve state file; run `token-usage serve status` to clean it up",
 				"serve.json 状态文件损坏;运行 `token-usage serve status` 清理",
 			))
 		case stErr != nil:
 			warnings++
-			doctorLine(out, ui.Bi("Dashboard", "仪表板"), statusWarn, ui.Bi(
+			emit("dashboard", ui.Bi("Dashboard", "仪表板"), statusWarn, ui.Bi(
 				fmt.Sprintf("failed to read serve state: %v", stErr),
 				fmt.Sprintf("读取服务状态失败:%v", stErr),
 			))
 		case st == nil:
-			doctorLine(out, ui.Bi("Dashboard", "仪表板"), statusInfo, ui.Bi(
+			emit("dashboard", ui.Bi("Dashboard", "仪表板"), statusInfo, ui.Bi(
 				"dashboard not running; run `token-usage serve start` to start it",
 				"仪表板未在后台运行;可用 `token-usage serve start` 启动",
 			))
 		default:
 			url := "http://" + st.Addr
 			if serveMetaAlive(url, serveStaleProbeTimeout) {
-				doctorLine(out, ui.Bi("Dashboard", "仪表板"), statusOK, ui.Bi(
+				emit("dashboard", ui.Bi("Dashboard", "仪表板"), statusOK, ui.Bi(
 					fmt.Sprintf("running at %s (PID %d)", url, st.PID),
 					fmt.Sprintf("运行中 %s（PID %d）", url, st.PID),
 				))
 			} else {
 				warnings++
-				doctorLine(out, ui.Bi("Dashboard", "仪表板"), statusWarn, ui.Bi(
+				emit("dashboard", ui.Bi("Dashboard", "仪表板"), statusWarn, ui.Bi(
 					fmt.Sprintf("stale state for %s (PID %d not answering); run `token-usage serve status` to clean it up", url, st.PID),
 					fmt.Sprintf("%s（PID %d）无响应的陈旧状态;运行 `token-usage serve status` 清理", url, st.PID),
 				))
@@ -424,7 +437,31 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 		}
 	}
 
-	// 汇总行:FAIL 优先于 WARN;两者皆无才是一切正常。
+	// 汇总:FAIL 优先于 WARN;两者皆无才是一切正常。table 逐行渲染后输出汇总
+	// 行;json 序列化 checks 与 summary(status 机器值与 table 同源)。
+	summary := doctorSummary{Warnings: warnings, Problems: failures}
+	switch {
+	case failures > 0:
+		summary.Result = "fail"
+	case warnings > 0:
+		summary.Result = "warn"
+	default:
+		summary.Result = "ok"
+	}
+
+	if format == "json" {
+		payload, jsonErr := marshalExportJSON(doctorReport{Checks: checks, Summary: summary})
+		if jsonErr != nil {
+			return fmt.Errorf("%s: %w", ui.Bi("failed to encode doctor report as JSON", "doctor 报告 JSON 编码失败"), jsonErr)
+		}
+		_, jsonErr = io.WriteString(out, payload)
+		return jsonErr
+	}
+
+	for _, c := range checks {
+		doctorLine(out, c.Label, statusText[c.Status], c.Detail)
+	}
+
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "%s: ", ui.Bi("Result", "结果"))
 	switch {
@@ -436,6 +473,41 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 		fmt.Fprintln(out, ui.Bi("OK", "一切正常"))
 	}
 	return nil
+}
+
+// doctorStatus 是检查项结论的封闭值域(ok/warn/fail/skipped/info),作为
+// 编译期常量供 emit 调用点与 --format json 序列化共用,避免裸字符串漂移。
+type doctorStatus string
+
+const (
+	statusOK   doctorStatus = "ok"
+	statusWarn doctorStatus = "warn"
+	statusFail doctorStatus = "fail"
+	statusSkip doctorStatus = "skipped"
+	statusInfo doctorStatus = "info"
+)
+
+// doctorCheck 是单个检查项的结构化结果:ID 是 --format json 的稳定机器键,
+// Label/Detail 与 table 输出同行同文(双语拼接串),Status 取封闭值域。
+type doctorCheck struct {
+	ID     string       `json:"id"`
+	Label  string       `json:"label"`
+	Status doctorStatus `json:"status"`
+	Detail string       `json:"detail"`
+}
+
+// doctorSummary 汇总全部检查项的结论:Warnings/Problems 与 table 的汇总行同
+// 口径(SKIPPED/INFO 不计入),Result 是 fail/warn/ok 的机器结论。
+type doctorSummary struct {
+	Result   string `json:"result"`
+	Warnings int    `json:"warnings"`
+	Problems int    `json:"problems"`
+}
+
+// doctorReport 是 --format json 的顶层载荷。
+type doctorReport struct {
+	Checks  []doctorCheck `json:"checks"`
+	Summary doctorSummary `json:"summary"`
 }
 
 // doctorStaleThreshold 是「数据新鲜度」检查项的陈旧阈值:最近成功采集距今

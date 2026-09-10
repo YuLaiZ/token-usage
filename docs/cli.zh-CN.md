@@ -387,11 +387,14 @@ token-usage errors --format json | jq .  # 机器可读记录
 
 ## doctor
 
-运行只读健康检查，逐项输出一行结果（格式为「标签: 状态 描述」，状态为 `OK / 正常`、`WARN / 警告`、`FAIL / 失败`，另有 `SKIPPED / 跳过` 与一条信息性的 `INFO / 提示`），最后给出汇总。严格只读：**绝不启动/停止/重启守护进程，绝不修改配置；不写业务数据**——打开数据库的行为（journal 模式设置与 schema 迁移）与其它读取类命令一致，doctor 自身不执行任何特有的写操作。数据目录可写性探针仅创建一个临时文件并立即删除。
+运行只读健康检查，逐项输出一行结果（格式为「标签: 状态 描述」，状态为 `OK / 正常`、`WARN / 警告`、`FAIL / 失败`，另有 `SKIPPED / 跳过` 与信息性的 `INFO / 提示` 行），最后给出汇总。严格只读：**绝不启动/停止/重启守护进程，绝不修改配置；不写业务数据**——打开数据库的行为（journal 模式设置与 schema 迁移）与其它读取类命令一致，doctor 自身不执行任何特有的写操作。数据目录可写性探针仅创建一个临时文件并立即删除。
 
 ```text
 token-usage doctor
+token-usage doctor --format json
 ```
+
+`--format json` 把同一批检查项与汇总输出为单个机器可读的 JSON 文档（两空格缩进、尾随换行）：`checks` 是 `{id, label, status, detail}` 数组——`id` 是稳定的机器键（`config`、`data_directory`、`database`、`clients`、`last_collection`、`data_freshness`、`date_consistency`、`unresolved_errors`、`query_definitions`、`daemon`、`dashboard`），`status` 取封闭值域（`ok`/`warn`/`fail`/`skipped`/`info`，与 table 状态词语义一致），`label`/`detail` 与 table 行是相同的双语字符串。`summary` 携带 `result`（`ok`/`warn`/`fail`，FAIL 优先于 WARN）、`warnings` 与 `problems`。非法 `--format` 在任何检查执行之前即被拒绝。
 
 | 检查项 | OK | WARN | FAIL |
 |---|---|---|---|
@@ -405,6 +408,9 @@ token-usage doctor
 | `Unresolved errors / 未解决异常` | 无 | 数量，并提示 `token-usage errors` 与 `token-usage collect retry` | 查询失败 |
 | `Query definitions / 查询视图` | 已配置的子查询/组合查询/默认行为语义合法（未配置时同样 OK） | 问题计数、首个诊断路径并指向 `token-usage query list`；仅警告——坏视图定义不会阻断采集与静态表格命令 | 配置加载失败 |
 | `Daemon / 守护进程` | 纯提示：指向 `token-usage daemon status`;doctor 绝不探测或操作守护进程（探测会创建锁文件/配置目录） | | |
+| `Dashboard / 仪表板` | `serve.json` 存在且 `/api/meta` 有响应；显示记录的 URL 与 PID | 状态损坏或陈旧（`serve.json` 无法读取，或记录实例不再应答）；建议 `token-usage serve status` 清理 | — |
+
+`Dashboard / 仪表板` 探测按构造只读：读 `serve.json`，文件存在时发一次 `GET /api/meta`（不存在时不发任何请求）。与守护进程检查不同，它可以安全探测——读状态文件与 HTTP GET 不创建锁或文件——但 doctor 绝不自行删除陈旧或损坏的状态文件；WARN 指向 `token-usage serve status`，其陈旧/损坏清理会在状态锁内删除残留。
 
 - 因上游检查失败而无法执行的检查项输出 `SKIPPED / 跳过`，不重复计数（上游 FAIL 已计数）：配置失败跳过全部依赖配置的检查项；数据库缺失或损坏跳过采集、数据新鲜度、日期一致性与异常四项；最近采集查询失败时数据新鲜度以「无法获取」跳过（最近采集一项已失败）；完全无采集记录时数据新鲜度跳过（最近采集一项已告警）。
 - 汇总行（`Result / 结果`）为 `OK / 一切正常`、`N warnings / N 项警告` 或 `N problems / N 项失败`（FAIL 优先于 WARN）。

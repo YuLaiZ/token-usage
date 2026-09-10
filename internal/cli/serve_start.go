@@ -28,8 +28,8 @@ import (
 // 后台启动的等待参数（包级 var 供测试按需缩短）。
 var (
 	// serveStaleProbeTimeout 是判定已记录实例是否仍存活的单次探活超时，
-	// serveDashboard 的单实例守卫（serveLifecycleGuard）与 serve start 的
-	// 已运行预检共用。
+	// serveDashboard 的单实例守卫（serveLifecycleGuard）、serve start 的
+	// 已运行预检与 doctor 的仪表板检查三处共用。
 	serveStaleProbeTimeout = 1500 * time.Millisecond
 	// serveStartPollTimeout 是轮询 serve.json 的上限：子命令监听成功才写
 	// 状态文件，超时说明 spawn 失败或监听报错（原因看 serve.log）。
