@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/serve"
 )
 
 func TestServeRunCmd_BackgroundLifecycle(t *testing.T) {
@@ -44,10 +45,10 @@ func TestServeRunCmd_BackgroundLifecycle(t *testing.T) {
 
 	// 轮询等待 serve.json 出现:子命令 Listen 成功才写。
 	deadline := time.Now().Add(10 * time.Second)
-	var st *ServeState
+	var st *serve.ServeState
 	var err error
 	for {
-		st, err = readServeState(dir)
+		st, err = serve.ReadState(dir)
 		if err == nil && st != nil {
 			break
 		}
@@ -69,7 +70,7 @@ func TestServeRunCmd_BackgroundLifecycle(t *testing.T) {
 	}
 
 	// /api/meta 可达。
-	if !serveMetaAlive("http://"+st.Addr, 2*time.Second) {
+	if !serve.MetaAlive("http://"+st.Addr, 2*time.Second) {
 		t.Errorf("后台服务 /api/meta 应可达: %s", st.Addr)
 	}
 
@@ -94,7 +95,7 @@ func TestServeRunCmd_BackgroundLifecycle(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("_serve-run 未在超时内退出")
 	}
-	if _, err := os.Stat(serveStatePath(dir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(serve.StatePath(dir)); !os.IsNotExist(err) {
 		t.Errorf("退出后 serve.json 应被自清理,stat err = %v", err)
 	}
 	if !strings.Contains(out.String(), "dashboard stopped") {

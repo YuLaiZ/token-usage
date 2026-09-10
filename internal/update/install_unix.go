@@ -88,6 +88,9 @@ func (p *posixInstaller) Platform() string {
 // 流程（见文件头事务保证）。oldBinPath 供回滚诊断（通常等于 targetBinPath）。
 // wasRunning 是替换前 daemon 运行态，写入 journal 供中断恢复时按原运行态重启 daemon
 // （中断可能发生在 Stop 已执行、Start 未成功之间，此时 Inspect 报 not-running 会丢失原态）。
+// serveWasRunning/serveAddr 是替换前 dashboard 的运行态与监听地址，同样写入 journal：
+// 中断恢复路径据此把已被本事务停止的 dashboard 按原地址恢复（旧版本 journal 缺这些
+// 字段时反序列化为零值，不恢复，向后兼容）。
 // 成功返回 targetBinPath 作为 newBinPath（POSIX rename 后路径不变）。
 // 任一失败须保证 target 处于可恢复状态（旧版本或已回滚）。
 //
@@ -102,7 +105,7 @@ func (p *posixInstaller) Platform() string {
 // 调用方契约（installUnderLock）：
 //   - Install 成功 → StartWithExecutable(newBinPath)；Start 成功 → Commit；Start 失败 → Rollback。
 //   - Install 失败 → target 已是旧版本（或已内部 rollback），调用方重启 oldBinPath 即恢复旧版本。
-func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, targetBinPath string, wasRunning bool) (string, error) {
+func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, targetBinPath string, wasRunning, serveWasRunning bool, serveAddr, expectedHash string) (string, error) {
 	il := newStepLogger(p.logWriter, "install", nil)
 	// 入参校验：stagePath 必须存在且为普通文件，targetBinPath 必须存在（覆盖已有）。
 	if err := validateInstallInputs(stagePath, targetBinPath); err != nil {
@@ -130,11 +133,19 @@ func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, tar
 		return "", fmt.Errorf("%s: %w", ui.Bi("failed to verify old target hash before transaction", "事务前校验旧 target hash 失败"), err)
 	}
 
-	// 计算新 stage hash（DownloadAsset 已校验过，这里重新计算用于 journal 记录
-	// 与恢复时的状态判定——避免依赖外部传入的 hash）。
-	newHash, err := fileSHA256(stagePath)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", ui.Bi("failed to verify new stage hash before transaction", "事务前校验新 stage hash 失败"), err)
+	// 新 stage hash 使用 manifest 期望值（下载校验、停止前复验共同确认），
+	// 不重新计算 stage 现状——重算会把校验之后被篡改的内容当作可信值写入
+	// journal 并被恢复路径启动。expectedHash 为空（无下载路径的向后兼容
+	// 形态）时回退重算。
+	newHash := expectedHash
+	if newHash == "" {
+		var err error
+		newHash, err = fileSHA256(stagePath)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", ui.Bi("failed to verify new stage hash before transaction", "事务前校验新 stage hash 失败"), err)
+		}
+	} else if err := verifyFileHash(stagePath, expectedHash); err != nil {
+		return "", fmt.Errorf("%s: %w", ui.Bi("the downloaded asset no longer matches the verified manifest hash", "下载产物与已验证的清单 hash 不再一致"), err)
 	}
 
 	// 步骤 1：备份旧 target 到 backup（优先 hard link，否则 copy+sync+verify）。
@@ -159,14 +170,16 @@ func (p *posixInstaller) Install(ctx context.Context, stagePath, oldBinPath, tar
 	// 步骤 3：写 journal(prepared)——记录三 basename + 旧新 hash + nonce + 原 daemon 运行态。
 	// journal 写在 rename 之前，使中断后能据 journal 判断事务进度并按原运行态恢复 daemon。
 	rec := journalRecord{
-		Nonce:          nonce,
-		Phase:          phasePrepared,
-		TargetBasename: filepath.Base(targetBinPath),
-		StageBasename:  filepath.Base(stageFile),
-		BackupBasename: filepath.Base(backupFile),
-		OldSHA256:      oldHash,
-		NewSHA256:      newHash,
-		WasRunning:     wasRunning,
+		Nonce:           nonce,
+		Phase:           phasePrepared,
+		TargetBasename:  filepath.Base(targetBinPath),
+		StageBasename:   filepath.Base(stageFile),
+		BackupBasename:  filepath.Base(backupFile),
+		OldSHA256:       oldHash,
+		NewSHA256:       newHash,
+		WasRunning:      wasRunning,
+		ServeWasRunning: serveWasRunning,
+		ServeAddr:       serveAddr,
 	}
 	if err := writeJournal(journalFile, rec); err != nil {
 		_ = cleanupTransactionFiles(stageFile, backupFile, journalFile)
@@ -451,17 +464,21 @@ func recoverState1NewInstalled(target, backupPath, stagePath, journalPath string
 		cleanupErr := cleanupTransactionFiles(stagePath, backupPath, journalPath)
 		if cleanupErr != nil {
 			return RecoveryOutcome{
-				State:         RecoveryStateCleanupPending,
-				WasRunning:    rec.WasRunning,
-				NewBinPath:    target,
-				RestartDaemon: true,
+				State:           RecoveryStateCleanupPending,
+				WasRunning:      rec.WasRunning,
+				NewBinPath:      target,
+				RestartDaemon:   true,
+				ServeWasRunning: rec.ServeWasRunning,
+				ServeAddr:       rec.ServeAddr,
 			}, fmt.Errorf("%s: %w", ui.Bi("new version already in place; failed to clean up leftover transaction files (manual cleanup needed)", "新版本已落地，清理遗留事务文件失败（需人工清理）"), cleanupErr)
 		}
 		return RecoveryOutcome{
-			State:         RecoveryStateNewInstalled,
-			WasRunning:    rec.WasRunning,
-			NewBinPath:    target,
-			RestartDaemon: true,
+			State:           RecoveryStateNewInstalled,
+			WasRunning:      rec.WasRunning,
+			NewBinPath:      target,
+			RestartDaemon:   true,
+			ServeWasRunning: rec.ServeWasRunning,
+			ServeAddr:       rec.ServeAddr,
 		}, nil
 	}
 	// backup 缺失或 hash 不一致：无法完全确认状态，保守要求人工处理。
@@ -478,17 +495,21 @@ func recoverState2OldIntact(target, backupPath, stagePath, journalPath string, r
 	cleanupErr := cleanupTransactionFiles(stagePath, backupPath, journalPath)
 	if cleanupErr != nil {
 		return RecoveryOutcome{
-			State:         RecoveryStateCleanupPending,
-			WasRunning:    rec.WasRunning,
-			NewBinPath:    target,
-			RestartDaemon: rec.WasRunning,
+			State:           RecoveryStateCleanupPending,
+			WasRunning:      rec.WasRunning,
+			NewBinPath:      target,
+			RestartDaemon:   rec.WasRunning,
+			ServeWasRunning: rec.ServeWasRunning,
+			ServeAddr:       rec.ServeAddr,
 		}, fmt.Errorf("%s: %w", ui.Bi("old version intact; failed to clean up leftover transaction files (manual cleanup needed)", "旧版本完好，清理遗留事务文件失败（需人工清理）"), cleanupErr)
 	}
 	return RecoveryOutcome{
-		State:         RecoveryStateOldIntact,
-		WasRunning:    rec.WasRunning,
-		NewBinPath:    target,
-		RestartDaemon: rec.WasRunning,
+		State:           RecoveryStateOldIntact,
+		WasRunning:      rec.WasRunning,
+		NewBinPath:      target,
+		RestartDaemon:   rec.WasRunning,
+		ServeWasRunning: rec.ServeWasRunning,
+		ServeAddr:       rec.ServeAddr,
 	}, nil
 }
 
@@ -521,17 +542,21 @@ func recoverState3TargetMissing(target, backupPath, stagePath, journalPath strin
 	cleanupErr := cleanupTransactionFiles(stagePath, backupPath, journalPath)
 	if cleanupErr != nil {
 		return RecoveryOutcome{
-			State:         RecoveryStateCleanupPending,
-			WasRunning:    rec.WasRunning,
-			NewBinPath:    target,
-			RestartDaemon: true,
+			State:           RecoveryStateCleanupPending,
+			WasRunning:      rec.WasRunning,
+			NewBinPath:      target,
+			RestartDaemon:   true,
+			ServeWasRunning: rec.ServeWasRunning,
+			ServeAddr:       rec.ServeAddr,
 		}, fmt.Errorf("%s: %w", ui.Bi("old target restored; failed to clean up leftover transaction files (manual cleanup needed)", "旧 target 已恢复，清理遗留事务文件失败（需人工清理）"), cleanupErr)
 	}
 	// 旧版本已恢复，按 wasRunning 标记调用方应重启旧 daemon。
 	return RecoveryOutcome{
-		State:         RecoveryStateOldRestored,
-		WasRunning:    rec.WasRunning,
-		NewBinPath:    target,
-		RestartDaemon: true,
+		State:           RecoveryStateOldRestored,
+		WasRunning:      rec.WasRunning,
+		NewBinPath:      target,
+		RestartDaemon:   true,
+		ServeWasRunning: rec.ServeWasRunning,
+		ServeAddr:       rec.ServeAddr,
 	}, nil
 }

@@ -28,9 +28,11 @@ import (
 
 // helperResult 是 helper 写入 result 文件的执行结果（JSON 序列化）。
 type helperResult struct {
-	Success  bool   `json:"success"`            // 替换 + daemon 重启是否全部成功
-	Error    string `json:"error,omitempty"`    // 主失败原因
-	Rollback string `json:"rollback,omitempty"` // 回滚过程的错误（若有）
+	Success bool   `json:"success"`         // 替换 + daemon/dashboard 恢复是否全部成功
+	Error   string `json:"error,omitempty"` // 主失败原因
+	// Rollback 记录事务恢复失败的聚合：文件回滚与（前置失败分支的）daemon/
+	// dashboard 原运行态恢复。恢复全部成功时为空——主失败之外无新增信息。
+	Rollback string `json:"rollback,omitempty"`
 }
 
 // helperRunner 串起后台 helper 的全部步骤。零值不可用：NewHelperRunner 构造。
@@ -40,17 +42,21 @@ type helperRunner struct {
 	resultWriter ResultWriter         // 写 result 文件
 	controlMgr   ControlManager       // control lock（daemon 检查 / 重启）
 	configLoader control.ConfigLoader // 锁内加载有效配置
+	serve        ServeLifecycle       // dashboard 恢复（plan.ServeWasRunning 时按原地址恢复）
 	helperLog    *stepLogger          // [helper] 步骤日志（从 logWriter 构造，nil=静默）
 }
 
 // NewHelperRunner 构造后台 helper 编排器。前五个依赖必须非空（否则返回装配错误）；
-// logWriter 可为 nil（静默），生产由 CLI 注入 os.Stderr（父进程 spawn 时重定向到日志文件）。
+// serve 可为 nil（此时记录 dashboard 原在运行的 plan 在 Run 处被拒绝执行——没有
+// 恢复能力的 helper 不得接管会丢失 dashboard 运行态的事务）；logWriter 可为 nil
+// （静默），生产由 CLI 注入 os.Stderr（父进程 spawn 时重定向到日志文件）。
 func NewHelperRunner(
 	parentWaiter ParentWaiter,
 	fileMover FileMover,
 	resultWriter ResultWriter,
 	controlMgr ControlManager,
 	configLoader control.ConfigLoader,
+	serve ServeLifecycle,
 	logWriter io.Writer,
 ) (*helperRunner, error) {
 	if parentWaiter == nil || fileMover == nil || resultWriter == nil || controlMgr == nil || configLoader == nil {
@@ -62,6 +68,7 @@ func NewHelperRunner(
 		resultWriter: resultWriter,
 		controlMgr:   controlMgr,
 		configLoader: configLoader,
+		serve:        serve,
 		helperLog:    newStepLogger(logWriter, "helper", nil),
 	}, nil
 }
@@ -76,6 +83,16 @@ func (r *helperRunner) Run(ctx context.Context, selfExe, planPath string) error 
 	validated, verr := validateHelperPlan(selfExe, planPath)
 	if verr != nil {
 		return fmt.Errorf("%s: %w", ui.Bi("helper plan validation failed", "helper 计划校验失败"), verr)
+	}
+	// 无 dashboard 恢复能力的 helper 不得接管会丢失 dashboard 运行态的事务：
+	// plan 记录 dashboard 原在运行而 serve 依赖未装配时，先写失败 result 再
+	// 短路失败，避免无谓的父进程等待。
+	if validated.Plan.ServeWasRunning && r.serve == nil {
+		err := errors.New(ui.Bi(
+			"plan records a running dashboard, but this helper has no dashboard lifecycle support",
+			"计划记录 dashboard 原在运行，但本 helper 未装配 dashboard 生命周期支持"))
+		r.fail(validated.Paths.Result, err, "")
+		return err
 	}
 	return r.execute(ctx, validated)
 }
@@ -131,66 +148,148 @@ func (r *helperRunner) execute(ctx context.Context, validated validatedHelperPla
 //	d. wasRunning → StartWithExecutable(target) 启动新 daemon；
 //	e. 成功写 result；任一失败从 backup 回滚并写失败 result。
 func (r *helperRunner) executeUnderLock(ctx context.Context, sess ControlSession, cfg *config.Config, plan helperPlan, paths helperPaths) error {
-	// a. 确认 daemon 未在停止后意外运行。
+	// a. 确认 daemon 未在停止后意外运行。失败时替换未发生（target 仍是旧
+	// 版本）：按事务语义恢复 daemon 与 dashboard 的原运行态后再写失败 result，
+	// 保留主失败与各恢复失败。
 	st, ierr := sess.Inspect(ctx, cfg)
 	if ierr != nil {
 		inspectErr := fmt.Errorf("%s: %w", ui.Bi("Inspect failed under lock", "锁内 Inspect 失败"), ierr)
-		r.fail(paths.Result, inspectErr, "")
-		return inspectErr
+		restore := r.restoreOriginalServices(ctx, sess, cfg, paths, plan)
+		r.fail(paths.Result, inspectErr, errToString(errors.Join(restore...)))
+		return errors.Join(append([]error{inspectErr}, restore...)...)
 	}
 	if st.Running {
-		// daemon 在停止后意外重启：为安全起见放弃替换（避免与运行中的 daemon 冲突）。
+		// daemon 在停止后意外重启：为安全起见放弃替换（避免与运行中的 daemon
+		// 冲突），且不触碰这个他人启动的 daemon；dashboard 未被任何人接管，
+		// 按事务语义以旧 target 按原地址恢复。
 		runningErr := errors.New(ui.Bi("daemon is unexpectedly running after stop; aborting replacement", "daemon 在停止后意外运行，放弃替换"))
-		r.fail(paths.Result, runningErr, "")
-		return errors.New(ui.Bi("daemon is running; aborting replacement", "daemon 运行中，放弃替换"))
+		var serveErr error
+		if plan.ServeWasRunning {
+			if serr := r.serve.Start(cfg.DataDir, paths.Target, plan.ServeAddr); serr != nil {
+				serveErr = fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), serr)
+			}
+		}
+		r.fail(paths.Result, runningErr, errToString(serveErr))
+		return errors.Join(runningErr, serveErr)
 	}
 	r.helperLog.step("daemon wasRunning=%v", plan.WasRunning)
 
-	// b. 备份旧 target → backup，校验旧 hash。
+	// b. 备份旧 target → backup，校验旧 hash。失败时替换未发生：恢复原运行态。
 	if err := backupForHelper(paths.Target, paths.Backup, plan.OldSHA256); err != nil {
 		backupErr := fmt.Errorf("%s: %w", ui.Bi("failed to back up old target", "备份旧 target 失败"), err)
-		r.fail(paths.Result, backupErr, "")
-		return backupErr
+		restore := r.restoreOriginalServices(ctx, sess, cfg, paths, plan)
+		r.fail(paths.Result, backupErr, errToString(errors.Join(restore...)))
+		return errors.Join(append([]error{backupErr}, restore...)...)
 	}
 	r.helperLog.step("backup OK")
 
-	// c. MoveFileEx(stage → target)。
+	// c. MoveFileEx(stage → target)。失败时 target 仍是旧版本（MoveFileEx
+	// 原子，未成功则不变），回滚 backup 覆盖并恢复 daemon 与 dashboard 原运行态。
 	if err := r.fileMover.MoveReplace(paths.Stage, paths.Target); err != nil {
-		// 移动失败：target 仍是旧版本（MoveFileEx 原子，未成功则不变），回滚 backup 覆盖。
+		// 主失败文案合并「已回滚」语义：原始 err 只出现一次，回滚与各服务
+		// 恢复失败经 Rollback 字段与聚合错误保留。
 		rbErr := rollbackForHelper(paths.Target, paths.Backup, plan.OldSHA256)
-		r.fail(paths.Result, fmt.Errorf("%s: %w", ui.Bi("MoveFileEx replacement failed", "MoveFileEx 替换失败"), err), errToString(rbErr))
-		return fmt.Errorf("%s: %w", ui.Bi("MoveFileEx replacement failed (rolled back)", "MoveFileEx 替换失败（已回滚）"), errors.Join(err, rbErr))
+		restore := r.restoreOriginalServices(ctx, sess, cfg, paths, plan)
+		moveErr := fmt.Errorf("%s: %w", ui.Bi("MoveFileEx replacement failed (rolled back)", "MoveFileEx 替换失败（已回滚）"), errors.Join(err, rbErr))
+		r.fail(paths.Result, moveErr, errToString(errors.Join(restore...)))
+		return errors.Join(append([]error{moveErr}, restore...)...)
 	}
 	r.helperLog.step("MoveFileEx OK")
 
-	// 校验新 target hash（防御移动过程中损坏）。
+	// 校验新 target hash（防御移动过程中损坏）。失败时已回滚为旧版本：
+	// 恢复 daemon 与 dashboard 原运行态。
 	if err := verifyFileHash(paths.Target, plan.NewSHA256); err != nil {
+		// 主失败文案合并「已回滚」语义：原始 err 只出现一次，回滚与各服务
+		// 恢复失败经 Rollback 字段与聚合错误保留。
 		rbErr := rollbackForHelper(paths.Target, paths.Backup, plan.OldSHA256)
-		r.fail(paths.Result, fmt.Errorf("%s: %w", ui.Bi("new target hash verification failed after replacement", "替换后新 target 校验失败"), err), errToString(rbErr))
-		return fmt.Errorf("%s: %w", ui.Bi("new target hash verification failed after replacement (rolled back)", "替换后新 target 校验失败（已回滚）"), errors.Join(err, rbErr))
+		restore := r.restoreOriginalServices(ctx, sess, cfg, paths, plan)
+		hashErr := fmt.Errorf("%s: %w", ui.Bi("new target hash verification failed after replacement (rolled back)", "替换后新 target 校验失败（已回滚）"), errors.Join(err, rbErr))
+		r.fail(paths.Result, hashErr, errToString(errors.Join(restore...)))
+		return errors.Join(append([]error{hashErr}, restore...)...)
 	}
 	r.helperLog.step("hash verified")
 
 	// d. wasRunning → 启动新 daemon。
 	if plan.WasRunning {
 		if serr := sess.StartWithExecutable(ctx, cfg, paths.Target); serr != nil {
-			// 启动失败：回滚到旧版本，再用旧 target 重启 daemon，写失败 result。
+			// 启动失败：回滚到旧版本，再用旧 target 重启 daemon；dashboard 原在
+			// 运行时同样以旧 target 按原地址恢复。写失败 result。
 			rbErr := rollbackForHelper(paths.Target, paths.Backup, plan.OldSHA256)
 			var restartErr error
 			if rerr := sess.StartWithExecutable(ctx, cfg, paths.Target); rerr != nil {
 				restartErr = rerr
 			}
+			var serveErr error
+			if plan.ServeWasRunning {
+				serveErr = r.serve.Start(cfg.DataDir, paths.Target, plan.ServeAddr)
+			}
 			r.fail(paths.Result,
 				fmt.Errorf("%s: %w", ui.Bi("failed to start new daemon", "启动新 daemon 失败"), serr),
-				fmt.Sprintf("rollback=%v restart=%v", rbErr, restartErr))
-			return fmt.Errorf("%s: %w", ui.Bi("failed to start new daemon (rolled back and restarted)", "启动新 daemon 失败（已回滚重启）"), errors.Join(serr, rbErr, restartErr))
+				fmt.Sprintf("rollback=%v restart=%v serve-restore=%v", rbErr, restartErr, serveErr))
+			return fmt.Errorf("%s: %w", ui.Bi("failed to start new daemon (rolled back and restarted)", "启动新 daemon 失败（已回滚重启）"), errors.Join(serr, rbErr, restartErr, serveErr))
 		}
 		r.helperLog.step("daemon restarted")
 	}
 
-	// e. 成功。
+	// d'. plan.ServeWasRunning → 以原监听地址、用新 target 恢复后台 dashboard
+	//（dashboard 已由父进程在替换前停止；自动恢复绝不打开浏览器）。恢复失败
+	// 执行整体回滚：恢复旧版本 →（原先运行）停止新 daemon 并用旧 target 重启
+	// → 用旧 target 按原地址再次尝试恢复 dashboard。主失败与各回滚失败聚合
+	// 保留，绝不谎报成功。
+	if plan.ServeWasRunning {
+		r.helperLog.step("restoring dashboard at %s", plan.ServeAddr)
+		if serr := r.serve.Start(cfg.DataDir, paths.Target, plan.ServeAddr); serr != nil {
+			serveErr := fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the new binary", "用新二进制恢复 dashboard 失败"), serr)
+			rbErr := rollbackForHelper(paths.Target, paths.Backup, plan.OldSHA256)
+			var stopErr, restartErr, resErr error
+			if plan.WasRunning {
+				if e := sess.Stop(ctx, cfg); e != nil {
+					stopErr = fmt.Errorf("%s: %w", ui.Bi("failed to stop the new daemon during rollback", "回滚时停止新 daemon 失败"), e)
+				}
+				if e := sess.StartWithExecutable(ctx, cfg, paths.Target); e != nil {
+					restartErr = fmt.Errorf("%s: %w", ui.Bi("rollback restart with the old binary also failed", "回滚重启旧二进制也失败"), e)
+				}
+			}
+			if e := r.serve.Start(cfg.DataDir, paths.Target, plan.ServeAddr); e != nil {
+				resErr = fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), e)
+			}
+			r.fail(paths.Result, serveErr,
+				fmt.Sprintf("rollback=%v stop=%v restart=%v serve-restore=%v", rbErr, stopErr, restartErr, resErr))
+			return errors.Join(serveErr, rbErr, stopErr, restartErr, resErr)
+		}
+		r.helperLog.step("dashboard restored")
+	}
+
+	// e. 成功：替换与服务恢复都已落地，清除父进程留下的恢复意图快照
+	//（失败路径不清理——恢复未完成或未成功时，快照是下一次 update 幂等
+	// 恢复服务的依据；删除失败同样无害，残留快照只会在下一轮被幂等消费）。
+	if rmErr := removeUpdateIntent(paths.Target); rmErr != nil {
+		r.helperLog.step("recovery intent cleanup failed: %v", rmErr)
+	}
 	r.succeed(paths.Result)
 	return nil
+}
+
+// restoreOriginalServices 在 helper 的替换前置步骤失败后按事务语义恢复
+// daemon 与 dashboard 的原运行态。此刻 target 未被替换或已回滚为旧版本，
+// 两个服务都以 paths.Target（旧版本内容）恢复：daemon 按 plan.WasRunning
+// 重启，dashboard 按 plan.ServeWasRunning 以 plan.ServeAddr 原地址恢复
+// （绝不打开浏览器）。Run 已短路「plan 记录 dashboard 在运行而 serve 依赖
+// 未装配」的组合，此处 plan.ServeWasRunning 蕴含 r.serve 非 nil。返回各恢复
+// 失败（无恢复动作时为 nil），由调用方与主失败一起聚合。
+func (r *helperRunner) restoreOriginalServices(ctx context.Context, sess ControlSession, cfg *config.Config, paths helperPaths, plan helperPlan) []error {
+	var errs []error
+	if plan.WasRunning {
+		if err := sess.StartWithExecutable(ctx, cfg, paths.Target); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restart the daemon with the old binary", "用旧二进制重启 daemon 失败"), err))
+		}
+	}
+	if plan.ServeWasRunning {
+		if err := r.serve.Start(cfg.DataDir, paths.Target, plan.ServeAddr); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), err))
+		}
+	}
+	return errs
 }
 
 // backupForHelper 把 target 复制为 backup 并校验其 hash == expectedOldHash。

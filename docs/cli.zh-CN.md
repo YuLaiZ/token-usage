@@ -680,7 +680,7 @@ token-usage serve restart
 
 从官方 GitHub Release 原地更新 `token-usage` 二进制。CLI 只解析参数、装配依赖、格式化结果，自更新核心位于 `internal/update`（见[架构设计](architecture.zh-CN.md)）。
 
-`update` 执行期间会逐步输出过程：先打印「正在检查更新…」行，发现新版本即给出当前/目标版本对（先于来源校验，拒绝路径同样可见），随后依次输出下载、校验、停止 daemon、安装、重启 daemon 的步骤行。交互终端上下载会渲染单行实时进度（百分比、已传输/总字节数、平均速度）；stdout 被重定向或接管道时省略进度行、只保留步骤行，下载失败也总会干净地收尾换行。更新前正在运行的 daemon 会被自动停止并用新二进制重启。`update --check` 只输出检查行与结果。
+`update` 执行期间会逐步输出过程：先打印「正在检查更新…」行，发现新版本即给出当前/目标版本对（先于来源校验，拒绝路径同样可见），随后依次输出下载、校验、停止 daemon 与 dashboard、安装、重启二者的步骤行。交互终端上下载会渲染单行实时进度（百分比、已传输/总字节数、平均速度）；stdout 被重定向或接管道时省略进度行、只保留步骤行，下载失败也总会干净地收尾换行。更新前正在运行的 daemon 会被自动停止并用新二进制重启。dashboard 以同样方式保持：运行中的 dashboard（对 `/api/meta` 有应答）会在替换前被停止——Windows 上这一步同时释放旧 `.exe` 供后台 helper 完成替换——替换完成后以原监听地址、用新二进制后台恢复；自动恢复绝不打开浏览器。只有有应答的 dashboard 才算在运行：缺失、损坏或陈旧的 `serve.json` 一律按未运行处理且不被改动。dashboard 无法停止时更新中止、二进制保持原样；其后任一步失败时更新回滚到旧二进制与更新前的 daemon/dashboard 运行态，并同时保留主失败与回滚失败信息。`update --check` 只输出检查行与结果；它绝不读取、停止、启动或清理 daemon/dashboard 运行态。
 
 ```text
 token-usage update
@@ -691,7 +691,7 @@ token-usage update --force
 
 | 形式 | 作用 |
 |------|------|
-| `update` | 更新到最新稳定 Release。若当前二进制同目录存在一次中断的 POSIX 更新留下的受限事务 journal，先完成恢复；之后仅当目标严格高于当前版本且当前来源可信时才继续新替换：下载资产、与 `SHA256SUMS` 清单比对 SHA256、stage `--version` 二次校验、替换二进制。更新前正在运行的 daemon 会用新二进制自动重启；原本已停止的 daemon 保持停止，成功输出会提示 `token-usage daemon start`。 |
+| `update` | 更新到最新稳定 Release。若当前二进制同目录存在一次中断的 POSIX 更新留下的受限事务 journal，先完成恢复（journal 同时记录 dashboard 是否在运行及其监听地址，恢复时一并还原）；之后仅当目标严格高于当前版本且当前来源可信时才继续新替换：下载资产、与 `SHA256SUMS` 清单比对 SHA256、stage `--version` 二次校验、替换二进制。更新前正在运行的 daemon 会用新二进制自动重启；原本已停止的 daemon 保持停止，成功输出会提示 `token-usage daemon start`。更新前正在运行的 dashboard 同样会用新二进制按原监听地址后台恢复；更新的生命周期动作与 `serve stop`/`serve start` 复用同一套内部编排（不经 CLI 子进程、不经 shell），恢复绝不打开浏览器，Windows 上停止 dashboard 同时释放旧 `.exe` 供后台 helper 完成替换。 |
 | `update --check` | 只读检查；不创建任何本地文件（不创建配置目录/锁/日志/数据库/服务定义）。 |
 | `update --version vX.Y.Z` / `update --version vX.Y.Z-rc.N` | 更新（或加 `--check` 后仅检查）指定精确版本 tag。`--version` 接受严格 Release tag（`v` 前缀、`MAJOR.MINOR.PATCH`、可选 `-rc.N`、无前导零）；非法值在任何网络请求前即报错。 |
 | `update --force` | 当前二进制来源非官方 Release 资产时仍强制覆盖，仅限两种豁免：与所报告版本官方资产 hash 不一致（按安装指引重签过的二进制、或 `go install pkg@vX.Y.Z` 产物），以及 dev 本地构建（`Version = dev`，或直接构建伪版本归一显示的 `vX.Y.Z-dev`——两种形态同判）。全部结构检查与目标资产的 SHA256 / stage `--version` 校验照常执行；软链副本与非官方 tag 不可被 force。 |

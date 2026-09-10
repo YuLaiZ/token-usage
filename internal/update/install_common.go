@@ -67,6 +67,11 @@ type journalRecord struct {
 	OldSHA256      string       `json:"old_sha256"`      // 旧 target 的 SHA256（64 位小写 hex）
 	NewSHA256      string       `json:"new_sha256"`      // 新 stage/target 的 SHA256（64 位小写 hex）
 	WasRunning     bool         `json:"was_running"`     // 原 daemon 是否在运行（决定恢复后是否重启）
+	// ServeWasRunning/ServeAddr 是替换前 dashboard 的运行态与监听地址
+	// （决定中断恢复后是否需要恢复 dashboard、以何地址恢复）。旧版本写入的
+	// journal 缺少这两个字段时反序列化为零值（不恢复 dashboard），向后兼容。
+	ServeWasRunning bool   `json:"serve_was_running,omitempty"`
+	ServeAddr       string `json:"serve_addr,omitempty"`
 }
 
 // RecoveryState 描述遗留 journal 检测后识别出的事务状态。
@@ -101,6 +106,11 @@ type RecoveryOutcome struct {
 	// WasRunning 恢复它。状态 1/3 始终为 true；状态 2 仅在 journal 记录原
 	// daemon 运行、因而已在 Install 前被 Stop 时为 true。
 	RestartDaemon bool
+	// ServeWasRunning/ServeAddr 是 journal 记录的替换前 dashboard 运行态与
+	// 监听地址：ServeWasRunning=true 表示 dashboard 已在本事务的 Install 前
+	// 被停止，调用方须以 ServeAddr、按落地二进制恢复它（中断恢复路径）。
+	ServeWasRunning bool
+	ServeAddr       string
 }
 
 // JournalRecoverer 抽象「在 apply 开始时检测并处理遗留 journal」的能力。

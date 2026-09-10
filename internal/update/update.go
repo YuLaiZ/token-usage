@@ -98,6 +98,12 @@ type Service struct {
 	// 由 CLI 层渲染为用户可见的过程输出。未注入（nil）时完全静默，保持既有行为。
 	Reporter Reporter
 
+	// ServeLifecycle 是 dashboard 生命周期的窄依赖（探测/停止/恢复）。
+	// 注入后 Apply 在锁内编排「探测 → 停止 → 替换 → 按 daemon 同样的原运行态
+	// 语义恢复 dashboard」；nil（历史调用方与隔离测试）时完全跳过 serve 编排，
+	// 与「dashboard 未运行」等效，不影响既有合同。
+	ServeLifecycle ServeLifecycle
+
 	// LogSink 是升级步骤日志的写入目标（注入，nil=静默）。生产由 CLI 工厂打开
 	// update-YYYY-MM-DD.log 注入；测试注入 buffer 可断言行内容。Apply 各关键步骤
 	// 经 stepLogger 输出 [update] 行到此处。
@@ -141,7 +147,10 @@ type VersionProbe interface {
 // Install 把已验证的 stage 文件（DownloadAsset 下载并校验过 SHA256 的新版本二进制）
 // 事务性地落地到 targetBinPath 位置（覆盖当前二进制）。stagePath 是已验证 stage 文件的
 // 绝对路径，oldBinPath 是当前二进制路径（供回滚诊断，通常等于 targetBinPath），
-// targetBinPath 是被覆盖的目标路径。
+// targetBinPath 是被覆盖的目标路径。wasRunning 是替换前 daemon 运行态；
+// serveWasRunning/serveAddr 是替换前 dashboard 的运行态与监听地址（二者一并写入
+// POSIX journal / Windows helper plan，供中断恢复与后台 helper 按原运行态恢复
+// daemon 与 dashboard）。
 //
 // Install 返回的 newBinPath 是替换后应启动的新二进制绝对路径（通常等于 targetBinPath，
 // 但允许平台实现返回实际落地的路径，如 Windows helper 路径）。
@@ -151,9 +160,13 @@ type Installer interface {
 	// Install 在 control lock 持有期内把已验证的 stage 文件事务性替换到 targetBinPath。
 	// stagePath 是 DownloadAsset 产出并校验过 SHA256 的新版本二进制绝对路径；
 	// oldBinPath 是当前二进制路径（供回滚诊断）；targetBinPath 是被覆盖的目标路径。
-	// wasRunning 是替换前 daemon 运行态，写入 journal 供中断恢复时按原运行态重启 daemon。
+	// wasRunning/serveWasRunning 是替换前 daemon/dashboard 运行态，写入事务记录供
+	// 中断恢复时按原运行态重启；serveAddr 是 dashboard 原监听地址。expectedHash 是
+	// manifest 期望 hash（下载校验与停止前复验共同确认）：事务记录（journal/plan）
+	// 必须记录它而非重新计算 stage 现状——非空时本实现还会在替换前对 stage 复验；
+	// 空值仅出现在无下载路径的向后兼容形态，此时实现回退重算。
 	// 成功返回实际落地的新二进制路径。任一失败须保证 target 处于可恢复状态（旧版本或已回滚）。
-	Install(ctx context.Context, stagePath, oldBinPath, targetBinPath string, wasRunning bool) (newBinPath string, err error)
+	Install(ctx context.Context, stagePath, oldBinPath, targetBinPath string, wasRunning, serveWasRunning bool, serveAddr, expectedHash string) (newBinPath string, err error)
 
 	// Platform 返回当前安装器对应的 GOOS（"darwin"/"linux"/"windows"）。
 	Platform() string
@@ -235,6 +248,14 @@ type ApplyResult struct {
 	// Deferred 路径同样填充）。恢复路径（Recovered）与未触碰 daemon 的路径为零值。
 	// 供 CLI 渲染区分「已更新并重启 daemon」与「daemon 原本未运行，提示 start」。
 	DaemonWasRunning bool
+	// ServeWasRunning 表示替换前 dashboard 是否在运行（更新前探测的结果，
+	// 且在停止编排确认其确实被停止后才保持 true；实例在停止前自行退出的
+	// 场景被更正为 false）。Deferred 路径同样填充（helper 据此恢复）。
+	// 未注入 ServeLifecycle 的路径为零值。
+	ServeWasRunning bool
+	// ServeAddr 是被恢复 dashboard 的原监听地址（ServeWasRunning=true 时非空），
+	// 恢复实例按该地址监听，与更新前完全一致。
+	ServeAddr string
 	// LogPath 升级日志文件路径（注入 LogSink 时填充），供 CLI 提示用户日志位置。
 	LogPath string
 }
@@ -326,6 +347,20 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 	// 或来源验证挡住。没有 journal 时该路径只做本地只读探测，不获取 control lock。
 	if outcome, handled, err := s.recoverPendingJournal(ctx); err != nil {
 		ul.step("recovery error: %v", err)
+		return result, err
+	} else if handled {
+		result.Recovered = outcome.Recovered
+		result.RecoveryState = outcome.RecoveryState
+		result.ServeWasRunning = outcome.ServeWasRunning
+		result.ServeAddr = outcome.ServeAddr
+		return result, nil
+	}
+
+	// journal 未命中时处理「已 stop、未 Install」窗口留下的恢复意图（停止动作
+	// 先于 journal 落盘，journal 不存在不代表没有中断）。快照消费以幂等恢复
+	// 两个服务并结束本轮。
+	if outcome, handled, err := s.recoverPendingIntent(ctx); err != nil {
+		ul.step("intent recovery error: %v", err)
 		return result, err
 	} else if handled {
 		result.Recovered = outcome.Recovered
@@ -436,7 +471,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 	// expectedHash 取自目标 Release 的 SHA256SUMS（ManifestFetcher 是 tag 参数化的，
 	// 目标版本同样适用）。未注入 AssetDownloader 时保持向后兼容：stagePath 为空，
 	// 仅依赖后续注入的 Installer 自行处理（生产 POSIX installer 要求非空；测试可注入 fake）。
-	stagePath, derr := s.downloadStage(ctx, checked.TargetTag, result.TargetAsset, result.BinaryPath)
+	stagePath, expectedHash, derr := s.downloadStage(ctx, checked.TargetTag, result.TargetAsset, result.BinaryPath)
 	if derr != nil {
 		// 下载或清单查询失败：保守拒绝安装，写明原因。ReadyToInstall 保持 false。
 		result.Reason = ui.Bi(
@@ -486,7 +521,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 	// Inspect → Stop → Install → StartWithExecutable，并据替换前运行状态回滚。
 	// 未注入任一依赖时只到 ReadyToInstall=true，不做锁内操作（保持向后兼容，便于分阶段接入）。
 	if s.ControlManager != nil && s.ConfigLoader != nil {
-		outcome, ierr := s.installUnderLockOutcome(ctx, stagePath, result.BinaryPath)
+		outcome, ierr := s.installUnderLockOutcome(ctx, stagePath, result.BinaryPath, expectedHash)
 		// Install 已把外部 stage 复制为内部 nonce 副本（POSIX copyStageWithMode /
 		// Windows copyFileWithMode），此后外部 stagePath 冗余——成功/失败路径都 best-effort 删除。
 		// Deferred 时 helper 用内部副本 paths.Stage，不引用外部 stagePath，删除亦安全。
@@ -504,6 +539,8 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 		result.Recovered = outcome.Recovered
 		result.RecoveryState = outcome.RecoveryState
 		result.DaemonWasRunning = outcome.WasRunning
+		result.ServeWasRunning = outcome.ServeWasRunning
+		result.ServeAddr = outcome.ServeAddr
 		if result.Installed {
 			ul.step("installed: %s", checked.TargetTag)
 		} else if result.Deferred {
@@ -516,8 +553,12 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 	return result, nil
 }
 
-// downloadStage 在可信分支下载目标资产到 stage 文件，返回 stage 绝对路径。
-// expectedHash 取自目标 Release 的 SHA256SUMS（经 ManifestFetcher 按 targetTag 拉取）。
+// downloadStage 在可信分支下载目标资产到 stage 文件，返回 (stage 绝对路径,
+// manifest 期望 hash)。expectedHash 取自目标 Release 的 SHA256SUMS（经
+// ManifestFetcher 按 targetTag 拉取），是后续全链路（停止前复验、安装器
+// journal/plan、恢复意图快照）唯一可信的「新版本 hash」来源：各环节一律
+// 对照它校验与记录，绝不重新计算 stage 现状并信任结果。未注入
+// AssetDownloader 时返回 ("", "")，保持向后兼容。
 // 未注入 AssetDownloader 时返回 ("", nil)，保持向后兼容（不下载，stagePath 为空，
 // 由注入的 Installer 自行处理或测试注入 fake stagePath）。
 // 清单查询或下载失败返回 error，调用方据此拒绝安装（ReadyToInstall=false）。
@@ -527,16 +568,16 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (ApplyResult, er
 // 收尾——失败事件在每条 error return 前统一发射（含 Manifest 未配置、清单拉取失败、
 // 清单为空、缺 hash、下载失败全部路径），保证进度帧的终结事件在任何退出路径都成对出现。
 // 无 progress 回调的失败（清单阶段）Failed 携带 Copied=0、Total=-1。
-func (s *Service) downloadStage(ctx context.Context, targetTag, assetName, binPath string) (string, error) {
+func (s *Service) downloadStage(ctx context.Context, targetTag, assetName, binPath string) (string, string, error) {
 	if s.AssetDownloader == nil {
-		return "", nil
+		return "", "", nil
 	}
 	var lastCopied int64
 	lastTotal := int64(-1)
 	s.report(Event{Kind: EventDownloadStart, Asset: assetName})
-	fail := func(err error) (string, error) {
+	fail := func(err error) (string, string, error) {
 		s.report(Event{Kind: EventDownloadFailed, Copied: lastCopied, Total: lastTotal})
-		return "", err
+		return "", "", err
 	}
 	progress := func(copied, total int64) {
 		lastCopied, lastTotal = copied, total
@@ -575,7 +616,7 @@ func (s *Service) downloadStage(ctx context.Context, targetTag, assetName, binPa
 		), derr))
 	}
 	s.report(Event{Kind: EventDownloadDone, Copied: lastCopied, Total: lastTotal})
-	return stagePath, nil
+	return stagePath, expectedHash, nil
 }
 
 // recoverPendingJournal 在新一轮版本检查和来源验证之前，处理当前二进制同目录中
@@ -653,6 +694,111 @@ func (s *Service) recoverJournalUnderLock(ctx context.Context, oldBinPath string
 	return recovered, handled, nil
 }
 
+// recoverPendingIntent 在 journal 恢复未命中时处理「已 stop、未 Install」窗口
+// 留下的恢复意图：停止动作先于 journal/plan 落盘，进程在该窗口被硬中断后，
+// 意图快照是唯一的服务运行态记录。无锁只读探测到意图文件后才进入 control lock。
+// ServeLifecycle 未注入时仍可恢复 daemon（不涉及 dashboard 的中断），但快照
+// 记录 dashboard 在运行则必须报错（与 journal 路径同合同）。
+func (s *Service) recoverPendingIntent(ctx context.Context) (installOutcome, bool, error) {
+	if s == nil || s.ControlManager == nil || s.ConfigLoader == nil {
+		return installOutcome{}, false, nil
+	}
+	target, ok := s.recoveryTargetPath()
+	if !ok {
+		return installOutcome{}, false, nil
+	}
+	intent, found, err := findIntent(target)
+	if err != nil {
+		return installOutcome{}, false, err
+	}
+	if !found {
+		return installOutcome{}, false, nil
+	}
+	cfg, err := s.ConfigLoader()
+	if err != nil {
+		return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to load effective config under lock", "锁内加载有效配置失败"), err)
+	}
+	if cfg == nil {
+		return installOutcome{}, false, errors.New(ui.Bi("loading effective config under lock returned nil", "锁内加载有效配置返回 nil"))
+	}
+	var recovered installOutcome
+	var handled bool
+	if err := s.ControlManager.WithLock(ctx, func(sess ControlSession) error {
+		var rerr error
+		recovered, handled, rerr = s.recoverIntentWithSession(ctx, sess, cfg, target, *intent)
+		return rerr
+	}); err != nil {
+		return installOutcome{}, false, err
+	}
+	return recovered, handled, nil
+}
+
+// recoverIntentWithSession 在 control lock 内消费恢复意图：校验快照与当前
+// 二进制同位，按 target 内容与快照双 hash 的精确匹配选择恢复用的二进制
+// （等于旧 hash=替换未发生，用旧二进制 OldRestored；等于已验证的新 hash=
+// 替换已完成而服务恢复被中断——Windows 上 helper 可能死在 MoveFileEx 成功
+// 之后——用新二进制 NewInstalled；两者都不是=二进制被异常替换/损坏/外部
+// 改动，保留快照报人工，绝不启动任何服务），幂等恢复 daemon 与 dashboard
+// 后删除快照。恢复中任一步失败保留快照文件供重试（幂等恢复），错误聚合返回。
+func (s *Service) recoverIntentWithSession(ctx context.Context, sess ControlSession, cfg *config.Config, target string, intent updateIntent) (installOutcome, bool, error) {
+	if intent.TargetBasename != filepath.Base(target) {
+		return installOutcome{}, false, fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("leftover update intent records target %q but the current executable is %q; files kept for manual handling", intent.TargetBasename, filepath.Base(target)),
+			fmt.Sprintf("遗留恢复意图记录的 target 为 %q，与当前可执行文件 %q 不符，保留文件要求人工处理", intent.TargetBasename, filepath.Base(target)),
+		))
+	}
+	targetHash, err := fileSHA256(target)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return installOutcome{}, false, fmt.Errorf("%s", ui.Bi(
+				"leftover update intent records running services, but the target binary is missing; files kept for manual handling",
+				"遗留恢复意图记录了待恢复服务，但目标二进制缺失，保留文件要求人工处理",
+			))
+		}
+		return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to hash the target while consuming the recovery intent", "消费恢复意图时计算 target hash 失败"), err)
+	}
+	// 替换是否已发生、以哪个版本的二进制恢复，由 target 内容与快照双 hash 的
+	// 精确匹配判定：等于旧 hash → 替换未发生（中断在停止之后、Install 之前），
+	// 以旧二进制恢复；等于下载阶段已验证的新 hash → 替换已落地而服务恢复被
+	// 中断（Windows helper 可能死在 MoveFileEx 成功之后——这是 Windows 唯一的
+	// 中断恢复记录，POSIX 侧该状态由 journal 主导），以新二进制恢复。两者都不
+	// 是：二进制被异常替换、损坏或手工改动，保留快照要求人工处理，绝不启动
+	// 任何服务。两种恢复都幂等：服务已在运行时 StartWithExecutable 幂等、
+	// dashboard 启动预检幂等避让，误判无副作用。
+	state := RecoveryStateOldRestored
+	if targetHash != intent.OldSHA256 {
+		if intent.NewSHA256 == "" || targetHash != intent.NewSHA256 {
+			return installOutcome{}, false, fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("leftover update intent records services to restore, but the current binary matches neither the old hash (%s) nor the verified new hash (%s); the binary was replaced, corrupted, or modified outside this update — files kept for manual handling, no service was started", intent.OldSHA256, intent.NewSHA256),
+				fmt.Sprintf("遗留恢复意图记录了待恢复服务，但当前二进制既不等于旧 hash（%s）也不等于已验证的新 hash（%s）；二进制被异常替换、损坏或在本更新之外被改动——保留文件要求人工处理，未启动任何服务", intent.OldSHA256, intent.NewSHA256),
+			))
+		}
+		state = RecoveryStateNewInstalled
+	}
+	if intent.DaemonWasRunning {
+		if startErr := sess.StartWithExecutable(ctx, cfg, target); startErr != nil {
+			return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to restore the daemon per the leftover recovery intent", "按遗留恢复意图恢复 daemon 失败"), startErr)
+		}
+	}
+	if intent.ServeWasRunning {
+		if s.ServeLifecycle == nil {
+			return installOutcome{}, false, errors.New(ui.Bi(
+				"leftover recovery intent records a running dashboard, but no dashboard lifecycle dependency is wired",
+				"遗留恢复意图记录 dashboard 原在运行，但未装配 dashboard 生命周期依赖",
+			))
+		}
+		if startErr := s.ServeLifecycle.Start(cfg.DataDir, target, intent.ServeAddr); startErr != nil {
+			return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard per the leftover recovery intent", "按遗留恢复意图恢复 dashboard 失败"), startErr)
+		}
+	}
+	if rmErr := removeUpdateIntent(target); rmErr != nil {
+		// 快照删除失败不推翻已完成的恢复：它是幂等快照，残留只会在下一轮
+		// 被再次消费（服务已在运行则全部幂等跳过）。
+		return installOutcome{Recovered: true, RecoveryState: state}, true, nil
+	}
+	return installOutcome{Recovered: true, RecoveryState: state}, true, nil
+}
+
 // recoverJournalWithSession 处理同一 control lock 中的 journal 恢复逻辑。handled
 // 为 false 表示没有待恢复事务，或 OldIntact 且 daemon 原本未运行，调用方可继续本轮安装。
 func (s *Service) recoverJournalWithSession(ctx context.Context, sess ControlSession, cfg *config.Config, oldBinPath string) (installOutcome, bool, error) {
@@ -674,7 +820,28 @@ func (s *Service) recoverJournalWithSession(ctx context.Context, sess ControlSes
 		))
 	case RecoveryStateNewInstalled, RecoveryStateOldRestored, RecoveryStateCleanupPending, RecoveryStateOldIntact:
 		// 状态 2 且原 daemon 未运行时，旧 target 完好，可继续本轮 Install。
+		// 但 dashboard 若已被上次中断的更新停止（journal 记录原在运行），必须
+		// 先按记录恢复它，再继续本轮安装——否则本轮安装的探测只会看到一份
+		// 陈旧状态，把更新前在运行的 dashboard 丢在中断里。
 		if journalOutcome.State == RecoveryStateOldIntact && !journalOutcome.RestartDaemon {
+			if !journalOutcome.ServeWasRunning {
+				return installOutcome{}, false, nil
+			}
+			if s.ServeLifecycle == nil {
+				return installOutcome{}, false, errors.New(ui.Bi(
+					"leftover journal records a running dashboard, but no dashboard lifecycle dependency is wired",
+					"遗留 journal 记录 dashboard 原在运行，但未装配 dashboard 生命周期依赖",
+				))
+			}
+			if startErr := s.ServeLifecycle.Start(cfg.DataDir, journalOutcome.NewBinPath, journalOutcome.ServeAddr); startErr != nil {
+				if cleanupErr != nil {
+					return installOutcome{}, false, errors.Join(
+						fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard per the leftover journal after the interrupted transaction", "恢复遗留事务后按 journal 记录恢复 dashboard 失败"), startErr),
+						fmt.Errorf("%s: %w", ui.Bi("leftover transaction file cleanup pending", "遗留事务文件清理待处理"), cleanupErr),
+					)
+				}
+				return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard per the leftover journal after the interrupted transaction", "恢复遗留事务后按 journal 记录恢复 dashboard 失败"), startErr)
+			}
 			return installOutcome{}, false, nil
 		}
 
@@ -700,10 +867,34 @@ func (s *Service) recoverJournalWithSession(ctx context.Context, sess ControlSes
 				return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to restart daemon per original running state after recovering the leftover transaction", "恢复遗留事务后按原运行态重启 daemon 失败"), startErr)
 			}
 		}
+		// journal 记录 dashboard 原在运行 → 按记录的原监听地址、用恢复落地的
+		// 二进制恢复后台实例（中断发生在 serve 已被停止之后；不恢复会把更新前
+		// 在运行的 dashboard 永远丢在中断里）。
+		if journalOutcome.ServeWasRunning {
+			if s.ServeLifecycle == nil {
+				return installOutcome{}, false, errors.New(ui.Bi(
+					"leftover journal records a running dashboard, but no dashboard lifecycle dependency is wired",
+					"遗留 journal 记录 dashboard 原在运行，但未装配 dashboard 生命周期依赖",
+				))
+			}
+			if startErr := s.ServeLifecycle.Start(cfg.DataDir, journalOutcome.NewBinPath, journalOutcome.ServeAddr); startErr != nil {
+				if cleanupErr != nil {
+					return installOutcome{}, false, errors.Join(
+						fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard per the leftover journal after the interrupted transaction", "恢复遗留事务后按 journal 记录恢复 dashboard 失败"), startErr),
+						fmt.Errorf("%s: %w", ui.Bi("leftover transaction file cleanup pending", "遗留事务文件清理待处理"), cleanupErr),
+					)
+				}
+				return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard per the leftover journal after the interrupted transaction", "恢复遗留事务后按 journal 记录恢复 dashboard 失败"), startErr)
+			}
+		}
 		if cleanupErr != nil {
 			return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("leftover transaction recovered, but cleanup is pending", "遗留事务已恢复，但清理待处理"), cleanupErr)
 		}
-		return installOutcome{Recovered: true, RecoveryState: journalOutcome.State}, true, nil
+		// journal 恢复已精确判定二进制版本并还原服务，先前写下的恢复意图是
+		// 冗余快照：尽力清除（失败无害——它是幂等快照，残留只会在下一轮被再次
+		// 消费，不把成功的恢复变成失败）。
+		_ = removeUpdateIntent(oldBinPath)
+		return installOutcome{Recovered: true, RecoveryState: journalOutcome.State, ServeWasRunning: journalOutcome.ServeWasRunning, ServeAddr: journalOutcome.ServeAddr}, true, nil
 	case RecoveryStateClean:
 		return installOutcome{}, false, nil
 	default:
@@ -716,8 +907,8 @@ func (s *Service) recoverJournalWithSession(ctx context.Context, sess ControlSes
 
 // installUnderLock 保留给直接测试与旧调用方，返回是否已同步完成安装。
 // 需要区分 Windows 后台替换时，调用 installUnderLockOutcome。
-func (s *Service) installUnderLock(ctx context.Context, stagePath, oldBinPath string) (bool, error) {
-	outcome, err := s.installUnderLockOutcome(ctx, stagePath, oldBinPath)
+func (s *Service) installUnderLock(ctx context.Context, stagePath, oldBinPath, expectedHash string) (bool, error) {
+	outcome, err := s.installUnderLockOutcome(ctx, stagePath, oldBinPath, expectedHash)
 	return outcome.Installed, err
 }
 
@@ -729,9 +920,15 @@ type installOutcome struct {
 	// WasRunning 替换前 daemon 是否在运行（锁内 Inspect 判定），传出 Apply
 	// 边界填充 ApplyResult.DaemonWasRunning；Recovered 路径不适用（零值）。
 	WasRunning bool
+	// ServeWasRunning/ServeAddr 替换前 dashboard 运行态与监听地址（锁内
+	// 探测判定；停止编排发现实例已自行退出时更正为 false），传出 Apply
+	// 边界填充 ApplyResult 的同名字段。
+	ServeWasRunning bool
+	ServeAddr       string
 }
 
-// installUnderLockOutcome 在 control lock 内完成 daemon 切换与（占位）安装编排。
+// installUnderLockOutcome 在 control lock 内完成 daemon 与 dashboard 的切换
+// 与（占位）安装编排。
 //
 // 编排顺序（全部在 ControlManager.WithLock 的同一个回调内，不二次加锁）：
 //  1. ConfigLoader 加载有效配置；
@@ -739,21 +936,37 @@ type installOutcome struct {
 //     按 3 种可恢复状态恢复，模糊状态返回 error 不继续；命中 NewInstalled、OldRestored，
 //     或 journal 记录曾运行的 OldIntact 时，按 journal 记录的原运行态重启 daemon
 //     （不能依赖 Inspect——Stop 已执行后 Inspect 报 not-running，会丢失原运行态），
-//     随后本轮结束，不再尝试新的 Install；
-//  3. ControlSession.Inspect 判定替换前 daemon 是否运行（决定是否需要 Stop / 之后是否 Start）；
-//  4. 若运行中：ControlSession.Stop 停掉 daemon，等 daemon lock 释放；
-//  5. Installer.Install 做实际文件替换（集成点；未注入时占位：不替换，newBinPath=oldBinPath），
-//     wasRunning 传入以便写入 journal 供中断恢复；
-//  6. 若替换前运行：ControlSession.StartWithExecutable(newBinPath) 启动新 daemon。
-//     install/Start 失败时尽力用 oldBinPath 回滚重启，保持替换前运行状态；主失败与
-//     restart/rollback 失败用 errors.Join 聚合保留。
+//     journal 记录 dashboard 原运行时一并按原地址恢复它，随后本轮结束，不再尝试
+//     新的 Install；
+//  3. （若注入 ServeLifecycle）探测替换前 dashboard 运行态（纯读：缺失/损坏/
+//     陈旧状态一律视为未运行）；
+//  4. dashboard 在运行 → ServeLifecycle.Stop 停掉它（探活判停）。停止编排
+//     位于 daemon Stop 之前：serve 停止失败时 daemon 未被扰动，按事务语义
+//     直接中止更新、不替换二进制；停止编排报告「无运行实例可停」时更正
+//     serveWasRunning=false（探测与停止之间实例自行退出，无需恢复）；
+//  5. ControlSession.Inspect 判定替换前 daemon 是否运行（决定是否需要 Stop / 之后是否 Start）；
+//  6. 若运行中：ControlSession.Stop 停掉 daemon，等 daemon lock 释放。停止失败时
+//     按事务语义恢复已被停止的 dashboard（旧二进制）后再返回错误；
+//  7. Installer.Install 做实际文件替换（集成点；未注入时占位：不替换，newBinPath=oldBinPath），
+//     wasRunning 与 serve 快照传入以便写入 journal/plan 供中断恢复。失败时按
+//     事务语义恢复 daemon 与 dashboard（均为旧二进制）后返回错误；
+//  8. 若替换前运行：ControlSession.StartWithExecutable(newBinPath) 启动新 daemon。
+//     Start 失败时尽力用 oldBinPath 回滚重启，保持替换前运行状态；dashboard
+//     原在运行时同样按事务语义以旧二进制恢复；
+//  9. dashboard 原在运行 → ServeLifecycle.Start(newBinPath, serveAddr) 以原监听
+//     地址、用新二进制恢复后台实例（绝不打开浏览器）。恢复失败时执行整体回滚：
+//     Installer.Rollback 恢复旧二进制 → 停止新 daemon →（原先运行）用旧二进制
+//     重启 daemon → 用旧二进制按原地址恢复 dashboard；主失败与各回滚失败用
+//     errors.Join 聚合保留；
+//  10. daemon Start 成功（或无需启动）：提交事务（清理 backup/journal）。
+//     Commit 失败不回滚已成功的新版本，返回「清理待处理」可诊断错误。
 //
 // oldBinPath 是当前二进制路径（Provenance.BinaryPath），也是被覆盖的目标位置。
 // stagePath 是 DownloadAsset 产出并校验过 SHA256 的新版本二进制路径；
 // 未注入 AssetDownloader 时 stagePath 为空（向后兼容），此时 Install 依赖注入的
 // Installer 自行处理（生产 POSIX installer 要求非空 stagePath；测试可注入 fake stagePath
 // 指向真实临时文件以驱动事务）。
-func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBinPath string) (installOutcome, error) {
+func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBinPath, expectedHash string) (installOutcome, error) {
 	cfg, err := s.ConfigLoader()
 	if err != nil {
 		return installOutcome{}, fmt.Errorf("%s: %w", ui.Bi("failed to load effective config under lock", "锁内加载有效配置失败"), err)
@@ -767,45 +980,166 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 	var wasRunning bool
 	var deferred bool // Windows helper 已接管后续替换与 daemon 切换，本轮 installed=false
 	var recovery installOutcome
+	var serveWasRunning bool
+	var serveAddr string
 
-	lockErr := s.ControlManager.WithLock(ctx, func(sess ControlSession) error {
-		// 0. 检测并处理上次中断遗留的 journal。正常 Apply 开始前已经做过一次
-		// 无副作用探测；这里保留同锁检查，处理探测和持锁安装之间出现的 journal。
-		// 若命中，必须先恢复并结束本轮安装。stagePath 是调用方提供的已验证输入，
-		// 恢复逻辑只删除其 nonce 派生的事务文件，不能在这里删除外部 stage。
+	lockErr := s.ControlManager.WithLock(ctx, func(sess ControlSession) (err error) {
+		// 0. 检测并处理上次中断遗留的 journal 与恢复意图。正常 Apply 开始前已经
+		// 做过一次无副作用探测；这里保留同锁检查，处理探测和持锁安装之间出现
+		// 的遗留事务。若命中，必须先恢复并结束本轮安装。stagePath 是调用方提供
+		// 的已验证输入，恢复逻辑只删除其 nonce 派生的事务文件，不能在这里删除
+		// 外部 stage。
 		if outcome, handled, rerr := s.recoverJournalWithSession(ctx, sess, cfg, oldBinPath); rerr != nil {
 			return rerr
 		} else if handled {
+			// journal 恢复已精确判定二进制版本并还原服务，先前写下的恢复意图
+			// 是冗余快照：尽力清除（失败无害——它是幂等快照，残留只会在下一轮
+			// 被再次消费，不加入返回错误以免把成功的恢复变成失败）。
+			_ = removeUpdateIntent(oldBinPath)
 			recovery = outcome
 			return nil
 		}
+		// journal 未命中（不存在）时，再查「已 stop、未 Install」窗口留下的
+		// 恢复意图。journal 存在（含 handled=false 继续本轮安装的分支）时不按
+		// 快照消费——journal 路径已恢复服务并把快照作为冗余清除，否则会截断
+		// 「恢复后重试安装」的既有语义。
+		_, journalFound, jerr := findLeftoverJournal(oldBinPath)
+		if jerr != nil {
+			return fmt.Errorf("%s: %w", ui.Bi("failed to check leftover journal", "检查遗留 journal 失败"), jerr)
+		}
+		if !journalFound {
+			if intent, found, ierr := findIntent(oldBinPath); ierr != nil {
+				return fmt.Errorf("%s: %w", ui.Bi("failed to check the leftover recovery intent", "检查遗留恢复意图失败"), ierr)
+			} else if found {
+				outcome, handled, rerr := s.recoverIntentWithSession(ctx, sess, cfg, oldBinPath, *intent)
+				if rerr != nil {
+					return rerr
+				} else if handled {
+					recovery = outcome
+					return nil
+				}
+			}
+		}
 
-		// 1. Inspect 判定替换前运行状态。
+		// 1. 探测替换前 dashboard 运行态（纯读；缺失/损坏/陈旧状态一律未运行）。
+		if s.ServeLifecycle != nil {
+			running, addr, derr := s.ServeLifecycle.DetectRunning(cfg.DataDir)
+			if derr != nil {
+				return fmt.Errorf("%s: %w", ui.Bi("failed to detect the dashboard state before replacement", "替换前探测 dashboard 运行态失败"), derr)
+			}
+			serveWasRunning, serveAddr = running, addr
+		}
+
+		// 2. Inspect 判定替换前 daemon 运行状态（提前到任何停止动作之前：
+		// 恢复意图快照需要两个服务的原运行态同时在场）。
 		st, ierr := sess.Inspect(ctx, cfg)
 		if ierr != nil {
 			return fmt.Errorf("%s: %w", ui.Bi("Inspect failed under lock", "锁内 Inspect 失败"), ierr)
 		}
 		wasRunning = st.Running
 
-		// 2. 运行中先 Stop（等 daemon lock 释放），为文件替换腾出干净状态。
-		if wasRunning {
-			s.report(Event{Kind: EventStopDaemon})
-			if serr := sess.Stop(ctx, cfg); serr != nil {
-				return fmt.Errorf("%s: %w", ui.Bi("failed to stop daemon before replacement", "替换前停止 daemon 失败"), serr)
+		// 3. 在停止任何服务之前持久化恢复意图：进程若在「已 stop、未 Install」
+		// 之间被硬中断，journal/plan 都还不存在，下一次启动只能凭这份快照还原
+		// 两个服务的原运行态。写失败则中止更新（此刻尚无任何服务被停止）。
+		persistIntent := func() error {
+			oldHash, herr := fileSHA256(oldBinPath)
+			if herr != nil {
+				return fmt.Errorf("%s: %w", ui.Bi("failed to hash the current binary before stopping services", "停止服务前计算当前二进制 hash 失败"), herr)
+			}
+			// NewSHA256 记录 manifest 期望 hash（下载校验、stage --version 与
+			// 本次停止前复验共同确认过的值）：替换已落地时，恢复路径只接受
+			// target 与其精确匹配才以新二进制恢复服务，杜绝把异常替换/损坏的
+			// 二进制当作新版本启动。停止前必须对 stage 复验该期望值——下载
+			// 校验与现在之间 stage 若被损坏或替换，在此中止且未触碰任何服务。
+			// 下载路径不可用（stagePath 为空，测试/嵌入方的向后兼容形态）时
+			// 留空，此时旧 hash 不匹配一律报人工。
+			newHash := expectedHash
+			if stagePath != "" && expectedHash != "" {
+				if verr := verifyFileHash(stagePath, expectedHash); verr != nil {
+					_ = removeRegularFile(stagePath)
+					return fmt.Errorf("%s: %w", ui.Bi("the downloaded asset no longer matches the verified manifest hash; the update is aborted and no service has been touched", "下载产物与已验证的清单 hash 不再一致，更新已中止且未触碰任何服务"), verr)
+				}
+			} else if stagePath != "" && expectedHash == "" {
+				// 无期望 hash 可对照（向后兼容形态）：无法建立「可信新版本」
+				// 判定，留空——恢复路径对旧 hash 不匹配一律报人工。
+				newHash = ""
+			}
+			return writeUpdateIntent(intentFilePath(oldBinPath), updateIntent{
+				Version:          intentCurrentVersion,
+				TargetBasename:   filepath.Base(oldBinPath),
+				OldSHA256:        oldHash,
+				NewSHA256:        newHash,
+				DaemonWasRunning: wasRunning,
+				ServeWasRunning:  serveWasRunning,
+				ServeAddr:        serveAddr,
+			})
+		}
+		if wasRunning || serveWasRunning {
+			if werr := persistIntent(); werr != nil {
+				return fmt.Errorf("%s: %w", ui.Bi("failed to persist the recovery intent before stopping services; the update is aborted and no service has been touched", "停止服务前持久化恢复意图失败，更新已中止且未触碰任何服务"), werr)
+			}
+			// 事务收尾时清除快照（成功提交、或失败回滚已把服务还原）；Deferred
+			// 例外——Windows helper 已接管，快照留给 helper 失败后的下一轮消费。
+			defer func() {
+				if deferred {
+					return
+				}
+				if rmErr := removeUpdateIntent(oldBinPath); rmErr != nil {
+					err = errors.Join(err, fmt.Errorf("%s: %w", ui.Bi("the update transaction has settled, but the recovery intent could not be removed; it is safe to retry the update or delete the file manually", "更新事务已了结，但恢复意图删除失败；可安全重试更新或手动删除该文件"), rmErr))
+				}
+			}()
+		}
+
+		// 4. dashboard 在运行 → 先停它（探活判停）。顺序在 daemon Stop 之前：
+		// serve 停止失败时 daemon 未被扰动，直接中止更新（不替换二进制、不改
+		// daemon 运行态）。「无运行实例可停」说明探测与停止之间实例已自行退出，
+		// 更正运行态、放弃恢复。
+		if serveWasRunning {
+			s.report(Event{Kind: EventStopServe})
+			stopped, serr := s.ServeLifecycle.Stop(cfg.DataDir)
+			if serr != nil {
+				return fmt.Errorf("%s: %w", ui.Bi("failed to stop the dashboard before replacement; the update is aborted and the binary is left untouched", "替换前停止 dashboard 失败，更新已中止，二进制未被改动"), serr)
+			}
+			if !stopped {
+				// 实例在探测与停止之间自行退出：内存修正之外必须同步重写磁盘
+				// 快照——否则此后的硬中断会让下一次启动把用户已自行退出的
+				// dashboard 错误拉起。重写失败中止更新（此刻无服务被触碰：
+				// 该实例已自行消亡，daemon 尚未停止）。
+				serveWasRunning, serveAddr = false, ""
+				if werr := persistIntent(); werr != nil {
+					return fmt.Errorf("%s: %w", ui.Bi("failed to update the recovery intent after the dashboard vanished on its own; the update is aborted and no service has been touched", "dashboard 自行退出后更新恢复意图失败，更新已中止且未触碰任何服务"), werr)
+				}
 			}
 		}
 
-		// 3. 实际文件替换（集成点）。未注入 Installer 时占位：不替换文件，
+		// 5. 运行中先 Stop（等 daemon lock 释放），为文件替换腾出干净状态。
+		// 停止失败时 dashboard 可能已被本编排停止：按事务语义先恢复它（旧二进制）
+		// 再返回错误，保留主失败与恢复失败。
+		if wasRunning {
+			s.report(Event{Kind: EventStopDaemon})
+			if serr := sess.Stop(ctx, cfg); serr != nil {
+				stopErr := fmt.Errorf("%s: %w", ui.Bi("failed to stop daemon before replacement", "替换前停止 daemon 失败"), serr)
+				if serveWasRunning {
+					if rerr := s.ServeLifecycle.Start(cfg.DataDir, oldBinPath, serveAddr); rerr != nil {
+						return errors.Join(stopErr, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard after the daemon stop failure", "daemon 停止失败后恢复 dashboard 失败"), rerr))
+					}
+				}
+				return stopErr
+			}
+		}
+
+		// 6. 实际文件替换（集成点）。未注入 Installer 时占位：不替换文件，
 		// newBinPath 沿用 oldBinPath，保证 StartWithExecutable 仍有合法目标路径。
 		// Install 成功后事务文件（backup/journal）暂不删除——若 Installer 实现
-		// TransactionHandler，由步骤 4 在 daemon Start 成功后 Commit、失败时 Rollback。
-		// wasRunning 传入 Install 以便写入 journal，供中断恢复时按原运行态重启 daemon。
+		// TransactionHandler，由步骤 8 在 daemon Start 成功后 Commit、失败时 Rollback。
+		// wasRunning 与 serve 快照传入 Install 以便写入 journal/plan，供中断恢复
+		// 与 Windows 后台 helper 按原运行态恢复 daemon 与 dashboard。
 		if s.Installer != nil {
 			s.report(Event{Kind: EventInstall})
-			nb, ierr := s.Installer.Install(ctx, stagePath, oldBinPath, oldBinPath, wasRunning)
+			nb, ierr := s.Installer.Install(ctx, stagePath, oldBinPath, oldBinPath, wasRunning, serveWasRunning, serveAddr, expectedHash)
 			if ierr != nil {
 				// Windows staged replacement：Install 已构造 plan、复制 helper.exe 并 spawn
-				// 后台 helper，文件替换与 daemon 切换由 helper 在父进程退出后完成。
+				// 后台 helper，文件替换与 daemon/dashboard 切换由 helper 在父进程退出后完成。
 				// 立即结束锁内编排（installed=false），跳过 Start/Commit/Rollback——
 				// 这些全部由 helper 负责。POSIX 的 Install 永不返回该 sentinel。
 				if errors.Is(ierr, ErrDeferredToHelper) {
@@ -821,60 +1155,45 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 			newBinPath = oldBinPath
 		}
 		if installErr != nil {
-			// 安装失败：若替换前 daemon 在运行，用旧二进制重启恢复运行态。
-			// POSIX Install 失败时 target 已是旧版本（或已内部 rollback），故 oldBinPath 是旧版本。
-			// restart 失败与主失败用 errors.Join 聚合保留，供上层诊断。
-			var restartErr error
+			// 安装失败：按事务语义恢复替换前运行状态。
+			// POSIX Install 失败时 target 已是旧版本（或已内部 rollback），故
+			// oldBinPath 是旧版本。各恢复失败与主失败用 errors.Join 聚合保留。
+			var errs []error
+			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to install new version", "安装新版本失败"), installErr))
 			if wasRunning {
-				restartErr = sess.StartWithExecutable(ctx, cfg, oldBinPath)
+				if restartErr := sess.StartWithExecutable(ctx, cfg, oldBinPath); restartErr != nil {
+					errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("rollback restart with the old binary also failed", "回滚重启旧二进制也失败"), restartErr))
+				}
 			}
-			if restartErr != nil {
-				return errors.Join(
-					fmt.Errorf("%s: %w", ui.Bi("failed to install new version", "安装新版本失败"), installErr),
-					fmt.Errorf("%s: %w", ui.Bi("rollback restart with the old binary also failed", "回滚重启旧二进制也失败"), restartErr),
-				)
+			if serveWasRunning {
+				if serveErr := s.ServeLifecycle.Start(cfg.DataDir, oldBinPath, serveAddr); serveErr != nil {
+					errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), serveErr))
+				}
 			}
-			if wasRunning {
-				return fmt.Errorf("%s: %w", ui.Bi("failed to install new version (restarted with the old binary)", "安装新版本失败（已用旧二进制重启）"), installErr)
-			}
-			return fmt.Errorf("%s: %w", ui.Bi("failed to install new version", "安装新版本失败"), installErr)
+			return errors.Join(errs...)
 		}
 
-		// 4. 替换前运行 → 用新二进制重启 daemon，完成「热切换」。
-		// Start 成功后调 Commit 清理事务文件；Start 失败调 Rollback 恢复旧版本再重启。
+		// 7. 替换前运行 → 用新二进制重启 daemon，完成「热切换」。
+		// Start 成功后调 Commit 清理事务文件；Start 失败调 Rollback 恢复旧版本，
+		// 重启旧 daemon 并按事务语义恢复 dashboard。
 		if wasRunning {
 			s.report(Event{Kind: EventRestartDaemon})
 			if serr := sess.StartWithExecutable(ctx, cfg, newBinPath); serr != nil {
-				// 启动失败：若 Installer 支持 TransactionHandler，先 Rollback（恢复旧版本）。
-				var rollbackErr error
-				if th, ok := s.Installer.(TransactionHandler); ok && th != nil {
-					rollbackErr = th.Rollback()
-				}
-				// Rollback 后 target 已是旧版本（或 POSIX 中 Install 已 rollback），
-				// 用 oldBinPath（= target）重启恢复旧版本运行。
-				if rerr := sess.StartWithExecutable(ctx, cfg, oldBinPath); rerr != nil {
-					if rollbackErr != nil {
-						return errors.Join(
-							fmt.Errorf("%s: %w", ui.Bi("failed to start new binary", "新二进制启动失败"), serr),
-							fmt.Errorf("%s: %w", ui.Bi("rollback restore failed", "回滚恢复失败"), rollbackErr),
-							fmt.Errorf("%s: %w", ui.Bi("rollback restart with the old binary also failed", "回滚重启旧二进制也失败"), rerr),
-						)
-					}
-					return errors.Join(
-						fmt.Errorf("%s: %w", ui.Bi("failed to start new binary", "新二进制启动失败"), serr),
-						fmt.Errorf("%s: %w", ui.Bi("rollback restart with the old binary also failed", "回滚重启旧二进制也失败"), rerr),
-					)
-				}
-				if rollbackErr != nil {
-					return errors.Join(
-						fmt.Errorf("%s: %w", ui.Bi("failed to start new binary", "新二进制启动失败"), serr),
-						fmt.Errorf("%s: %w", ui.Bi("rollback restore failed", "回滚恢复失败"), rollbackErr),
-					)
-				}
-				return fmt.Errorf("%s: %w", ui.Bi("failed to start new binary; rolled back and restarted with the old binary", "新二进制启动失败，已用旧二进制回滚重启"), serr)
+				return s.rollbackAfterDaemonStartFailure(ctx, sess, cfg, oldBinPath, serveWasRunning, serveAddr, serr)
 			}
 		}
-		// daemon Start 成功（或无需启动）：提交事务（清理 backup/journal）。
+
+		// 8. dashboard 原在运行 → 以原监听地址、用新二进制恢复后台实例。
+		// 恢复失败执行整体回滚（恢复旧二进制与更新前 daemon/dashboard 状态），
+		// 主失败与各回滚失败聚合保留。
+		if serveWasRunning {
+			s.report(Event{Kind: EventStartServe})
+			if serr := s.ServeLifecycle.Start(cfg.DataDir, newBinPath, serveAddr); serr != nil {
+				return s.rollbackAfterServeStartFailure(ctx, sess, cfg, oldBinPath, wasRunning, serveAddr, serr)
+			}
+		}
+
+		// daemon/dashboard Start 成功（或无需启动）：提交事务（清理 backup/journal）。
 		// Commit 失败不回滚已成功的新版本，返回「清理待处理」可诊断错误。
 		if th, ok := s.Installer.(TransactionHandler); ok && th != nil {
 			if cerr := th.Commit(); cerr != nil {
@@ -892,8 +1211,71 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 	}
 	// deferred=true 表示 Windows helper 已接管替换（Install 返回 sentinel），installed=false。
 	// 否则表示执行了完整 Install 流程，installed=true。
-	// WasRunning 一并传出，供结果文案按替换前运行态分流。
-	return installOutcome{Installed: !deferred, Deferred: deferred, WasRunning: wasRunning}, nil
+	// WasRunning 与 serve 快照一并传出，供结果文案按替换前运行态分流。
+	return installOutcome{Installed: !deferred, Deferred: deferred, WasRunning: wasRunning, ServeWasRunning: serveWasRunning, ServeAddr: serveAddr}, nil
+}
+
+// rollbackAfterDaemonStartFailure 处理「新二进制启动 daemon 失败」的事务回滚：
+// 若 Installer 支持 TransactionHandler 先 Rollback（恢复旧版本），再用 oldBinPath
+// （= target，已恢复为旧版本）重启 daemon；dashboard 原在运行时以旧二进制按
+// 原地址恢复。主失败与各回滚失败用 errors.Join 聚合保留。
+func (s *Service) rollbackAfterDaemonStartFailure(ctx context.Context, sess ControlSession, cfg *config.Config, oldBinPath string, serveWasRunning bool, serveAddr string, startErr error) error {
+	// 启动失败：若 Installer 支持 TransactionHandler，先 Rollback（恢复旧版本）。
+	var rollbackErr error
+	if th, ok := s.Installer.(TransactionHandler); ok && th != nil {
+		rollbackErr = th.Rollback()
+	}
+	// Rollback 后 target 已是旧版本（或 POSIX 中 Install 已 rollback），
+	// 用 oldBinPath（= target）重启恢复旧版本运行。
+	var errs []error
+	errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to start new binary", "新二进制启动失败"), startErr))
+	if rerr := sess.StartWithExecutable(ctx, cfg, oldBinPath); rerr != nil {
+		errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("rollback restart with the old binary also failed", "回滚重启旧二进制也失败"), rerr))
+	}
+	if serveWasRunning {
+		if serr := s.ServeLifecycle.Start(cfg.DataDir, oldBinPath, serveAddr); serr != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), serr))
+		}
+	}
+	if rollbackErr != nil {
+		errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("rollback restore failed", "回滚恢复失败"), rollbackErr))
+	}
+	if len(errs) == 1 {
+		// 无回滚动作失败、dashboard 也未运行：保留既有「已回滚重启」语义。
+		return fmt.Errorf("%s: %w", ui.Bi("failed to start new binary; rolled back and restarted with the old binary", "新二进制启动失败，已用旧二进制回滚重启"), startErr)
+	}
+	return errors.Join(errs...)
+}
+
+// rollbackAfterServeStartFailure 处理「dashboard 恢复失败」的整体事务回滚：
+// 二进制此时已替换为新版本、daemon 已按新二进制运行。按事务语义恢复旧二进制
+// 与更新前 daemon/dashboard 状态：
+//  1. Installer.Rollback 恢复旧二进制（target 回到旧版本）；
+//  2. （原先运行 daemon）停止新 daemon 并用旧二进制重启；
+//  3. 用旧二进制按原地址再次尝试恢复 dashboard（更新前它在运行）。
+//
+// 主失败（新二进制恢复 dashboard 失败）与各回滚失败用 errors.Join 聚合保留，
+// 绝不吞掉任何一路错误。
+func (s *Service) rollbackAfterServeStartFailure(ctx context.Context, sess ControlSession, cfg *config.Config, oldBinPath string, wasRunning bool, serveAddr string, serveErr error) error {
+	var errs []error
+	errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the new binary; rolling back the update", "用新二进制恢复 dashboard 失败，正在回滚本次更新"), serveErr))
+	if th, ok := s.Installer.(TransactionHandler); ok && th != nil {
+		if rbErr := th.Rollback(); rbErr != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("rollback restore failed", "回滚恢复失败"), rbErr))
+		}
+	}
+	if wasRunning {
+		if stopErr := sess.Stop(ctx, cfg); stopErr != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to stop the new daemon during rollback", "回滚时停止新 daemon 失败"), stopErr))
+		}
+		if restartErr := sess.StartWithExecutable(ctx, cfg, oldBinPath); restartErr != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("rollback restart with the old binary also failed", "回滚重启旧二进制也失败"), restartErr))
+		}
+	}
+	if resErr := s.ServeLifecycle.Start(cfg.DataDir, oldBinPath, serveAddr); resErr != nil {
+		errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), resErr))
+	}
+	return errors.Join(errs...)
 }
 
 // parseCurrent 解析当前版本。dev / 非正式 tag 返回 error；force=true 时 dev 放行

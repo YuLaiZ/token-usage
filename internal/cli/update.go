@@ -110,6 +110,10 @@ func defaultUpdateServiceFactory(info buildinfo.Info, checkOnly bool, out io.Wri
 		svc.AssetDownloader = downloader
 		svc.VersionProbe = update.NewExecVersionProbe()
 		svc.Reporter = newUpdateProgressPrinter(out)
+		// dashboard 运行态保持依赖：探测/停止/恢复全部经 internal/serve 的
+		// 共用编排（与 serve stop/start 命令同一实现），--check 路径不注入，
+		// 保持严格只读。
+		svc.ServeLifecycle = newUpdateServeLifecycle()
 
 		// 打开升级日志文件并注入 LogSink/LogPath + installer 的 writer/logDir。
 		// 日志打开失败是 best-effort：Apply 不依赖日志也能工作。
@@ -171,7 +175,7 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 		Short:        "Update token-usage to the latest or a given version / 更新 token-usage 到最新或指定版本",
 		SilenceUsage: true,
 		Long: ui.Bi("Check and update token-usage itself to the latest stable or a given version.\n\n"+
-			"  token-usage update            Update to the latest stable version (replaces the binary after provenance checks pass; a running daemon restarts automatically and a stopped one stays stopped)\n"+
+			"  token-usage update            Update to the latest stable version (replaces the binary after provenance checks pass; a running daemon restarts automatically and a stopped one stays stopped; the same applies to the local dashboard — a running dashboard is stopped for the replacement and then restored in the background at its original address with the new binary, and a stopped one is not started)\n"+
 			"  token-usage update --check    Only check for a newer version; make no changes\n"+
 			"  token-usage update --version vX.Y.Z   Update to the given version\n"+
 			"  token-usage update --check --version vX.Y.Z-rc.N   Only check the given pre-release\n"+
@@ -180,9 +184,10 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 			"A plain update never overwrites a source that fails the official-asset checks (a re-signed binary, go install, a dev/local build, a symlinked copy, or a non-official tag); it prints manual install instructions instead.\n"+
 			"With --force the update overwrites a re-signed official asset, a `go install` of a tagged version, or a dev build, so automatic updates resume from the official channel; symlinked copies and non-official tags cannot be forced and always require manual installation.\n"+
 			"--check and --force cannot be combined.\n"+
-			"While running, update prints step-by-step progress (check, versions, download, verify, install, daemon switch) and, on a terminal, a live download indicator with percentage and average speed.",
+			"While running, update prints step-by-step progress (check, versions, download, verify, install, daemon and dashboard switch) and, on a terminal, a live download indicator with percentage and average speed.\n"+
+			"Dashboard preservation details: only a dashboard that answers on /api/meta before the update counts as running (missing, corrupt, or stale serve.json state is treated as not running and left untouched); the update aborts without replacing the binary if the running dashboard cannot be stopped; on any failure the update rolls back to the old binary and the pre-update daemon/dashboard state; --check never reads, stops, starts, or cleans up daemon or dashboard runtime state; the automatic restore never opens a browser.",
 			"检查并更新 token-usage 自身到最新稳定版或指定版本。\n\n"+
-				"  token-usage update            更新到最新稳定版（来源校验通过后替换二进制；daemon 原本运行则自动重启，原本停止则保持停止）\n"+
+				"  token-usage update            更新到最新稳定版（来源校验通过后替换二进制；daemon 原本运行则自动重启，原本停止则保持停止；本地仪表板同理——运行中的 dashboard 会被停止以完成替换，随后以原监听地址、用新二进制后台恢复，原本停止则不会启动）\n"+
 				"  token-usage update --check    只检查是否有新版本，不做任何修改\n"+
 				"  token-usage update --version vX.Y.Z   更新到指定版本\n"+
 				"  token-usage update --check --version vX.Y.Z-rc.N   只检查指定候选版\n"+
@@ -191,7 +196,8 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 				"默认不覆盖未通过官方资产校验的来源（已重签二进制、go install、dev 本地构建、软链副本、非官方 tag），改为输出人工安装指引。\n"+
 				"使用 --force 可强制覆盖已重签的官方资产、指定 tag 的 go install 产物或 dev 本地构建，使自动更新回归官方通道；软链副本与非官方 tag 不可被 force 覆盖，只能手动安装。\n"+
 				"--check 与 --force 不能组合。\n"+
-				"执行期间逐步输出过程（检查、版本对比、下载、校验、安装、daemon 切换），终端上下载还会显示带百分比与平均速度的实时进度。"),
+				"执行期间逐步输出过程（检查、版本对比、下载、校验、安装、daemon 与 dashboard 切换），终端上下载还会显示带百分比与平均速度的实时进度。\n"+
+				"dashboard 保持细节：只有更新前 /api/meta 有应答的 dashboard 才算在运行（serve.json 缺失、损坏或陈旧一律按未运行处理且不被改动）；运行中的 dashboard 无法停止时更新中止、不替换二进制；任一步骤失败时更新回滚到旧二进制与更新前的 daemon/dashboard 运行态；--check 绝不读取、停止、启动或清理 daemon/dashboard 运行态；自动恢复绝不打开浏览器。"),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUpdate(cmd, info)
@@ -340,6 +346,7 @@ func renderApplyResult(out, errOut io.Writer, goos string, res update.ApplyResul
 		// 主标题按替换前 daemon 运行态分流；既有次行全部保留，未运行提示为纯追加行。
 		fmt.Fprintf(out, "%s：%s → %s\n", installedTitle(res, " (--force overwrite)", "（--force 强制覆盖）"), res.CurrentTag, res.TargetTag)
 		fmt.Fprintln(out, ui.Bi("Run `token-usage version` to confirm the current version.", "可用 `token-usage version` 确认当前版本。"))
+		printServeRestoredLine(out, res)
 		printDaemonStartHint(out, res)
 		maybeCompletionMigrationNotice(out, goos, res, false)
 		return nil
@@ -347,6 +354,7 @@ func renderApplyResult(out, errOut io.Writer, goos string, res update.ApplyResul
 		// --force 下 Windows 后台替换已排队：非错误的排队状态，退出 0。
 		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Background replacement queued (--force overwrite)", "后台替换已排队（--force 强制覆盖）"), res.CurrentTag, res.TargetTag)
 		fmt.Fprintln(out, ui.Bi("Later run `token-usage version` or `token-usage update --check` to confirm the final version.", "请稍后运行 `token-usage version` 或 `token-usage update --check` 确认最终版本。"))
+		printServeDeferredLine(out, res)
 		printDaemonStartHintAfterReplacement(out, res)
 		maybeCompletionMigrationNotice(out, goos, res, true)
 		return nil
@@ -372,12 +380,14 @@ func renderApplyResult(out, errOut io.Writer, goos string, res update.ApplyResul
 		//（原本未运行时不误称「已恢复 daemon」，改为给出 start 提示）。
 		fmt.Fprintf(out, "%s：%s → %s\n", installedTitle(res, "", ""), res.CurrentTag, res.TargetTag)
 		fmt.Fprintln(out, ui.Bi("Run `token-usage version` to confirm the current version.", "可用 `token-usage version` 确认当前版本。"))
+		printServeRestoredLine(out, res)
 		printDaemonStartHint(out, res)
 		maybeCompletionMigrationNotice(out, goos, res, false)
 		return nil
 	case res.Deferred:
 		fmt.Fprintf(out, "%s：%s → %s\n", ui.Bi("Background replacement queued", "后台替换已排队"), res.CurrentTag, res.TargetTag)
 		fmt.Fprintln(out, ui.Bi("Later run `token-usage version` or `token-usage update --check` to confirm the final version.", "请稍后运行 `token-usage version` 或 `token-usage update --check` 确认最终版本。"))
+		printServeDeferredLine(out, res)
 		printDaemonStartHintAfterReplacement(out, res)
 		maybeCompletionMigrationNotice(out, goos, res, true)
 		return nil
@@ -403,14 +413,50 @@ func renderApplyResult(out, errOut io.Writer, goos string, res update.ApplyResul
 	}
 }
 
-// installedTitle 生成 Installed 分支的主标题：替换前 daemon 在运行 →
-// 「已更新并恢复 daemon」；原本未运行 → 「已更新」，不再误称「恢复」。
+// installedTitle 生成 Installed 分支的主标题，按替换前 daemon 与 dashboard 的
+// 运行态分流：各自恢复才称「恢复」，未运行的组件不误称（daemon 原本未运行时
+// 由 printDaemonStartHint 给出 start 提示；dashboard 未运行无需用户动作）。
 // forceEn/forceZh 为 --force 分支的后缀（普通分支传空串）。
 func installedTitle(res update.ApplyResult, forceEn, forceZh string) string {
-	if res.DaemonWasRunning {
+	daemon := res.DaemonWasRunning
+	serveRestored := res.ServeWasRunning
+	switch {
+	case daemon && serveRestored:
+		return ui.Bi("Updated; daemon and dashboard restored"+forceEn, "已更新，daemon 与 dashboard 已恢复"+forceZh)
+	case daemon:
 		return ui.Bi("Updated and daemon restored"+forceEn, "已更新并恢复 daemon"+forceZh)
+	case serveRestored:
+		return ui.Bi("Updated; dashboard restored"+forceEn, "已更新，dashboard 已恢复"+forceZh)
+	default:
+		return ui.Bi("Updated"+forceEn, "已更新"+forceZh)
 	}
-	return ui.Bi("Updated"+forceEn, "已更新"+forceZh)
+}
+
+// printServeRestoredLine 在安装同步完成的成功出口（POSIX Installed）输出
+// dashboard 恢复明细：更新前在运行的 dashboard 已按原监听地址、用新二进制
+// 恢复后台运行。ServeWasRunning=false 时不输出（未运行则保持未运行，无需
+// 用户动作）。
+func printServeRestoredLine(out io.Writer, res update.ApplyResult) {
+	if !res.ServeWasRunning {
+		return
+	}
+	fmt.Fprintln(out, ui.Bi(
+		fmt.Sprintf("The dashboard that was running before the update has been restored in the background at http://%s (its original address; the browser was not opened).", res.ServeAddr),
+		fmt.Sprintf("更新前在运行的 dashboard 已按原监听地址后台恢复：http://%s（未打开浏览器）。", res.ServeAddr),
+	))
+}
+
+// printServeDeferredLine 在 Windows 后台替换出口（Deferred）告知 dashboard 的
+// 处置：更新前在运行的实例已被本次命令停止（释放旧 .exe 供后台替换），后台
+// helper 会在替换完成后以原监听地址自动恢复它，无需用户操作。
+func printServeDeferredLine(out io.Writer, res update.ApplyResult) {
+	if !res.ServeWasRunning {
+		return
+	}
+	fmt.Fprintln(out, ui.Bi(
+		fmt.Sprintf("The dashboard that was running before the update has been stopped to release the old binary; the background replacement will restore it automatically at http://%s when it completes.", res.ServeAddr),
+		fmt.Sprintf("更新前在运行的 dashboard 已被停止以释放旧二进制；后台替换完成后将以原监听地址自动恢复：http://%s。", res.ServeAddr),
+	))
 }
 
 // printDaemonStartHint 在 daemon 替换前未运行时追加启动提示（纯追加行，
@@ -490,10 +536,12 @@ func renderRecoveredApplyResult(out io.Writer, res update.ApplyResult) error {
 	switch res.RecoveryState {
 	case update.RecoveryStateNewInstalled:
 		fmt.Fprintln(out, ui.Bi("Detected an interrupted update; recovery complete: the new version is in place and the daemon has been restored to its prior running state.", "检测到上次更新中断，已恢复完成：新版本已落地，并已按原运行态恢复 daemon。"))
+		printServeRestoredLine(out, res)
 		fmt.Fprintln(out, ui.Bi("Run token-usage version to confirm the current version.", "请运行 token-usage version 确认当前版本。"))
 		return nil
 	case update.RecoveryStateOldIntact, update.RecoveryStateOldRestored:
 		fmt.Fprintln(out, ui.Bi("Detected an interrupted update; rolled back to the previous version and restored the daemon to its prior running state.", "检测到上次更新中断，已恢复到旧版本，并已按原运行态恢复 daemon。"))
+		printServeRestoredLine(out, res)
 		fmt.Fprintln(out, ui.Bi("The target version was not installed this time; re-run token-usage update to retry.", "本次未安装目标版本，可重新运行 token-usage update 重试。"))
 		return errUpdateIncomplete
 	default:

@@ -18,6 +18,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/querier"
 	"github.com/YuLaiZ/token-usage/internal/querydef"
 	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
+	"github.com/YuLaiZ/token-usage/internal/serve"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
@@ -401,9 +402,9 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 	case configFailed:
 		emit("dashboard", ui.Bi("Dashboard", "仪表板"), statusSkip, ui.Bi("config failed", "配置加载失败"))
 	default:
-		st, stErr := readServeState(cfg.DataDir)
+		st, stErr := serve.ReadState(cfg.DataDir)
 		switch {
-		case errors.Is(stErr, errServeStateCorrupt):
+		case errors.Is(stErr, serve.ErrStateCorrupt):
 			warnings++
 			emit("dashboard", ui.Bi("Dashboard", "仪表板"), statusWarn, ui.Bi(
 				"corrupt serve state file; run `token-usage serve status` to clean it up",
@@ -422,7 +423,7 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 			))
 		default:
 			url := "http://" + st.Addr
-			if serveMetaAlive(url, serveStaleProbeTimeout) {
+			if serve.MetaAlive(url, serve.StaleProbeTimeout) {
 				emit("dashboard", ui.Bi("Dashboard", "仪表板"), statusOK, ui.Bi(
 					fmt.Sprintf("running at %s (PID %d)", url, st.PID),
 					fmt.Sprintf("运行中 %s（PID %d）", url, st.PID),

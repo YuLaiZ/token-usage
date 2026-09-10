@@ -52,12 +52,18 @@ const (
 // helper 据此等待精确的父进程实例退出，杜绝 PID 复用导致的 TOCTOU。Parent 是标量身份，
 // 不是路径，不违反「plan 不含路径」的安全约束。
 type helperPlan struct {
-	Nonce          string          `json:"nonce"`           // 绑定本次替换的随机 hex（32 字符）
-	TargetBasename string          `json:"target_basename"` // 被替换的目标二进制 basename
-	OldSHA256      string          `json:"old_sha256"`      // 旧 target SHA256（backup 校验与回滚用）
-	NewSHA256      string          `json:"new_sha256"`      // 新 stage SHA256（MoveFileEx 后校验用）
-	WasRunning     bool            `json:"was_running"`     // 原 daemon 运行态（决定 helper 是否重启 daemon）
-	Parent         ProcessIdentity `json:"parent"`          // 父进程身份（spawn 前由父进程捕获）
+	Nonce          string `json:"nonce"`           // 绑定本次替换的随机 hex（32 字符）
+	TargetBasename string `json:"target_basename"` // 被替换的目标二进制 basename
+	OldSHA256      string `json:"old_sha256"`      // 旧 target SHA256（backup 校验与回滚用）
+	NewSHA256      string `json:"new_sha256"`      // 新 stage SHA256（MoveFileEx 后校验用）
+	WasRunning     bool   `json:"was_running"`     // 原 daemon 运行态（决定 helper 是否重启 daemon）
+	// ServeWasRunning/ServeAddr 是替换前 dashboard 的运行态与监听地址：helper
+	// 完成 MoveFileEx 与 daemon 重启后，据二者以新 target 按原地址恢复后台
+	// dashboard（serve 已由父进程在替换前停止以释放旧 .exe）。恢复绝不打开
+	// 浏览器。ServeWasRunning=true 时 ServeAddr 必须非空（validateHelperPlanFields）。
+	ServeWasRunning bool            `json:"serve_was_running"`
+	ServeAddr       string          `json:"serve_addr,omitempty"`
+	Parent          ProcessIdentity `json:"parent"` // 父进程身份（spawn 前由父进程捕获）
 }
 
 // helperPaths 是从 (selfDir, targetBasename, nonce) 派生的全部 helper 文件绝对路径。
@@ -346,6 +352,11 @@ func validateHelperPlanFields(plan helperPlan) error {
 			fmt.Sprintf("target_basename %q contains path separators", plan.TargetBasename),
 			fmt.Sprintf("target_basename %q 含路径分隔符", plan.TargetBasename),
 		))
+	}
+	// dashboard 运行态自洽：记录在运行时监听地址必须随行——helper 恢复
+	// dashboard 只认 plan 内的原地址，缺失即无法按原地址恢复，拒绝执行。
+	if plan.ServeWasRunning && plan.ServeAddr == "" {
+		return errors.New(ui.Bi("plan records a running dashboard but is missing serve_addr", "计划记录 dashboard 原在运行但缺少 serve_addr"))
 	}
 	// Parent 身份必须为合法非零值（防降级或缺失：helper 必须据显式身份等待精确父进程实例）。
 	if !plan.Parent.Valid() {

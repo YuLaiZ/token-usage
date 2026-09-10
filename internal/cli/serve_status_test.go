@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/serve"
 )
 
 // serveStatusCmdFixture 构造注入临时 DataDir 的 serve status 命令与输出 buffer。
@@ -48,7 +49,7 @@ func TestServeStatusCmd_Running(t *testing.T) {
 	addr := strings.TrimPrefix(ts.URL, "http://")
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{
+	if err := serve.WriteState(dir, &serve.ServeState{
 		PID:       4242,
 		Addr:      addr,
 		StartedAt: time.Now().Format(time.RFC3339),
@@ -72,7 +73,7 @@ func TestServeStatusCmd_Running(t *testing.T) {
 		}
 	}
 	// 运行中不得删除状态文件。
-	if _, err := os.Stat(serveStatePath(dir)); err != nil {
+	if _, err := os.Stat(serve.StatePath(dir)); err != nil {
 		t.Errorf("运行中状态文件应保留: %v", err)
 	}
 }
@@ -87,7 +88,7 @@ func TestServeStatusCmd_StaleStateRemoved(t *testing.T) {
 	_ = ln.Close()
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{
+	if err := serve.WriteState(dir, &serve.ServeState{
 		PID:       999999,
 		Addr:      addr,
 		StartedAt: time.Now().Format(time.RFC3339),
@@ -105,7 +106,7 @@ func TestServeStatusCmd_StaleStateRemoved(t *testing.T) {
 			t.Errorf("输出应含 %q,实际: %q", want, got)
 		}
 	}
-	if _, err := os.Stat(serveStatePath(dir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(serve.StatePath(dir)); !os.IsNotExist(err) {
 		t.Errorf("陈旧状态文件应被删除,stat err = %v", err)
 	}
 }
@@ -130,16 +131,16 @@ func TestServeStatusCmd_ReportsNewInstanceWhenStateReplaced(t *testing.T) {
 	liveAddr := strings.TrimPrefix(ts.URL, "http://")
 
 	dir := t.TempDir()
-	stale := &ServeState{PID: 999999, Addr: staleAddr, StartedAt: time.Now().Format(time.RFC3339)}
-	if err := writeServeState(dir, stale); err != nil {
+	stale := &serve.ServeState{PID: 999999, Addr: staleAddr, StartedAt: time.Now().Format(time.RFC3339)}
+	if err := serve.WriteState(dir, stale); err != nil {
 		t.Fatalf("写陈旧状态: %v", err)
 	}
 
 	// 条件删除 seam：模拟磁盘状态已被改写为存活的新实例 B（真实写入），
 	// 返回 (false, B) 触发重评估分支。
-	next := &ServeState{PID: 5555, Addr: liveAddr, StartedAt: time.Now().Format(time.RFC3339)}
-	stubRemoveServeStateIfSame(t, func(dataDir string, judged *ServeState) (bool, *ServeState, error) {
-		if err := writeServeState(dataDir, next); err != nil {
+	next := &serve.ServeState{PID: 5555, Addr: liveAddr, StartedAt: time.Now().Format(time.RFC3339)}
+	stubRemoveServeStateIfSame(t, func(dataDir string, judged *serve.ServeState) (bool, *serve.ServeState, error) {
+		if err := serve.WriteState(dataDir, next); err != nil {
 			return false, nil, err
 		}
 		return false, next, nil
@@ -156,7 +157,7 @@ func TestServeStatusCmd_ReportsNewInstanceWhenStateReplaced(t *testing.T) {
 		}
 	}
 	// 新实例 B 的状态文件原样保留。
-	cur, err := readServeState(dir)
+	cur, err := serve.ReadState(dir)
 	if err != nil || cur == nil || cur.PID != 5555 || cur.Addr != liveAddr {
 		t.Errorf("新实例状态应原样保留,实际 (%+v, %v)", cur, err)
 	}

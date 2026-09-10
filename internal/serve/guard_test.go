@@ -1,9 +1,9 @@
-package cli
+package serve
 
-// serve_dashboard_guard_test.go 直打 serveDashboard 的单实例守卫
-// serveLifecycleGuard 的四个分支（存活幂等拒绝、损坏清理放行、生命周期锁
+// guard_test.go 直打后台服务主体的单实例守卫
+// LifecycleGuard 的四个分支（存活幂等拒绝、损坏清理放行、生命周期锁
 // 被占报错、陈旧清理放行），httptest + 临时 DataDir，无需起真实服务；全链路
-// 由 serve_hyperlink_e2e_test.go 与 serve_run_e2e_test.go 的 unix E2E 兜底
+// 由 cli 包的 serve_hyperlink_e2e_test.go 与 serve_run_e2e_test.go 的 unix E2E 兜底
 // （无状态场景 missing → 放行）。
 
 import (
@@ -31,17 +31,17 @@ func TestServeDashboard_SingleInstanceGuard_StaleProbeAlive(t *testing.T) {
 	aliveAddr := strings.TrimPrefix(ts.URL, "http://")
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{PID: 4242, Addr: aliveAddr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
+	if err := WriteState(dir, &ServeState{PID: 4242, Addr: aliveAddr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
 		t.Fatalf("写状态文件: %v", err)
 	}
 	// 记录种子内容，断言守卫不覆盖状态文件（现存实例的定位信息必须保留）。
-	seeded, err := os.ReadFile(serveStatePath(dir))
+	seeded, err := os.ReadFile(StatePath(dir))
 	if err != nil {
 		t.Fatalf("读种子状态文件: %v", err)
 	}
 
 	var out bytes.Buffer
-	lock, proceed, err := serveLifecycleGuard(dir, &out, serveStaleProbeTimeout)
+	lock, proceed, err := LifecycleGuard(dir, &out, StaleProbeTimeout)
 	if err != nil {
 		t.Fatalf("存活实例下守卫应幂等拒绝而非报错, err=%v", err)
 	}
@@ -59,7 +59,7 @@ func TestServeDashboard_SingleInstanceGuard_StaleProbeAlive(t *testing.T) {
 		}
 	}
 
-	got, err := os.ReadFile(serveStatePath(dir))
+	got, err := os.ReadFile(StatePath(dir))
 	if err != nil {
 		t.Fatalf("拒绝后状态文件应保留: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestServeDashboard_SingleInstanceGuard_StaleProbeAlive(t *testing.T) {
 	}
 
 	// serve.lock 未被守卫持有：可再次获取（拒绝路径不碰生命周期锁）。
-	l, ok := daemon.AcquireLock(filepath.Join(dir, serveLifecycleLockFile))
+	l, ok := daemon.AcquireLock(filepath.Join(dir, LifecycleLockFile))
 	if !ok {
 		t.Fatal("守卫拒绝后 serve.lock 应可获取（守卫不得持有残留）")
 	}
@@ -81,12 +81,12 @@ func TestServeDashboard_SingleInstanceGuard_StaleProbeAlive(t *testing.T) {
 // 无法辨识的 serve.json 是残留，守卫删除后放行并交出生命周期锁。
 func TestServeDashboard_SingleInstanceGuard_CorruptState(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(serveStatePath(dir), []byte("{not-json"), 0644); err != nil {
+	if err := os.WriteFile(StatePath(dir), []byte("{not-json"), 0644); err != nil {
 		t.Fatalf("写损坏状态文件: %v", err)
 	}
 
 	var out bytes.Buffer
-	lock, proceed, err := serveLifecycleGuard(dir, &out, serveStaleProbeTimeout)
+	lock, proceed, err := LifecycleGuard(dir, &out, StaleProbeTimeout)
 	if err != nil {
 		t.Fatalf("损坏状态应清理后放行, err=%v", err)
 	}
@@ -99,11 +99,11 @@ func TestServeDashboard_SingleInstanceGuard_CorruptState(t *testing.T) {
 	defer func() { _ = daemon.ReleaseLock(lock) }()
 
 	// 损坏文件已被删除。
-	if _, err := os.Stat(serveStatePath(dir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(StatePath(dir)); !os.IsNotExist(err) {
 		t.Errorf("损坏状态文件应被删除, stat err = %v", err)
 	}
 	// 生命周期锁已被守卫持有（放行的组成部分）：第二次获取应失败。
-	if l2, ok := daemon.AcquireLock(filepath.Join(dir, serveLifecycleLockFile)); ok {
+	if l2, ok := daemon.AcquireLock(filepath.Join(dir, LifecycleLockFile)); ok {
 		_ = daemon.ReleaseLock(l2)
 		t.Error("放行路径应持有 serve.lock,第二次获取不应成功")
 	}
@@ -113,14 +113,14 @@ func TestServeDashboard_SingleInstanceGuard_CorruptState(t *testing.T) {
 // serve.lock 被占（另一实例正在启动、尚未写出 serve.json）时守卫报双语错误。
 func TestServeDashboard_SingleInstanceGuard_LockHeld(t *testing.T) {
 	dir := t.TempDir()
-	held, ok := daemon.AcquireLock(filepath.Join(dir, serveLifecycleLockFile))
+	held, ok := daemon.AcquireLock(filepath.Join(dir, LifecycleLockFile))
 	if !ok {
 		t.Fatal("测试前置:占用 serve.lock 失败")
 	}
 	defer func() { _ = daemon.ReleaseLock(held) }()
 
 	var out bytes.Buffer
-	lock, proceed, err := serveLifecycleGuard(dir, &out, serveStaleProbeTimeout)
+	lock, proceed, err := LifecycleGuard(dir, &out, StaleProbeTimeout)
 	if err == nil {
 		t.Fatal("生命周期锁被占用时守卫应报错")
 	}
@@ -150,12 +150,12 @@ func TestServeDashboard_SingleInstanceGuard_StaleState(t *testing.T) {
 	_ = ln.Close()
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{PID: 999999, Addr: staleAddr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
+	if err := WriteState(dir, &ServeState{PID: 999999, Addr: staleAddr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
 		t.Fatalf("写陈旧状态文件: %v", err)
 	}
 
 	var out bytes.Buffer
-	lock, proceed, err := serveLifecycleGuard(dir, &out, serveStaleProbeTimeout)
+	lock, proceed, err := LifecycleGuard(dir, &out, StaleProbeTimeout)
 	if err != nil {
 		t.Fatalf("陈旧状态应清理后放行, err=%v", err)
 	}
@@ -169,7 +169,7 @@ func TestServeDashboard_SingleInstanceGuard_StaleState(t *testing.T) {
 		t.Fatalf("释放守卫交出的锁: %v", err)
 	}
 	// 陈旧文件已被删除。
-	if _, err := os.Stat(serveStatePath(dir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(StatePath(dir)); !os.IsNotExist(err) {
 		t.Errorf("陈旧状态文件应被删除, stat err = %v", err)
 	}
 }

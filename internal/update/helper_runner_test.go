@@ -53,6 +53,7 @@ type helperFixture struct {
 	sess    *fakeControlSession
 	mgr     *fakeControlManager
 	cfgLoad *recordingConfigLoader
+	serve   ServeLifecycle // dashboard 恢复依赖（nil=未装配；plan 记录运行中的 dashboard 时 Run 拒绝）
 	logBuf  *bytes.Buffer
 }
 
@@ -108,7 +109,7 @@ func newHelperFixture(t *testing.T, wasRunning bool) *helperFixture {
 // runner 装配 helperRunner（用 fixture 的 seam）。logBuf 捕获 [helper] 步骤日志。
 func (f *helperFixture) runner(t *testing.T) *helperRunner {
 	t.Helper()
-	r, err := NewHelperRunner(f.parent, f.mover, f.result, f.mgr, f.cfgLoad.load, f.logBuf)
+	r, err := NewHelperRunner(f.parent, f.mover, f.result, f.mgr, f.cfgLoad.load, f.serve, f.logBuf)
 	if err != nil {
 		t.Fatalf("NewHelperRunner: %v", err)
 	}
@@ -396,7 +397,7 @@ func TestHelperRunner_LockAcquireFailureWritesResult(t *testing.T) {
 // TestNewHelperRunner_NilDeps 依赖为空 → 装配错误。
 func TestNewHelperRunner_NilDeps(t *testing.T) {
 	if _, err := NewHelperRunner(nil, realFileMover{}, newFakeResultWriter(), &fakeControlManager{},
-		(&recordingConfigLoader{cfg: &config.Config{}}).load, nil); err == nil {
+		(&recordingConfigLoader{cfg: &config.Config{}}).load, nil, nil); err == nil {
 		t.Error("nil parentWaiter 应返回错误")
 	}
 }

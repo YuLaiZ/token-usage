@@ -91,7 +91,7 @@ func TestPosixInstall_Success_TargetReplacedWithNewVersion(t *testing.T) {
 	target, stage := setupTargetAndStage(t, "old-version", "new-version")
 	installer := NewPosixInstaller().(*posixInstaller)
 
-	got, err := installer.Install(context.Background(), stage, target, target, false)
+	got, err := installer.Install(context.Background(), stage, target, target, false, false, "", "")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestPosixInstall_Success_StageDifferentDirectory(t *testing.T) {
 	}
 	installer := NewPosixInstaller()
 
-	_, err := installer.Install(context.Background(), stage, target, target, false)
+	_, err := installer.Install(context.Background(), stage, target, target, false, false, "", "")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestPosixInstall_StageMissingFails(t *testing.T) {
 	stage := filepath.Join(dir, ".no-such-stage")
 	installer := NewPosixInstaller()
 
-	_, err := installer.Install(context.Background(), stage, target, target, false)
+	_, err := installer.Install(context.Background(), stage, target, target, false, false, "", "")
 	if err == nil {
 		t.Fatal("stage 不存在应返回错误")
 	}
@@ -224,7 +224,7 @@ func TestPosixInstall_TargetMissingFails(t *testing.T) {
 	target := filepath.Join(dir, ".no-such-target")
 	installer := NewPosixInstaller()
 
-	_, err := installer.Install(context.Background(), stage, target, target, false)
+	_, err := installer.Install(context.Background(), stage, target, target, false, false, "", "")
 	if err == nil {
 		t.Fatal("target 不存在应返回错误")
 	}
@@ -243,7 +243,7 @@ func TestPosixInstall_StageNotRegularFileFails(t *testing.T) {
 	}
 	installer := NewPosixInstaller()
 
-	_, err := installer.Install(context.Background(), stage, target, target, false)
+	_, err := installer.Install(context.Background(), stage, target, target, false, false, "", "")
 	if err == nil {
 		t.Fatal("stage 是目录应返回错误")
 	}
@@ -267,7 +267,7 @@ func TestPosixInstall_TargetNotRegularFileFails(t *testing.T) {
 	}
 	installer := NewPosixInstaller()
 
-	_, err := installer.Install(context.Background(), stage, target, target, false)
+	_, err := installer.Install(context.Background(), stage, target, target, false, false, "", "")
 	if err == nil {
 		t.Fatal("target 是 symlink 应返回错误")
 	}
@@ -276,7 +276,7 @@ func TestPosixInstall_TargetNotRegularFileFails(t *testing.T) {
 // TestPosixInstall_EmptyStagePathFails stagePath 为空 → 返回错误。
 func TestPosixInstall_EmptyStagePathFails(t *testing.T) {
 	installer := NewPosixInstaller()
-	_, err := installer.Install(context.Background(), "", "/some/target", "/some/target", false)
+	_, err := installer.Install(context.Background(), "", "/some/target", "/some/target", false, false, "", "")
 	if err == nil {
 		t.Fatal("空 stagePath 应返回错误")
 	}
@@ -293,7 +293,7 @@ func TestPosixInstall_PreservesExecutableMode(t *testing.T) {
 		t.Fatalf("Chmod: %v", err)
 	}
 	installer := NewPosixInstaller()
-	_, err := installer.Install(context.Background(), stage, target, target, false)
+	_, err := installer.Install(context.Background(), stage, target, target, false, false, "", "")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -723,7 +723,7 @@ func TestApply_RealPosixInstall_DaemonNotRunning(t *testing.T) {
 	svc, sess, binPath, stagePath := makeApplyInstallService(t, false)
 
 	// 用 installUnderLock 验证未运行路径（Install + Commit，无 Stop/Start）。
-	installed, err := svc.installUnderLock(context.Background(), stagePath, binPath)
+	installed, err := svc.installUnderLock(context.Background(), stagePath, binPath, "")
 	if err != nil {
 		t.Fatalf("installUnderLock: %v", err)
 	}
@@ -747,7 +747,7 @@ func TestApply_RealPosixInstall_OrchestrationOrderRunning(t *testing.T) {
 	svc, sess, binPath, stagePath := makeApplyInstallService(t, true)
 
 	// 通过直接调用 installUnderLock 验证编排（绕过 Apply 的 download 集成）。
-	installed, err := svc.installUnderLock(context.Background(), stagePath, binPath)
+	installed, err := svc.installUnderLock(context.Background(), stagePath, binPath, "")
 	if err != nil {
 		t.Fatalf("installUnderLock: %v", err)
 	}
@@ -777,7 +777,7 @@ func TestApply_RealPosixInstall_OrchestrationOrderRunning(t *testing.T) {
 func TestApply_RealPosixInstall_OrchestrationOrderNotRunning(t *testing.T) {
 	svc, sess, binPath, stagePath := makeApplyInstallService(t, false)
 
-	installed, err := svc.installUnderLock(context.Background(), stagePath, binPath)
+	installed, err := svc.installUnderLock(context.Background(), stagePath, binPath, "")
 	if err != nil {
 		t.Fatalf("installUnderLock: %v", err)
 	}
@@ -803,7 +803,7 @@ func TestApply_StopFails_TargetUnchanged(t *testing.T) {
 	svc, sess, binPath, stagePath := makeApplyInstallService(t, true)
 	sess.stopErr = errors.New("stop boom")
 
-	_, err := svc.installUnderLock(context.Background(), stagePath, binPath)
+	_, err := svc.installUnderLock(context.Background(), stagePath, binPath, "")
 	if err == nil {
 		t.Fatal("Stop 失败应返回错误")
 	}
@@ -822,7 +822,7 @@ func TestApply_StopFails_TargetUnchanged(t *testing.T) {
 func TestApply_InstallFails_TargetPreservedRollback(t *testing.T) {
 	svc, sess, binPath, _ := makeApplyInstallService(t, true)
 	// stagePath 指向不存在文件 → Install 在 validateInstallInputs 失败。
-	_, err := svc.installUnderLock(context.Background(), filepath.Join(filepath.Dir(binPath), ".no-stage"), binPath)
+	_, err := svc.installUnderLock(context.Background(), filepath.Join(filepath.Dir(binPath), ".no-stage"), binPath, "")
 	if err == nil {
 		t.Fatal("Install 失败应返回错误")
 	}
@@ -846,7 +846,7 @@ func TestApply_StartNewFails_RollbackToOld(t *testing.T) {
 	svc, sess, binPath, stagePath := makeApplyInstallService(t, true)
 	sess.startErr = errors.New("start boom")
 
-	_, err := svc.installUnderLock(context.Background(), stagePath, binPath)
+	_, err := svc.installUnderLock(context.Background(), stagePath, binPath, "")
 	if err == nil {
 		t.Fatal("Start 失败应返回错误")
 	}
@@ -911,7 +911,7 @@ func TestInstall_FullTransaction_AllFilesCleaned(t *testing.T) {
 	target, stage := setupTargetAndStage(t, "old-version-bin", "new-version-bin")
 	installer := NewPosixInstaller().(*posixInstaller)
 
-	_, err := installer.Install(context.Background(), stage, target, target, false)
+	_, err := installer.Install(context.Background(), stage, target, target, false, false, "", "")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -931,7 +931,7 @@ func TestInstall_PendingBackupBeforeCommit(t *testing.T) {
 	target, stage := setupTargetAndStage(t, "old", "new")
 	installer := NewPosixInstaller().(*posixInstaller)
 
-	_, err := installer.Install(context.Background(), stage, target, target, false)
+	_, err := installer.Install(context.Background(), stage, target, target, false, false, "", "")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -960,7 +960,7 @@ func TestInstall_PendingBackupBeforeCommit(t *testing.T) {
 func TestInstall_CommitIdempotent(t *testing.T) {
 	target, stage := setupTargetAndStage(t, "old", "new")
 	installer := NewPosixInstaller().(*posixInstaller)
-	_, err := installer.Install(context.Background(), stage, target, target, false)
+	_, err := installer.Install(context.Background(), stage, target, target, false, false, "", "")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -979,7 +979,7 @@ func TestInstall_RollbackRestoresOldVersion(t *testing.T) {
 	target, stage := setupTargetAndStage(t, "old-version", "new-version")
 	installer := NewPosixInstaller().(*posixInstaller)
 
-	_, err := installer.Install(context.Background(), stage, target, target, false)
+	_, err := installer.Install(context.Background(), stage, target, target, false, false, "", "")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -996,7 +996,7 @@ func TestInstall_RollbackRestoresOldVersion(t *testing.T) {
 func TestInstall_RollbackIdempotent(t *testing.T) {
 	target, stage := setupTargetAndStage(t, "old", "new")
 	installer := NewPosixInstaller().(*posixInstaller)
-	_, _ = installer.Install(context.Background(), stage, target, target, false)
+	_, _ = installer.Install(context.Background(), stage, target, target, false, false, "", "")
 	if err := installer.Rollback(); err != nil {
 		t.Fatalf("Rollback 1: %v", err)
 	}
@@ -1041,7 +1041,7 @@ func TestPosixInstall_RenameFailsTargetUnchanged(t *testing.T) {
 	defer os.Chmod(dir, 0o755) // 恢复以便 t.TempDir 清理
 
 	installer := NewPosixInstaller()
-	_, err := installer.Install(context.Background(), stage, target, target, false)
+	_, err := installer.Install(context.Background(), stage, target, target, false, false, "", "")
 	// rename 在只读目录下应失败（或 backup 创建时失败，取决于顺序）。
 	if err == nil {
 		// 某些系统/配置下只读目录仍允许 rename（如 root 用户），跳过此断言。
@@ -1109,7 +1109,7 @@ func TestApply_RecoverJournalBeforeInstall(t *testing.T) {
 	writeJournal(journalFilePath(binPath, "prev"), rec)
 
 	// installUnderLock 应先恢复（清理残留），再正常 Install。
-	installed, err := svc.installUnderLock(context.Background(), stagePath, binPath)
+	installed, err := svc.installUnderLock(context.Background(), stagePath, binPath, "")
 	if err != nil {
 		t.Fatalf("installUnderLock: %v", err)
 	}
@@ -1127,7 +1127,7 @@ func TestApply_RecoverJournalManualBlocksInstall(t *testing.T) {
 	// 创建损坏的 journal（无法解析）。
 	os.WriteFile(journalFilePath(binPath, "fuzzy"), []byte("{corrupt"), 0o600)
 
-	_, err := svc.installUnderLock(context.Background(), stagePath, binPath)
+	_, err := svc.installUnderLock(context.Background(), stagePath, binPath, "")
 	if err == nil {
 		t.Fatal("模糊 journal 应阻止 Install，返回错误")
 	}
@@ -1145,7 +1145,7 @@ func TestInstall_TwoConsecutiveInstalls(t *testing.T) {
 	// 第一次：v1 → v2 + Commit。
 	stage1 := filepath.Join(filepath.Dir(target), ".stage1")
 	os.WriteFile(stage1, []byte("v2"), 0o755)
-	_, err := installer.Install(context.Background(), stage1, target, target, false)
+	_, err := installer.Install(context.Background(), stage1, target, target, false, false, "", "")
 	if err != nil {
 		t.Fatalf("Install 1: %v", err)
 	}
@@ -1157,7 +1157,7 @@ func TestInstall_TwoConsecutiveInstalls(t *testing.T) {
 	// 第二次：v2 → v3 + Commit。
 	stage2 := filepath.Join(filepath.Dir(target), ".stage2")
 	os.WriteFile(stage2, []byte("v3"), 0o755)
-	_, err = installer.Install(context.Background(), stage2, target, target, false)
+	_, err = installer.Install(context.Background(), stage2, target, target, false, false, "", "")
 	if err != nil {
 		t.Fatalf("Install 2: %v", err)
 	}
@@ -1196,7 +1196,7 @@ func TestRecoverThenInstall_CleanStateAllowsNewInstall(t *testing.T) {
 	}
 	assertNoTransactionFiles(t, target)
 	// 恢复后可继续新 Install + Commit。
-	_, err = installer.Install(context.Background(), stage, target, target, false)
+	_, err = installer.Install(context.Background(), stage, target, target, false, false, "", "")
 	if err != nil {
 		t.Fatalf("恢复后 Install: %v", err)
 	}
@@ -1233,7 +1233,7 @@ func TestInstall_WritesWasRunningToJournal(t *testing.T) {
 	installer := NewPosixInstaller().(*posixInstaller)
 
 	// wasRunning=true 调用 Install。
-	if _, err := installer.Install(context.Background(), stage, target, target, true); err != nil {
+	if _, err := installer.Install(context.Background(), stage, target, target, true, false, "", ""); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	// 用 findLeftoverJournal + readJournal 读回磁盘 journal，验证 WasRunning=true。
@@ -1263,7 +1263,7 @@ func TestInstall_WritesWasRunningFalseToJournal(t *testing.T) {
 	os.WriteFile(stage, []byte("new"), 0o755)
 	installer := NewPosixInstaller().(*posixInstaller)
 
-	if _, err := installer.Install(context.Background(), stage, target, target, false); err != nil {
+	if _, err := installer.Install(context.Background(), stage, target, target, false, false, "", ""); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	// 读 journal。
@@ -1416,7 +1416,7 @@ func makeRecoveryApplyService(t *testing.T, newInstalled bool, wasRunning bool) 
 func TestApply_RecoveryNewInstalled_RestartsDaemonByJournalWasRunning(t *testing.T) {
 	svc, sess, binPath := makeRecoveryApplyService(t, true, true)
 
-	installed, err := svc.installUnderLock(context.Background(), "/nonexistent-stage", binPath)
+	installed, err := svc.installUnderLock(context.Background(), "/nonexistent-stage", binPath, "")
 	if err != nil {
 		t.Fatalf("installUnderLock: %v", err)
 	}
@@ -1506,7 +1506,7 @@ func TestApply_RecoveryPrecedesVersionAndProvenanceChecks(t *testing.T) {
 func TestApply_RecoveryNewInstalled_NoRestartWhenNotRunning(t *testing.T) {
 	svc, sess, binPath := makeRecoveryApplyService(t, true, false)
 
-	_, err := svc.installUnderLock(context.Background(), "/nonexistent-stage", binPath)
+	_, err := svc.installUnderLock(context.Background(), "/nonexistent-stage", binPath, "")
 	if err != nil {
 		t.Fatalf("installUnderLock: %v", err)
 	}
@@ -1526,7 +1526,7 @@ func TestApply_RecoveryOldRestored_RestartsDaemonByJournalWasRunning(t *testing.
 		t.Fatalf("Remove target: %v", err)
 	}
 
-	_, err := svc.installUnderLock(context.Background(), "/nonexistent-stage", binPath)
+	_, err := svc.installUnderLock(context.Background(), "/nonexistent-stage", binPath, "")
 	if err != nil {
 		t.Fatalf("installUnderLock: %v", err)
 	}
@@ -1548,7 +1548,7 @@ func TestApply_RecoveryOldRestored_RestartsDaemonByJournalWasRunning(t *testing.
 func TestApply_RecoveryOldIntact_RestartsDaemonByJournalWasRunning(t *testing.T) {
 	svc, sess, binPath := makeRecoveryApplyService(t, false, true)
 
-	installed, err := svc.installUnderLock(context.Background(), "/nonexistent-stage", binPath)
+	installed, err := svc.installUnderLock(context.Background(), "/nonexistent-stage", binPath, "")
 	if err != nil {
 		t.Fatalf("installUnderLock: %v", err)
 	}
@@ -1580,7 +1580,7 @@ func TestApply_RecoveryNewInstalled_CleanupPendingStillRestartsDaemon(t *testing
 		t.Fatalf("Mkdir stage: %v", err)
 	}
 
-	_, err := svc.installUnderLock(context.Background(), "/nonexistent-stage", binPath)
+	_, err := svc.installUnderLock(context.Background(), "/nonexistent-stage", binPath, "")
 	if err == nil {
 		t.Fatal("事务文件清理失败应返回错误")
 	}
@@ -1611,7 +1611,7 @@ func TestApply_RecoveryOldRestored_CleanupPendingStillRestartsDaemon(t *testing.
 		t.Fatalf("Mkdir stage: %v", err)
 	}
 
-	_, err := svc.installUnderLock(context.Background(), "/nonexistent-stage", binPath)
+	_, err := svc.installUnderLock(context.Background(), "/nonexistent-stage", binPath, "")
 	if err == nil {
 		t.Fatal("事务文件清理失败应返回错误")
 	}
@@ -1639,7 +1639,7 @@ func TestApply_RecoveryOldIntact_CleanupPendingStillRestartsDaemon(t *testing.T)
 		t.Fatalf("Mkdir stage: %v", err)
 	}
 
-	_, err := svc.installUnderLock(context.Background(), "/nonexistent-stage", binPath)
+	_, err := svc.installUnderLock(context.Background(), "/nonexistent-stage", binPath, "")
 	if err == nil {
 		t.Fatal("事务文件清理失败应返回错误")
 	}
@@ -1678,7 +1678,7 @@ func TestApply_InstallFailsRestartFails_AggregatesErrors(t *testing.T) {
 		ConfigLoader:   (&recordingConfigLoader{cfg: &config.Config{DataDir: dir}}).load,
 	}
 
-	_, err := svc.installUnderLock(context.Background(), filepath.Join(dir, ".no-such-stage"), binPath)
+	_, err := svc.installUnderLock(context.Background(), filepath.Join(dir, ".no-such-stage", ""), binPath, "")
 	if err == nil {
 		t.Fatal("应返回错误")
 	}
@@ -1713,7 +1713,7 @@ func TestApply_InstallFailsRestartSucceeds_OnlyInstallError(t *testing.T) {
 		ConfigLoader:   (&recordingConfigLoader{cfg: &config.Config{DataDir: dir}}).load,
 	}
 
-	_, err := svc.installUnderLock(context.Background(), filepath.Join(dir, ".no-such-stage"), binPath)
+	_, err := svc.installUnderLock(context.Background(), filepath.Join(dir, ".no-such-stage", ""), binPath, "")
 	if err == nil {
 		t.Fatal("应返回错误")
 	}

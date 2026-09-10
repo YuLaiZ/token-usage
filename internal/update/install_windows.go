@@ -62,11 +62,14 @@ func (windowsInstaller) Platform() string { return "windows" }
 //
 // stagePath 是 DownloadAsset 产出并校验过 SHA256 的新版本二进制绝对路径；
 // oldBinPath / targetBinPath 均为当前二进制路径（被覆盖的目标）；
-// wasRunning 是替换前 daemon 运行态，写入计划供 helper 据此决定是否重启 daemon。
+// wasRunning 是替换前 daemon 运行态，写入计划供 helper 据此决定是否重启 daemon；
+// serveWasRunning/serveAddr 是替换前 dashboard 的运行态与监听地址（dashboard 已由
+// 父进程在替换前停止以释放旧 .exe），写入计划供 helper 在替换成功后以新 target
+// 按原地址恢复后台 dashboard。
 //
 // 成功返回 (targetBinPath, ErrDeferredToHelper)；任一前置步骤失败返回普通 error
 // （此时未 spawn helper，调用方按普通安装失败回滚）。
-func (inst windowsInstaller) Install(ctx context.Context, stagePath, oldBinPath, targetBinPath string, wasRunning bool) (string, error) {
+func (inst windowsInstaller) Install(ctx context.Context, stagePath, oldBinPath, targetBinPath string, wasRunning, serveWasRunning bool, serveAddr, expectedHash string) (string, error) {
 	if err := validateInstallInputs(stagePath, targetBinPath); err != nil {
 		return "", err
 	}
@@ -81,13 +84,22 @@ func (inst windowsInstaller) Install(ctx context.Context, stagePath, oldBinPath,
 	paths := deriveHelperPaths(targetDir, targetBase, nonce)
 
 	// 旧 / 新 hash：旧供 helper backup 校验与回滚，新供替换后 target 校验。
+	// 新 hash 使用 manifest 期望值（下载校验、停止前复验共同确认），不重新
+	// 计算 stage 现状；expectedHash 为空（无下载路径的向后兼容形态）时回退
+	// 重算。非空时替换前对 stage 复验，篡改在最早期失败。
 	oldHash, err := fileSHA256(targetBinPath)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", ui.Bi("failed to verify old target hash before transaction", "事务前校验旧 target hash 失败"), err)
 	}
-	newHash, err := fileSHA256(stagePath)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", ui.Bi("failed to verify new stage hash before transaction", "事务前校验新 stage hash 失败"), err)
+	newHash := expectedHash
+	if newHash == "" {
+		var nerr error
+		newHash, nerr = fileSHA256(stagePath)
+		if nerr != nil {
+			return "", fmt.Errorf("%s: %w", ui.Bi("failed to verify new stage hash before transaction", "事务前校验新 stage hash 失败"), nerr)
+		}
+	} else if err := verifyFileHash(stagePath, expectedHash); err != nil {
+		return "", fmt.Errorf("%s: %w", ui.Bi("the downloaded asset no longer matches the verified manifest hash", "下载产物与已验证的清单 hash 不再一致"), err)
 	}
 
 	// 捕获父进程（自身）身份。顺序硬约束：先捕获身份 → 写入 plan.Parent → 再 spawn helper。
@@ -112,12 +124,14 @@ func (inst windowsInstaller) Install(ctx context.Context, stagePath, oldBinPath,
 
 	// 写 helper 计划（0600 原子写）。Parent 携带捕获的父进程身份，plan 写后不再改写。
 	plan := helperPlan{
-		Nonce:          nonce,
-		TargetBasename: targetBase,
-		OldSHA256:      oldHash,
-		NewSHA256:      newHash,
-		WasRunning:     wasRunning,
-		Parent:         parentIdentity,
+		Nonce:           nonce,
+		TargetBasename:  targetBase,
+		OldSHA256:       oldHash,
+		NewSHA256:       newHash,
+		WasRunning:      wasRunning,
+		ServeWasRunning: serveWasRunning,
+		ServeAddr:       serveAddr,
+		Parent:          parentIdentity,
 	}
 	if err := writeHelperPlan(paths.Plan, plan); err != nil {
 		_ = removeRegularFile(paths.Stage)

@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/serve"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
@@ -45,18 +46,18 @@ func newServeStatusCmd(load func() (*config.Config, error)) *cobra.Command {
 			}
 			// 状态迁移锁：「读-判-删」整段持锁（status 无信号等待段，全程毫秒
 			// 级至探活超时的秒级），保证判定所据内容与被删内容一致。
-			stateLock, err := acquireServeStateLock(cfg.DataDir)
+			stateLock, err := serve.AcquireStateLock(cfg.DataDir)
 			if err != nil {
 				return err
 			}
-			defer releaseServeStateLock(stateLock)
+			defer serve.ReleaseStateLock(stateLock)
 
-			st, err := readServeState(cfg.DataDir)
+			st, err := serve.ReadState(cfg.DataDir)
 			if err != nil {
-				if errors.Is(err, errServeStateCorrupt) {
+				if errors.Is(err, serve.ErrStateCorrupt) {
 					// 损坏的状态文件无法定位实例：持锁期间内容稳定，直接删除
 					// 残留后按未运行如实报告。
-					if rmErr := removeServeState(cfg.DataDir); rmErr != nil {
+					if rmErr := serve.RemoveState(cfg.DataDir); rmErr != nil {
 						return fmt.Errorf("%s: %w", ui.Bi("failed to remove corrupt serve state", "清理损坏的服务状态失败"), rmErr)
 					}
 					fmt.Fprintln(out, ui.Bi("serve is not running (corrupt state removed)", "仪表板未在后台运行（已清理损坏的状态文件）"))
@@ -69,7 +70,7 @@ func newServeStatusCmd(load func() (*config.Config, error)) *cobra.Command {
 				return nil
 			}
 			url := "http://" + st.Addr
-			if serveMetaAlive(url, serveStatusProbeTimeout) {
+			if serve.MetaAlive(url, serveStatusProbeTimeout) {
 				fmt.Fprintf(out, "%s\n", ui.Bi(
 					fmt.Sprintf("serve is running: %s (pid %d, since %s)", url, st.PID, serveLocalTime(st.StartedAt)),
 					fmt.Sprintf("仪表板正在后台运行：%s（PID %d，自 %s 起）", url, st.PID, serveLocalTime(st.StartedAt)),
@@ -78,7 +79,7 @@ func newServeStatusCmd(load func() (*config.Config, error)) *cobra.Command {
 			}
 			// 状态文件在但探活无响应：疑似陈旧状态。条件删除——锁内重读与判定
 			// 所据一致才删；不一致说明新实例已接管，不删。
-			removed, current, err := removeServeStateIfSame(cfg.DataDir, st)
+			removed, current, err := serve.RemoveStateIfSame(cfg.DataDir, st)
 			if err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("failed to remove stale serve state", "清理陈旧服务状态失败"), err)
 			}
@@ -88,7 +89,7 @@ func newServeStatusCmd(load func() (*config.Config, error)) *cobra.Command {
 			}
 			// 新实例已写出自己的 serve.json：用新状态重新探活——响应则按运行中
 			// 报告（不删任何东西）；无响应则当前状态才是真的陈旧，删除后报未运行。
-			if current != nil && serveMetaAlive("http://"+current.Addr, serveStatusProbeTimeout) {
+			if current != nil && serve.MetaAlive("http://"+current.Addr, serveStatusProbeTimeout) {
 				newURL := "http://" + current.Addr
 				fmt.Fprintf(out, "%s\n", ui.Bi(
 					fmt.Sprintf("serve is running: %s (pid %d, since %s)", newURL, current.PID, serveLocalTime(current.StartedAt)),
@@ -96,7 +97,7 @@ func newServeStatusCmd(load func() (*config.Config, error)) *cobra.Command {
 				))
 				return nil
 			}
-			if rmErr := removeServeState(cfg.DataDir); rmErr != nil {
+			if rmErr := serve.RemoveState(cfg.DataDir); rmErr != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("failed to remove stale serve state", "清理陈旧服务状态失败"), rmErr)
 			}
 			fmt.Fprintln(out, ui.Bi("serve is not running (stale state removed)", "仪表板未在后台运行（已清理陈旧状态）"))

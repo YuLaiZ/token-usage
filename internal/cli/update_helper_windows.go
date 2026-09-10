@@ -50,7 +50,10 @@ func runUpdateHelperCmd(ctx context.Context, planPath string) error {
 	}
 	cm := update.NewControlManager(mgr)
 
-	runner, err := update.NewHelperRunner(parent, mover, result, cm, loadConfig, os.Stderr)
+	// dashboard 运行态恢复依赖：helper 据计划内记录的原运行态与监听地址，
+	// 在替换完成后以新 target 按原地址后台恢复 dashboard（同一 internal/serve
+	// 编排，绝不打开浏览器）。
+	runner, err := update.NewHelperRunner(parent, mover, result, cm, loadConfig, newUpdateServeLifecycle(), os.Stderr)
 	if err != nil {
 		return fmt.Errorf("%s: %w", ui.Bi("failed to assemble helper runner", "装配 helper runner 失败"), err)
 	}

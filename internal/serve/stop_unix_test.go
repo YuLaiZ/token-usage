@@ -1,6 +1,6 @@
 //go:build unix
 
-package cli
+package serve
 
 // serve_stop_unix_test.go 在类 Unix 平台对信号 seam 的真实现做行为覆盖：
 // 对真实子进程发 SIGTERM/SIGKILL，断言进程确被终止（编译 + 行为双覆盖；
@@ -34,7 +34,7 @@ func startSleepChild(t *testing.T) *exec.Cmd {
 
 func TestServeStopSignalPlatform_TerminatesProcess(t *testing.T) {
 	cmd := startSleepChild(t)
-	if err := serveSignalProcPlatform(cmd.Process.Pid); err != nil {
+	if err := signalProcPlatform(cmd.Process.Pid); err != nil {
 		t.Fatalf("SIGTERM 发送失败: %v", err)
 	}
 	// sleep 被 SIGTERM 终止后 Wait 返回(带信号退出错误);限定时间内未返回
@@ -51,7 +51,7 @@ func TestServeStopSignalPlatform_TerminatesProcess(t *testing.T) {
 
 func TestServeStopKillPlatform_KillsProcess(t *testing.T) {
 	cmd := startSleepChild(t)
-	if err := serveKillProcPlatform(cmd.Process.Pid); err != nil {
+	if err := killProcPlatform(cmd.Process.Pid); err != nil {
 		t.Fatalf("SIGKILL 发送失败: %v", err)
 	}
 	done := make(chan error, 1)

@@ -35,21 +35,27 @@ type fakeInstaller struct {
 	installAfter   string // 记录调用时刻的 orchestration 阶段标记（由 trace 对照）
 	useTargetAsNew bool   // true 时 newBinPath 取 targetBinPath（默认行为）
 	deferred       bool   // true 时返回 (targetBinPath, ErrDeferredToHelper) 模拟 Windows staged replacement
+	installHook    func() // 每次 Install 时触发（磁盘中间态断言用）
 }
 
 type recordedInstall struct {
 	stagePath, oldBinPath, targetBinPath string
 	wasRunning                           bool
+	serveWasRunning                      bool
+	serveAddr                            string
 }
 
 func newFakeInstaller() *fakeInstaller {
 	return &fakeInstaller{useTargetAsNew: true}
 }
 
-func (f *fakeInstaller) Install(ctx context.Context, stagePath, oldBinPath, targetBinPath string, wasRunning bool) (string, error) {
+func (f *fakeInstaller) Install(ctx context.Context, stagePath, oldBinPath, targetBinPath string, wasRunning, serveWasRunning bool, serveAddr, expectedHash string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, recordedInstall{stagePath: stagePath, oldBinPath: oldBinPath, targetBinPath: targetBinPath, wasRunning: wasRunning})
+	f.calls = append(f.calls, recordedInstall{stagePath: stagePath, oldBinPath: oldBinPath, targetBinPath: targetBinPath, wasRunning: wasRunning, serveWasRunning: serveWasRunning, serveAddr: serveAddr})
+	if f.installHook != nil {
+		f.installHook()
+	}
 	// 捕获 stage 内容（Apply 成功后会删外部 stage，须在 Install 内捕获而非事后读取）。
 	if stagePath != "" {
 		if content, rerr := os.ReadFile(stagePath); rerr == nil {
@@ -74,6 +80,13 @@ func (f *fakeInstaller) Install(ctx context.Context, stagePath, oldBinPath, targ
 }
 
 func (f *fakeInstaller) Platform() string { return "posix-fake" }
+
+// callCount 返回 Install 被调用的次数。
+func (f *fakeInstaller) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
 
 // fakeTransactionInstaller 为编排失败路径提供可注入的 Commit/Rollback 结果。
 // 它嵌入 fakeInstaller，因此复用其安装调用记录与返回行为。

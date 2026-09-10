@@ -29,10 +29,16 @@ const (
 	EventVerifyStage
 	// EventStopDaemon 表示替换前正在停止 daemon。
 	EventStopDaemon
+	// EventStopServe 表示替换前正在停止运行中的 dashboard（update 的
+	// dashboard 运行态保持编排：停止 → 替换 → 以原地址恢复）。
+	EventStopServe
 	// EventInstall 表示正在替换二进制。
 	EventInstall
 	// EventRestartDaemon 表示替换后正在用新二进制重启 daemon。
 	EventRestartDaemon
+	// EventStartServe 表示替换后正在以原监听地址、用新二进制恢复后台
+	// dashboard。自动恢复绝不打开浏览器。
+	EventStartServe
 )
 
 // Event 携带一次过程事件的参数；各 Kind 只使用相关字段。

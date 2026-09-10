@@ -19,28 +19,29 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/serve"
 )
 
 // withServeStopSeams 替换信号 seam 并缩短等待窗口，测试结束恢复。
 // 返回记录信号调用的指针。
 func withServeStopSeams(t *testing.T, sig func(int) error, kill func(int) error) (sigs, kills *[]int) {
 	t.Helper()
-	origSig, origKill := serveSignalProc, serveKillProc
+	origSig, origKill := serve.SignalProc, serve.KillProc
 	sigCalls, killCalls := []int{}, []int{}
-	serveSignalProc = func(pid int) error {
+	serve.SignalProc = func(pid int) error {
 		sigCalls = append(sigCalls, pid)
 		return sig(pid)
 	}
-	serveKillProc = func(pid int) error {
+	serve.KillProc = func(pid int) error {
 		killCalls = append(killCalls, pid)
 		return kill(pid)
 	}
-	origTerm, origKillWait, origInterval, origProbe := serveStopTermWait, serveStopKillWait, serveStopProbeInterval, serveStopProbeTimeout
-	serveStopTermWait, serveStopKillWait, serveStopProbeInterval, serveStopProbeTimeout =
+	origTerm, origKillWait, origInterval, origProbe := serve.StopTermWait, serve.StopKillWait, serve.StopProbeInterval, serve.StopProbeTimeout
+	serve.StopTermWait, serve.StopKillWait, serve.StopProbeInterval, serve.StopProbeTimeout =
 		80*time.Millisecond, 80*time.Millisecond, 5*time.Millisecond, 200*time.Millisecond
 	t.Cleanup(func() {
-		serveSignalProc, serveKillProc = origSig, origKill
-		serveStopTermWait, serveStopKillWait, serveStopProbeInterval, serveStopProbeTimeout =
+		serve.SignalProc, serve.KillProc = origSig, origKill
+		serve.StopTermWait, serve.StopKillWait, serve.StopProbeInterval, serve.StopProbeTimeout =
 			origTerm, origKillWait, origInterval, origProbe
 	})
 	return &sigCalls, &killCalls
@@ -83,7 +84,7 @@ func TestServeStopCmd_StaleBeforeSignal(t *testing.T) {
 
 	sigCalls, killCalls := withServeStopSeams(t, func(int) error { return nil }, func(int) error { return nil })
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{PID: 999999, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
+	if err := serve.WriteState(dir, &serve.ServeState{PID: 999999, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
 		t.Fatalf("写状态文件: %v", err)
 	}
 
@@ -99,7 +100,7 @@ func TestServeStopCmd_StaleBeforeSignal(t *testing.T) {
 	if len(*sigCalls) != 0 || len(*killCalls) != 0 {
 		t.Errorf("陈旧状态不应发信号,signal=%v kill=%v", *sigCalls, *killCalls)
 	}
-	if _, err := os.Stat(serveStatePath(dir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(serve.StatePath(dir)); !os.IsNotExist(err) {
 		t.Errorf("陈旧状态文件应被删除,stat err = %v", err)
 	}
 }
@@ -116,7 +117,7 @@ func TestServeStopCmd_SignalThenProbeDown(t *testing.T) {
 		func(int) error { t.Error("不应走到强杀兜底"); return nil })
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{PID: 4242, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
+	if err := serve.WriteState(dir, &serve.ServeState{PID: 4242, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
 		t.Fatalf("写状态文件: %v", err)
 	}
 
@@ -135,7 +136,7 @@ func TestServeStopCmd_SignalThenProbeDown(t *testing.T) {
 	if len(*killCalls) != 0 {
 		t.Errorf("探活下线后不应强杀,kill=%v", *killCalls)
 	}
-	if _, err := os.Stat(serveStatePath(dir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(serve.StatePath(dir)); !os.IsNotExist(err) {
 		t.Errorf("停止后状态文件应被删除,stat err = %v", err)
 	}
 }
@@ -154,7 +155,7 @@ func TestServeStopCmd_KillFallbackWhenStillAlive(t *testing.T) {
 		func(int) error { ts.Close(); return nil })
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{PID: 4242, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
+	if err := serve.WriteState(dir, &serve.ServeState{PID: 4242, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
 		t.Fatalf("写状态文件: %v", err)
 	}
 
@@ -173,7 +174,7 @@ func TestServeStopCmd_KillFallbackWhenStillAlive(t *testing.T) {
 	if len(*killCalls) != 1 || (*killCalls)[0] != 4242 {
 		t.Errorf("宽限超时应恰强杀一次,实际 %v", *killCalls)
 	}
-	if _, err := os.Stat(serveStatePath(dir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(serve.StatePath(dir)); !os.IsNotExist(err) {
 		t.Errorf("停止后状态文件应被删除,stat err = %v", err)
 	}
 }
@@ -192,7 +193,7 @@ func TestServeStopCmd_SignalErrorButServerGoneStops(t *testing.T) {
 		func(int) error { t.Error("探活已下线不应强杀"); return nil })
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{PID: 4242, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
+	if err := serve.WriteState(dir, &serve.ServeState{PID: 4242, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
 		t.Fatalf("写状态文件: %v", err)
 	}
 
@@ -211,7 +212,7 @@ func TestServeStopCmd_SignalErrorButServerGoneStops(t *testing.T) {
 	if len(*killCalls) != 0 {
 		t.Errorf("探活下线后不应强杀,kill=%v", *killCalls)
 	}
-	if _, err := os.Stat(serveStatePath(dir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(serve.StatePath(dir)); !os.IsNotExist(err) {
 		t.Errorf("停止后状态文件应被删除,stat err = %v", err)
 	}
 }
@@ -231,7 +232,7 @@ func TestServeStopCmd_SignalAndKillErrorsStillResponding(t *testing.T) {
 		func(int) error { return errors.New("access denied") })
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{PID: 4242, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
+	if err := serve.WriteState(dir, &serve.ServeState{PID: 4242, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
 		t.Fatalf("写状态文件: %v", err)
 	}
 
@@ -258,7 +259,7 @@ func TestServeStopCmd_SignalAndKillErrorsStillResponding(t *testing.T) {
 	if out := buf.String(); strings.Contains(out, "dashboard stopped") || strings.Contains(out, "仪表板已停止") {
 		t.Errorf("不得输出停止成功文案,实际: %q", out)
 	}
-	if _, err := os.Stat(serveStatePath(dir)); err != nil {
+	if _, err := os.Stat(serve.StatePath(dir)); err != nil {
 		t.Errorf("服务仍响应时状态文件必须保留,stat err = %v", err)
 	}
 }
@@ -278,7 +279,7 @@ func TestServeStopCmd_KillIneffectiveStillResponding(t *testing.T) {
 		func(int) error { return nil })
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{PID: 4242, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
+	if err := serve.WriteState(dir, &serve.ServeState{PID: 4242, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
 		t.Fatalf("写状态文件: %v", err)
 	}
 
@@ -307,7 +308,7 @@ func TestServeStopCmd_KillIneffectiveStillResponding(t *testing.T) {
 	if out := buf.String(); strings.Contains(out, "dashboard stopped") || strings.Contains(out, "仪表板已停止") {
 		t.Errorf("不得输出停止成功文案,实际: %q", out)
 	}
-	if _, err := os.Stat(serveStatePath(dir)); err != nil {
+	if _, err := os.Stat(serve.StatePath(dir)); err != nil {
 		t.Errorf("服务仍响应时状态文件必须保留,stat err = %v", err)
 	}
 }
@@ -316,7 +317,7 @@ func TestServeStopCmd_CorruptStateRemoved(t *testing.T) {
 	// 损坏的状态文件无法定位实例：删除残留后按未运行报告（exit 0），不发信号。
 	sigCalls, killCalls := withServeStopSeams(t, func(int) error { return nil }, func(int) error { return nil })
 	dir := t.TempDir()
-	if err := os.WriteFile(serveStatePath(dir), []byte("{not json"), 0644); err != nil {
+	if err := os.WriteFile(serve.StatePath(dir), []byte("{not json"), 0644); err != nil {
 		t.Fatalf("写损坏状态文件: %v", err)
 	}
 
@@ -332,7 +333,7 @@ func TestServeStopCmd_CorruptStateRemoved(t *testing.T) {
 	if len(*sigCalls) != 0 || len(*killCalls) != 0 {
 		t.Errorf("损坏状态不应发信号,signal=%v kill=%v", *sigCalls, *killCalls)
 	}
-	if _, err := os.Stat(serveStatePath(dir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(serve.StatePath(dir)); !os.IsNotExist(err) {
 		t.Errorf("损坏状态文件应被删除,stat err = %v", err)
 	}
 }
@@ -361,27 +362,27 @@ func TestServeStopCmd_ReroutesToNewInstanceWhenStateReplaced(t *testing.T) {
 		func(int) error { t.Error("新实例探活确认下线后不应强杀"); return nil })
 
 	dir := t.TempDir()
-	stale := &ServeState{PID: 999999, Addr: staleAddr, StartedAt: time.Now().Format(time.RFC3339)}
-	if err := writeServeState(dir, stale); err != nil {
+	stale := &serve.ServeState{PID: 999999, Addr: staleAddr, StartedAt: time.Now().Format(time.RFC3339)}
+	if err := serve.WriteState(dir, stale); err != nil {
 		t.Fatalf("写陈旧状态: %v", err)
 	}
 
 	// 条件删除 seam：第一次调用（陈旧判定段）模拟新实例已接管——磁盘状态被
 	// 改写为 B 并返回 (false, B)；后续调用（B 确认下线后的 finalize）转发原始实现。
-	orig := removeServeStateIfSame
+	orig := serve.RemoveStateIfSame
 	calls := 0
-	removeServeStateIfSame = func(dataDir string, judged *ServeState) (bool, *ServeState, error) {
+	serve.RemoveStateIfSame = func(dataDir string, judged *serve.ServeState) (bool, *serve.ServeState, error) {
 		calls++
 		if calls == 1 {
-			next := &ServeState{PID: 5555, Addr: liveAddr, StartedAt: time.Now().Format(time.RFC3339)}
-			if err := writeServeState(dataDir, next); err != nil {
+			next := &serve.ServeState{PID: 5555, Addr: liveAddr, StartedAt: time.Now().Format(time.RFC3339)}
+			if err := serve.WriteState(dataDir, next); err != nil {
 				t.Fatalf("模拟新实例接管写入失败: %v", err)
 			}
 			return false, next, nil
 		}
 		return orig(dataDir, judged)
 	}
-	t.Cleanup(func() { removeServeStateIfSame = orig })
+	t.Cleanup(func() { serve.RemoveStateIfSame = orig })
 
 	cmd, buf := serveStopCmdFixture(t, dir)
 	if err := cmd.Execute(); err != nil {
@@ -403,7 +404,7 @@ func TestServeStopCmd_ReroutesToNewInstanceWhenStateReplaced(t *testing.T) {
 		t.Errorf("陈旧判定段与 finalize 应各调用一次条件删除,实际 %d 次", calls)
 	}
 	// B 确认下线后其状态文件被条件删除。
-	if _, err := os.Stat(serveStatePath(dir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(serve.StatePath(dir)); !os.IsNotExist(err) {
 		t.Errorf("新实例停止后状态文件应被删除,stat err = %v", err)
 	}
 }
@@ -426,40 +427,40 @@ func TestServeStopCmd_FinalizeReroutesWhenStateReplaced(t *testing.T) {
 	addrB := strings.TrimPrefix(tsB.URL, "http://")
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{PID: 4242, Addr: addrA, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
+	if err := serve.WriteState(dir, &serve.ServeState{PID: 4242, Addr: addrA, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
 		t.Fatalf("写状态文件: %v", err)
 	}
 
 	// 优雅信号命中旧实例：关闭 A 并模拟等待窗口内的接管——新实例 B 写出
 	// 自己的 serve.json。命中新实例：关闭 B 让重路由后的探活确认下线。
 	var sigCalls []int
-	origSig := serveSignalProc
-	serveSignalProc = func(pid int) error {
+	origSig := serve.SignalProc
+	serve.SignalProc = func(pid int) error {
 		sigCalls = append(sigCalls, pid)
 		switch pid {
 		case 4242:
 			tsA.Close()
-			return writeServeState(dir, &ServeState{PID: 5151, Addr: addrB, StartedAt: time.Now().Format(time.RFC3339)})
+			return serve.WriteState(dir, &serve.ServeState{PID: 5151, Addr: addrB, StartedAt: time.Now().Format(time.RFC3339)})
 		case 5151:
 			tsB.Close()
 			return nil
 		}
 		return nil
 	}
-	origTerm, origKillWait, origInterval, origProbe := serveStopTermWait, serveStopKillWait, serveStopProbeInterval, serveStopProbeTimeout
-	serveStopTermWait, serveStopKillWait, serveStopProbeInterval, serveStopProbeTimeout =
+	origTerm, origKillWait, origInterval, origProbe := serve.StopTermWait, serve.StopKillWait, serve.StopProbeInterval, serve.StopProbeTimeout
+	serve.StopTermWait, serve.StopKillWait, serve.StopProbeInterval, serve.StopProbeTimeout =
 		80*time.Millisecond, 80*time.Millisecond, 5*time.Millisecond, 200*time.Millisecond
 	t.Cleanup(func() {
-		serveSignalProc = origSig
-		serveStopTermWait, serveStopKillWait, serveStopProbeInterval, serveStopProbeTimeout =
+		serve.SignalProc = origSig
+		serve.StopTermWait, serve.StopKillWait, serve.StopProbeInterval, serve.StopProbeTimeout =
 			origTerm, origKillWait, origInterval, origProbe
 	})
-	origFinalize := removeServeStateIfSame
-	removeServeStateIfSame = func(dataDir string, judged *ServeState) (bool, *ServeState, error) {
+	origFinalize := serve.RemoveStateIfSame
+	serve.RemoveStateIfSame = func(dataDir string, judged *serve.ServeState) (bool, *serve.ServeState, error) {
 		// finalize 阶段（judged=旧实例 A）遇到文件已是 B：模拟接管，返回
 		// (false, B) 走重路由；其余场景（judged=B）走真实条件删除。
 		if judged.PID == 4242 {
-			cur, err := readServeState(dataDir)
+			cur, err := serve.ReadState(dataDir)
 			if err != nil {
 				return false, nil, err
 			}
@@ -470,7 +471,7 @@ func TestServeStopCmd_FinalizeReroutesWhenStateReplaced(t *testing.T) {
 		}
 		return origFinalize(dataDir, judged)
 	}
-	t.Cleanup(func() { removeServeStateIfSame = origFinalize })
+	t.Cleanup(func() { serve.RemoveStateIfSame = origFinalize })
 
 	cmd, buf := serveStopCmdFixture(t, dir)
 	if err := cmd.Execute(); err != nil {
@@ -487,7 +488,7 @@ func TestServeStopCmd_FinalizeReroutesWhenStateReplaced(t *testing.T) {
 			t.Errorf("输出应含 %q,实际: %q", want, buf.String())
 		}
 	}
-	if _, err := os.Stat(serveStatePath(dir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(serve.StatePath(dir)); !os.IsNotExist(err) {
 		t.Errorf("最终状态文件应被删除: %v", err)
 	}
 }

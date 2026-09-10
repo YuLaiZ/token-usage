@@ -16,15 +16,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
-
-	"github.com/gofrs/flock"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/daemon"
 	"github.com/YuLaiZ/token-usage/internal/db"
+	"github.com/YuLaiZ/token-usage/internal/serve"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 	"github.com/YuLaiZ/token-usage/internal/web"
 )
@@ -32,102 +30,24 @@ import (
 // serveShutdownTimeout 是收到 SIGINT/SIGTERM 后等待在途请求完成的宽限期。
 const serveShutdownTimeout = 3 * time.Second
 
-// serveLifecycleGuard 是 serveDashboard 的单实例守卫，在监听之前执行单实例
-// 契约：任意时刻至多一个服务实例（serve start/restart 拉起的后台主体）。依次判定：
-//
-//  1. serve-state 状态迁移锁内的状态分诊（「读-判定-删」整段在锁内，杜绝判定
-//     与删除之间新实例接管导致的误删）。损坏的 serve.json → 删除残留后继续
-//     （与 status/stop/start 的统一承诺一致）；存在且 /api/meta 有响应 → 幂等
-//     拒绝：向 out 打印现存实例的 URL 与 PID，返回 (nil, false, nil)，调用方以
-//     退出码 0 返回——URL 对用户可用，exit 0 诚实；存在但无响应 → 陈旧
-//     （SIGKILL/崩溃遗留），条件删除后继续。条件删除锁内重读发现已被新实例
-//     改写则不删——此时不重评估：新实例能写出状态说明它已持有（或刚释放）
-//     serve.lock，下方第 2 步的生命周期锁获取本身就是仲裁（新实例活着则取锁
-//     失败报重试，已死则放行接管）。
-//  2. 释放 state 锁后取 AcquireLock(serve.lock 生命周期锁)：失败说明另一个
-//     实例正在启动（瞬时竞态），返回双语错误，调用方以非零退出码结束；成功则
-//     锁随返回值交出，调用方必须在整个服务生命周期持有并在退出时释放。
-//
-// 锁序：判定段先取再释放 state.lock，之后才取 serve.lock，两锁从不同时持有；
-// 放行后服务主体对状态的写/删是 serve.lock → state.lock 顺序（见 serveDashboard），
-// 全局无环。
-//
-// 返回 (lock, true, nil) 表示放行继续启动（lock 非 nil）；(nil, false, nil)
-// 表示已有实例在运行、幂等拒绝；err 非 nil 表示意外失败。
-func serveLifecycleGuard(dataDir string, out io.Writer, probeTimeout time.Duration) (*flock.Flock, bool, error) {
-	stateLock, err := acquireServeStateLock(dataDir)
-	if err != nil {
-		return nil, false, err
-	}
-	st, err := readServeState(dataDir)
-	switch {
-	case errors.Is(err, errServeStateCorrupt):
-		// 损坏残留与陈旧同路：锁内直接删除（损坏文件无新实例语义），避免带着
-		// 无法辨识的旧文件进入正常路径（后续写状态文件会覆盖它，但删除与 start
-		// 的承诺保持一致）。
-		if rmErr := removeServeState(dataDir); rmErr != nil {
-			_ = releaseServeStateLock(stateLock)
-			return nil, false, fmt.Errorf("%s: %w", ui.Bi("failed to remove corrupt serve state", "清理损坏的服务状态失败"), rmErr)
-		}
-	case err != nil:
-		_ = releaseServeStateLock(stateLock)
-		return nil, false, fmt.Errorf("%s: %w", ui.Bi("failed to read serve state", "读取服务状态失败"), err)
-	case st != nil:
-		if serveMetaAlive("http://"+st.Addr, probeTimeout) {
-			_ = releaseServeStateLock(stateLock)
-			url := "http://" + st.Addr
-			fmt.Fprintf(out, "%s\n", ui.Bi(
-				fmt.Sprintf("dashboard is already running at %s (pid %d); stop it first with token-usage serve stop, or open that URL", url, st.PID),
-				fmt.Sprintf("仪表板已在运行（%s，PID %d）；请先用 token-usage serve stop 停止，或直接打开该地址", url, st.PID)))
-			return nil, false, nil
-		}
-		// 放行前条件删除陈旧状态，避免误判「已启动」；新实例已接管时不删：
-		// 它存活会令下方 serve.lock 获取失败并报「正在启动」，已死则放行接管。
-		if _, _, rmErr := removeServeStateIfSame(dataDir, st); rmErr != nil {
-			_ = releaseServeStateLock(stateLock)
-			return nil, false, fmt.Errorf("%s: %w", ui.Bi("failed to remove stale serve state", "清理陈旧服务状态失败"), rmErr)
-		}
-	}
-	// 判定段结束，先释放 state 锁再取生命周期锁：两锁从不同时持有（锁序注释）。
-	_ = releaseServeStateLock(stateLock)
-
-	// 生命周期锁：挡住「另一个实例正在启动」的瞬时竞态（它已通过状态文件
-	// 之前的检查但尚未写出 serve.json）。锁由调用方持有至服务退出。
-	// 获取失败按带界重试处理:探活判定下线只说明端口已关闭,前一个实例可能
-	// 尚未走完退出路径(释放 serve.lock 前的收尾),serve restart 的 start 段
-	// 恰好落在这一瞬态窗口;窗口耗尽仍是真互斥失败,报错退出。
-	deadline := time.Now().Add(serveLifecycleLockWait)
-	for {
-		lock, ok := daemon.AcquireLock(filepath.Join(dataDir, serveLifecycleLockFile))
-		if ok {
-			return lock, true, nil
-		}
-		if time.Now().After(deadline) {
-			return nil, false, errors.New(ui.Bi(
-				"another serve instance is starting; retry in a moment",
-				"另一个 serve 实例正在启动，请稍后重试"))
-		}
-		time.Sleep(serveLifecycleLockRetry)
-	}
-}
-
 // serveDashboard 完成一次后台仪表板服务生命周期：单实例守卫（serve.json
 // + 探活幂等拒绝第二实例；serve.lock 生命周期锁交由本函数持有至退出）→ 接收
-// 已打开的只读数据库（调用方负责打开与 Close）→ 监听 addr → 写 serve.json →
-// 宣告启动 → Serve → SIGINT/SIGTERM 优雅关停（3s Shutdown 宽限）→ 自清理
+// 已打开的只读数据库（调用方负责打开与 Close）→ 监听 addr → 写 serve.json
+// → 宣告启动 → Serve → SIGINT/SIGTERM 优雅关停（3s Shutdown 宽限）→ 自清理
 // serve.json。
 //
 // 状态文件由 serve start/status/stop 与服务主体共用：监听成功即写出（PID 为
 // 本进程），任何退出路径都在 defer 中删除；SIGKILL/崩溃留下的陈旧文件由
 // serve status/stop 与下一次启动的守卫探活陈旧清理兜底。本进程对状态文件的
 // 全部写/删都在 serve-state 状态迁移锁内、以持有的 serve.lock 为先（锁序
-// serve.lock → state.lock）。
+// serve.lock → state.lock）。单实例守卫与状态/锁原语由 internal/serve 提供，
+// 与 serve start/status/stop 命令及 update 的运行态探测共享同一实现。
 func serveDashboard(cfg *config.Config, usageDB *db.DB, version, addr string, out, errOut io.Writer) error {
 	// 单实例守卫先于监听：第二个实例无论请求哪个端口、以哪种形态启动都会在
 	// 这里被拒绝或报错，serve.json 永远只描述唯一实例。守卫放行时交出的
 	// 生命周期锁持有至本函数退出（defer 顺序：先删状态文件，再释放锁；
 	// 两者互不依赖，均必达）。
-	lock, proceed, err := serveLifecycleGuard(cfg.DataDir, out, serveStaleProbeTimeout)
+	lock, proceed, err := serve.LifecycleGuard(cfg.DataDir, out, serve.StaleProbeTimeout)
 	if err != nil {
 		return err
 	}
@@ -151,34 +71,34 @@ func serveDashboard(cfg *config.Config, usageDB *db.DB, version, addr string, ou
 	// 写入在 serve-state 状态迁移锁内进行（状态迁移不变量）：本进程已持
 	// serve.lock，理论上无竞争者，取锁只为让所有状态迁移共享同一不变量——
 	// 锁序 serve.lock → state.lock，与 status/stop/start（仅 state.lock）无环。
-	ownState := &ServeState{
+	ownState := &serve.ServeState{
 		PID:       os.Getpid(),
 		Addr:      ln.Addr().String(),
 		StartedAt: time.Now().Format(time.RFC3339),
 	}
-	stateLock, err := acquireServeStateLock(cfg.DataDir)
+	stateLock, err := serve.AcquireStateLock(cfg.DataDir)
 	if err != nil {
 		_ = ln.Close()
 		return err
 	}
-	writeErr := writeServeState(cfg.DataDir, ownState)
-	_ = releaseServeStateLock(stateLock)
+	writeErr := serve.WriteState(cfg.DataDir, ownState)
+	_ = serve.ReleaseStateLock(stateLock)
 	if writeErr != nil {
 		_ = ln.Close()
 		return fmt.Errorf("%s: %w", ui.Bi("failed to write serve state file", "写入服务状态文件失败"), writeErr)
 	}
 	// 退出时自清理状态文件（defer LIFO：先于 serve.lock 释放执行）。自删同样
-	// 在 state 锁内走条件删除 removeServeStateIfSame：自己写出的状态必然一致
+	// 在 state 锁内走条件删除 serve.RemoveStateIfSame：自己写出的状态必然一致
 	// → 删除；若锁内重读不一致说明文件被改写——持 serve.lock 时理论上不可达，
 	// 防御性报告到 errOut 且不删。取锁失败或 I/O 失败静默容忍（文件系统只读等
 	// 罕见场景下，后续 status/stop 的陈旧探活清理仍会兜底删除）。
 	defer func() {
-		slock, err := acquireServeStateLock(cfg.DataDir)
+		slock, err := serve.AcquireStateLock(cfg.DataDir)
 		if err != nil {
 			return
 		}
-		removed, cur, err := removeServeStateIfSame(cfg.DataDir, ownState)
-		_ = releaseServeStateLock(slock)
+		removed, cur, err := serve.RemoveStateIfSame(cfg.DataDir, ownState)
+		_ = serve.ReleaseStateLock(slock)
 		if err == nil && !removed && cur != nil {
 			fmt.Fprintf(errOut, "%s\n", ui.Bi(
 				fmt.Sprintf("warning: serve state was overwritten by pid %d at %s during shutdown; left untouched", cur.PID, cur.Addr),

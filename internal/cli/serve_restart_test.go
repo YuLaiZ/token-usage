@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/serve"
 )
 
 // TestServeRestartCmd_NotRunningStartsFresh 覆盖未运行分支：stop 段幂等成功
@@ -33,7 +33,7 @@ func TestServeRestartCmd_NotRunningStartsFresh(t *testing.T) {
 		func(int) error { t.Error("未运行时不应强杀"); return nil })
 
 	var spawnedAddr string
-	stubServeSpawnAndWait(t, func(cfg *config.Config, addr, logPath string) (int, string, error) {
+	stubServeSpawnAndWait(t, func(dataDir, binPath, addr, logPath string) (int, string, error) {
 		spawnedAddr = addr
 		return 4242, liveAddr, nil
 	})
@@ -83,15 +83,15 @@ func TestServeRestartCmd_StopsRunningThenStartsNew(t *testing.T) {
 		func(int) error { t.Error("优雅信号已确认下线,不应强杀"); return nil })
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{PID: 4242, Addr: oldAddr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
+	if err := serve.WriteState(dir, &serve.ServeState{PID: 4242, Addr: oldAddr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
 		t.Fatalf("写运行中状态: %v", err)
 	}
 
 	var spawnedAddr string
-	stubServeSpawnAndWait(t, func(cfg *config.Config, addr, logPath string) (int, string, error) {
+	stubServeSpawnAndWait(t, func(dataDir, binPath, addr, logPath string) (int, string, error) {
 		spawnedAddr = addr
 		// spawn 前旧状态必须已被 stop 段条件删除,否则轮询会把旧文件当就绪信号。
-		if st, err := readServeState(cfg.DataDir); err != nil || st != nil {
+		if st, err := serve.ReadState(dataDir); err != nil || st != nil {
 			t.Errorf("spawn 时旧状态应已被删除,实际 (%v, %v)", st, err)
 		}
 		return 5151, newAddr, nil
@@ -141,13 +141,13 @@ func TestServeRestartCmd_StopFailureAborts(t *testing.T) {
 		func(int) error { return nil },
 		func(int) error { return nil })
 
-	stubServeSpawnAndWait(t, func(*config.Config, string, string) (int, string, error) {
+	stubServeSpawnAndWait(t, func(string, string, string, string) (int, string, error) {
 		t.Error("stop 失败后不应进入 start 段 spawn")
 		return 0, "", nil
 	})
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{PID: 4242, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
+	if err := serve.WriteState(dir, &serve.ServeState{PID: 4242, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
 		t.Fatalf("写运行中状态: %v", err)
 	}
 
@@ -171,7 +171,7 @@ func TestServeRestartCmd_StopFailureAborts(t *testing.T) {
 	if out := out.String(); strings.Contains(out, "dashboard started in background") || strings.Contains(out, "仪表板已后台启动") {
 		t.Errorf("中止后不得输出启动成功文案,实际: %q", out)
 	}
-	if _, err := os.Stat(serveStatePath(dir)); err != nil {
+	if _, err := os.Stat(serve.StatePath(dir)); err != nil {
 		t.Errorf("停止失败时状态文件必须保留,stat err = %v", err)
 	}
 }
@@ -179,7 +179,7 @@ func TestServeRestartCmd_StopFailureAborts(t *testing.T) {
 // TestServeRestartCmd_CustomAddrFlowsToSpawn 锁定 flag 透传：restart 继承的
 // persistent --addr 必须原样送达 spawn（与 start 同一通道）。
 func TestServeRestartCmd_CustomAddrFlowsToSpawn(t *testing.T) {
-	stubServeSpawnAndWait(t, func(cfg *config.Config, addr, logPath string) (int, string, error) {
+	stubServeSpawnAndWait(t, func(dataDir, binPath, addr, logPath string) (int, string, error) {
 		if addr != "127.0.0.1:9443" {
 			t.Errorf("spawn 应收到自定义 --addr,实际 %q", addr)
 		}

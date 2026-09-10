@@ -1,7 +1,7 @@
 package cli
 
 // serve_start_test.go 驱动 serve start 的可进程内测分支：真实 spawn 交给
-// 主线程人工 E2E，这里注入 serveSpawnAndWait 假实现断言编排逻辑——已运行
+// 主线程人工 E2E，这里注入 serve.SpawnAndWait 假实现断言编排逻辑——已运行
 // 拒绝、陈旧放行（spawn 前清理）、成功输出、失败附日志尾、--open 警告。
 // 探活与陈旧分支以 httptest 假 /api/meta 端点驱动，不发真信号。
 
@@ -21,6 +21,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/daemon"
+	"github.com/YuLaiZ/token-usage/internal/serve"
 )
 
 // serveFamilyFixture 构造完整 serve 命令族（子命令继承 persistent flags），
@@ -37,12 +38,13 @@ func serveFamilyFixture(t *testing.T, dataDir string) (*cobra.Command, *bytes.Bu
 	return cmd, &out, &errBuf
 }
 
-// stubServeSpawnAndWait 注入假 spawn 并返回恢复函数。
-func stubServeSpawnAndWait(t *testing.T, fn func(cfg *config.Config, addr, logPath string) (int, string, error)) {
+// stubServeSpawnAndWait 注入假 spawn（internal/serve 的 SpawnAndWait seam）
+// 并在测试结束恢复。
+func stubServeSpawnAndWait(t *testing.T, fn func(dataDir, binPath, addr, logPath string) (int, string, error)) {
 	t.Helper()
-	orig := serveSpawnAndWait
-	serveSpawnAndWait = fn
-	t.Cleanup(func() { serveSpawnAndWait = orig })
+	orig := serve.SpawnAndWait
+	serve.SpawnAndWait = fn
+	t.Cleanup(func() { serve.SpawnAndWait = orig })
 }
 
 func TestServeStartCmd_AlreadyRunningIdempotent(t *testing.T) {
@@ -56,12 +58,12 @@ func TestServeStartCmd_AlreadyRunningIdempotent(t *testing.T) {
 	addr := strings.TrimPrefix(ts.URL, "http://")
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{PID: 4242, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
+	if err := serve.WriteState(dir, &serve.ServeState{PID: 4242, Addr: addr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
 		t.Fatalf("写状态文件: %v", err)
 	}
 
 	// 已运行时绝不 spawn。
-	stubServeSpawnAndWait(t, func(*config.Config, string, string) (int, string, error) {
+	stubServeSpawnAndWait(t, func(string, string, string, string) (int, string, error) {
 		t.Error("已运行时不应 spawn")
 		return 0, "", nil
 	})
@@ -80,7 +82,7 @@ func TestServeStartCmd_AlreadyRunningIdempotent(t *testing.T) {
 		}
 	}
 	// 状态文件保留（仍指向运行中的实例）。
-	if _, err := os.Stat(serveStatePath(dir)); err != nil {
+	if _, err := os.Stat(serve.StatePath(dir)); err != nil {
 		t.Errorf("已运行拒绝时状态文件应保留: %v", err)
 	}
 }
@@ -102,13 +104,13 @@ func TestServeStartCmd_StaleStateRemovedBeforeSpawn(t *testing.T) {
 	liveAddr := strings.TrimPrefix(ts.URL, "http://")
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{PID: 999999, Addr: staleAddr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
+	if err := serve.WriteState(dir, &serve.ServeState{PID: 999999, Addr: staleAddr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
 		t.Fatalf("写状态文件: %v", err)
 	}
 
-	stubServeSpawnAndWait(t, func(cfg *config.Config, addr, logPath string) (int, string, error) {
+	stubServeSpawnAndWait(t, func(dataDir, binPath, addr, logPath string) (int, string, error) {
 		// spawn 前陈旧状态必须已被清理,否则轮询会把旧文件当就绪信号。
-		if st, err := readServeState(cfg.DataDir); err != nil || st != nil {
+		if st, err := serve.ReadState(dataDir); err != nil || st != nil {
 			t.Errorf("spawn 时陈旧状态应已被删除,实际 (%v, %v)", st, err)
 		}
 		return 4242, liveAddr, nil
@@ -124,7 +126,7 @@ func TestServeStartCmd_StaleStateRemovedBeforeSpawn(t *testing.T) {
 		"dashboard started in background",
 		"http://" + liveAddr,
 		"4242",
-		serveLogPath(dir),
+		serve.LogPath(dir),
 		"token-usage serve stop",
 		"仪表板已后台启动",
 	} {
@@ -136,11 +138,11 @@ func TestServeStartCmd_StaleStateRemovedBeforeSpawn(t *testing.T) {
 
 func TestServeStartCmd_FailureIncludesLogTail(t *testing.T) {
 	dir := t.TempDir()
-	logPath := serveLogPath(dir)
+	logPath := serve.LogPath(dir)
 	if err := os.WriteFile(logPath, []byte("line-1\nline-2\n监听 127.0.0.1:8619 失败\n"), 0644); err != nil {
 		t.Fatalf("写日志: %v", err)
 	}
-	stubServeSpawnAndWait(t, func(*config.Config, string, string) (int, string, error) {
+	stubServeSpawnAndWait(t, func(string, string, string, string) (int, string, error) {
 		return 0, "", errors.New("background serve did not become ready")
 	})
 
@@ -166,7 +168,7 @@ func TestServeStartCmd_FailureIncludesLogTail(t *testing.T) {
 
 func TestServeStartCmd_FailureLogTailCappedAtTenLines(t *testing.T) {
 	dir := t.TempDir()
-	stubServeSpawnAndWait(t, func(*config.Config, string, string) (int, string, error) {
+	stubServeSpawnAndWait(t, func(string, string, string, string) (int, string, error) {
 		return 0, "", errors.New("not ready")
 	})
 
@@ -175,7 +177,7 @@ func TestServeStartCmd_FailureLogTailCappedAtTenLines(t *testing.T) {
 	for i := 1; i <= 15; i++ {
 		logBuf.WriteString("unique-log-line-" + strings.Repeat("x", i) + "\n")
 	}
-	if err := os.WriteFile(serveLogPath(dir), []byte(logBuf.String()), 0644); err != nil {
+	if err := os.WriteFile(serve.LogPath(dir), []byte(logBuf.String()), 0644); err != nil {
 		t.Fatalf("写日志: %v", err)
 	}
 
@@ -201,7 +203,7 @@ func TestServeStartCmd_OpenWarningOnFailure(t *testing.T) {
 	defer ts.Close()
 	liveAddr := strings.TrimPrefix(ts.URL, "http://")
 
-	stubServeSpawnAndWait(t, func(*config.Config, string, string) (int, string, error) {
+	stubServeSpawnAndWait(t, func(string, string, string, string) (int, string, error) {
 		return 4242, liveAddr, nil
 	})
 	origOpen := serveOpenBrowser
@@ -221,7 +223,7 @@ func TestServeStartCmd_OpenWarningOnFailure(t *testing.T) {
 }
 
 func TestServeStartCmd_MissingAddr(t *testing.T) {
-	stubServeSpawnAndWait(t, func(*config.Config, string, string) (int, string, error) {
+	stubServeSpawnAndWait(t, func(string, string, string, string) (int, string, error) {
 		t.Error("空 --addr 不应 spawn")
 		return 0, "", nil
 	})
@@ -259,22 +261,22 @@ func TestServeStartCmd_StartLockSerializes(t *testing.T) {
 	liveAddr := strings.TrimPrefix(ts.URL, "http://")
 
 	dir := t.TempDir()
-	if err := writeServeState(dir, &ServeState{PID: 999999, Addr: staleAddr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
+	if err := serve.WriteState(dir, &serve.ServeState{PID: 999999, Addr: staleAddr, StartedAt: time.Now().Format(time.RFC3339)}); err != nil {
 		t.Fatalf("写状态文件: %v", err)
 	}
 
 	spawned := false
-	stubServeSpawnAndWait(t, func(cfg *config.Config, addr, logPath string) (int, string, error) {
+	stubServeSpawnAndWait(t, func(dataDir, binPath, addr, logPath string) (int, string, error) {
 		spawned = true
 		// 锁释放后 spawn 前陈旧状态必须已被清理,否则轮询会把旧文件当就绪信号。
-		if st, err := readServeState(cfg.DataDir); err != nil || st != nil {
+		if st, err := serve.ReadState(dataDir); err != nil || st != nil {
 			t.Errorf("spawn 时陈旧状态应已被删除,实际 (%v, %v)", st, err)
 		}
 		return 4242, liveAddr, nil
 	})
 
 	// 阶段一：占住启动锁 → start 报错且不 spawn。
-	lock, ok := daemon.AcquireLock(filepath.Join(dir, serveStartLockFile))
+	lock, ok := daemon.AcquireLock(filepath.Join(dir, serve.StartLockFile))
 	if !ok {
 		t.Fatal("测试前置:占用 serve-start.lock 失败")
 	}
@@ -334,22 +336,22 @@ func TestServeStartCmd_IdempotentRejectWhenStateReplaced(t *testing.T) {
 	defer ts.Close()
 	liveAddr := strings.TrimPrefix(ts.URL, "http://")
 
-	stubServeSpawnAndWait(t, func(*config.Config, string, string) (int, string, error) {
+	stubServeSpawnAndWait(t, func(string, string, string, string) (int, string, error) {
 		t.Error("新实例存活时 start 应幂等拒绝,不应 spawn")
 		return 0, "", nil
 	})
 
 	dir := t.TempDir()
-	stale := &ServeState{PID: 999999, Addr: staleAddr, StartedAt: time.Now().Format(time.RFC3339)}
-	if err := writeServeState(dir, stale); err != nil {
+	stale := &serve.ServeState{PID: 999999, Addr: staleAddr, StartedAt: time.Now().Format(time.RFC3339)}
+	if err := serve.WriteState(dir, stale); err != nil {
 		t.Fatalf("写陈旧状态: %v", err)
 	}
 
 	// 条件删除 seam：模拟磁盘状态已被改写为存活的新实例 B（真实写入），
 	// 返回 (false, B) 触发重评估分支。
-	next := &ServeState{PID: 5555, Addr: liveAddr, StartedAt: time.Now().Format(time.RFC3339)}
-	stubRemoveServeStateIfSame(t, func(dataDir string, judged *ServeState) (bool, *ServeState, error) {
-		if err := writeServeState(dataDir, next); err != nil {
+	next := &serve.ServeState{PID: 5555, Addr: liveAddr, StartedAt: time.Now().Format(time.RFC3339)}
+	stubRemoveServeStateIfSame(t, func(dataDir string, judged *serve.ServeState) (bool, *serve.ServeState, error) {
+		if err := serve.WriteState(dataDir, next); err != nil {
 			return false, nil, err
 		}
 		return false, next, nil
@@ -367,7 +369,7 @@ func TestServeStartCmd_IdempotentRejectWhenStateReplaced(t *testing.T) {
 		}
 	}
 	// 新实例 B 的状态文件原样保留（拒绝路径不删不写）。
-	got, err := readServeState(dir)
+	got, err := serve.ReadState(dir)
 	if err != nil || got == nil || got.PID != 5555 || got.Addr != liveAddr {
 		t.Errorf("新实例状态应原样保留,实际 (%+v, %v)", got, err)
 	}

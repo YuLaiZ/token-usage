@@ -269,6 +269,7 @@ type fakeControlSession struct {
 	inspectCalls     int
 	stopCalls        int
 	startCalls       int
+	startPaths       []string // 按次序记录全部 StartWithExecutable 的 binPath
 	lastStartBinPath string
 	state            control.RuntimeState
 	inspectErr       error
@@ -295,6 +296,7 @@ func (s *fakeControlSession) StartWithExecutable(ctx context.Context, cfg *confi
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.startCalls++
+	s.startPaths = append(s.startPaths, binPath)
 	s.lastStartBinPath = binPath
 	if index := s.startCalls - 1; index < len(s.startErrs) {
 		return s.startErrs[index]
