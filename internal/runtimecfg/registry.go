@@ -20,7 +20,7 @@ var registry = struct {
 	clientPaths map[string][]string
 	routerPaths map[string][]string
 }{
-	clients:   []string{"claude", "codex", "opencode", "workbuddy", "zcode", "autoclaw"},
+	clients:   []string{"claude", "codex", "opencode", "workbuddy", "zcode", "autoclaw", "mimocode"},
 	routers:   []string{"cc_switch"},
 	logLevels: []string{"default", "info", "debug", "warn", "error"},
 	clientPaths: map[string][]string{
@@ -30,6 +30,7 @@ var registry = struct {
 		"workbuddy": {"db", "projects_dir"},
 		"zcode":     {"db"},
 		"autoclaw":  {"sessions_dir"},
+		"mimocode":  {"db"},
 	},
 	routerPaths: map[string][]string{
 		"cc_switch": {"db_path"},
@@ -192,6 +193,10 @@ func (standardDefaultPaths) ApplyDefaults(cfg *config.Config, home, goos string)
 			if c.Paths["sessions_dir"] == "" {
 				c.Paths["sessions_dir"] = defaultAutoClawSessionsDir(home)
 			}
+		case "mimocode":
+			if c.Paths["db"] == "" {
+				c.Paths["db"] = defaultMimoCodeDB(home)
+			}
 		}
 		cfg.Clients[name] = c // map value 不可寻址，需回写
 	}
@@ -266,6 +271,14 @@ func defaultZCodeDB(home string) string {
 // defaultAutoClawSessionsDir 返回 AutoClaw 的 sessions 根目录 agents/（collector 从 agents/*/sessions/ 递归发现）。
 func defaultAutoClawSessionsDir(home string) string {
 	return filepath.Join(home, ".openclaw-autoclaw", "agents")
+}
+
+// defaultMimoCodeDB 返回 Xiaomi MiMo Desktop / MiMo-Code CLI 共用的 SQLite 库路径。
+// MiMo-Code 引擎为 OpenCode fork，同样按 XDG 风格落盘且多 OS 地址一致
+// （macOS 实测即 ~/.local/share/mimocode/mimocode.db），统一该默认；
+// MIMOCODE_HOME 等重定向场景由用户改 paths.db 覆盖。
+func defaultMimoCodeDB(home string) string {
+	return filepath.Join(home, ".local", "share", "mimocode", "mimocode.db")
 }
 
 // errNotRegistered 构造「未注册 X」错误（稳定错误信息，便于测试与 CLI 提示）。

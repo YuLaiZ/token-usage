@@ -60,6 +60,13 @@ enabled = false
 [clients.autoclaw.paths]
 sessions_dir = "~/.openclaw-autoclaw/agents"
 
+[clients.mimocode]
+enabled = false
+
+[clients.mimocode.paths]
+# Xiaomi MiMo Desktop and MiMo Code CLI share this database.
+db = "~/.local/share/mimocode/mimocode.db"
+
 # 路由中间件配置（支持多个）
 [routers.cc_switch]
 db_path = "~/.cc-switch/cc-switch.db"

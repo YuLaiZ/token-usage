@@ -52,6 +52,7 @@ const (
 	SyncSourceOpenCodeEvent   = "opencode_event"
 	SyncSourceCodexState      = "codex_state"
 	SyncSourceCCSwitchRouter  = "ccswitch_router"
+	SyncSourceMimoCodeMessage = "mimocode_message"
 )
 
 // CollectRequest 统一采集请求，兼容 CLI 按日期、文件级、增量、路由等多种模式

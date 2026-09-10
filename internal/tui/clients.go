@@ -15,6 +15,15 @@ import (
 // "paths.sessions_dir"(18)与"Router / 绑定路由"(显示宽度 17)取整加余量。
 const detailLabelColWidth = 20
 
+// clientLabel 返回配置 TUI 的用户可读名称；mimocode 同时标出共用数据库的 Xiaomi
+// MiMo 与 MiMo Code。配置键仍保留在 config.toml 和 CLI 参数中。
+func clientLabel(name string) string {
+	if name == "mimocode" {
+		return "Xiaomi MiMo / MiMo Code"
+	}
+	return name
+}
+
 // 客户端列表页
 type clientsPage struct {
 	app    *App
@@ -90,7 +99,7 @@ func (p *clientsPage) View() string {
 		if c.Router != "" {
 			router = c.Router
 		}
-		s += fmt.Sprintf("%s%s %s %s %s\n", cur, mark, pad(name, 10), ui.Bi("Router:", "路由:"), router)
+		s += fmt.Sprintf("%s%s %s %s %s\n", cur, mark, pad(clientLabel(name), 10), ui.Bi("Router:", "路由:"), router)
 	}
 	if len(p.names) == 0 {
 		s += "  (" + ui.Bi("no configured clients", "无已配置客户端") + ")\n"
@@ -168,7 +177,7 @@ func routerChoiceIndex(router string, choices []string) int {
 }
 
 func (p *clientDetailPage) title() string {
-	return ui.Bi("Edit client", "编辑客户端") + ": " + p.name
+	return ui.Bi("Edit client", "编辑客户端") + ": " + clientLabel(p.name)
 }
 func (p *clientDetailPage) Init() tea.Cmd { return nil }
 
@@ -321,7 +330,7 @@ func (p *clientDetailPage) commit() error {
 }
 
 func (p *clientDetailPage) View() string {
-	s := ui.Bi("Edit client", "编辑客户端") + ": " + p.name + "\n\n"
+	s := ui.Bi("Edit client", "编辑客户端") + ": " + clientLabel(p.name) + "\n\n"
 	tc := "  "
 	if p.cursor == -1 {
 		tc = "▸ "

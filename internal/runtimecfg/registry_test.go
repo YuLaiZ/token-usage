@@ -7,11 +7,11 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/config"
 )
 
-// TestRegisteredClients_FixedContent registry 固定包含 6 个 client。
+// TestRegisteredClients_FixedContent registry 固定包含 7 个 client。
 // 顺序无关，只校验集合一致。
 func TestRegisteredClients_FixedContent(t *testing.T) {
 	got := RegisteredClients()
-	want := map[string]bool{"claude": true, "codex": true, "opencode": true, "workbuddy": true, "zcode": true, "autoclaw": true}
+	want := map[string]bool{"claude": true, "codex": true, "opencode": true, "workbuddy": true, "zcode": true, "autoclaw": true, "mimocode": true}
 	if len(got) != len(want) {
 		t.Fatalf("RegisteredClients 返回 %d 个，want %d 个 (%v)", len(got), len(want), got)
 	}
@@ -158,6 +158,7 @@ func TestStandardProvider_FillsAllClientDefaults(t *testing.T) {
 			"workbuddy": {Enabled: true},
 			"zcode":     {Enabled: true},
 			"autoclaw":  {Enabled: true},
+			"mimocode":  {Enabled: true},
 		},
 	}
 	runProvider(t, cfg, home, goos)
@@ -173,6 +174,7 @@ func TestStandardProvider_FillsAllClientDefaults(t *testing.T) {
 		{"workbuddy", "db", "/.workbuddy/workbuddy.db"},
 		{"zcode", "db", "/.zcode/cli/db/db.sqlite"},
 		{"autoclaw", "sessions_dir", "/.openclaw-autoclaw/agents"},
+		{"mimocode", "db", "/.local/share/mimocode/mimocode.db"},
 	}
 	for _, tt := range tests {
 		got := cfg.Clients[tt.client].Paths[tt.key]

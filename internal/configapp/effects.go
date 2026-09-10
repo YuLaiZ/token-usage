@@ -43,7 +43,7 @@ type ConfigEffects struct {
 // AnalyzeConfigEffects 比较 previous/current 两份 effective config，返回变化影响。
 //
 // 纯函数：不读取文件/数据库，不依赖 home/GOOS（入参应是已 resolved 的有效配置）。
-// 受影响 client 的计算只遍历 current client map，复杂度 O(n)，当前最多六个已注册 client。
+// 受影响 client 的计算只遍历 current client map，复杂度 O(n)，当前最多七个已注册 client。
 // 同一 client 同时命中 full collect 与 router backfill 时只保留 full collect。
 func AnalyzeConfigEffects(previous, current *config.Config) ConfigEffects {
 	prev := normalize(previous)

@@ -44,7 +44,7 @@ func loadEffectiveConfigForTest(cfgPath, home string) (*config.Config, error) {
 // ---- catchUpRequestsFor：四类数据源 request 矩阵 ----
 
 // TestCatchUpRequestsFor_FourSourceMatrix 验证请求矩阵：
-//   - opencode/zcode：单请求 Incremental=true（SQLite cursor 继续）
+//   - opencode/zcode/mimocode：单请求 Incremental=true（SQLite cursor 继续）
 //   - claude/workbuddy/autoclaw：单请求无日期扫描现存 JSONL（Incremental=false，Dates 空，
 //     ScanExistingJSONL=true——现存 JSONL 全扫的显式合同）
 //   - codex：两个请求——先 Incremental=true（state cursor），再无日期全扫 rollout JSONL
@@ -59,6 +59,7 @@ func TestCatchUpRequestsFor_FourSourceMatrix(t *testing.T) {
 	}{
 		{"opencode", 1, []bool{true}, []bool{false}},
 		{"zcode", 1, []bool{true}, []bool{false}},
+		{"mimocode", 1, []bool{true}, []bool{false}},
 		{"claude", 1, []bool{false}, []bool{true}},
 		{"workbuddy", 1, []bool{false}, []bool{true}},
 		{"autoclaw", 1, []bool{false}, []bool{true}},
@@ -125,7 +126,7 @@ func TestCatchUpRequestsFor_CodexTwoSerialIncrementalThenFullScan(t *testing.T) 
 // 无标志字面量（internal/cli/collect.go、internal/engine/retry.go、internal/analyzer/），
 // 行为级断言见 engine 层 RunCollect 请求透传测试。
 func TestCatchUpRequestsFor_ScanExistingJSONLSingleProducer(t *testing.T) {
-	for _, client := range []string{"opencode", "zcode", "unknown-client"} {
+	for _, client := range []string{"opencode", "zcode", "mimocode", "unknown-client"} {
 		for _, req := range catchUpRequestsFor(client) {
 			if req.ScanExistingJSONL {
 				t.Errorf("%s: ScanExistingJSONL=true, want false (SQLite cursor 类 client 无 JSONL 全扫)", client)
@@ -246,7 +247,7 @@ enabled = true
 			content += `state_dir = "` + filepath.Join(tmpDir, c) + `"` + "\n"
 		case "autoclaw":
 			content += `sessions_dir = "` + filepath.Join(tmpDir, c) + `"` + "\n"
-		default: // opencode, zcode
+		default: // opencode, zcode, mimocode
 			content += `db = "` + filepath.Join(tmpDir, c, c+".db") + `"` + "\n"
 		}
 	}

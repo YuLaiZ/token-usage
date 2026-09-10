@@ -15,6 +15,7 @@ func TestEnabledClientNames_Sorted(t *testing.T) {
 			"zcode":     {Enabled: true},
 			"workbuddy": {Enabled: true},
 			"opencode":  {Enabled: true},
+			"mimocode":  {Enabled: true},
 			"codex":     {Enabled: true},
 			"claude":    {Enabled: true},
 			"autoclaw":  {Enabled: true},
@@ -22,7 +23,7 @@ func TestEnabledClientNames_Sorted(t *testing.T) {
 	}
 	names := enabledClientNames(cfg)
 
-	expected := []string{"autoclaw", "claude", "codex", "opencode", "workbuddy", "zcode"}
+	expected := []string{"autoclaw", "claude", "codex", "mimocode", "opencode", "workbuddy", "zcode"}
 	if len(names) != len(expected) {
 		t.Fatalf("expected %d names, got %d: %v", len(expected), len(names), names)
 	}

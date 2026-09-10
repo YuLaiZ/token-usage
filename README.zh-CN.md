@@ -8,7 +8,7 @@
 
 - **把你真正想要的报表做出来，无需 SQL。** 从 `client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday` 组合出具名多维视图，再把内置与自定义视图编排成可复用、按顺序输出的报表组合；设为默认、用 `query list` 查找、按名称运行，并统一选择表格型报表展示的指标列及其顺序。
 - 按消息/API 请求统计，准确处理跨日、多模型、分支与 rewind 的归因。
-- 支持 Claude Code/Desktop、OpenCode、Codex、WorkBuddy、ZCode 与 Zhipu-AutoClaw。
+- 支持 Claude Code/Desktop、OpenCode、Codex、WorkBuddy、ZCode、Zhipu-AutoClaw 与 Xiaomi MiMo / MiMo Code（共用同一本地数据库）。
 - 支持 Claude 系列与 Codex 的 CC-Switch router 归因：通过代理日志回填实际 provider/model。
 - 可单次执行，也可使用实时后台监控守护进程（`token-usage daemon start`）；支持 macOS launchd 与 Windows 注册表自启。
 - 内建可视化分析：按小时/星期分布、星期×小时热力矩阵、实时监视模式，以及本地仪表板服务（`token-usage serve start`，只读 HTTP 数据面上内嵌交互式 HTML 仪表板：前端自绘 SVG 图表、未来用量预测、两期环比对比、最重会话排行、一键 CSV 导出、点击柱条即聚焦对应区间）。

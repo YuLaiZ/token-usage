@@ -161,6 +161,7 @@ func waitForRuntimeStateCatchUp(t *testing.T, statePath string, wantPhase string
 // 覆盖的 catch-up 请求矩阵（catchUpRequestsFor + routerCatchUpRequest）：
 //   - opencode: client-source Incremental=true（SQLite cursor）
 //   - zcode: client-source Incremental=true（SQLite cursor）
+//   - mimocode: client-source Incremental=true（SQLite cursor）
 //   - claude: client-source 无日期全扫（Incremental=false，ScanExistingJSONL=true）
 //   - workbuddy: client-source 无日期全扫（Incremental=false，ScanExistingJSONL=true）
 //   - autoclaw: client-source 无日期全扫（Incremental=false，ScanExistingJSONL=true）
@@ -168,14 +169,14 @@ func waitForRuntimeStateCatchUp(t *testing.T, statePath string, wantPhase string
 //     ScanExistingJSONL=true）
 //   - router: codex + opencode 各一个 Source=router Incremental=true
 //
-// 单个 analyzer 同时挂 claude/codex/workbuddy/autoclaw watcher + opencode/zcode/codex-state/router poller，
+// 单个 analyzer 同时挂 claude/codex/workbuddy/autoclaw watcher + opencode/zcode/mimocode/codex-state/router poller，
 // ready barrier 在全部 monitor 初始化后关闭，coordinator 随后串行 Submit 全部 catch-up。
 func TestStartupCatchUp_AllSourceTypes_ReadyBeforeInject(t *testing.T) {
 	tmpDir := t.TempDir()
-	// 启用全部六类 client + codex/opencode 配 cc_switch router（router catch-up 也覆盖）。
+	// 启用全部七类 client + codex/opencode 配 cc_switch router（router catch-up 也覆盖）。
 	// buildConfigWithCodexState 预创建 codex state 文件使 state poller 能建（monitor > 0）。
 	cfg := buildConfigWithCodexState(t, tmpDir,
-		[]string{"claude", "codex", "opencode", "workbuddy", "zcode", "autoclaw"},
+		[]string{"claude", "codex", "opencode", "workbuddy", "zcode", "autoclaw", "mimocode"},
 		map[string]bool{"codex": true, "opencode": true})
 
 	// 真实 usage DB。
@@ -195,6 +196,9 @@ func TestStartupCatchUp_AllSourceTypes_ReadyBeforeInject(t *testing.T) {
 			},
 			sourceKey("zcode", collector.CollectSourceClient, true): {
 				{ID: "zc-1", Client: model.ClientZCode, Date: "2026-07-29", SessionID: "s-zc", TotalTokens: 20},
+			},
+			sourceKey("mimocode", collector.CollectSourceClient, true): {
+				{ID: "mc-1", Client: model.ClientXiaomiMiMoCode, Date: "2026-07-29", SessionID: "s-mc", TotalTokens: 25},
 			},
 			// JSONL client 无日期全扫（Incremental=false）。
 			sourceKey("claude", collector.CollectSourceClient, false): {
@@ -249,9 +253,9 @@ func TestStartupCatchUp_AllSourceTypes_ReadyBeforeInject(t *testing.T) {
 	}
 
 	// ready 后不再修改任何数据源。等 coordinator 串行 Submit 全部 catch-up 请求。
-	// 期望请求数：claude(1)+codex(2)+opencode(1)+workbuddy(1)+zcode(1)+autoclaw(1) = 7 client-source
-	//          + codex router(1) + opencode router(1) = 9。
-	const wantCalls = 9
+	// 期望请求数：claude(1)+codex(2)+opencode(1)+workbuddy(1)+zcode(1)+autoclaw(1)+mimocode(1) = 8 client-source
+	//          + codex router(1) + opencode router(1) = 10。
+	const wantCalls = 10
 	got := waitForSubmitCalls(t, exec, wantCalls, 5*time.Second)
 	if len(got) < wantCalls {
 		cancel()
@@ -276,6 +280,9 @@ func TestStartupCatchUp_AllSourceTypes_ReadyBeforeInject(t *testing.T) {
 	}
 	if n := countMessagesByClient(t, usageDB, model.ClientZCode); n != 1 {
 		t.Errorf("zcode messages = %d, want 1", n)
+	}
+	if n := countMessagesByClient(t, usageDB, model.ClientXiaomiMiMoCode); n != 1 {
+		t.Errorf("mimocode messages = %d, want 1", n)
 	}
 	if n := countMessagesByClient(t, usageDB, model.ClientWorkBuddy); n != 1 {
 		t.Errorf("workbuddy messages = %d, want 1", n)

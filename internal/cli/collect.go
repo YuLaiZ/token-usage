@@ -63,7 +63,7 @@ collect all 已隐含包含 router backfill，无需再单独执行 collect rout
 
 	// --client 为 PersistentFlag，三个子命令继承。
 	cmd.PersistentFlags().String("client", "",
-		ui.Bi("Limit to one client (claude/opencode/codex/workbuddy/zcode/autoclaw), inherited by subcommands", "指定客户端 (claude/opencode/codex/workbuddy/zcode/autoclaw)，子命令继承"))
+		ui.Bi("Limit to one client (claude/opencode/codex/mimocode/workbuddy/zcode/autoclaw), inherited by subcommands", "指定客户端 (claude/opencode/codex/mimocode/workbuddy/zcode/autoclaw)，子命令继承"))
 	// --force 仅 collect 本身的 LocalFlag，子命令不继承。
 	cmd.Flags().Bool("force", false, ui.Bi("Force recollection (ignore collection_log dedup)", "强制重新采集（忽略 collection_log 去重）"))
 

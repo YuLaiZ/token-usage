@@ -60,7 +60,7 @@ func newStartupCoordinator(cfg *config.Config, submit SubmitFunc, writeState sta
 // router 请求不在本函数产出（由 runCatchUp 按 client 单独追加，Source=router）。
 //
 // 请求矩阵：
-//   - opencode、zcode：Incremental=true，从持久化 SQLite cursor 继续。
+//   - opencode、zcode、mimocode：Incremental=true，从持久化 SQLite cursor 继续。
 //   - claude、workbuddy、autoclaw：无日期扫描现存 JSONL（Incremental=false，Dates 空，
 //     ScanExistingJSONL=true——现存 JSONL 全扫的显式合同，与 codex rollout 全扫同语义）。
 //   - codex：两个串行请求——先 Incremental=true 推进 state cursor，再 ScanExistingJSONL=true
@@ -69,7 +69,7 @@ func newStartupCoordinator(cfg *config.Config, submit SubmitFunc, writeState sta
 // 未知 client 返回 nil（已启用但分类未登记的 client 不会被 coordinator 处理）。
 func catchUpRequestsFor(client string) []collector.CollectRequest {
 	switch client {
-	case "opencode", "zcode":
+	case "opencode", "zcode", "mimocode":
 		return []collector.CollectRequest{{Source: collector.CollectSourceClient, Incremental: true}}
 	case "claude", "workbuddy", "autoclaw":
 		// 无日期扫描现存 JSONL：Dates 空、Incremental=false、ChangedFile 空。

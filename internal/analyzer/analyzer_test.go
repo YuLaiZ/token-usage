@@ -84,6 +84,20 @@ poll_interval = 1
 			wantPollers:  1, // opencode poller
 		},
 		{
+			name: "mimocode enabled",
+			cfgTemplate: `
+data_dir = "%s"
+[clients.mimocode]
+enabled = true
+[clients.mimocode.paths]
+db = "%s/mimocode.db"
+[daemon]
+poll_interval = 1
+`,
+			wantWatchers: 0,
+			wantPollers:  1, // mimocode poller（SQLite 单文件，同 opencode 分支）
+		},
+		{
 			name: "codex enabled with state files",
 			cfgTemplate: `
 data_dir = "%s"

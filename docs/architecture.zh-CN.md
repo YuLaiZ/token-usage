@@ -39,7 +39,7 @@
 | `internal/update/` | 自更新核心（非 CLI）：版本解析、平台资产映射、`SHA256SUMS` 清单、GitHub Release 查询、下载、来源校验、安装编排。不依赖 `internal/cli` |
 | `internal/model/` | 数据模型（Message、Session、SyncCursor、RouterLog 等） |
 | `internal/db/` | SQLite 连接、Schema 迁移、各表 DAO |
-| `internal/collector/` | 采集引擎（6 个 client collector + CC Switch router adapter） |
+| `internal/collector/` | 采集引擎（7 个 client collector + CC Switch router adapter） |
 | `internal/engine/` | 采集编排（依赖装配、主循环、事务化写入、重试、结果校验） |
 | `internal/analyzer/` | 守护进程实时监控（JSONL watcher、SQLite poller、debounce、串行化锁） |
 | `internal/querier/` | 查询引擎（从 messages 实时聚合） |
@@ -60,6 +60,7 @@
 | WorkBuddy | JSONL（主源）+ SQLite（仅查 title） | `~/.workbuddy/projects`、`~/.workbuddy/workbuddy.db` |
 | ZCode | SQLite | `~/.zcode/cli/db/db.sqlite` |
 | Zhipu-AutoClaw | JSONL（全量按文件扫描） | `~/.openclaw-autoclaw/agents` |
+| Xiaomi MiMo / MiMo Code | SQLite（共用同一数据库） | `~/.local/share/mimocode/mimocode.db` |
 
 **路由中间件**：
 
@@ -71,7 +72,7 @@
 
 ```mermaid
 graph TB
-    A[6 个客户端 JSONL/SQLite] --> C[Collectors]
+    A[7 个客户端 JSONL/SQLite] --> C[Collectors]
     R[CC Switch SQLite] --> RA[RouterAdapter]
     C --> M[(messages token 唯一真相)]
     C --> S[(sessions metadata)]
@@ -85,7 +86,7 @@ graph TB
 
 **说明**：
 
-- Collectors 读取 6 个客户端源，输出 `[]model.Message` + `[]model.Session`，在单事务内写入 `messages` 和 `sessions`。
+- Collectors 读取 7 个客户端源，输出 `[]model.Message` + `[]model.Session`，在单事务内写入 `messages` 和 `sessions`。
 - RouterAdapter 读取 CC Switch SQLite，输出 `[]model.RouterLog`，写入 `raw_router_logs`；随后查询归因——Claude 系按 `message_id`、Codex 按 session ID 加 300s 时间窗——把 `router_provider/router_model/router_name` 回填到 `messages`。对已配置 router 且支持归因的 client，其采集轮在 messages 入库后同样基于已入库的 `raw_router_logs` 行重算归因（Claude 按 `message_id`；Codex 对触达的 session 查两侧全量——该 session 的全部 proxy 行与全部 Codex messages——任何后续触达该 session 的采集轮都能修复跨日交错）——不限于 CLI 日期模式，daemon 轮因此覆盖「router 日志先入库、message 后入库」的交错。
 - `sync_state` 记录每个 client 各 source 的增量游标，collector 和 router adapter 各自读写自己的 source。
 - 全量采集（`collect all`）传入 `Dates=nil`，不使用 `collection_log` 的日期去重；`messages` 按 `(client, id)` UPSERT，因此可安全重复扫描。
@@ -114,7 +115,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 | 列 | 含义 |
 |----|------|
 | `input_tokens` | 原始 input（含 cache） |
-| `fresh_input_tokens` | 扣除 cache 后的真正 fresh input（WorkBuddy/ZCode/Codex 由 `model.SubtractCache` 计算；AutoClaw/Claude/OpenCode 的 input 已是 fresh，直接取 input 不扣减） |
+| `fresh_input_tokens` | 扣除 cache 后的真正 fresh input（WorkBuddy/ZCode/Codex 由 `model.SubtractCache` 计算；AutoClaw/Claude/OpenCode/MiMo 的 input 已是 fresh，直接取 input 不扣减） |
 | `output_tokens` | 输出 token |
 | `cache_read_tokens` | 缓存命中读取 |
 | `cache_create_tokens` | 缓存创建写入 |
@@ -184,7 +185,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 **触发语义**（由 `CollectRequest` 字段区分）：
 
 - **ChangedFile**：JSONLWatcher 触发（fsnotify 监听 `.jsonl` 变化，debounce 合并高频写事件），只扫描变更的单个文件。覆盖 claude / codex sessions / workbuddy projects / autoclaw agents。
-- **Incremental**：SQLitePoller 触发（定时轮询 mtime，WAL 模式取 max(db, -wal)），按 `sync_state` 游标增量读取。覆盖 opencode / zcode / codex state DB。
+- **Incremental**：SQLitePoller 触发（定时轮询 mtime，WAL 模式取 max(db, -wal)），按 `sync_state` 游标增量读取。覆盖 opencode / zcode / mimocode / codex state DB。
 - **router source**（`Source=router`）：router DB poller 触发，只补 router 字段，不调用 client collector。按启用且声明 Router 的 client 配置装配（当前只有 `cc_switch` case）。
 
 对已配置 router 且支持归因的 client，每个采集轮（ChangedFile / Incremental / CLI 日期模式）在 messages 入库后同样基于已入库的 `raw_router_logs` 行重算归因——Claude 系按 `message_id`，Codex 按 session ID 加 300s 时间窗对触达的 session 查两侧全量——router 日志先于 message 到达（router 轮的 UPDATE 落空且 cursor 已推过）或跨午夜交错时，归因仍能补上。未配置 router、或在不支持 router 的 client 上持存量 router 配置的轮既不查表也不回填；存量配置仍只写原始日志。
@@ -295,7 +296,7 @@ daemon lock 是存活唯一真相源，PID/runtime-state 是**可降级**的定�
 1. 等待 analyzer 所有 monitor 就绪（ready barrier）；ctx 取消则不写 state、不 catch-up。
 2. 写 ready state（`monitor_ready=true, catch_up=pending`）；失败回传 fatal，daemon 立即取消 analyzer。
 3. 写 running state（`catch_up=running`）；失败时记录日志，不停 daemon，并继续 catch-up。
-4. 顺序 Submit catch-up（经 analyzer 串行化锁，与实时触发同一路径）：按已启用 client 名升序，每个 client 先发 client-source 请求（opencode/zcode 增量 cursor；claude/workbuddy/autoclaw 无日期扫现存 JSONL；codex 先 state 增量再 rollout 全扫），再发该 client 的 router 增量请求（若配置）。任一失败只累计该请求一次，不跳过后续。
+4. 顺序 Submit catch-up（经 analyzer 串行化锁，与实时触发同一路径）：按已启用 client 名升序，每个 client 先发 client-source 请求（opencode/zcode/mimocode 增量 cursor；claude/workbuddy/autoclaw 无日期扫现存 JSONL；codex 先 state 增量再 rollout 全扫），再发该 client 的 router 增量请求（若配置）。任一失败只累计该请求一次，不跳过后续。
 5. 写 final state：0 失败 = `succeeded`，否则 = `failed` + 准确失败数；失败不停 daemon。
 
 catch-up 覆盖「最后一次手工 collect 到监听 ready」的窗口，因此只要 daemon 成功启动并完成 catch-up，期间产生的增量会被补采。catch-up 部分失败会在 `daemon status`（`catch_up=failed`）与 `errors` 中体现。
@@ -415,6 +416,9 @@ enabled = true
 enabled = true
 
 [clients.autoclaw]
+enabled = true
+
+[clients.mimocode]
 enabled = true
 
 # 路由中间件（表名即实现类型，未来加新路由约定表名并在装配 switch 增 case）

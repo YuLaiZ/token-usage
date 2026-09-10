@@ -39,7 +39,7 @@
 | `internal/update/` | Self-update core (non-CLI): version parsing, platform asset mapping, the `SHA256SUMS` manifest, GitHub Release lookup, download, source verification, and install orchestration. Does not depend on `internal/cli`. |
 | `internal/model/` | Data models such as Message, Session, SyncCursor, and RouterLog. |
 | `internal/db/` | SQLite connections, schema migration, and table DAOs. |
-| `internal/collector/` | Collection engine: six client collectors plus the CC Switch router adapter. |
+| `internal/collector/` | Collection engine: seven client collectors plus the CC Switch router adapter. |
 | `internal/engine/` | Collection orchestration: dependency assembly, main loop, transactional writes, retries, and result validation. |
 | `internal/analyzer/` | Daemon real-time monitoring: JSONL watcher, SQLite poller, debounce, and serialization lock. |
 | `internal/querier/` | Query engine that aggregates directly from `messages`. |
@@ -60,6 +60,7 @@
 | WorkBuddy | JSONL (primary source) + SQLite (title lookup only) | `~/.workbuddy/projects`, `~/.workbuddy/workbuddy.db` |
 | ZCode | SQLite | `~/.zcode/cli/db/db.sqlite` |
 | Zhipu-AutoClaw | JSONL (full scan by file) | `~/.openclaw-autoclaw/agents` |
+| Xiaomi MiMo / MiMo Code | SQLite (one shared database) | `~/.local/share/mimocode/mimocode.db` |
 
 **Router middleware**:
 
@@ -71,7 +72,7 @@
 
 ```mermaid
 graph TB
-    A["6 client JSONL/SQLite sources"] --> C[Collectors]
+    A["7 client JSONL/SQLite sources"] --> C[Collectors]
     R["CC Switch SQLite"] --> RA[RouterAdapter]
     C --> M[("messages: token source of truth")]
     C --> S[("sessions: metadata")]
@@ -85,7 +86,7 @@ graph TB
 
 **Notes**:
 
-- Collectors read the six client sources and produce `[]model.Message` plus `[]model.Session`; both are written to `messages` and `sessions` in one transaction.
+- Collectors read the seven client sources and produce `[]model.Message` plus `[]model.Session`; both are written to `messages` and `sessions` in one transaction.
 - The RouterAdapter reads CC Switch SQLite and produces `[]model.RouterLog`, which is written to `raw_router_logs`; it then queries attribution — by `message_id` for the Claude family, or by session ID plus a 300s time window for Codex — and backfills `router_provider`/`router_model`/`router_name` in `messages`. For a client with a router configured that supports attribution, collection rounds also recompute attribution against the already-staged `raw_router_logs` rows after their messages are persisted (Claude by `message_id`; Codex queries both sides in full for the touched sessions — every proxy row and every Codex message — so any later round touching a session repairs cross-day interleavings); this is not limited to the CLI date mode, so daemon rounds cover the interleaving where router logs land before the message does.
 - `sync_state` records the incremental cursor for every source of each client. Collectors and router adapters read and write their own sources independently.
 - Full collection (`collect all`) passes `Dates=nil`, so it does not consult `collection_log` date deduplication. Repeated scans remain safe because `messages` uses `(client, id)` UPSERT.
@@ -114,7 +115,7 @@ The schema is in `migrateV1` in `internal/db/schema.go` (`user_version=1`).
 | Column | Meaning |
 |----|------|
 | `input_tokens` | Raw input, including cache. |
-| `fresh_input_tokens` | Actual fresh input after removing cache (`model.SubtractCache` calculates it for WorkBuddy/ZCode/Codex; input for AutoClaw/Claude/OpenCode is already fresh and is used directly). |
+| `fresh_input_tokens` | Actual fresh input after removing cache (`model.SubtractCache` calculates it for WorkBuddy/ZCode/Codex; input for AutoClaw/Claude/OpenCode/MiMo is already fresh and is used directly). |
 | `output_tokens` | Output tokens. |
 | `cache_read_tokens` | Cache-hit reads. |
 | `cache_create_tokens` | Cache-creation writes. |
@@ -184,7 +185,7 @@ Use cases: real-time usage inspection and continuous background monitoring.
 **Trigger semantics** (distinguished by `CollectRequest` fields):
 
 - **ChangedFile**: triggered by JSONLWatcher (fsnotify watches `.jsonl` changes and debounce merges frequent write events); scans only the changed single file. Covers claude / codex sessions / workbuddy projects / autoclaw agents.
-- **Incremental**: triggered by SQLitePoller (periodically polls mtime; in WAL mode it uses max(db, -wal)); reads incrementally using `sync_state` cursors. Covers opencode / zcode / Codex state DB.
+- **Incremental**: triggered by SQLitePoller (periodically polls mtime; in WAL mode it uses max(db, -wal)); reads incrementally using `sync_state` cursors. Covers opencode / zcode / mimocode / Codex state DB.
 - **router source** (`Source=router`): triggered by the router DB poller; backfills router fields only and does not call a client collector. It is assembled from enabled clients that declare a Router configuration (currently only the `cc_switch` case).
 
 For a client with a router configured that supports attribution, every round (ChangedFile / Incremental / CLI date mode) also recomputes attribution against the already-staged `raw_router_logs` rows once its messages are persisted — the Claude family by `message_id`, Codex by session ID plus a 300s time window over both sides in full for the touched sessions — so an attribution is still backfilled when the router log arrived before the message (the router round's UPDATE missed it and the cursor already moved past) or across midnight boundaries. Rounds of other clients — without a router, or with a legacy router configuration on a non-router-capable client — neither query nor backfill; legacy configurations keep writing raw logs only.
@@ -295,7 +296,7 @@ This contract covers PID files, runtime-state, and `config.toml` (written by `Ap
 1. Wait for every analyzer monitor to be ready (the ready barrier); if the context is canceled, write no state and perform no catch-up.
 2. Write ready state (`monitor_ready=true, catch_up=pending`); a failure is fatal, and the daemon immediately cancels the analyzer.
 3. Write running state (`catch_up=running`); on failure, log the failure, keep the daemon running, and continue with catch-up.
-4. Submit catch-up work in order through the analyzer serialization lock, following enabled client names in ascending order. For each client, send the client-source request first (opencode/zcode use incremental cursors; claude/workbuddy/autoclaw scan existing JSONL with no date; Codex does state increment first then a full rollout scan), then the client's router incremental request if configured. Any failure is counted once for that request and does not skip later work.
+4. Submit catch-up work in order through the analyzer serialization lock, following enabled client names in ascending order. For each client, send the client-source request first (opencode/zcode/mimocode use incremental cursors; claude/workbuddy/autoclaw scan existing JSONL with no date; Codex does state increment first then a full rollout scan), then the client's router incremental request if configured. Any failure is counted once for that request and does not skip later work.
 5. Write final state: zero failures means `succeeded`; otherwise `failed` plus the exact failure count. Failures do not stop the daemon.
 
 Catch-up covers the window from the last manual collection until monitoring is ready. As long as the daemon starts successfully and finishes catch-up, incremental data created in that window is collected. Partial catch-up failure appears in `daemon status` (`catch_up=failed`) and `errors`.
@@ -415,6 +416,9 @@ enabled = true
 enabled = true
 
 [clients.autoclaw]
+enabled = true
+
+[clients.mimocode]
 enabled = true
 
 # Router middleware: its table name is the implementation type. For a future router,

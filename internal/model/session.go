@@ -2,14 +2,15 @@
 package model
 
 const (
-	ClientClaudeCode    = "Claude Code"
-	ClientClaudeDesktop = "Claude Desktop"
-	ClientOpenCode      = "OpenCode"
-	ClientCodexCLI      = "Codex CLI"
-	ClientCodexApp      = "Codex App"
-	ClientWorkBuddy     = "WorkBuddy"
-	ClientZCode         = "ZCode"
-	ClientZhipuAutoClaw = "Zhipu-AutoClaw"
+	ClientClaudeCode     = "Claude Code"
+	ClientClaudeDesktop  = "Claude Desktop"
+	ClientOpenCode       = "OpenCode"
+	ClientCodexCLI       = "Codex CLI"
+	ClientCodexApp       = "Codex App"
+	ClientWorkBuddy      = "WorkBuddy"
+	ClientZCode          = "ZCode"
+	ClientZhipuAutoClaw  = "Zhipu-AutoClaw"
+	ClientXiaomiMiMoCode = "Xiaomi MiMo / MiMo Code"
 )
 
 const (
@@ -21,6 +22,7 @@ const (
 	RawClientWorkBuddy     = "workbuddy"
 	RawClientZCode         = "zcode"
 	RawClientZhipuAutoClaw = "zhipu_autoclaw"
+	RawClientMimoCode      = "mimocode"
 )
 
 var RawClientToClient = map[string]string{
@@ -32,6 +34,7 @@ var RawClientToClient = map[string]string{
 	RawClientWorkBuddy:     ClientWorkBuddy,
 	RawClientZCode:         ClientZCode,
 	RawClientZhipuAutoClaw: ClientZhipuAutoClaw,
+	RawClientMimoCode:      ClientXiaomiMiMoCode,
 }
 
 // ClientToDisplayNames 配置 key（cfg.Clients map key，如 "claude"）→ 显示名列表的映射。
@@ -54,6 +57,9 @@ var ClientToDisplayNames = map[string][]string{
 	"workbuddy": {ClientWorkBuddy},
 	"zcode":     {ClientZCode},
 	"autoclaw":  {ClientZhipuAutoClaw},
+	// mimocode 一个 key 覆盖 Xiaomi MiMo Desktop 与 MiMo Code CLI（两者共用同一
+	// ~/.local/share/mimocode/mimocode.db，库内无 Desktop/CLI 标记，不拆显示名）。
+	"mimocode": {ClientXiaomiMiMoCode},
 }
 
 type Message struct {

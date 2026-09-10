@@ -13,7 +13,7 @@ import (
 
 // Deps 封装采集所需的无状态依赖（cfg + collectors + routers 表）。
 // collect 命令与守护进程在装配期各建一次复用，避免每次触发都重建
-// 6 个 collector + N 个 router（它们仅持有 cfg、无连接/句柄，Collect/CollectLogs 每次现读现开）。
+// 7 个 collector + N 个 router（它们仅持有 cfg、无连接/句柄，Collect/CollectLogs 每次现读现开）。
 type Deps struct {
 	cfg        *config.Config
 	collectors []collector.Collector
@@ -46,6 +46,7 @@ func NewDeps(cfg *config.Config) *Deps {
 			collector.NewWorkBuddyCollector(cfg),
 			collector.NewZCodeCollector(cfg),
 			collector.NewAutoClawCollector(cfg),
+			collector.NewMimoCodeCollector(cfg),
 		},
 		routers: routers,
 	}
@@ -81,8 +82,8 @@ func (r Result) Complete() bool {
 // RunRetryWithDepsContext 共用，避免支持列表两处文案漂移）。
 func unknownClientError(client string) error {
 	return errors.New(ui.Bi(
-		fmt.Sprintf("unknown client: %s (supported: claude, opencode, codex, workbuddy, zcode, autoclaw)", client),
-		fmt.Sprintf("未知客户端: %s（支持: claude, opencode, codex, workbuddy, zcode, autoclaw）", client)))
+		fmt.Sprintf("unknown client: %s (supported: claude, opencode, codex, mimocode, workbuddy, zcode, autoclaw)", client),
+		fmt.Sprintf("未知客户端: %s（支持: claude, opencode, codex, mimocode, workbuddy, zcode, autoclaw）", client)))
 }
 
 // ValidateResult 校验采集结果语义

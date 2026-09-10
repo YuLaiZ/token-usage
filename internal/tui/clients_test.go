@@ -7,6 +7,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func TestClientLabel_MimoCodeShowsBothProducts(t *testing.T) {
+	if got := clientLabel("mimocode"); got != "Xiaomi MiMo / MiMo Code" {
+		t.Errorf("clientLabel(mimocode) = %q", got)
+	}
+	if got := clientLabel("codex"); got != "codex" {
+		t.Errorf("clientLabel(codex) = %q, want unchanged key", got)
+	}
+}
+
 func TestClientsPage_ToggleEnabled(t *testing.T) {
 	edit := &config.Config{Clients: map[string]config.Client{"codex": {Enabled: true}}}
 	a := newAppForTest(edit, edit, nil)

@@ -68,7 +68,7 @@ func newErrorsCmdWithDeps(load func() (*config.Config, error), open func(string)
 		},
 	}
 
-	cmd.Flags().String("source", "", ui.Bi("Filter by client (claude/opencode/codex/workbuddy/zcode/autoclaw)", "指定数据源 (claude/opencode/codex/workbuddy/zcode/autoclaw)"))
+	cmd.Flags().String("source", "", ui.Bi("Filter by client (claude/opencode/codex/mimocode/workbuddy/zcode/autoclaw)", "指定数据源 (claude/opencode/codex/mimocode/workbuddy/zcode/autoclaw)"))
 	cmd.Flags().Bool("unresolved", false, ui.Bi("Show unresolved errors only", "只看未解决的异常"))
 	cmd.Flags().String("format", "table", ui.Bi("output format: table or json", "输出格式：table 或 json"))
 

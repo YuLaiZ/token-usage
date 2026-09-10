@@ -469,7 +469,7 @@ func TestClientSupportsRouter_ClaudeAndCodex(t *testing.T) {
 			t.Errorf("client %q 应支持 router", name)
 		}
 	}
-	for _, name := range []string{"opencode", "workbuddy", "zcode", "autoclaw"} {
+	for _, name := range []string{"opencode", "workbuddy", "zcode", "autoclaw", "mimocode"} {
 		if ClientSupportsRouter(name) {
 			t.Errorf("client %q 不应支持 router", name)
 		}

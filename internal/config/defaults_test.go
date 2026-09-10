@@ -18,6 +18,7 @@ func TestDefaultConfigTemplate_ContainsAllSections(t *testing.T) {
 		"[clients.workbuddy]",
 		"[clients.zcode]",
 		"[clients.autoclaw]",
+		"[clients.mimocode]",
 		"[routers.cc_switch]",
 		"[daemon]",
 		"[log]",
@@ -88,7 +89,7 @@ func TestDefaultConfig_CanBeLoaded(t *testing.T) {
 // 用户按需逐个开启，避免新装即全量采集与带出示例映射。
 func TestDefaultConfigTemplate_AllClientsDisabledByDefault(t *testing.T) {
 	template := DefaultConfigTemplate()
-	for _, name := range []string{"claude", "opencode", "codex", "workbuddy", "zcode", "autoclaw"} {
+	for _, name := range []string{"claude", "opencode", "codex", "workbuddy", "zcode", "autoclaw", "mimocode"} {
 		section := "[" + "clients." + name + "]"
 		idx := strings.Index(template, section)
 		if idx < 0 {

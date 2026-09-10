@@ -236,8 +236,9 @@ var jsonlMonitorClients = []struct {
 }
 
 // sqliteMonitorClients 是 client 源 SQLite poller 监控的客户端与其路径键。
-// opencode/zcode 监控单个 db 文件（zcode 为 WAL 模式，取 max(db, -wal) mtime）；
-// codex 为 state_dir 目录 glob 轮询。三者同属「路径键非空即装配」的静态判定。
+// opencode/zcode/mimocode 监控单个 db 文件；codex 为 state_dir 目录 glob 轮询。
+// 四者同属「路径键非空即装配」的静态判定；db 指纹统一取 max(db, -wal) mtime
+// （zcode/mimocode 为 WAL 模式持续写 -wal，opencode 同样纳入该检查）。
 var sqliteMonitorClients = []struct {
 	name    string
 	pathKey string
@@ -245,6 +246,7 @@ var sqliteMonitorClients = []struct {
 	{"opencode", "db"},
 	{"zcode", "db"},
 	{"codex", "state_dir"},
+	{"mimocode", "db"},
 }
 
 // clientPathConfigured 判定客户端是否启用且指定路径键配置非空。
@@ -336,7 +338,7 @@ func (a *Analyzer) setupFromConfig(cfg *config.Config, debounceDuration time.Dur
 		interval = 30 * time.Second
 	}
 
-	// client 源 SQLite poller 固定 Incremental 请求（OpenCode/ZCode/Codex state DB）。
+	// client 源 SQLite poller 固定 Incremental 请求（OpenCode/ZCode/MiMoCode/Codex state DB）。
 	// Codex 双重监控取舍：state DB 是主源（包含完整 session 元数据），rollout JSONL
 	// 是辅助（记录原始 API 调用）；两者都监控，串行化锁下并发重复不造成数据错误
 	// （UpsertMessage 主键 upsert 幂等）。state_dir 按字面值读取目录再对文件名应用
@@ -386,7 +388,7 @@ func (a *Analyzer) addWatcher(w *JSONLWatcher) {
 }
 
 // addSQLitePoller 构造并注册一个 SQLite 轮询器，集中 NewSQLitePoller + append 样板，
-// 使 setupFromConfig 各 SQLite 源（opencode/codex state/cc_switch）只关心「路径从哪来」。
+// 使 setupFromConfig 各 SQLite 源（opencode/zcode/mimocode/codex state/cc_switch）只关心「路径从哪来」。
 // request 携带该源的固定采集语义（client 源 Incremental；router 源 Source=router）。
 func (a *Analyzer) addSQLitePoller(clientName, dbPath string, request collector.CollectRequest, interval time.Duration) {
 	poller := NewSQLitePoller(dbPath, clientName, request, interval, a.monitorSubmit, a.logger)

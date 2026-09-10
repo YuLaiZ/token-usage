@@ -18,6 +18,7 @@ func TestRawClientToClient_Mapping(t *testing.T) {
 		{RawClientCodexApp, ClientCodexApp},
 		{RawClientWorkBuddy, ClientWorkBuddy},
 		{RawClientZhipuAutoClaw, ClientZhipuAutoClaw},
+		{RawClientMimoCode, ClientXiaomiMiMoCode},
 	}
 
 	for _, tt := range tests {
@@ -62,6 +63,25 @@ func TestRawClientToClient_AutoClaw(t *testing.T) {
 	}
 	if ClientZhipuAutoClaw != "Zhipu-AutoClaw" {
 		t.Errorf("ClientZhipuAutoClaw = %q, want %q", ClientZhipuAutoClaw, "Zhipu-AutoClaw")
+	}
+}
+
+// TestRawClientToClient_MimoCode 固定 raw client 字符串值与显示名。
+// 配置 key/raw 值/显示名三者刻意不同（mimocode / "mimocode" / Xiaomi MiMo / MiMo Code），
+// 防止后续重构漂移；Desktop 与 CLI 共库，单显示名。
+func TestRawClientToClient_MimoCode(t *testing.T) {
+	got, ok := RawClientToClient[RawClientMimoCode]
+	if !ok {
+		t.Fatalf("RawClientToClient[%q] not found", RawClientMimoCode)
+	}
+	if got != ClientXiaomiMiMoCode {
+		t.Errorf("RawClientToClient[%q] = %q, want %q", RawClientMimoCode, got, ClientXiaomiMiMoCode)
+	}
+	if RawClientMimoCode != "mimocode" {
+		t.Errorf("RawClientMimoCode = %q, want %q", RawClientMimoCode, "mimocode")
+	}
+	if ClientXiaomiMiMoCode != "Xiaomi MiMo / MiMo Code" {
+		t.Errorf("ClientXiaomiMiMoCode = %q, want %q", ClientXiaomiMiMoCode, "Xiaomi MiMo / MiMo Code")
 	}
 }
 
@@ -122,9 +142,9 @@ func TestClientToDisplayNames_ClaudeMultiMapping(t *testing.T) {
 	}
 }
 
-// TestClientToDisplayNames_AllConfigKeys 验证 6 个配置 key 全部登记。
+// TestClientToDisplayNames_AllConfigKeys 验证 7 个配置 key 全部登记。
 func TestClientToDisplayNames_AllConfigKeys(t *testing.T) {
-	expected := []string{"claude", "opencode", "codex", "workbuddy", "zcode", "autoclaw"}
+	expected := []string{"claude", "opencode", "codex", "workbuddy", "zcode", "autoclaw", "mimocode"}
 	for _, key := range expected {
 		if _, ok := ClientToDisplayNames[key]; !ok {
 			t.Errorf("ClientToDisplayNames 缺少配置 key %q", key)
