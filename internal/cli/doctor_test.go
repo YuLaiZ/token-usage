@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -126,9 +128,10 @@ func TestDoctor_ConfigLoadFailure(t *testing.T) {
 		t.Errorf("Config 应 FAIL 并携带错误:\n%s", out)
 	}
 	// Data directory / Database / Clients / Last collection / Data freshness /
-	// Date consistency / Unresolved errors / Query definitions 共 8 项跳过。
-	if n := strings.Count(out, "SKIPPED / 跳过"); n != 8 {
-		t.Errorf("依赖配置的检查项应恰 8 行 SKIPPED,实际 %d:\n%s", n, out)
+	// Date consistency / Unresolved errors / Query definitions / Dashboard
+	// 共 9 项跳过。
+	if n := strings.Count(out, "SKIPPED / 跳过"); n != 9 {
+		t.Errorf("依赖配置的检查项应恰 9 行 SKIPPED,实际 %d:\n%s", n, out)
 	}
 	if !strings.Contains(out, "Daemon / 守护进程: INFO / 提示") {
 		t.Errorf("Daemon 提示行不受配置失败影响:\n%s", out)
@@ -514,5 +517,140 @@ func TestDoctor_DateConsistency_EpochTs(t *testing.T) {
 	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
 	if !strings.Contains(out, "Date consistency / 日期一致性: OK / 正常 1 messages consistent / 1 条消息日期一致") {
 		t.Errorf("ts=0 与 date=1970-01-01 应视为一致:\n%s", out)
+	}
+}
+
+// ---- Dashboard / 仪表板检查(第 11 项,只读探测) ----
+
+// doctorDashboardBaseline 构造除仪表板分支外全绿的最小 doctor 环境:
+// 有效配置 + 已建库(一条当日消息 + 一条 2h 前采集记录,压掉「无采集记录」
+// 的既有 WARN),返回 dataDir。
+func doctorDashboardBaseline(t *testing.T) string {
+	t.Helper()
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "usage.db")
+	usageDB, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedDate := time.Now().Format("2006-01-02")
+	if err := insertOneMessageAt(usageDB, seedDate, "claude", time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	insertCollectionLogAge(t, usageDB, seedDate, "claude", 2*time.Hour)
+	usageDB.Close()
+	return dataDir
+}
+
+// writeServeStateFixture 向 dataDir 写出指定内容的 serve.json。
+func writeServeStateFixture(t *testing.T, dataDir, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dataDir, "serve.json"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 未运行(serve.json 缺失)→ INFO 提示行,不计入警告:Result 仍为 OK / 一切正常。
+func TestDoctor_Dashboard_NotRunning_Info(t *testing.T) {
+	dataDir := doctorDashboardBaseline(t)
+
+	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
+	if !strings.Contains(out, "Dashboard / 仪表板: INFO / 提示 ") {
+		t.Errorf("无 serve.json 时应输出 INFO 提示行:\n%s", out)
+	}
+	if !strings.Contains(out, "serve start") {
+		t.Errorf("INFO 行应指向 serve start:\n%s", out)
+	}
+	if !strings.Contains(out, "Result / 结果: OK / 一切正常") {
+		t.Errorf("INFO 不应计入警告,Result 应为 OK:\n%s", out)
+	}
+}
+
+// 配置失败 → SKIPPED(依赖 data_dir,不读固定路径)。
+func TestDoctor_Dashboard_ConfigFailed_Skipped(t *testing.T) {
+	out := runDoctorForTest(t, func() (*config.Config, error) {
+		return nil, errors.New("boom")
+	}, db.Open)
+	if !strings.Contains(out, "Dashboard / 仪表板: SKIPPED / 跳过 config failed / 配置加载失败") {
+		t.Errorf("配置失败时仪表板检查应 SKIPPED:\n%s", out)
+	}
+}
+
+// 损坏 serve.json → WARN + 清理指引,Result 计 1 warnings。
+func TestDoctor_Dashboard_CorruptState_Warn(t *testing.T) {
+	dataDir := doctorDashboardBaseline(t)
+	writeServeStateFixture(t, dataDir, "{not-json")
+
+	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
+	if !strings.Contains(out, "Dashboard / 仪表板: WARN / 警告 ") {
+		t.Errorf("损坏状态应 WARN:\n%s", out)
+	}
+	if !strings.Contains(out, "serve status") {
+		t.Errorf("损坏状态应指向 serve status 清理:\n%s", out)
+	}
+	if !strings.Contains(out, "Result / 结果: 1 warnings / 1 项警告") {
+		t.Errorf("损坏状态应计 1 项警告:\n%s", out)
+	}
+}
+
+// 陈旧状态(记录地址无响应)→ WARN + 清理指引,Result 计 1 warnings。
+// addr 指向未监听地址,探活立即失败,测试无需等待超时。
+func TestDoctor_Dashboard_StaleState_Warn(t *testing.T) {
+	dataDir := doctorDashboardBaseline(t)
+	writeServeStateFixture(t, dataDir,
+		`{"pid": 999999, "addr": "127.0.0.1:1", "started_at": "2026-01-01T00:00:00Z"}`)
+
+	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
+	if !strings.Contains(out, "Dashboard / 仪表板: WARN / 警告 ") {
+		t.Errorf("陈旧状态应 WARN:\n%s", out)
+	}
+	if !strings.Contains(out, "http://127.0.0.1:1") || !strings.Contains(out, "999999") {
+		t.Errorf("陈旧状态应含记录的 URL 与 PID:\n%s", out)
+	}
+	if !strings.Contains(out, "Result / 结果: 1 warnings / 1 项警告") {
+		t.Errorf("陈旧状态应计 1 项警告:\n%s", out)
+	}
+}
+
+// 运行中(serve.json 指向存活 /api/meta)→ OK 且含 URL 与 PID,不计警告。
+func TestDoctor_Dashboard_Running_Ok(t *testing.T) {
+	dataDir := doctorDashboardBaseline(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+	addr := strings.TrimPrefix(ts.URL, "http://")
+	writeServeStateFixture(t, dataDir,
+		`{"pid": 4321, "addr": "`+addr+`", "started_at": "2026-01-01T00:00:00Z"}`)
+
+	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
+	if !strings.Contains(out, "Dashboard / 仪表板: OK / 正常 ") || !strings.Contains(out, "running at http://"+addr) {
+		t.Errorf("运行中应 OK 且含 URL:\n%s", out)
+	}
+	if !strings.Contains(out, "4321") {
+		t.Errorf("运行中应含 PID:\n%s", out)
+	}
+	if !strings.Contains(out, "Result / 结果: OK / 一切正常") {
+		t.Errorf("运行中不应计警告:\n%s", out)
+	}
+}
+
+// 读失败(serve.json 路径是目录,ReadFile 返回 EISDIR,非 corrupt 哨兵)
+// → WARN + 读取失败原因,Result 计 1 warnings。
+func TestDoctor_Dashboard_ReadFailure_Warn(t *testing.T) {
+	dataDir := doctorDashboardBaseline(t)
+	if err := os.Mkdir(filepath.Join(dataDir, "serve.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
+	if !strings.Contains(out, "Dashboard / 仪表板: WARN / 警告 ") {
+		t.Errorf("读失败应 WARN:\n%s", out)
+	}
+	if !strings.Contains(out, "failed to read serve state") || !strings.Contains(out, "读取服务状态失败") {
+		t.Errorf("读失败应携带读取失败原因:\n%s", out)
+	}
+	if !strings.Contains(out, "Result / 结果: 1 warnings / 1 项警告") {
+		t.Errorf("读失败应计 1 项警告:\n%s", out)
 	}
 }

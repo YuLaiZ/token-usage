@@ -32,8 +32,8 @@ func newDoctorCmdWithDeps(load func() (*config.Config, error), open func(string)
 		Use:   "doctor",
 		Short: "Run health checks and report problems / 运行健康检查并报告问题",
 		Long: ui.Bi(
-			"Run read-only health checks and print one line per check (OK/WARN/FAIL) with a final summary. Checks: config, data directory (the writability probe creates exactly one temporary file and removes it immediately), database (SQLite quick_check plus message count), enabled clients, last successful collection, data freshness (WARN when the last collection is more than seven days old), date consistency (WARN when stored dates disagree with the local dates recomputed from message timestamps; report-only, no auto-fix), unresolved collection errors, query view definitions (subqueries/groups/default semantic validity, warnings only), and an informational pointer to `token-usage daemon status` for daemon state. No business data is written: opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own; it never starts, stops, or restarts the daemon, and never modifies configuration. FAIL/WARN are report-only; the exit code is always 0 in v1.",
-			"运行只读健康检查,逐项输出检查结果(OK/WARN/FAIL)并给出汇总。检查项:配置、数据目录(可写探针仅创建一个临时文件并立即删除)、数据库(SQLite quick_check 与消息行数)、已启用客户端、最近成功采集、数据新鲜度(最近采集距今超过七天告警)、日期一致性(date 列与按 ts 毫秒重算的本地日期不一致时告警,仅报告不自动修复)、未解决采集异常、查询视图定义(subqueries/groups/default 的语义合法性,仅警告),以及指向 `token-usage daemon status` 的守护进程状态提示。不写业务数据:打开数据库的行为(journal 模式设置与 schema 迁移)与其它读取类命令一致,doctor 自身不执行任何特有的写操作;绝不启动/停止/重启守护进程,绝不修改配置。FAIL/WARN 仅体现在输出,v1 退出码恒为 0。",
+			"Run read-only health checks and print one line per check (OK/WARN/FAIL) with a final summary. Checks: config, data directory (the writability probe creates exactly one temporary file and removes it immediately), database (SQLite quick_check plus message count), enabled clients, last successful collection, data freshness (WARN when the last collection is more than seven days old), date consistency (WARN when stored dates disagree with the local dates recomputed from message timestamps; report-only, no auto-fix), unresolved collection errors, query view definitions (subqueries/groups/default semantic validity, warnings only), a read-only dashboard probe (serve.json plus /api/meta liveness — INFO when not running, OK when answering, WARN for a stale or corrupt state file with cleanup pointed at `token-usage serve status`), and an informational pointer to `token-usage daemon status` for daemon state. No business data is written: opening the database (journal-mode setup and schema migration) behaves exactly as in every other read command, and doctor itself performs no writes of its own; it never starts, stops, or restarts the daemon, and never modifies configuration. FAIL/WARN are report-only; the exit code is always 0 in v1.",
+			"运行只读健康检查,逐项输出检查结果(OK/WARN/FAIL)并给出汇总。检查项:配置、数据目录(可写探针仅创建一个临时文件并立即删除)、数据库(SQLite quick_check 与消息行数)、已启用客户端、最近成功采集、数据新鲜度(最近采集距今超过七天告警)、日期一致性(date 列与按 ts 毫秒重算的本地日期不一致时告警,仅报告不自动修复)、未解决采集异常、查询视图定义(subqueries/groups/default 的语义合法性,仅警告)、只读仪表板探测(读 serve.json 并探活 /api/meta——未运行为 INFO、应答为 OK、陈旧或损坏状态为 WARN 并指向 `token-usage serve status` 清理),以及指向 `token-usage daemon status` 的守护进程状态提示。不写业务数据:打开数据库的行为(journal 模式设置与 schema 迁移)与其它读取类命令一致,doctor 自身不执行任何特有的写操作;绝不启动/停止/重启守护进程,绝不修改配置。FAIL/WARN 仅体现在输出,v1 退出码恒为 0。",
 		),
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
@@ -376,6 +376,53 @@ func runDoctor(cmd *cobra.Command, load func() (*config.Config, error), open fun
 		"run `token-usage daemon status` for daemon state (this command never probes or controls the daemon)",
 		"使用 `token-usage daemon status` 查看守护进程状态(本命令绝不探测或操作守护进程)",
 	))
+
+	// 11. Dashboard / 仪表板:只读探测后台仪表板,与第 10 项形成对照——daemon
+	// 探测有写副作用(锁文件)故只指向 status;而读 serve.json 与 HTTP GET
+	// /api/meta 均为纯读,doctor 可安全执行。本项绝不取 serve-state 锁、绝不
+	// 删除状态文件:损坏/陈旧的清理指引交给 `token-usage serve status`(其
+	// 陈旧/损坏清理会在锁内条件删除残留)。探测仅在 serve.json 存在时发生,
+	// 缺失时零 HTTP 请求,常见路径不增加耗时。损坏与陈旧计 WARN(残留会误导
+	// serve stop/status 的判定语义);未运行是 INFO(仪表板可选,不构成健康问题)。
+	switch {
+	case configFailed:
+		doctorLine(out, ui.Bi("Dashboard", "仪表板"), statusSkip, ui.Bi("config failed", "配置加载失败"))
+	default:
+		st, stErr := readServeState(cfg.DataDir)
+		switch {
+		case errors.Is(stErr, errServeStateCorrupt):
+			warnings++
+			doctorLine(out, ui.Bi("Dashboard", "仪表板"), statusWarn, ui.Bi(
+				"corrupt serve state file; run `token-usage serve status` to clean it up",
+				"serve.json 状态文件损坏;运行 `token-usage serve status` 清理",
+			))
+		case stErr != nil:
+			warnings++
+			doctorLine(out, ui.Bi("Dashboard", "仪表板"), statusWarn, ui.Bi(
+				fmt.Sprintf("failed to read serve state: %v", stErr),
+				fmt.Sprintf("读取服务状态失败:%v", stErr),
+			))
+		case st == nil:
+			doctorLine(out, ui.Bi("Dashboard", "仪表板"), statusInfo, ui.Bi(
+				"dashboard not running; run `token-usage serve start` to start it",
+				"仪表板未在后台运行;可用 `token-usage serve start` 启动",
+			))
+		default:
+			url := "http://" + st.Addr
+			if serveMetaAlive(url, serveStaleProbeTimeout) {
+				doctorLine(out, ui.Bi("Dashboard", "仪表板"), statusOK, ui.Bi(
+					fmt.Sprintf("running at %s (PID %d)", url, st.PID),
+					fmt.Sprintf("运行中 %s（PID %d）", url, st.PID),
+				))
+			} else {
+				warnings++
+				doctorLine(out, ui.Bi("Dashboard", "仪表板"), statusWarn, ui.Bi(
+					fmt.Sprintf("stale state for %s (PID %d not answering); run `token-usage serve status` to clean it up", url, st.PID),
+					fmt.Sprintf("%s（PID %d）无响应的陈旧状态;运行 `token-usage serve status` 清理", url, st.PID),
+				))
+			}
+		}
+	}
 
 	// 汇总行:FAIL 优先于 WARN;两者皆无才是一切正常。
 	fmt.Fprintln(out)
