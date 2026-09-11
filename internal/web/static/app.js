@@ -1505,9 +1505,9 @@
     document.querySelectorAll("[data-preset]").forEach((b) => {
       b.classList.toggle("active", b.dataset.preset === presetName);
     });
-    // 记住选区:下次打开恢复(刷新/重开不丢上下文)。
+    // 记住选区:仅本标签页 reload 时恢复(见 init 的导航类型判定),新开页面一律默认 Today。
     try {
-      localStorage.setItem("tu-range", JSON.stringify({ from, to }));
+      sessionStorage.setItem("tu-range", JSON.stringify({ from, to }));
     } catch (_) {
       // 隐私模式等存储不可用场景静默降级为不记忆。
     }
@@ -1579,6 +1579,17 @@
 
   // ---------- 初始化 ----------
 
+  // 本文档是否以 reload 方式导航。带 opener 打开的新标签页会先复制来源页的
+  // sessionStorage 副本,因此恢复选区不能只看存储有无值,必须以导航类型兜底;
+  // performance 整体缺失或 Navigation Timing 不可用时按非 reload 处理——恢复
+  // 宁可缺失,不可在新浏览上下文误恢复。
+  function isReloadNavigation() {
+    const entries = typeof performance !== "undefined" && performance.getEntriesByType
+      ? performance.getEntriesByType("navigation")
+      : [];
+    return entries.length > 0 && entries[0].type === "reload";
+  }
+
   function init() {
     buildDataBlocks();
     initTooltip();
@@ -1604,25 +1615,28 @@
     });
     initNavHighlight();
 
-    // 初始范围:首次进入默认 Today;恢复的上次选区若恰为某预设区间,
-    // 回亮对应预设按钮,否则清除全部预设高亮。
+    // 初始范围:仅真正的 reload 恢复上次选区;其余导航一律默认 Today——
+    // 新开页面(含带 opener 继承 sessionStorage 副本的新标签页)即属此列。
+    // 恢复的上次选区若恰为某预设区间,回亮对应预设按钮,否则清除全部预设高亮。
     let initialFrom = todayStr();
     let initialTo = todayStr();
     let initialPreset = "today";
-    try {
-      const saved = JSON.parse(localStorage.getItem("tu-range") || "null");
-      if (saved && /^\d{4}-\d{2}-\d{2}$/.test(saved.from) && /^\d{4}-\d{2}-\d{2}$/.test(saved.to) && saved.from <= saved.to) {
-        initialFrom = saved.from;
-        initialTo = saved.to;
-        initialPreset = null;
-        for (const name of Object.keys(PRESETS)) {
-          if (name === "all" && !metaReady()) continue;
-          const r = PRESETS[name]();
-          if (r[0] === initialFrom && r[1] === initialTo) { initialPreset = name; break; }
+    if (isReloadNavigation()) {
+      try {
+        const saved = JSON.parse(sessionStorage.getItem("tu-range") || "null");
+        if (saved && /^\d{4}-\d{2}-\d{2}$/.test(saved.from) && /^\d{4}-\d{2}-\d{2}$/.test(saved.to) && saved.from <= saved.to) {
+          initialFrom = saved.from;
+          initialTo = saved.to;
+          initialPreset = null;
+          for (const name of Object.keys(PRESETS)) {
+            if (name === "all" && !metaReady()) continue;
+            const r = PRESETS[name]();
+            if (r[0] === initialFrom && r[1] === initialTo) { initialPreset = name; break; }
+          }
         }
+      } catch (_) {
+        // 存储不可用或内容损坏,回退默认 Today。
       }
-    } catch (_) {
-      // 存储不可用或内容损坏,回退默认 Today。
     }
     setRange(initialFrom, initialTo, initialPreset);
     resetTimer();
