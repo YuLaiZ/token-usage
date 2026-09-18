@@ -270,11 +270,13 @@ Last successful collection / 最近成功采集: 2026-07-22 08:15:03
 
 所有分组视图（九个内置视图与全部自定义多维表）末行显示 `Total / 总计`，总计与表格使用同一日期范围独立聚合；会话明细与总览摘要不追加该行。
 
+所有分组视图的维度分组不区分大小写（Unicode 简单折叠，与 `strings.EqualFold` 同一等价语义）：仅大小写不同的值合并为一行，行内显示该查询范围内请求数最多的拼写（平手取字节序最小拼写），聚合值为各变体之和。该语义覆盖文本维度（`client`、`model`、`provider`、`project`）与时间维度（分组值不存在仅大小写不同的变体，行为不变），内置视图、自定义视图与 serve 仪表板一致；`messages` 源数据不改写。
+
 `query day`、`query month`、`query hour`、`query weekday` 及任何含 `day`、`month`、`hour` 或 `weekday` 时间维度的视图按时间升序呈现时间轴：行按时间维度升序排列（日 `YYYY-MM-DD`、月 `YYYY-MM`、小时 `00:00`..`23:00` 或 ISO 周序的星期名，而非按总量降序；多个时间维度并存时按声明首个为排序主轴），`Trend / 趋势` 条形列以区间内最繁忙的行为基准对比各行总量。纯 `day` 与 `month` 视图为请求区间内无数据的日期/月份插入零值行；纯 `hour` 与 `weekday` 视图按本机时区折算小时/星期（与 date 列同一时区语义），任一请求区间都呈现整日 24 小时固定刻度与 ISO 周序（周一在首）的整周 7 天固定刻度，为无数据小时/星期补零值行，时间轴不留缺口。
 
 `query heatmap` 渲染星期×小时矩阵：行为 ISO 周序（周一在首）的 7 个星期，列为 `00`..`23` 的 24 个小时（均按本机时区折算，与 date 列同一时区语义）。单元格为该交点 total 相对全表最大值的密度字符（` .:-=+*#%@`，0..9 级），尾列合计各星期，尾行 `Total / 总计` 合计各小时与全表。矩阵不参与 `[query.output.columns]` 布局；`heatmap` 是保留视图名——与 `session`、`summary` 一样，不可被 `query.default`、子查询或组合查询引用。
 
-`query summary` 输出固定的纵向摘要：`Clients / 客户端数`、`Total requests / 请求总数`、`Active days / 活跃天数`（区间内有数据的天数）、每个 token 列一行（`Input` 至 `Total`，恒含 `Cache Create`）；区间内至少有一天有数据时，追加 `Peak day / 单日峰值`（源 total 最高的日期，同分取日期最早者）与 `Daily average / 日均总量`（区间总量除以活跃天数，整数除法向下取整）。区间内无数据时最后两行不渲染。
+`query summary` 输出固定的纵向摘要：`Clients / 客户端数`（与 client 分组同一大小写折叠语义的去重计数）、`Total requests / 请求总数`、`Active days / 活跃天数`（区间内有数据的天数）、每个 token 列一行（`Input` 至 `Total`，恒含 `Cache Create`）；区间内至少有一天有数据时，追加 `Peak day / 单日峰值`（源 total 最高的日期，同分取日期最早者）与 `Daily average / 日均总量`（区间总量除以活跃天数，整数除法向下取整）。区间内无数据时最后两行不渲染。
 
 ### 可配置查询视图
 
@@ -325,7 +327,7 @@ columns = ["requests", "input", "output", "total", "cache_hit"]
 - **校验规则**：`query.output` 必须是表且只允许 `columns` 一个子键；数组非空、元素为上表中的字符串、不得重复（元素首尾空格自动去除）。空数组不是「恢复默认」——恢复默认应删除 `query.output`（或 `query.output.columns`）。错误会报出完整配置路径与具体值。`config set` 不支持写入 `query.output.columns`，请使用 TUI 的 Output columns 页或手工编辑 TOML。
 - **错误边界**：无关的视图定义错误（`subqueries`/`groups`/`default`）不阻断九个受布局影响的静态表格命令——合法布局仍生效。`query.output` 自身不合法时，这九个命令在打开数据库前失败。顶层 query 问题（`[query]` 与 `[Query]` 并存、根值非表）下静态表格命令静默回退默认七列，裸 query、具名视图与 `query list` 仍按既有定位错误失败。TUI 保存始终执行完整 query 校验。
 
-`query provider`（以及任何自定义视图中的 provider 维度）优先使用路由归因，其次使用采集器的供应商值；历史空值保持未归因，查询不会依据客户端推断供应商。`provider_aliases` 在组合键形成前生效：相同别名在每个视图中合并为同一行，且不会修改 `usage.db`。
+`query provider`（以及任何自定义视图中的 provider 维度）优先使用路由归因，其次使用采集器的供应商值；历史空值保持未归因，查询不会依据客户端推断供应商。`provider_aliases` 在组合键形成前生效：相同别名在每个视图中合并为同一行，且不会修改 `usage.db`。别名查找先精确匹配原始值；无精确键时对别名表做大小写不敏感（`EqualFold`）扫描兜底——多个仅大小写不同的键同时命中时取字节序最小的键，空白别名值永远不生效。
 
 query 配置是纯展示配置。语义错误（断开引用、CSV 写错、未知键、`[query]` 与 `[Query]` 并存等顶层冲突、`query = "x"` 根值非表）只会使默认路径（裸 `query` 与 `query <日期>`）、全部具名调用（`query <name>` / `query custom <name>`）、`query list` 与 TUI 保存失败并定位具体配置键；九个受布局影响的静态表格命令（`client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`session`）在顶层问题态回退默认七列、仅无关视图定义损坏时保持合法布局，`query summary` 不受影响，`collect`、`daemon status`、`daemon start`、守护进程本体、`config set`、`config show` 不受影响且原样保留问题项。`watch` 遵循同一分界：其缺省视图与配置视图路径与裸 `query` 同样以本地化诊断失败，而显式内置视图名（`watch --by client`）与静态表格命令一致，忽略无关的视图定义错误。TUI 主菜单按 `v` 进入 **Query** 页，含三个平级入口——**Views / 查询视图**（自定义子查询、组合查询、默认行为）、**Output columns / 输出列**（全局指标布局，`d` 恢复默认）、**Provider aliases / 供应商别名**——各自的部分无法解析时先显示自己的恢复列表。降级到不支持查询视图的旧版本前，请删除整个 `[query]`、`[query.subqueries]`、`[query.groups]`、`[query.output]` 段：旧版本会拒绝任何非空 query 段。
 

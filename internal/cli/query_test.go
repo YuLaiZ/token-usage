@@ -792,6 +792,57 @@ VALUES ('m1', 's', 'claude', '2026-07-09', 0, 'mod', 'source-a', '', 100),
 	}
 }
 
+// 自定义视图与内置视图同一大小写归一链路:[query.subqueries] 定义的
+// client,model 视图中仅大小写不同的 model 合并为一行,代表取请求数多者,
+// 请求数列=各变体之和(机制由 querier 层测试覆盖,此处锁入口)。
+func TestRunQueryCustom_CaseInsensitiveGrouping(t *testing.T) {
+	open := func(p string) (*db.DB, error) {
+		usageDB, err := db.Open(":memory:")
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { usageDB.Close() })
+		if _, err := usageDB.ExecContext(context.Background(), `
+INSERT INTO messages (id, session_id, client, date, ts, model, total_tokens)
+VALUES ('m1', 's', 'claude', '2026-07-09', 0, 'GLM-5.3', 100),
+       ('m2', 's', 'claude', '2026-07-09', 0, 'GLM-5.3', 100),
+       ('m3', 's', 'claude', '2026-07-09', 0, 'glm-5.3', 50)`); err != nil {
+			return nil, err
+		}
+		return usageDB, nil
+	}
+	raw := map[string]any{"subqueries": map[string]any{"cm": "client,model"}}
+	cmd, buf := newQueryOutputCmd()
+	if err := runQueryCustomWithDeps(cmd, "cm", []string{"20260709"}, loadWithRaw(raw, nil), open); err != nil {
+		t.Fatalf("custom cm: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "自定义视图 cm") {
+		t.Fatalf("应输出自定义视图标题:\n%s", out)
+	}
+	if strings.Contains(out, "glm-5.3") {
+		t.Errorf("小写变体应并入代表行,不得单独出现:\n%s", out)
+	}
+	// 数据行(含 GLM-5.3 的表格行)恰一行,请求数列=3(两变体之和)。
+	dataRows := 0
+	for _, ln := range strings.Split(out, "\n") {
+		if !strings.Contains(ln, "GLM-5.3") || !strings.Contains(ln, "│") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(ln, "│"), "│")
+		if len(cells) < 3 || strings.TrimSpace(cells[1]) != "GLM-5.3" {
+			continue
+		}
+		dataRows++
+		if got := strings.TrimSpace(cells[2]); got != "3" {
+			t.Errorf("合并行请求数应为 3(两变体之和),实际 %q:\n%s", got, out)
+		}
+	}
+	if dataRows != 1 {
+		t.Errorf("合并后应恰一行数据行,实际 %d:\n%s", dataRows, out)
+	}
+}
+
 // ---- 统一统计信息区（范围 / 数据截至 / 最近成功采集） ----
 
 // TestQueryStatisticsHeader_Rendering 锁定信息区文案与三类边界形态:

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/ui"
@@ -392,6 +393,71 @@ func (a *GroupAggregate) add(o GroupAggregate) {
 	a.TotalTokens += o.TotalTokens
 }
 
+// foldRune 返回 r 所在 unicode.SimpleFold 折叠链(环)上码点最小的 rune,
+// 最小码点在链上唯一;不在任何折叠链上的 rune(数字、CJK 等)返回自身。
+func foldRune(r rune) rune {
+	min := r
+	for c := unicode.SimpleFold(r); c != r; c = unicode.SimpleFold(c) {
+		if c < min {
+			min = c
+		}
+	}
+	return min
+}
+
+// foldKey 把 s 的每个 rune 归一为其折叠链上码点最小的 rune,作为维度分组的
+// 大小写不敏感合并键:对合法 UTF-8 字符串,foldKey(a)==foldKey(b) 当且仅当
+// strings.EqualFold(a,b)——两者同为 simple case folding 语义,是分组折叠、
+// provider 别名兜底与 Summary 客户端计数三处共享的唯一大小写等价定义
+// (维度值均经 JSON/TOML 文本链路入库,恒为合法 UTF-8;非法字节串上与
+// EqualFold 的 RuneError 折叠存在理论分叉,不可达)。不得换成 strings.ToLower:
+// ſ(U+017F)与 S 折叠等价而 ToLower 不同(撕裂),İ(U+0130)与 i 折叠不等价而
+// ToLower 同为 "i"(过度合并)。全部 rune 已是链上最小形态(时间维度数字键、
+// 全大写串等)时原样返回,零分配。
+func foldKey(s string) string {
+	folded := true
+	for _, r := range s {
+		if foldRune(r) != r {
+			folded = false
+			break
+		}
+	}
+	if folded {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		b.WriteRune(foldRune(r))
+	}
+	return b.String()
+}
+
+// aliasLookup 在 provider 别名表中查找 raw 的有效显示别名:精确命中优先;
+// 精确键未命中、或命中但值 TrimSpace 后为空(空白值视为未命中,与配置侧
+// 不校验空白值的现状衔接)时,按 EqualFold(与 foldKey 同源的 Unicode 简单
+// 折叠)扫描兜底,多个有效命中取键字节序小者,保证病态配置下行为确定;
+// 返回值为 TrimSpace 后的别名,无命中返回空串。配置键值不改写。
+func aliasLookup(aliases map[string]string, raw string) string {
+	if v := strings.TrimSpace(aliases[raw]); v != "" {
+		return v
+	}
+	var bestKey string
+	for k, v := range aliases {
+		if bestKey != "" && k >= bestKey {
+			continue
+		}
+		if !strings.EqualFold(k, raw) || strings.TrimSpace(v) == "" {
+			continue
+		}
+		bestKey = k
+	}
+	if bestKey == "" {
+		return ""
+	}
+	return strings.TrimSpace(aliases[bestKey])
+}
+
 // displayKey 把 SQL 返回的原始键值映射为显示键:provider 应用 alias 与未归因,
 // project 应用未分类,hour 补 ":00" 后缀表示小时起点,weekday 映射为双语星期
 // 名,client/model 保持源字段空值。
@@ -407,7 +473,7 @@ func (d dimension) displayKey(raw string, aliases map[string]string) string {
 		return weekdayDisplayKey(raw)
 	}
 	if d.name == "provider" {
-		if alias := strings.TrimSpace(aliases[raw]); alias != "" {
+		if alias := aliasLookup(aliases, raw); alias != "" {
 			return alias
 		}
 		if raw == "" && d.empty != nil {
@@ -472,14 +538,69 @@ func trendBar(total, maxTotal int64) string {
 	return strings.Repeat("█", n)
 }
 
+// variantStat 记录合并组内一个维度的一个精确显示拼写变体:count 是该拼写
+// 累计的请求数(代表拼写选择依据),raw 是该拼写首次贡献时的 SQL 原始键。
+type variantStat struct {
+	count int64
+	raw   string
+}
+
 // DimensionRow 是一张维度视图聚合结果中的一行:显示键序列与该键下的聚合值。
 // rawKeys 是与 Keys 一一对应的 SQL 原始键(未做显示映射),时间维度的排序轴
 // 消费原始键(weekday 的显示名为双语星期名,字典序不是周序,原始键 "0".."6"
 // 才是),缺口填充行同样填原始键形态保持排序统一;非导出仅供聚合核内部使用。
+// variants[k] 是第 k 维的显示拼写变体统计(大小写折叠合并的组内以精确拼写
+// 为键),finalize 回填代表拼写后清空;缺口填充零值行恒为 nil。
 type DimensionRow struct {
-	Keys    []string
-	Agg     GroupAggregate
-	rawKeys []string
+	Keys     []string
+	Agg      GroupAggregate
+	rawKeys  []string
+	variants []map[string]*variantStat
+}
+
+// absorbVariant 把合并组内第 dim 维的一个显示拼写变体计入统计:同拼写多次
+// 出现累加请求数;raw 记该拼写首次贡献的原始键,此后保持不变。
+func (r *DimensionRow) absorbVariant(dim int, display, raw string, requests int64) {
+	for len(r.variants) <= dim {
+		r.variants = append(r.variants, nil)
+	}
+	if r.variants[dim] == nil {
+		r.variants[dim] = make(map[string]*variantStat, 1)
+	}
+	if st, ok := r.variants[dim][display]; ok {
+		st.count += requests
+		return
+	}
+	r.variants[dim][display] = &variantStat{count: requests, raw: raw}
+}
+
+// finalizeVariantKeys 在排序前把每行各维的代表拼写回填到 Keys/rawKeys:
+// 代表 = 组内请求数最多的精确显示拼写,平手取显示键字节序小者(组内成员的
+// SQL 行序无保证,「首遇」不可依赖);rawKeys[k] 取代表拼写首次贡献的原始键。
+// 无变体统计的行(缺口填充零值行)保持原键;回填后清空变体统计。
+func finalizeVariantKeys(rows []DimensionRow) {
+	for i := range rows {
+		row := &rows[i]
+		for k, variants := range row.variants {
+			if len(variants) == 0 {
+				continue
+			}
+			bestDisplay := ""
+			var best variantStat
+			bestCount := int64(-1) // count 恒非负,-1 表示尚未选定(不依赖空串键的不变式)
+			for display, st := range variants {
+				if bestCount < 0 || st.count > bestCount ||
+					(st.count == bestCount && display < bestDisplay) {
+					bestDisplay = display
+					bestCount = st.count
+					best = *st
+				}
+			}
+			row.Keys[k] = bestDisplay
+			row.rawKeys[k] = best.raw
+		}
+		row.variants = nil
+	}
 }
 
 // AggregateDimensionView 执行维度视图的数据聚合与排序(不含渲染):
@@ -580,9 +701,9 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 		rowIndex := map[string]int{}
 		if tsBucketed {
 			// 裸列行循环:行数=消息数,Scan 参数与行缓冲循环外构造一次复用
-			// (指针装箱进 any 不逃逸分配);桶键查表折算零分配,显示键 memo
-			// 落在低基数层(桶键 hour 24/weekday 7 个、文本维度 distinct 键),
-			// 单维视图免 join 直接以唯一键比较。
+			// (指针装箱进 any 不逃逸分配);桶键查表折算零分配,显示键与折叠键
+			// memo 均落在低基数层(桶键 hour 24/weekday 7 个、文本维度 distinct
+			// 键),合并键=折叠键 join(单元素 join 返回原串,零额外分配)。
 			var ts, freshIn, output, cacheRead, cacheCreate, reasoning, total int64
 			keyBuf := make([]string, len(dims))
 			keyCols := 0
@@ -597,7 +718,11 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 			scanArgs = append(scanArgs, &ts, &freshIn, &output, &cacheRead, &cacheCreate, &reasoning, &total)
 			rawKeys := make([]string, len(dims))
 			keys := make([]string, 0, len(dims))
+			foldBuf := make([]string, len(dims))
 			displays := make(map[absorbMemoKey]string)
+			// folds 是显示拼写 → 折叠键的 memo,absorbMemoKey.raw 字段承载
+			// 该维的显示拼写(与 displays 的原始键同为低基数输入)。
+			folds := make(map[absorbMemoKey]string)
 			for rows.Next() {
 				if err := rows.Scan(scanArgs...); err != nil {
 					return fmt.Errorf("%s: %w", ui.Bi("scan aggregate rows failed", "扫描聚合结果失败"), err)
@@ -626,12 +751,21 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 					CacheRead: cacheRead, CacheCreate: cacheCreate,
 					Reasoning: reasoning, TotalTokens: total,
 				}
-				key := keys[0]
-				if len(keys) > 1 {
-					key = strings.Join(keys, "\x00")
+				for i, disp := range keys {
+					fk, ok := folds[absorbMemoKey{dim: i, raw: disp}]
+					if !ok {
+						fk = foldKey(disp)
+						folds[absorbMemoKey{dim: i, raw: disp}] = fk
+					}
+					foldBuf[i] = fk
 				}
+				key := strings.Join(foldBuf, "\x00")
 				if idx, ok := rowIndex[key]; ok {
-					rowOrder[idx].Agg.add(agg)
+					dst := &rowOrder[idx]
+					dst.Agg.add(agg)
+					for i, disp := range keys {
+						dst.absorbVariant(i, disp, rawKeys[i], agg.Requests)
+					}
 					continue
 				}
 				rowIndex[key] = len(rowOrder)
@@ -641,6 +775,9 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 					rawKeys: append([]string(nil), rawKeys...),
 				}
 				stored.Agg = agg
+				for i, disp := range keys {
+					stored.absorbVariant(i, disp, rawKeys[i], agg.Requests)
+				}
 				rowOrder = append(rowOrder, stored)
 			}
 			if err := rows.Err(); err != nil {
@@ -648,9 +785,11 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 			}
 		} else {
 			// Scan 参数与行缓冲在循环外构造一次复用;组数=distinct 键组合数,
-			// 行处理逐维显示键映射后按显示键元组累加或新建行。
+			// 行处理逐维显示键映射后按显示键的折叠归一元组累加或新建行
+			// (行数=组数,低基数,foldKey 直接计算)。
 			var row DimensionRow
 			rawKeys := make([]string, len(dims))
+			foldBuf := make([]string, len(dims))
 			scanArgs := make([]any, 0, len(dims)+7)
 			for i := range rawKeys {
 				scanArgs = append(scanArgs, &rawKeys[i])
@@ -665,9 +804,16 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 				for _, d := range dims {
 					row.Keys = append(row.Keys, d.displayKey(rawKeys[len(row.Keys)], view.Aliases))
 				}
-				key := strings.Join(row.Keys, "\x00")
+				for i, disp := range row.Keys {
+					foldBuf[i] = foldKey(disp)
+				}
+				key := strings.Join(foldBuf, "\x00")
 				if idx, ok := rowIndex[key]; ok {
-					rowOrder[idx].Agg.add(row.Agg)
+					dst := &rowOrder[idx]
+					dst.Agg.add(row.Agg)
+					for i, disp := range row.Keys {
+						dst.absorbVariant(i, disp, rawKeys[i], row.Agg.Requests)
+					}
 					continue
 				}
 				rowIndex[key] = len(rowOrder)
@@ -678,6 +824,9 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 					rawKeys: append([]string(nil), rawKeys...),
 				}
 				stored.Agg = row.Agg
+				for i, disp := range row.Keys {
+					stored.absorbVariant(i, disp, rawKeys[i], row.Agg.Requests)
+				}
 				rowOrder = append(rowOrder, stored)
 			}
 			if err := rows.Err(); err != nil {
@@ -755,6 +904,10 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 				}
 			}
 		}
+
+		// finalize:大小写折叠合并的行按变体统计回填各维代表拼写。必须在排序
+		// 前完成——排序第③层比较回填后的显示键元组。
+		finalizeVariantKeys(rowOrder)
 
 		// 稳定排序:含时间维度时该维度按原始键升序优先(day/month/hour 的原始键
 		// 与显示键同序;weekday 显示名为星期名,原始键 ISO 周序 "0".."6" 才是时间
@@ -1077,7 +1230,7 @@ func (q *Querier) Summary(ctx context.Context, dates []string) (string, error) {
 
 	placeholders, args := buildPlaceholders(dates)
 	query := fmt.Sprintf(`
-		SELECT COUNT(DISTINCT client), COUNT(*),
+		SELECT COUNT(*),
 		       COALESCE(SUM(fresh_input_tokens),0),
 		       COALESCE(SUM(output_tokens),0),
 		       COALESCE(SUM(cache_read_tokens),0),
@@ -1088,11 +1241,18 @@ func (q *Querier) Summary(ctx context.Context, dates []string) (string, error) {
 		WHERE date IN (%s)
 	`, placeholders)
 
-	var clientCount, requestCount, freshInput, outputTokens, cacheRead, cacheCreate, reasoning, totalTokens int64
+	var requestCount, freshInput, outputTokens, cacheRead, cacheCreate, reasoning, totalTokens int64
 	err = q.queryRowContext(ctx, query, args...).Scan(
-		&clientCount, &requestCount, &freshInput, &outputTokens, &cacheRead, &cacheCreate, &reasoning, &totalTokens)
+		&requestCount, &freshInput, &outputTokens, &cacheRead, &cacheCreate, &reasoning, &totalTokens)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
+	}
+
+	// 活跃客户端数:与 client 维度分组严格同键的大小写折叠计数(SQL
+	// COUNT(DISTINCT client) 是 BINARY 精确计数,仅大小写不同的拼写会多计)。
+	clientCount, err := q.distinctClientCount(ctx, placeholders, args)
+	if err != nil {
+		return "", err
 	}
 
 	// 活跃天数:请求范围内实际有数据的天数(日均的分母)。
@@ -1132,6 +1292,32 @@ func (q *Querier) Summary(ctx context.Context, dates []string) (string, error) {
 	}
 
 	return sb.String(), nil
+}
+
+// distinctClientCount 返回日期范围内按 foldKey 大小写折叠去重后的客户端数,
+// 与 client 维度分组严格同键同语义;client 基数低,DISTINCT 拉取后 Go 侧计数。
+func (q *Querier) distinctClientCount(ctx context.Context, placeholders string, args []interface{}) (int64, error) {
+	rows, err := q.queryContext(ctx, fmt.Sprintf(
+		"SELECT DISTINCT client FROM messages WHERE date IN (%s)", placeholders), args...)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
+	}
+	defer rows.Close()
+	seen := make(map[string]bool)
+	for rows.Next() {
+		var client string
+		if err := rows.Scan(&client); err != nil {
+			return 0, fmt.Errorf("%s: %w", ui.Bi("scan client rows failed", "扫描客户端行失败"), err)
+		}
+		key := foldKey(client)
+		if !seen[key] {
+			seen[key] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("%s: %w", ui.Bi("iterate client rows failed", "遍历客户端行失败"), err)
+	}
+	return int64(len(seen)), nil
 }
 
 // RangeStats 是一段日期区间的全量聚合与活跃天数(区间内实际有数据的天数)。

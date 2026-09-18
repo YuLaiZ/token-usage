@@ -1975,6 +1975,435 @@ func sqliteLocaltimeUsesTestTZ(t *testing.T, q *Querier) bool {
 	return localHour == "11"
 }
 
+// ---- 维度分组大小写归一 ----
+
+// foldKey 与 strings.EqualFold 严格同源合同:foldKey(a)==foldKey(b) ⟺
+// EqualFold(a,b)。S/ſ(U+017F)与 Σ/ς(U+03C2)是 EqualFold 为真而 ToLower 不同
+// 的撕裂对(ToLower 型实现在此类值上漏合并),İ(U+0130)/i 是 EqualFold 为假
+// 而 ToLower 同为 "i" 的过度合并对(ToLower 型实现在此类值上错误合并),
+// 双向合取锁定折叠语义与标准库一致。
+func TestFoldKeyUnicodeFoldEquivalence(t *testing.T) {
+	pairs := []struct {
+		a, b  string
+		equal bool
+	}{
+		{"GLM-5.3-Flash", "glm-5.3-flash", true},
+		{"", "", true},
+		{"abc", "abc", true},
+		{"S", "ſ", true},
+		{"TeSt", "tEſt", true},
+		{"Σ", "ς", true},
+		{"σigma", "ΣIGMA", true},
+		{"İ", "i", false},
+		{"İ", "I", false},
+		{"i̇", "i", false},
+		{"abc", "abd", false},
+		{"模型", "模型", true},
+		{"模型", "模形", false},
+		{"00", "00", true},
+		{"2026-07-09", "2026-07-09", true},
+	}
+	for _, p := range pairs {
+		if got := foldKey(p.a) == foldKey(p.b); got != p.equal {
+			t.Errorf("foldKey(%q)==foldKey(%q) = %v, want %v", p.a, p.b, got, p.equal)
+		}
+		if got := strings.EqualFold(p.a, p.b); got != p.equal {
+			t.Errorf("EqualFold(%q,%q) = %v, want %v(与 foldKey 语义分叉)", p.a, p.b, got, p.equal)
+		}
+	}
+}
+
+// aliasLookup 分支合同:精确命中优先且返回 TrimSpace 后的值;精确键值空白时
+// 视为未命中继续 EqualFold 兜底;兜底多有效命中取键字节序小者;空白值候选
+// 跳过;无命中返回空串。
+func TestAliasLookup(t *testing.T) {
+	cases := []struct {
+		name    string
+		aliases map[string]string
+		raw     string
+		want    string
+	}{
+		{"exact hit", map[string]string{"Anthropic": "Exact"}, "Anthropic", "Exact"},
+		{"exact hit beats smaller fold key", map[string]string{"Anthropic": "Exact", "ANTHROPIC": "Fold"}, "Anthropic", "Exact"},
+		{"exact value is trimmed", map[string]string{"k": "  V  "}, "k", "V"},
+		{"blank exact value falls through to fold", map[string]string{"Anthropic": "  ", "ANTHROPIC": "Fold"}, "Anthropic", "Fold"},
+		{"fold fallback", map[string]string{"Anthropic": "Merged"}, "anthropic", "Merged"},
+		{"fold fallback on long s", map[string]string{"Test": "Alias"}, "Teſt", "Alias"},
+		{"no fold merge for dotted capital I", map[string]string{"i": "Alias"}, "İ", ""},
+		{"smallest key among fold hits", map[string]string{"ANTHROPIC": "A-Vendor", "anthropic": "a-vendor"}, "Anthropic", "A-Vendor"},
+		{"blank fold candidates skipped", map[string]string{"ANTHROPIC": " ", "anthropic": "\t"}, "Anthropic", ""},
+		{"miss", map[string]string{"Other": "x"}, "Anthropic", ""},
+		{"empty aliases", nil, "Anthropic", ""},
+	}
+	for _, tc := range cases {
+		if got := aliasLookup(tc.aliases, tc.raw); got != tc.want {
+			t.Errorf("%s: aliasLookup(%v, %q) = %q, want %q", tc.name, tc.aliases, tc.raw, got, tc.want)
+		}
+	}
+}
+
+// 单维 model 视图:仅大小写不同的拼写折叠合并为一行;代表拼写取组内请求数
+// 最多者;聚合值=各变体之和;Σ各行=总计(rangeTotals 独立全量聚合)。
+func TestAggregateDimensionView_CaseVariantsMergeIntoOneRow(t *testing.T) {
+	q := setupMessageFixture(t)
+	msgs := []model.Message{
+		{ID: "cv-up-1", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4000, Model: "GLM-5.3-Flash", TotalTokens: 300},
+		{ID: "cv-up-2", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4100, Model: "GLM-5.3-Flash", TotalTokens: 60},
+		{ID: "cv-low", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4200, Model: "glm-5.3-flash", TotalTokens: 30},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	rows, totals, err := q.AggregateDimensionView(context.Background(), []string{"2026-07-11"}, DimensionView{
+		Dimensions: []string{"model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("大小写变体应合并为一行,实际 %d 行: %+v", len(rows), rows)
+	}
+	if rows[0].Keys[0] != "GLM-5.3-Flash" {
+		t.Errorf("代表拼写应为请求数多的大写 GLM-5.3-Flash,实际 %q", rows[0].Keys[0])
+	}
+	if rows[0].Agg.Requests != 3 || rows[0].Agg.TotalTokens != 390 {
+		t.Errorf("合并行聚合应为变体之和: got requests=%d total=%d, want 3/390", rows[0].Agg.Requests, rows[0].Agg.TotalTokens)
+	}
+	var sum int64
+	for _, r := range rows {
+		sum += r.Agg.TotalTokens
+	}
+	if sum != totals.TotalTokens {
+		t.Errorf("Σ各行 total %d 应等于总计 %d", sum, totals.TotalTokens)
+	}
+}
+
+// 平手确定性:同请求数的两拼写代表取显示键字节序小者。fixture 中字节序大
+// 的拼写先插入——裸列路径按 rowid 序消费(首遇=小写),SQL 路径 GROUP BY 输出
+// 通常按 BINARY 键升序(首遇=大写),两路径对「首遇」型错误实现天然反向,
+// 双断言夹击区分;正确实现下两路径结论一致。
+func TestAggregateDimensionView_TieBreakSmallestDisplayKeyBothPaths(t *testing.T) {
+	q := newEmptyQuerier(t)
+	msgs := []model.Message{
+		{ID: "tie-a", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-09", TS: hourTS(2026, 7, 9, 10, 0), Model: "glm-5.3", TotalTokens: 100},
+		{ID: "tie-b", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-09", TS: hourTS(2026, 7, 9, 10, 30), Model: "GLM-5.3", TotalTokens: 100},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	dates := []string{"2026-07-09"}
+
+	// SQL 路径:纯 model 视图(无时间戳维度走 GROUP BY)。
+	sqlRows, _, err := q.AggregateDimensionView(context.Background(), dates, DimensionView{
+		Dimensions: []string{"model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sqlRows) != 1 || sqlRows[0].Keys[0] != "GLM-5.3" || sqlRows[0].Agg.Requests != 2 {
+		t.Errorf("SQL 路径平手代表应为字节序小的 GLM-5.3(2 请求): %+v", sqlRows)
+	}
+
+	// 裸列路径:hour,model 视图(含时间戳维度走逐行累加)。
+	rawRows, _, err := q.AggregateDimensionView(context.Background(), dates, DimensionView{
+		Dimensions: []string{"hour", "model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rawRows) != 1 {
+		t.Fatalf("裸列路径同小时两变体应合并为一行,实际 %d 行: %+v", len(rawRows), rawRows)
+	}
+	if rawRows[0].Keys[1] != sqlRows[0].Keys[0] {
+		t.Errorf("两路径代表拼写不一致: 裸列=%q SQL=%q", rawRows[0].Keys[1], sqlRows[0].Keys[0])
+	}
+	if rawRows[0].Agg.Requests != sqlRows[0].Agg.Requests || rawRows[0].Agg.TotalTokens != sqlRows[0].Agg.TotalTokens {
+		t.Errorf("两路径聚合不一致: 裸列=%+v SQL=%+v", rawRows[0].Agg, sqlRows[0].Agg)
+	}
+}
+
+// 多维合并:同一 client 下仅大小写不同的 model 合并一行;不同 client 的
+// 组合行内代表独立确定(各组内主流拼写不同,代表可不同)。
+func TestAggregateDimensionView_MultiDimensionIndependentRepresentatives(t *testing.T) {
+	q := setupMessageFixture(t)
+	msgs := []model.Message{
+		// Claude Code 组:大写主流(2:1)。
+		{ID: "md-cc-1", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4000, Model: "GLM-5.3", TotalTokens: 100},
+		{ID: "md-cc-2", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4100, Model: "GLM-5.3", TotalTokens: 100},
+		{ID: "md-cc-3", SessionID: "sess-alpha", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4200, Model: "glm-5.3", TotalTokens: 10},
+		// Codex App 组:小写主流(2:1)。
+		{ID: "md-cx-1", SessionID: "sess-alpha", Client: model.ClientCodexApp, Date: "2026-07-11", TS: 4300, Model: "glm-5.3", TotalTokens: 50},
+		{ID: "md-cx-2", SessionID: "sess-alpha", Client: model.ClientCodexApp, Date: "2026-07-11", TS: 4400, Model: "glm-5.3", TotalTokens: 50},
+		{ID: "md-cx-3", SessionID: "sess-alpha", Client: model.ClientCodexApp, Date: "2026-07-11", TS: 4500, Model: "GLM-5.3", TotalTokens: 5},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	rows, _, err := q.AggregateDimensionView(context.Background(), []string{"2026-07-11"}, DimensionView{
+		Dimensions: []string{"client", "model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("两 client 组各合并为一行,实际 %d 行: %+v", len(rows), rows)
+	}
+	// total 降序:Claude Code 组(210)在前,Codex App 组(105)在后。
+	if rows[0].Keys[0] != model.ClientClaudeCode || rows[0].Keys[1] != "GLM-5.3" {
+		t.Errorf("Claude Code 组代表应为大写 GLM-5.3: %+v", rows[0].Keys)
+	}
+	if rows[1].Keys[0] != model.ClientCodexApp || rows[1].Keys[1] != "glm-5.3" {
+		t.Errorf("Codex App 组代表应为小写 glm-5.3: %+v", rows[1].Keys)
+	}
+	if rows[0].Agg.Requests != 3 || rows[0].Agg.TotalTokens != 210 {
+		t.Errorf("Claude Code 组聚合应为变体之和: %+v", rows[0].Agg)
+	}
+	if rows[1].Agg.Requests != 3 || rows[1].Agg.TotalTokens != 105 {
+		t.Errorf("Codex App 组聚合应为变体之和: %+v", rows[1].Agg)
+	}
+}
+
+// provider 维归一与 alias 兜底经 displayKey 的完整链路:无 alias 时仅大小写
+// 不同的有效值合并;alias EqualFold 兜底命中;空白值候选跳过后由其余有效
+// 候选兜底(分支级白盒见 TestAliasLookup)。
+func TestAggregateDimensionView_ProviderFoldAndAliasFallback(t *testing.T) {
+	newFixture := func(t *testing.T) *Querier {
+		t.Helper()
+		q := setupMessageFixture(t)
+		msgs := []model.Message{
+			{ID: "pv-1", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4000, Provider: "Anthropic", TotalTokens: 100},
+			{ID: "pv-2", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4100, Provider: "Anthropic", TotalTokens: 100},
+			{ID: "pv-3", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4200, Provider: "anthropic", TotalTokens: 10},
+		}
+		if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+			t.Fatal(err)
+		}
+		return q
+	}
+	dates := []string{"2026-07-11"}
+
+	t.Run("no aliases fold merge", func(t *testing.T) {
+		q := newFixture(t)
+		rows, _, err := q.AggregateDimensionView(context.Background(), dates, DimensionView{Dimensions: []string{"provider"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 || rows[0].Keys[0] != "Anthropic" || rows[0].Agg.Requests != 3 {
+			t.Errorf("无 alias 时大小写变体应合并且代表为请求数多者: %+v", rows)
+		}
+	})
+	t.Run("alias fold fallback", func(t *testing.T) {
+		q := newFixture(t)
+		rows, _, err := q.AggregateDimensionView(context.Background(), dates, DimensionView{
+			Dimensions: []string{"provider"},
+			Aliases:    map[string]string{"Anthropic": "Zhipu GLM"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 小写源经 EqualFold 兜底命中同一别名,与大写源合并为一行。
+		if len(rows) != 1 || rows[0].Keys[0] != "Zhipu GLM" || rows[0].Agg.Requests != 3 {
+			t.Errorf("alias EqualFold 兜底应把小写源并入同一别名行: %+v", rows)
+		}
+	})
+	t.Run("blank candidate skipped with fallback", func(t *testing.T) {
+		q := newFixture(t)
+		// 追加全大写源:精确键 "Anthropic" EqualFold 命中但值空白须跳过,
+		// "anthropic" 键有效候选兜底生效。
+		if _, err := db.UpsertMessages(context.Background(), q.db, []model.Message{
+			{ID: "pv-4", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4300, Provider: "ANTHROPIC", TotalTokens: 7},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		rows, _, err := q.AggregateDimensionView(context.Background(), dates, DimensionView{
+			Dimensions: []string{"provider"},
+			Aliases:    map[string]string{"Anthropic": "  ", "anthropic": "Zhipu"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 || rows[0].Keys[0] != "Zhipu" || rows[0].Agg.Requests != 4 {
+			t.Errorf("空白值候选应跳过并由有效候选兜底: %+v", rows)
+		}
+	})
+}
+
+// 两条累加路径等价:同一数据上裸列路径(hour,model)与 SQL 路径(model)对
+// model 维的代表拼写与聚合值一致。
+func TestAggregateDimensionView_BothPathsAgreeOnRepresentative(t *testing.T) {
+	q := newEmptyQuerier(t)
+	msgs := []model.Message{
+		{ID: "eq-up-1", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-09", TS: hourTS(2026, 7, 9, 10, 0), Model: "GLM-5.3", TotalTokens: 100},
+		{ID: "eq-up-2", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-09", TS: hourTS(2026, 7, 9, 11, 0), Model: "GLM-5.3", TotalTokens: 100},
+		{ID: "eq-low", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-09", TS: hourTS(2026, 7, 9, 11, 30), Model: "glm-5.3", TotalTokens: 100},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	dates := []string{"2026-07-09"}
+
+	sqlRows, _, err := q.AggregateDimensionView(context.Background(), dates, DimensionView{
+		Dimensions: []string{"model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawRows, _, err := q.AggregateDimensionView(context.Background(), dates, DimensionView{
+		Dimensions: []string{"hour", "model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sqlRows) != 1 || sqlRows[0].Keys[0] != "GLM-5.3" || sqlRows[0].Agg.Requests != 3 {
+		t.Fatalf("SQL 路径代表/聚合不符: %+v", sqlRows)
+	}
+	if len(rawRows) != 2 {
+		t.Fatalf("裸列路径应有两个小时行,实际 %d: %+v", len(rawRows), rawRows)
+	}
+	var merged GroupAggregate
+	for _, r := range rawRows {
+		if r.Keys[1] != "GLM-5.3" {
+			t.Errorf("裸列路径各小时行 model 代表应与 SQL 路径一致: %+v", r.Keys)
+		}
+		merged.add(r.Agg)
+	}
+	if merged != sqlRows[0].Agg {
+		t.Errorf("裸列路径聚合之和与 SQL 路径不一致: %+v vs %+v", merged, sqlRows[0].Agg)
+	}
+}
+
+// Summary 客户端数按 foldKey 去重:仅大小写不同的 client 记为 1 个,
+// 与 client 维度分组严格同键同语义。
+func TestSummary_ClientCountCaseInsensitive(t *testing.T) {
+	q := setupMessageFixture(t)
+	msgs := []model.Message{
+		{ID: "sc-up", SessionID: "sess-alpha", Client: "Zcode", Date: "2026-07-11", TS: 4000, TotalTokens: 100},
+		{ID: "sc-low", SessionID: "sess-alpha", Client: "zcode", Date: "2026-07-11", TS: 4100, TotalTokens: 100},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	out, err := q.Summary(context.Background(), []string{"2026-07-11"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Clients / 客户端数: 1") {
+		t.Errorf("大小写变体 client 应去重为 1:\n%s", out)
+	}
+	if !strings.Contains(out, "Total requests / 请求总数: 2") {
+		t.Errorf("请求数应保持 2 不受去重影响:\n%s", out)
+	}
+}
+
+// Unicode 折叠一致性,正反双向(对 ToLower 型错误实现必红):
+//   - 正向(撕裂型)S/ſ:EqualFold=true 而 ToLower 不同——分组折叠、alias
+//     兜底、Summary Clients 三处都合并。
+//   - 反向(过度合并型)İ/i:EqualFold=false 而 ToLower 同为 "i"——三处都
+//     不得合并。
+func TestAggregateDimensionView_UnicodeFoldConsistency(t *testing.T) {
+	// 正向:分组折叠——model "Test" 与 "Teſt"(ſ 替换 s 位)合并一行。
+	q := setupMessageFixture(t)
+	msgs := []model.Message{
+		{ID: "uf-up", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4000, Model: "Test", TotalTokens: 100},
+		{ID: "uf-up-2", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4100, Model: "Test", TotalTokens: 40},
+		{ID: "uf-long-s", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4200, Model: "Teſt", TotalTokens: 10},
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, msgs); err != nil {
+		t.Fatal(err)
+	}
+	rows, _, err := q.AggregateDimensionView(context.Background(), []string{"2026-07-11"}, DimensionView{
+		Dimensions: []string{"model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Keys[0] != "Test" || rows[0].Agg.Requests != 3 {
+		t.Errorf("[正向分组] S/ſ 折叠等价须合并为一行且代表为请求数多者: %+v", rows)
+	}
+
+	// 正向:alias 兜底——配置键 "Test" 经 EqualFold 命中源 "Teſt"。
+	if _, err := db.UpsertMessages(context.Background(), q.db, []model.Message{
+		{ID: "uf-alias-src", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-13", TS: 4500, Provider: "Teſt", TotalTokens: 30},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	aliasRows, _, err := q.AggregateDimensionView(context.Background(), []string{"2026-07-13"}, DimensionView{
+		Dimensions: []string{"provider"},
+		Aliases:    map[string]string{"Test": "Fold-Alias"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aliasRows) != 1 || aliasRows[0].Keys[0] != "Fold-Alias" {
+		t.Errorf("[正向 alias] 配置键 Test 应经 EqualFold 命中源 Teſt: %+v", aliasRows)
+	}
+
+	// 正向:Summary Clients——client "Workspace"/"Workſpace" 记为 1。
+	if _, err := db.UpsertMessages(context.Background(), q.db, []model.Message{
+		{ID: "uf-cli-s", SessionID: "s", Client: "Workſpace", Date: "2026-07-12", TS: 4300, TotalTokens: 10},
+		{ID: "uf-cli-up", SessionID: "s", Client: "Workspace", Date: "2026-07-12", TS: 4400, TotalTokens: 10},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := q.Summary(context.Background(), []string{"2026-07-12"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Clients / 客户端数: 1") {
+		t.Errorf("[正向 Summary] Workspace/Workſpace 应折叠计为 1:\n%s", out)
+	}
+
+	// 反向:分组折叠——model "İ" 与 "i" 保持两行。
+	q2 := setupMessageFixture(t)
+	if _, err := db.UpsertMessages(context.Background(), q2.db, []model.Message{
+		{ID: "uf-dot", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4000, Model: "İ", TotalTokens: 100},
+		{ID: "uf-low-i", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-11", TS: 4100, Model: "i", TotalTokens: 100},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows2, _, err := q2.AggregateDimensionView(context.Background(), []string{"2026-07-11"}, DimensionView{
+		Dimensions: []string{"model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows2) != 2 {
+		t.Errorf("[反向分组] İ/i 非折叠等价须保持两行,实际 %d: %+v", len(rows2), rows2)
+	}
+
+	// 反向:alias 兜底——配置键 "i" 不得命中源 "İ"。
+	if _, err := db.UpsertMessages(context.Background(), q2.db, []model.Message{
+		{ID: "uf-alias-dot", SessionID: "s", Client: model.ClientClaudeCode, Date: "2026-07-13", TS: 4400, Provider: "İ", TotalTokens: 30},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	aliasRows2, _, err := q2.AggregateDimensionView(context.Background(), []string{"2026-07-13"}, DimensionView{
+		Dimensions: []string{"provider"},
+		Aliases:    map[string]string{"i": "Lower-Alias"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aliasRows2) != 1 || aliasRows2[0].Keys[0] != "İ" {
+		t.Errorf("[反向 alias] 配置键 i 不得命中源 İ,应显示原值: %+v", aliasRows2)
+	}
+
+	// 反向:Summary Clients——client "İ"/"i" 记为 2。
+	if _, err := db.UpsertMessages(context.Background(), q2.db, []model.Message{
+		{ID: "uf-cli-dot", SessionID: "s", Client: "İ", Date: "2026-07-12", TS: 4200, TotalTokens: 10},
+		{ID: "uf-cli-low", SessionID: "s", Client: "i", Date: "2026-07-12", TS: 4300, TotalTokens: 10},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out2, err := q2.Summary(context.Background(), []string{"2026-07-12"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out2, "Clients / 客户端数: 2") {
+		t.Errorf("[反向 Summary] İ/i 不得折叠,应计为 2:\n%s", out2)
+	}
+}
+
 // 聚合级等价:同一 fixture 上,Go 分桶聚合路径与 SQL 'localtime' 旧表达式
 // 直接聚合的分组结果逐键相等(行数、桶键与各聚合列),锚定改造前后行为
 // 等价;既有 ByHour/ByWeekday/Heatmap 用例的期望值同为此锚定服务。
