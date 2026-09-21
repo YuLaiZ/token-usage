@@ -1,7 +1,6 @@
 package collector
 
 import (
-	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -372,22 +371,22 @@ func parseWorkBuddyJSONLContext(ctx context.Context, path string, logger *slog.L
 
 	var outcome parseFileOutcome
 	var messages []workbuddyParsedMessage
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), maxJSONLLineSize)
-	lineNum := 0
+	it := newJSONLLineIter(ctx, f, maxJSONLLineSize)
 	seen := make(map[string]struct{})
-	for scanner.Scan() {
-		if err := ctx.Err(); err != nil {
-			return nil, status, err
+	for it.Next() {
+		// 迭代器已按行检查 ctx：取消时终止迭代并经 Err() 返回。
+		if it.Oversized() {
+			outcome.addBad(it.LineNo(), errJSONLLineOversized)
+			continue
 		}
-		lineNum++
-		line := scanner.Text()
-		if line == "" {
+		lineNum := it.LineNo()
+		line := it.Line()
+		if len(line) == 0 {
 			continue
 		}
 
 		var msg workbuddyMessage
-		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+		if err := json.Unmarshal(line, &msg); err != nil {
 			outcome.addBad(lineNum, err)
 			continue
 		}
@@ -426,7 +425,13 @@ func parseWorkBuddyJSONLContext(ctx context.Context, path string, logger *slog.L
 		messages = append(messages, parsed)
 	}
 
-	if err := scanner.Err(); err != nil {
+	if err := it.Err(); err != nil {
+		// ctx 取消丢弃已解析部分（原语义）；IO 错误保留部分结果。按 err 本身
+		// 判来源（迭代器取消时返回 ctx.Err()，IO 错误返回原始错误），避免取消
+		// 与 IO 错误并发时误丢 partial。
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, status, err
+		}
 		return messages, status, err
 	}
 	// 尾行未以 \n 终结：可能仍在写，不得视为完整采集。

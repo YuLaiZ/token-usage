@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -600,7 +601,10 @@ invalid json line
 	}
 }
 
-func TestClaude_FileParseFailureLogsWarn(t *testing.T) {
+// 超限行（> maxJSONLLineSize）不再令整文件读取失败：计入坏行（Debug 心跳）
+// 后继续，同文件及后续文件的好行照常产出。文件级 Warn 失败路径仅剩真实 IO
+// 错误可触发（真实文件读段错误无法稳定构造，不再用超限行代理）。
+func TestClaude_OversizedLineSkippedLogsBadLine(t *testing.T) {
 	projectsDir := t.TempDir()
 	valid := `{"type":"assistant","sessionId":"s1","timestamp":"2026-06-22T10:00:00Z",` +
 		`"entrypoint":"cli","cwd":"/tmp/project","message":{"id":"m1","role":"assistant",` +
@@ -615,8 +619,51 @@ func TestClaude_FileParseFailureLogsWarn(t *testing.T) {
 	c := newClaudeCollectorCfg(t, projectsDir)
 	handler := &testLogHandler{}
 	result, err := c.Collect(context.Background(), CollectRequest{Dates: []string{"2026-06-22"}}, slog.New(handler))
-	if err != nil || len(result.Messages) != 1 {
-		t.Fatalf("messages=%+v err=%v", result.Messages, err)
+	if err != nil {
+		t.Fatalf("Collect err = %v, want nil（超限行不构成文件级失败）", err)
+	}
+	if len(result.Messages) != 1 {
+		t.Fatalf("messages=%+v err=%v, want good.jsonl 的 1 条消息", result.Messages, err)
+	}
+	if result.PartialErr != nil {
+		t.Fatalf("PartialErr = %v, want nil", result.PartialErr)
+	}
+	if !handler.HasRecord(slog.LevelDebug, "Claude JSONL line parse failed, skipped") {
+		t.Fatalf("missing bad-line debug record: %v", handler.Messages())
+	}
+}
+
+// 文件级失败（打开/读取终止性错误）路径：chmod 000 稳定触发 EACCES，坏文件
+// Warn + PartialErr，好文件照常采集（超限行已降级为坏行，不再触发本路径）。
+func TestClaude_FileParseFailureLogsWarn(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("windows/root 下 chmod 000 不产生打开失败，无法触发文件级失败路径")
+	}
+	projectsDir := t.TempDir()
+	valid := `{"type":"assistant","sessionId":"s1","timestamp":"2026-06-22T10:00:00Z",` +
+		`"entrypoint":"cli","cwd":"/tmp/project","message":{"id":"m1","role":"assistant",` +
+		`"model":"claude-sonnet","usage":{"input_tokens":100,"output_tokens":50}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(projectsDir, "good.jsonl"), []byte(valid), 0644); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(projectsDir, "bad.jsonl")
+	if err := os.WriteFile(bad, []byte("{}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(bad, 0); err != nil {
+		t.Fatal(err)
+	}
+	c := newClaudeCollectorCfg(t, projectsDir)
+	handler := &testLogHandler{}
+	result, err := c.Collect(context.Background(), CollectRequest{Dates: []string{"2026-06-22"}}, slog.New(handler))
+	if err != nil {
+		t.Fatalf("Collect err = %v, want nil（单文件失败不拖垮整体）", err)
+	}
+	if len(result.Messages) != 1 {
+		t.Fatalf("messages=%+v, want good.jsonl 的 1 条消息", result.Messages)
+	}
+	if result.PartialErr == nil {
+		t.Errorf("坏文件失败应报告 PartialErr")
 	}
 	if !handler.HasRecord(slog.LevelWarn, "Claude JSONL file parse failed, skipped") {
 		t.Fatalf("missing file-failure warn record: %v", handler.Messages())

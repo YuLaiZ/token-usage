@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -701,7 +702,9 @@ func TestWorkBuddy_BadLineLogsDebug(t *testing.T) {
 	}
 }
 
-func TestWorkBuddy_FileParseFailureLogsWarn(t *testing.T) {
+// 超限行（> maxJSONLLineSize）不再令整文件读取失败：计入坏行（Debug 心跳）
+// 后继续。文件级 Warn 失败路径仅剩真实 IO 错误可触发（无法稳定构造，不再代理）。
+func TestWorkBuddy_OversizedLineSkippedLogsBadLine(t *testing.T) {
 	_, projectsDir := buildWorkBuddyDir(t, "dir", "session",
 		strings.Repeat("x", maxJSONLLineSize+1)+"\n")
 	cfg := &config.Config{Clients: map[string]config.Client{
@@ -710,8 +713,45 @@ func TestWorkBuddy_FileParseFailureLogsWarn(t *testing.T) {
 	handler := &testLogHandler{}
 	result, err := NewWorkBuddyCollector(cfg).Collect(context.Background(),
 		CollectRequest{Dates: []string{"2025-06-08"}}, slog.New(handler))
-	if err != nil || len(result.Messages) != 0 {
-		t.Fatalf("messages=%+v err=%v", result.Messages, err)
+	if err != nil {
+		t.Fatalf("Collect err = %v, want nil（超限行不构成文件级失败）", err)
+	}
+	if len(result.Messages) != 0 {
+		t.Fatalf("messages=%+v, want 0 条", result.Messages)
+	}
+	if result.PartialErr != nil {
+		t.Fatalf("PartialErr = %v, want nil", result.PartialErr)
+	}
+	if !handler.HasRecord(slog.LevelDebug, "WorkBuddy JSONL line parse failed, skipped") {
+		t.Fatalf("missing bad-line debug record: %v", handler.Messages())
+	}
+}
+
+// 文件级失败（打开/读取终止性错误）路径：chmod 000 稳定触发 EACCES，Warn +
+// PartialErr（超限行已降级为坏行，不再触发本路径）。
+func TestWorkBuddy_FileParseFailureLogsWarn(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("windows/root 下 chmod 000 不产生打开失败，无法触发文件级失败路径")
+	}
+	_, projectsDir := buildWorkBuddyDir(t, "dir", "session", "{}\n")
+	bad := filepath.Join(projectsDir, "dir", "session.jsonl")
+	if err := os.Chmod(bad, 0); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Clients: map[string]config.Client{
+		"workbuddy": {Enabled: true, Paths: map[string]string{"projects_dir": projectsDir}},
+	}}
+	handler := &testLogHandler{}
+	result, err := NewWorkBuddyCollector(cfg).Collect(context.Background(),
+		CollectRequest{Dates: []string{"2025-06-08"}}, slog.New(handler))
+	if err != nil {
+		t.Fatalf("Collect err = %v, want nil（单文件失败不拖垮整体）", err)
+	}
+	if len(result.Messages) != 0 {
+		t.Fatalf("messages=%+v, want 0 条", result.Messages)
+	}
+	if result.PartialErr == nil {
+		t.Errorf("坏文件失败应报告 PartialErr")
 	}
 	if !handler.HasRecord(slog.LevelWarn, "WorkBuddy JSONL file parse failed, skipped") {
 		t.Fatalf("missing file-failure warn record: %v", handler.Messages())

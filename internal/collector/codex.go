@@ -1,7 +1,6 @@
 package collector
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1071,8 +1070,9 @@ func parseRolloutJSONL(path string) ([]rolloutLine, parseFileOutcome, error) {
 	return parseRolloutJSONLContext(context.Background(), path)
 }
 
-// parseRolloutJSONLContext 逐行解析 rollout JSONL。行 Unmarshal 失败计入
-// outcome 坏行计数（不再静默跳过），尾行是否以 \n 终结一并检测。
+// parseRolloutJSONLContext 逐行解析 rollout JSONL。行 Unmarshal 失败与超过
+// maxJSONLLineSize 的超限行计入 outcome 坏行计数（超限行数据丢弃但继续读取，
+// 均阻止跳过门推进），尾行是否以 \n 终结一并检测；IO 错误与 ctx 取消返回 err。
 func parseRolloutJSONLContext(ctx context.Context, path string) ([]rolloutLine, parseFileOutcome, error) {
 	var outcome parseFileOutcome
 	if ctx == nil {
@@ -1088,27 +1088,26 @@ func parseRolloutJSONLContext(ctx context.Context, path string) ([]rolloutLine, 
 	defer file.Close()
 
 	var entries []rolloutLine
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), maxJSONLLineSize)
-
-	for line := 1; scanner.Scan(); line++ {
-		if err := ctx.Err(); err != nil {
-			return nil, outcome, err
+	it := newJSONLLineIter(ctx, file, maxJSONLLineSize)
+	for it.Next() {
+		if it.Oversized() {
+			outcome.addBad(it.LineNo(), errJSONLLineOversized)
+			continue
 		}
-		raw := scanner.Text()
-		if raw == "" {
+		raw := it.Line()
+		if len(raw) == 0 {
 			continue
 		}
 
 		var entry rolloutEntry
-		if err := json.Unmarshal([]byte(raw), &entry); err != nil {
-			outcome.addBad(line, err) // 跳过解析失败的行，但计入坏行（阻止跳过门推进）
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			outcome.addBad(it.LineNo(), err) // 跳过解析失败的行，但计入坏行（阻止跳过门推进）
 			continue
 		}
-		entries = append(entries, rolloutLine{entry: entry, lineNo: line})
+		entries = append(entries, rolloutLine{entry: entry, lineNo: it.LineNo()})
 	}
 
-	if err := scanner.Err(); err != nil {
+	if err := it.Err(); err != nil {
 		return nil, outcome, err
 	}
 	// 尾行未以 \n 终结：可能仍在写，不得视为完整采集。

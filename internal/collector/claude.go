@@ -1,7 +1,6 @@
 package collector
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -221,16 +220,19 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 	// 上游合法数据形态变化（如 user 行 content 为字符串）会让失败在全量扫描中
 	// 必然重复出现，逐行打印只产生噪音。
 	var outcome parseFileOutcome
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), maxJSONLLineSize)
-	for line := 1; scanner.Scan(); line++ {
-		raw := scanner.Bytes()
+	it := newJSONLLineIter(context.Background(), file, maxJSONLLineSize)
+	for it.Next() {
+		if it.Oversized() {
+			outcome.addBad(it.LineNo(), errJSONLLineOversized)
+			continue
+		}
+		raw := it.Line()
 		if len(bytes.TrimSpace(raw)) == 0 {
 			continue
 		}
 		var entry jsonlEntry
 		if err := json.Unmarshal(raw, &entry); err != nil {
-			outcome.addBad(line, err)
+			outcome.addBad(it.LineNo(), err)
 			continue
 		}
 		// content 双形态归一校验：数字、对象等未知形态与行 Unmarshal 失败同等
@@ -241,17 +243,17 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 		if entry.Message != nil {
 			_, stringForm, cerr := normalizeClaudeContent(entry.Message.Content)
 			if cerr != nil {
-				outcome.addBad(line, cerr)
+				outcome.addBad(it.LineNo(), cerr)
 				continue
 			}
 			if stringForm {
 				continue
 			}
 		}
-		entry.lineNo = line
+		entry.lineNo = it.LineNo()
 		entries = append(entries, entry)
 	}
-	if err := scanner.Err(); err != nil {
+	if err := it.Err(); err != nil {
 		return CollectResult{}, status, fmt.Errorf("读取文件失败: %w", err)
 	}
 	// 尾行未以 \n 终结：可能仍在写，即使恰好可解析也不得视为完整采集。

@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,7 +11,14 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/model"
 )
 
-const maxJSONLLineSize = 16 * 1024 * 1024
+// maxJSONLLineSize 是 JSONL 单行读取上限：上限内的行正常解析；超过的行按坏行
+// 跳过（数据丢弃、继续读取）。上限只决定「解析」与「跳过」的分界与单行内存
+// 峰值，不决定采集成败。codex 会话压缩（compacted）把整份 replacement_history
+// 写成单行，实测达 16.6 MiB，故取 32 MiB 留约 2 倍余量。
+const maxJSONLLineSize = 32 * 1024 * 1024
+
+// errJSONLLineOversized 超限行计入坏行时的定位错误（与上限常量同源）。
+var errJSONLLineOversized = fmt.Errorf("单行超过 %d MiB 上限，跳过该行", maxJSONLLineSize/(1024*1024))
 
 func projectBase(directory string) string {
 	if strings.TrimSpace(directory) == "" {
@@ -155,7 +163,7 @@ func (o parseFileOutcome) fillStatus(st *FileScanStatus) {
 
 // tailHasNewline 报告 size 字节的文件最后一个字节是否为 '\n'。
 // size<=0 视为 true（空文件没有未完成的尾行）；读取失败按 false 处理
-// （不确定一律倒向「不推进门」）。调用方须在 scanner 读完之后调用。
+// （不确定一律倒向「不推进门」）。调用方须在行迭代器读完后调用。
 func tailHasNewline(f *os.File, size int64) bool {
 	if size <= 0 {
 		return true

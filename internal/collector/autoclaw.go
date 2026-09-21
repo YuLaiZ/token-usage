@@ -1,7 +1,6 @@
 package collector
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -142,7 +141,7 @@ func (c *AutoClawCollector) Collect(ctx context.Context, req CollectRequest, log
 			providerCache[agentID] = providerMap
 		}
 
-		// 解析该文件全部有效行（ctx 透传到 scanner 循环）
+		// 解析该文件全部有效行（ctx 透传到行迭代器）
 		before := fsident.SnapshotOfFile(file)
 		if skipGateHit(req.SkipGate, file, before) {
 			result.FileStatuses = append(result.FileStatuses, FileScanStatus{Path: file, Skipped: true, Before: before})
@@ -421,7 +420,7 @@ type autoclawParsedMessage struct {
 }
 
 // parseAutoClawJSONLContext 解析 AutoClaw JSONL，提取「带 usage 的 assistant 消息」。
-// 仿 workbuddy parseWorkBuddyJSONLContext，scanner 循环检查 ctx。
+// 仿 workbuddy parseWorkBuddyJSONLContext，行迭代器在行交付前检查 ctx。
 // 返回的 FileScanStatus 已填 Path/BadLines/FirstBad*/TrailingNewline（Before/After
 // 快照与 Err 由 Collect 层补充）。
 func parseAutoClawJSONLContext(ctx context.Context, path string, logger *slog.Logger) ([]autoclawParsedMessage, FileScanStatus, error) {
@@ -459,8 +458,8 @@ func parseAutoClawJSONLContext(ctx context.Context, path string, logger *slog.Lo
 }
 
 // parseAutoClawJSONLReader 从 reader 逐行解析（仅包内可见的 reader seam，供受控 reader 测试取消点）。
-// scanner 循环每行开头检查 ctx.Err()——取消时立即返回 (已解析 messages, ctx.Err)，
-// 由 Collect 层返回外层 ctx.Err（不降级为 PartialErr）。
+// 行迭代器在「行读出后、交付前」检查 ctx.Err()——取消时立即返回 (已解析 messages, ctx.Err)，
+// 由 Collect 层返回外层 ctx.Err（不降级为 PartialErr）；超过 maxJSONLLineSize 的行计入坏行续读。
 // 返回的 parseFileOutcome 只含行级计数（尾行终结检测由文件句柄持有方补齐）。
 func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, logger *slog.Logger) ([]autoclawParsedMessage, parseFileOutcome, error) {
 	var outcome parseFileOutcome
@@ -478,22 +477,21 @@ func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, log
 	var cwd string
 	var derivedTitle string
 	seen := make(map[string]struct{})
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), maxJSONLLineSize)
-	lineNum := 0
-	for scanner.Scan() {
-		// 每行开头检查 ctx（取消时返回已解析 messages + ctx.Err，不丢弃部分结果）
-		if err := ctx.Err(); err != nil {
-			return messages, outcome, err
+	it := newJSONLLineIter(ctx, r, maxJSONLLineSize)
+	for it.Next() {
+		// 迭代器已按行检查 ctx：取消时终止迭代并经 Err() 返回（已解析消息保留）。
+		if it.Oversized() {
+			outcome.addBad(it.LineNo(), errJSONLLineOversized)
+			continue
 		}
-		lineNum++
-		line := scanner.Text()
-		if line == "" {
+		lineNum := it.LineNo()
+		line := it.Line()
+		if len(line) == 0 {
 			continue
 		}
 
 		var msg autoclawMessage
-		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+		if err := json.Unmarshal(line, &msg); err != nil {
 			outcome.addBad(lineNum, err)
 			continue
 		}
@@ -572,9 +570,10 @@ func parseAutoClawJSONLReader(ctx context.Context, r io.Reader, path string, log
 		messages[i].Title = derivedTitle
 	}
 
-	// scanner 错误（IO 错误、行超 maxJSONLLineSize）：返回已解析部分 + err，
-	// 让 Collect 层 append + PartialErr（不 continue 丢弃）。
-	if err := scanner.Err(); err != nil {
+	// 读错误（IO 错误）或 ctx 取消：返回已解析部分 + err，让 Collect 层 append +
+	// PartialErr（不 continue 丢弃）；超过 maxJSONLLineSize 的行已降级为坏行，
+	// 不再终止读取。
+	if err := it.Err(); err != nil {
 		return messages, outcome, err
 	}
 	if err := ctx.Err(); err != nil {

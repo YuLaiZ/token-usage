@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -534,11 +535,11 @@ func TestAutoClaw_DirtyDataHandling(t *testing.T) {
 	}
 }
 
-// ---- 用例 12：部分结果保留（scanner 错误） ----
+// ---- 用例 12：超限行降级为坏行（不再终止读取） ----
 
-func TestAutoClaw_PartialResultRetention_ScannerError(t *testing.T) {
+func TestAutoClaw_OversizedLineSkipped(t *testing.T) {
 	tmp := t.TempDir()
-	// 有效首行 + 超过 maxJSONLLineSize 的行 -> bufio.Scanner 报错
+	// 有效首行 + 超过 maxJSONLLineSize 的行 -> 计入坏行后继续读取
 	content := `{"type":"session","version":3,"id":"s","timestamp":"2026-07-29T12:00:00.000Z","cwd":"/tmp"}` + "\n" +
 		acUsageLine("retained", acTS(2026, 7, 29), "zai", "zai_auto", 10, 5, 0, 0, 0, 15) + "\n" +
 		strings.Repeat("x", maxJSONLLineSize+1) + "\n"
@@ -557,11 +558,61 @@ func TestAutoClaw_PartialResultRetention_ScannerError(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("scanner 错误时应保留已解析的 retained 消息, got msgs=%v", acMsgIDs(result.Messages))
+		t.Errorf("超限行应只坏行跳过，retained 消息保留, got msgs=%v", acMsgIDs(result.Messages))
 	}
-	// 同时报告 PartialErr
+	// 超限行不再是源级失败：不得产生 PartialErr
+	if result.PartialErr != nil {
+		t.Errorf("超限行应计入坏行而非 PartialErr, got %v", result.PartialErr)
+	}
+}
+
+// ---- 用例 12b：读错误保留部分结果（reader seam，超限降级后该路径仅剩 IO 错误） ----
+
+func TestAutoClaw_PartialResultRetention_ReadError(t *testing.T) {
+	good := `{"type":"session","version":3,"id":"s","timestamp":"2026-07-29T12:00:00.000Z","cwd":"/tmp"}` + "\n" +
+		acUsageLine("retained", acTS(2026, 7, 29), "zai", "zai_auto", 10, 5, 0, 0, 0, 15) + "\n"
+	boom := errors.New("boom")
+	r := &failingReader{data: good, err: boom}
+	msgs, _, err := parseAutoClawJSONLReader(context.Background(), r, "test.jsonl", slog.Default())
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want boom", err)
+	}
+	if len(msgs) != 1 || msgs[0].ID != "retained" {
+		t.Errorf("读错误时应保留已解析的 retained 消息, got %v", acParsedMsgIDs(msgs))
+	}
+}
+
+// ---- 用例 12c：Collect 层文件级失败 → PartialErr ----
+
+func TestAutoClaw_FileFailurePartialErr(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("windows/root 下 chmod 000 不产生打开失败，无法触发文件级失败路径")
+	}
+	tmp := t.TempDir()
+	good := `{"type":"session","version":3,"id":"s","timestamp":"2026-07-29T12:00:00.000Z","cwd":"/tmp"}` + "\n" +
+		acUsageLine("good", acTS(2026, 7, 29), "zai", "zai_auto", 10, 5, 0, 0, 0, 15) + "\n"
+	root := writeAcFile(t, tmp, "a1", "sess-good", good)
+	writeAcFile(t, tmp, "a2", "sess-bad", "{}\n")
+	if err := os.Chmod(filepath.Join(tmp, "agents", "a2", "sessions", "sess-bad.jsonl"), 0); err != nil {
+		t.Fatal(err)
+	}
+	cfg := newAutoClawCfg(t, root)
+	c := NewAutoClawCollector(cfg)
+	result, err := c.Collect(context.Background(), CollectRequest{}, slog.Default())
+	if err != nil {
+		t.Fatalf("Collect 失败: %v（单文件失败不拖垮整体）", err)
+	}
+	found := false
+	for _, m := range result.Messages {
+		if m.ID == "good" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("坏文件失败应保留好文件消息, got %v", acMsgIDs(result.Messages))
+	}
 	if result.PartialErr == nil {
-		t.Errorf("scanner 错误应报告 PartialErr")
+		t.Errorf("坏文件失败应报告 PartialErr")
 	}
 }
 
@@ -691,13 +742,13 @@ func TestAutoClaw_ProviderFallback_EmptyName(t *testing.T) {
 	}
 }
 
-// ---- 用例 18：ctx 取消（解析层，scanner 循环内确定性取消点） ----
+// ---- 用例 18：ctx 取消（解析层，行迭代器 deliver 检查点确定性触发） ----
 
 func TestAutoClaw_CtxCancel_ParserLayer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	// 受控 reader：第一次 Read 放出首行（scanner 解析并 append），第二次 Read 才 cancel。
+	// 受控 reader：第一次 Read 放出首行（解析并 append），第二次 Read 才 cancel。
 	// 这样循环回到顶部 ctx.Err() 检查时 ctx 已取消，返回（已 append 首条）+ Canceled。
-	// 若循环内 ctx 检查被移除，scanner 会继续读完第二行（msgs 含 2 条），断言 len==1 失败。
+	// 若迭代器交付前 ctx 检查被移除，第二行会继续交付（msgs 含 2 条），断言 len==1 失败。
 	firstLine := acUsageLine("cancel-pre", acTS(2026, 7, 29), "zai", "zai_auto", 10, 5, 0, 0, 0, 15) + "\n"
 	secondLine := acUsageLine("cancel-post", acTS(2026, 7, 29), "zai", "zai_auto", 20, 6, 0, 0, 0, 26) + "\n"
 	consumedFirst := make(chan struct{})
@@ -708,7 +759,7 @@ func TestAutoClaw_CtxCancel_ParserLayer(t *testing.T) {
 		cancel:        cancel,
 	}
 	msgs, _, err := parseAutoClawJSONLReader(ctx, reader, "test.jsonl", slog.Default())
-	// 确认首行已被 scanner 消费（栅栏），否则测试无效
+	// 确认首行已被消费（栅栏），否则测试无效
 	select {
 	case <-consumedFirst:
 	default:
@@ -907,9 +958,9 @@ func TestAutoClaw_WalkError_PartialResultRetention(t *testing.T) {
 
 // ---- 辅助：controlledReader（受控 reader seam，构造确定性取消点） ----
 
-// controlledReader 分两次 Read 放数据：第一次只给 firstLine（scanner 解析并 append 后），
+// controlledReader 分两次 Read 放数据：第一次只给 firstLine（解析并 append 后），
 // 第二次 Read 时 close(consumedFirst) 标记首行已消费、cancel 触发取消，再返回 rest。
-// 这样 parser 的 scanner 循环在下一轮顶部检查到 ctx 已取消，返回（已 append 首条）+ Canceled，
+// 这样迭代器在第二行读出后的交付检查发现 ctx 已取消，返回（已 append 首条）+ Canceled，
 // 确定性验证循环内 ctx 检查（不依赖 sleep 或大文件竞态）。
 type controlledReader struct {
 	firstLine     []byte
@@ -921,12 +972,12 @@ type controlledReader struct {
 
 func (r *controlledReader) Read(p []byte) (int, error) {
 	if !r.firstReturned {
-		// 第一次 Read：只返回 firstLine 字节（即使 p 更大，强制 scanner 下次再来 Read）
+		// 第一次 Read：只返回 firstLine 字节（即使 p 更大，强制 reader 下次再来 Read）
 		r.firstReturned = true
 		n := copy(p, r.firstLine)
 		return n, nil
 	}
-	// 第二次 Read：首行已被 scanner 消费，标记栅栏并 cancel，再返回 rest
+	// 第二次 Read：首行已被消费，标记栅栏并 cancel，再返回 rest
 	select {
 	case <-r.consumedFirst:
 	default:

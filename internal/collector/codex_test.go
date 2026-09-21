@@ -358,6 +358,74 @@ func TestParseCodexRollout_SubagentObjectSource(t *testing.T) {
 	}
 }
 
+// 复刻真实故障形态（2026-09-21）：compacted 事件把整份 replacement_history 写成
+// 单行、超过 maxJSONLLineSize。超限行计入坏行跳过，其后 token_count 照常采集，
+// 不再整文件失败（旧实现 bufio.Scanner token too long → 源级失败）。
+func TestParseCodexRollout_OversizedCompactedLineSkipped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized-compacted.jsonl")
+	before := `{"timestamp":"2026-09-21T02:30:00Z","type":"session_meta","payload":{"id":"oversize-thread","originator":"codex-tui","source":"cli"}}
+{"timestamp":"2026-09-21T02:30:30Z","type":"response_item","payload":{"type":"message","role":"assistant","id":"msg-o1"}}
+{"timestamp":"2026-09-21T02:31:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":2,"total_tokens":12}}}}`
+	oversized := `{"timestamp":"2026-09-21T02:36:12.843Z","type":"compacted","payload":{"replacement_history":"` +
+		strings.Repeat("x", maxJSONLLineSize+1) + `"}}`
+	after := `{"timestamp":"2026-09-21T02:37:10Z","type":"response_item","payload":{"type":"message","role":"assistant","id":"msg-o2"}}
+{"timestamp":"2026-09-21T02:37:20Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120}}}}`
+	if err := os.WriteFile(path, []byte(before+"\n"+oversized+"\n"+after+"\n"), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	result, status, err := parseCodexRollout(path, codexThread{}, nil)
+	if err != nil {
+		t.Fatalf("parseCodexRollout failed: %v（超限行不得构成文件级失败）", err)
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("Messages = %d, want 2（超限行前后各一条）", len(result.Messages))
+	}
+	if result.Messages[0].TotalTokens != 12 || result.Messages[1].TotalTokens != 120 {
+		t.Errorf("TotalTokens = [%d %d], want [12 120]（超限行之后的行必须被采集）",
+			result.Messages[0].TotalTokens, result.Messages[1].TotalTokens)
+	}
+	if status.Err != nil {
+		t.Errorf("status.Err = %v, want nil", status.Err)
+	}
+	if status.BadLines != 1 || status.FirstBadLine != 4 {
+		t.Errorf("BadLines = %d FirstBadLine = %d, want 1 和 4（第 4 行为超限 compacted 行）",
+			status.BadLines, status.FirstBadLine)
+	}
+	if status.FullyParsed() {
+		t.Errorf("FullyParsed = true, want false（坏行存在时跳过门不得推进）")
+	}
+}
+
+// 16–32MiB 区间的 compacted 行必须正常解析：锁 32MiB 上限取值——若把常量回退
+// 16MiB，真实故障形态（16.56MiB）会从「正常采集」静默退化为「坏行丢弃」，
+// 相对构造（maxJSONLLineSize+1）的全部测试对此不报警，本测试用绝对尺寸锁住。
+func TestParseCodexRollout_LargeCompactedLineWithinCapParses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large-compacted.jsonl")
+	content := `{"timestamp":"2026-09-21T02:30:00Z","type":"session_meta","payload":{"id":"large-thread","originator":"codex-tui","source":"cli"}}` + "\n" +
+		`{"timestamp":"2026-09-21T02:36:12.843Z","type":"compacted","payload":{"replacement_history":"` +
+		strings.Repeat("x", 17*1024*1024) + `"}}` + "\n" +
+		`{"timestamp":"2026-09-21T02:37:10Z","type":"response_item","payload":{"type":"message","role":"assistant","id":"msg-l1"}}` + "\n" +
+		`{"timestamp":"2026-09-21T02:37:20Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120}}}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	result, status, err := parseCodexRollout(path, codexThread{}, nil)
+	if err != nil {
+		t.Fatalf("parseCodexRollout failed: %v", err)
+	}
+	if len(result.Messages) != 1 || result.Messages[0].TotalTokens != 120 {
+		t.Fatalf("Messages = %d, want 1（compacted 行后的 token_count 正常采集）", len(result.Messages))
+	}
+	if status.BadLines != 0 {
+		t.Errorf("BadLines = %d, want 0（17MiB 在 16–32MiB 区间内，必须正常解析不记坏行）", status.BadLines)
+	}
+	if !status.FullyParsed() {
+		t.Errorf("FullyParsed = false, want true（上限内大行正常解析，跳过门可推进）")
+	}
+}
+
 // 字段漂移降级的端到端：仅 ID 可提取时，fallback 空的扫描路径仍能建立会话。
 func TestParseCodexRollout_FieldDriftStillBuildsSession(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "drift-rollout.jsonl")
