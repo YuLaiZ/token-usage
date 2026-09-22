@@ -68,9 +68,9 @@ func TestRawClientToClient_AutoClaw(t *testing.T) {
 
 // TestRawClientToClient_MimoCode 固定 raw client 字符串值与正式 client 名。
 // 配置 key/raw 值/正式名三者刻意不同（mimocode / "mimocode" / "MiMo Code"），
-// 防止后续重构漂移；Desktop 与 CLI 共库且不可区分，统一归为 MiMo Code
-// （未来可区分时可能另行拆分 MiMo Desktop）。LegacyClientXiaomiMiMoCode
-// 仅供 migration 与旧版回写兼容 trigger 使用（见 db.migrateV4），不是正式 client。
+// 防止后续重构漂移；Desktop 与 CLI 虽共库，但按 session.version 分派为两个
+// 正式 client。LegacyClientXiaomiMiMoCode 仅供 migration 与旧版回写兼容
+// trigger 使用，不是正式 client。
 func TestRawClientToClient_MimoCode(t *testing.T) {
 	got, ok := RawClientToClient[RawClientMimoCode]
 	if !ok {
@@ -93,15 +93,15 @@ func TestRawClientToClient_MimoCode(t *testing.T) {
 	}
 }
 
-// TestClientToDisplayNames_MimoCode：mimocode 的查询过滤名必须是正式落库名
-// MiMo Code（router backfill 等按显示名查 messages 的路径据此命中）。
+// TestClientToDisplayNames_MimoCode：mimocode 的查询过滤名必须包含两个正式
+// 落库名（router backfill 等按显示名查 messages 的路径据此命中）。
 func TestClientToDisplayNames_MimoCode(t *testing.T) {
 	names, ok := ClientToDisplayNames["mimocode"]
 	if !ok {
 		t.Fatal("ClientToDisplayNames 缺少 mimocode 配置 key")
 	}
-	if len(names) != 1 || names[0] != ClientMiMoCode {
-		t.Errorf("ClientToDisplayNames[mimocode] = %v, want [%q]", names, ClientMiMoCode)
+	if len(names) != 2 || names[0] != ClientMiMoCode || names[1] != ClientMiMoDesktop {
+		t.Errorf("ClientToDisplayNames[mimocode] = %v, want [%q %q]", names, ClientMiMoCode, ClientMiMoDesktop)
 	}
 }
 
@@ -189,5 +189,35 @@ func TestClientToDisplayNames_AllConfigKeys(t *testing.T) {
 		if _, ok := ClientToDisplayNames[key]; !ok {
 			t.Errorf("ClientToDisplayNames 缺少配置 key %q", key)
 		}
+	}
+}
+
+// TestMiMoSessionClient：终裁判别矩阵——严格 desktop-<hash> 归 Desktop，
+// 其余一切形态归 MiMo Code；provider/model 不参与（不在函数输入内）。
+func TestMiMoSessionClient(t *testing.T) {
+	cases := []struct {
+		version, want string
+	}{
+		{"desktop-bdfe497", ClientMiMoDesktop},
+		{"desktop-1d6a9fe", ClientMiMoDesktop},
+		{"desktop-0123456789abcdef", ClientMiMoDesktop},
+		{"0.1.14", ClientMiMoCode},
+		{"2.1.156", ClientMiMoCode},
+		{"2.1.278", ClientMiMoCode},
+		{"", ClientMiMoCode},
+		{"9.9.9-unknown", ClientMiMoCode},
+		{"desktop-", ClientMiMoCode},
+		{"desktop-xxx", ClientMiMoCode},     // 非 hex
+		{"desktop-ABC123", ClientMiMoCode},  // 大写非 [0-9a-f]
+		{"Desktop-bdfe497", ClientMiMoCode}, // 前缀大小写敏感
+		{"desktop-bdfe497 ", ClientMiMoCode},
+	}
+	for _, c := range cases {
+		if got := MiMoSessionClient(c.version); got != c.want {
+			t.Errorf("MiMoSessionClient(%q) = %q, want %q", c.version, got, c.want)
+		}
+	}
+	if ClientMiMoDesktop != "MiMo Desktop" {
+		t.Errorf("ClientMiMoDesktop = %q", ClientMiMoDesktop)
 	}
 }

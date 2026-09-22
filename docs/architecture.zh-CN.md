@@ -60,7 +60,7 @@
 | WorkBuddy | JSONL（主源）+ SQLite（仅查 title） | `~/.workbuddy/projects`、`~/.workbuddy/workbuddy.db` |
 | ZCode | SQLite | `~/.zcode/cli/db/db.sqlite` |
 | Zhipu-AutoClaw | JSONL（全量按文件扫描） | `~/.openclaw-autoclaw/agents` |
-| MiMo Code（Xiaomi MiMo Desktop / MiMo Code CLI） | SQLite（共用同一数据库） | `~/.local/share/mimocode/mimocode.db` |
+| MiMo Code + MiMo Desktop（共用同一数据库） | SQLite；按 `session.version` 区分产品归属（严格 `desktop-<hash>` → MiMo Desktop，其余全部 → MiMo Code） | `~/.local/share/mimocode/mimocode.db` |
 
 **路由中间件**：
 
@@ -112,11 +112,11 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 
 ### Schema 迁移
 
-`user_version` 门控向前迁移，每个迁移单事务提交：v2 重建 `file_scan_log` 为 startup 跳过门状态表；v3 为 `raw_router_logs` 加 `data_source` 列（区分 proxy 直录与 `codex_session` 同步行）；v4 把 `messages` 与 `sessions` 中存量 mimocode client 从 legacy 长名 `Xiaomi MiMo / MiMo Code` 改名为 `MiMo Code`。由于 `client` 是两表主键成分，v4 不是裸 UPDATE：先按与 DAO upsert 相同的 `ON CONFLICT` 语义把 legacy 行折叠进 `MiMo Code` 行（同 id 新旧名并存时确定性合并——不报主键冲突、token 不重复计数），删除 legacy 行，再创建两个持久化 `BEFORE INSERT` trigger 把旧版回滚二进制写入的 legacy 名改写为 `MiMo Code` upsert，最后才把 `user_version` 提升到 4。
+`user_version` 门控向前迁移，每个迁移单事务提交：v2 重建 `file_scan_log` 为 startup 跳过门状态表；v3 为 `raw_router_logs` 加 `data_source` 列（区分 proxy 直录与 `codex_session` 同步行）；v4 把 `messages` 与 `sessions` 中存量 mimocode client 从 legacy 长名 `Xiaomi MiMo / MiMo Code` 改名为 `MiMo Code`；v5 增加 MiMo Desktop 拆分能力：重建 legacy trigger 并附加副作用（旧名写入同时重置拆分 reconciliation pending 标记）、创建 split trigger（会话已知 Desktop 时把 `MiMo Code` 写入改写为 `MiMo Desktop`）、写入初始 reconciliation pending，最后才把 `user_version` 提升到 5。v4 与 v5 同属一个 v0.1.11。由于 `client` 是两表主键成分，v4 不是裸 UPDATE：先按与 DAO upsert 相同的 `ON CONFLICT` 语义把 legacy 行折叠进 `MiMo Code` 行（同 id 新旧名并存时确定性合并——不报主键冲突、token 不重复计数），删除 legacy 行，再创建两个持久化 `BEFORE INSERT` trigger 把旧版回滚二进制写入的 legacy 名改写为 `MiMo Code` upsert，最后才把 `user_version` 提升到 4。
 
 ### Client 身份
 
-mimocode 数据源的正式 client 名是 `MiMo Code`：collector 写入 `messages.client`/`sessions.client`，query、dashboard、CSV 导出直接读回。`mimocode` 只是配置键（config.toml、CLI 参数与配置 TUI）。当前数据源（Xiaomi MiMo Desktop 与 MiMo Code CLI 共用的同一 SQLite 库）无法区分两个产品，全部采集数据统一归为 `MiMo Code`；未来数据源可可靠区分时，可能像 Claude Desktop 一样另行拆分 `MiMo Desktop`。旧长名仅以 `model.LegacyClientXiaomiMiMoCode` 形式存在于 v4 迁移、旧版回滚兼容 trigger 与防御性展示兜底中，不是当前 client 名。
+mimocode 数据源产生两个正式 client：`MiMo Code`（CLI）与 `MiMo Desktop`（桌面应用），与 Claude Code/Claude Desktop 在单一 `mimocode` 配置键下的模式一致（config.toml、CLI 参数与配置 TUI——配置界面只显示配置键，不显示 client 名）。归属按共用 SQLite 库的 `session.version` 判定（`model.MiMoSessionClient`）：严格 `desktop-<hex-hash>` 归 `MiMo Desktop`；其余一切形态——`0.x` CLI 版本、`2.1.x` 序列、空值与未见过的形态——归 `MiMo Code`；provider/model 永不参与。v5 升级后会在下一次 mimocode 采集（包括 daemon 启动补采）自动执行可恢复、无损的 reconciliation，按上述规则重归属存量行（分批执行，每批单事务：合并另一侧历史行 → upsert 当前源值 → 删除已合并源侧行 → 推进 pending 游标 → 提交；源库中已消失的会话保持库内身份不动）。此后每个 mimocode 写批次还会按本轮触达会话的目标 client，先合并另一侧全部历史、再写当前值并在同一事务删除源侧；Desktop→Code 方向由 split-trigger bypass 保护，因此 session.version 双向变化都不会留下 `(client,id)` 双侧行或 token 双计。显式 `collect all --client mimocode` 会重新置 pending 并完整重跑 assignments reconciliation，包括源消息已删除的会话。query 可以安装迁移，但不会读取 MiMo 源库，因此会保留 pending 等待下一次 mimocode 采集。回滚兼容经「旧长名 → `MiMo Code` → `MiMo Desktop`」trigger 链生效，旧名写入会重置 pending 标记使回滚期在下一次 mimocode 采集时自愈。旧长名仅以 `model.LegacyClientXiaomiMiMoCode` 形式存在于迁移、兼容 trigger 与防御性展示兜底中，不是当前 client 名。
 
 ### messages 表 token 字段
 

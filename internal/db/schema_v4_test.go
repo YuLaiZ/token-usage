@@ -58,8 +58,8 @@ func v4TriggerExists(t *testing.T, q interface {
 func TestFreshDBReachesV4(t *testing.T) {
 	d := openFreshDB(t)
 	defer d.Close()
-	if got := userVersion(t, d); got != 4 {
-		t.Fatalf("fresh DB user_version = %d, want 4", got)
+	if got := userVersion(t, d); got != 5 {
+		t.Fatalf("fresh DB user_version = %d, want 5（v4 合同由本测试其余断言在 v5 库上验证）", got)
 	}
 	if !v4TriggerExists(t, d, v4TriggerMessages) {
 		t.Fatal("fresh DB 应含 messages 兼容 trigger")
@@ -82,8 +82,8 @@ func TestV3UpgradeRenamesLegacyMimoRows(t *testing.T) {
 		t.Fatalf("open v3 db: %v", err)
 	}
 	defer upgraded.Close()
-	if got := userVersion(t, upgraded); got != 4 {
-		t.Fatalf("upgraded user_version = %d, want 4", got)
+	if got := userVersion(t, upgraded); got != 5 {
+		t.Fatalf("upgraded user_version = %d, want 5（v3→v4→v5 一气呵成）", got)
 	}
 
 	// messages：两条 legacy 行改名且字段逐项保留。
@@ -325,7 +325,7 @@ func TestMigrateV4FailureKeepsV3(t *testing.T) {
 		t.Fatalf("失败后 sessions legacy 行应原样 %d 行,实际 %d", 1, n)
 	}
 
-	// 清除注入后重试成功，trigger 与改名全部到位。
+	// 清除注入后重试成功，trigger 与改名全部到位（直调 migrateV4 只到 v4）。
 	migrateV4PostTriggerHook = nil
 	if err := migrateV4(raw); err != nil {
 		t.Fatalf("重试 migrateV4 失败: %v", err)
@@ -359,8 +359,8 @@ func TestLegacyWriteAfterMigrationRewrittenByTrigger(t *testing.T) {
 		t.Fatalf("open v3 db: %v", err)
 	}
 	defer d.Close()
-	if got := userVersion(t, d); got != 4 {
-		t.Fatalf("user_version = %d, want 4", got)
+	if got := userVersion(t, d); got != 5 {
+		t.Fatalf("user_version = %d, want 5", got)
 	}
 
 	// 场景 A：旧版写入全新消息（legacy client 值）→ trigger 改写为新名入库。
@@ -583,6 +583,15 @@ func sqlDumpV3ForMimoRename(t *testing.T, path string) error {
 			first_ts  INTEGER NOT NULL DEFAULT 0,
 			last_ts   INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (id, client)
+		)`,
+		// sync_state 为真实表（v5 reconciliation pending 依赖）。
+		`CREATE TABLE sync_state (
+			client       TEXT NOT NULL,
+			source       TEXT NOT NULL,
+			cursor_value INTEGER NOT NULL DEFAULT 0,
+			cursor_id    TEXT NOT NULL DEFAULT '',
+			updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (client, source)
 		)`,
 		`INSERT INTO messages (id,session_id,client,date,ts,model,provider,directory,project,
 			input_tokens,fresh_input_tokens,output_tokens,cache_read_tokens,cache_create_tokens,reasoning_tokens,total_tokens) VALUES

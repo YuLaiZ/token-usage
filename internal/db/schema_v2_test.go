@@ -55,12 +55,12 @@ func userVersion(t *testing.T, d *DB) int {
 	return v
 }
 
-// TestSchemaCurrentVersionIsFour：当前 schema 版本常量守护（v3 起 data_source
-// 列合同由 schema_v3_test.go、v4 起 mimocode 改名与兼容 trigger 合同由
-// schema_v4_test.go 断言；升级 schema 时同步本断言）。
-func TestSchemaCurrentVersionIsFour(t *testing.T) {
-	if currentSchemaVersion != 4 {
-		t.Fatalf("currentSchemaVersion = %d, want 4", currentSchemaVersion)
+// TestSchemaCurrentVersionIsFive：当前 schema 版本常量守护（v3 起 data_source
+// 列合同由 schema_v3_test.go、v4/v5 起 mimocode 改名/拆分与兼容 trigger 合同
+// 由 schema_v4_test.go、schema_v5_test.go 断言；升级 schema 时同步本断言）。
+func TestSchemaCurrentVersionIsFive(t *testing.T) {
+	if currentSchemaVersion != 5 {
+		t.Fatalf("currentSchemaVersion = %d, want 5", currentSchemaVersion)
 	}
 }
 
@@ -249,6 +249,15 @@ func sqlDumpV1(t *testing.T, path string) error {
 			first_ts  INTEGER NOT NULL DEFAULT 0,
 			last_ts   INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (id, client)
+		)`,
+		// sync_state 为 v1 真实表（v5 的 reconciliation pending 依赖它），夹具须复刻。
+		`CREATE TABLE sync_state (
+			client       TEXT NOT NULL,
+			source       TEXT NOT NULL,
+			cursor_value INTEGER NOT NULL DEFAULT 0,
+			cursor_id    TEXT NOT NULL DEFAULT '',
+			updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (client, source)
 		)`,
 		`CREATE TABLE raw_router_logs (
 			request_id              TEXT NOT NULL,

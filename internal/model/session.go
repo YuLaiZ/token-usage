@@ -1,6 +1,8 @@
 // internal/model/session.go
 package model
 
+import "regexp"
+
 const (
 	ClientClaudeCode    = "Claude Code"
 	ClientClaudeDesktop = "Claude Desktop"
@@ -10,12 +12,14 @@ const (
 	ClientWorkBuddy     = "WorkBuddy"
 	ClientZCode         = "ZCode"
 	ClientZhipuAutoClaw = "Zhipu-AutoClaw"
-	// ClientMiMoCode 是 mimocode 的当前正式 client 名：collector 落库
-	// （messages.client / sessions.client 及主键成分）、RawClientToClient 映射
-	// 与查询过滤全部使用它。当前数据源（Desktop/CLI 共库）无法区分两个产品，
-	// 统一归为 MiMo Code；若未来数据源可可靠区分，可能像 Claude Desktop 一样
-	// 另行拆分 MiMo Desktop。
+	// ClientMiMoCode 是 mimocode 数据源中 MiMo Code CLI 的正式 client 名。
+	// 除严格 desktop-<hash> 标记外的全部会话（含 0.x CLI 版本、2.1.x 序列、
+	// 空值与未知形态）统一归入，见 MiMoSessionClient。
 	ClientMiMoCode = "MiMo Code"
+	// ClientMiMoDesktop 是 mimocode 数据源中 Xiaomi MiMo Desktop 的正式
+	// client 名：仅当 session.version 严格匹配 ^desktop-[0-9a-f]+$ 时归属
+	// （MiMoSessionClient 单一判别来源）。
+	ClientMiMoDesktop = "MiMo Desktop"
 )
 
 // LegacyClientXiaomiMiMoCode 是 v0.1.10 及之前版本写入 messages/sessions 的
@@ -23,6 +27,24 @@ const (
 // 的兼容 trigger（BEFORE INSERT 改写为 ClientMiMoCode）、以及 ClientDisplayName
 // 对异常残留旧数据的防御性渲染。它不代表任何当前正式 client。
 const LegacyClientXiaomiMiMoCode = "Xiaomi MiMo / MiMo Code"
+
+// mimoDesktopVersionRe 是 MiMo Desktop 会话 version 的严格匹配：desktop- 前缀
+// + 十六进制 hash。这是当前唯一明确、可作为 MiMo Desktop 正式身份依据的
+// 正向标记（Desktop 应用自报 InstallationVersion）；其余形态一律归
+// ClientMiMoCode——包括 0.x CLI 语义版本、2.1.x 小版本序列、空值、未知形态
+// 与非 hash 的 desktop-* 变体，provider/model 不参与判别。
+var mimoDesktopVersionRe = regexp.MustCompile(`^desktop-[0-9a-f]+$`)
+
+// MiMoSessionClient 按 session.version 判定会话归属的正式 client：
+// 严格 desktop-<hash> → ClientMiMoDesktop，其余全部 → ClientMiMoCode。
+// 未见过的新 version 形态在正式确认前统一归 ClientMiMoCode（默认规则），
+// 不得凭推测扩分类；调用方可用日志观察未知形态，但不得改变本归属。
+func MiMoSessionClient(version string) string {
+	if mimoDesktopVersionRe.MatchString(version) {
+		return ClientMiMoDesktop
+	}
+	return ClientMiMoCode
+}
 
 // ClientDisplayName 是防御性的历史兼容兜底：migrateV4 已把存量旧名改名、
 // trigger 已把旧版二进制回写的旧名改写，正常数据落库即 ClientMiMoCode；
@@ -79,9 +101,10 @@ var ClientToDisplayNames = map[string][]string{
 	"zcode":     {ClientZCode},
 	"autoclaw":  {ClientZhipuAutoClaw},
 	// mimocode 一个 key 覆盖 Xiaomi MiMo Desktop 与 MiMo Code CLI（两者共用同一
-	// ~/.local/share/mimocode/mimocode.db，库内无 Desktop/CLI 标记，统一归为
-	// ClientMiMoCode；未来可可靠区分时可能另行拆分 MiMo Desktop）。
-	"mimocode": {ClientMiMoCode},
+	// ~/.local/share/mimocode/mimocode.db）；会话按 session.version 经
+	// MiMoSessionClient 判别归属 MiMo Code 或 MiMo Desktop（严格 desktop-<hash>
+	// 才归 Desktop，其余默认 MiMo Code）。
+	"mimocode": {ClientMiMoCode, ClientMiMoDesktop},
 }
 
 type Message struct {

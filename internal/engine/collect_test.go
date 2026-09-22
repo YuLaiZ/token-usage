@@ -745,14 +745,20 @@ func TestRunCollect_ClientTxnFailureAbortsAllWrites(t *testing.T) {
 	if result.Complete() || result.Err == nil {
 		t.Fatalf("cursor write failure must fail: %+v", result)
 	}
-	// 验证事务原子性：messages/sessions/collection_log/sync_state 全部为 0
+	// 验证事务原子性：messages/sessions/collection_log 全部为 0；sync_state
+	// 仅统计本 client 的游标行（v5 库预置的 mimocode 拆分 pending 行属预期，
+	// 不在本断言范围）。
 	for table, want := range map[string]int{
-		"messages": 0, "sessions": 0, "collection_log": 0, "sync_state": 0,
+		"messages": 0, "sessions": 0, "collection_log": 0,
 	} {
 		var got int
 		if err := usageDB.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&got); err != nil || got != want {
 			t.Fatalf("%s count=%d want=%d err=%v", table, got, want, err)
 		}
+	}
+	var cursorRows int
+	if err := usageDB.QueryRow("SELECT COUNT(*) FROM sync_state WHERE client='claude'").Scan(&cursorRows); err != nil || cursorRows != 0 {
+		t.Fatalf("claude cursor count=%d want=0 err=%v", cursorRows, err)
 	}
 }
 

@@ -211,6 +211,15 @@ func sqlDumpV2(t *testing.T, path string) error {
 			last_ts   INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (id, client)
 		)`,
+		// sync_state 为 v1/v2 真实表（v5 pending 依赖）。
+		`CREATE TABLE sync_state (
+			client       TEXT NOT NULL,
+			source       TEXT NOT NULL,
+			cursor_value INTEGER NOT NULL DEFAULT 0,
+			cursor_id    TEXT NOT NULL DEFAULT '',
+			updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (client, source)
+		)`,
 		`CREATE TABLE raw_router_logs (
 			request_id              TEXT NOT NULL,
 			message_id              TEXT NOT NULL DEFAULT '',

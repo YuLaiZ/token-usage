@@ -2604,3 +2604,34 @@ func TestHourWeekdayAggregationEquivalentToSQLLocaltime(t *testing.T) {
 		}
 	}
 }
+
+// TestAggregateDimensionView_TwoMimoClientsSplitRows：拆分后两个正式 client
+// 在 client 维度自然分列两行，summary 客户端数同步计 2（加 Claude Code 共 3）。
+func TestAggregateDimensionView_TwoMimoClientsSplitRows(t *testing.T) {
+	q := setupMessageFixture(t)
+	if _, err := db.UpsertMessages(context.Background(), q.db, []model.Message{
+		{ID: "mm-cli-1", SessionID: "sess-alpha", Client: model.ClientMiMoCode, Date: "2026-07-10", TS: 3000, TotalTokens: 40},
+		{ID: "mm-dsk-1", SessionID: "sess-alpha", Client: model.ClientMiMoDesktop, Date: "2026-07-10", TS: 3100, TotalTokens: 60},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _, err := q.AggregateDimensionView(context.Background(), bothDates, DimensionView{Dimensions: []string{"client"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int64{}
+	for _, r := range rows {
+		seen[r.Keys[0]] = r.Agg.TotalTokens
+	}
+	if seen[model.ClientMiMoCode] != 40 || seen[model.ClientMiMoDesktop] != 60 || seen[model.ClientClaudeCode] != 2200 {
+		t.Errorf("两 client 应分列: %v", seen)
+	}
+	summary, err := q.Summary(context.Background(), bothDates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLine := ui.Bi("Clients", "客户端数") + ": 3"
+	if !strings.Contains(summary, wantLine) {
+		t.Errorf("Summary 客户端数应为 3（Claude+MiMo Code+MiMo Desktop）, want %q:\n%s", wantLine, summary)
+	}
+}

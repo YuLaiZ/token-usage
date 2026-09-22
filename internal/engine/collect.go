@@ -72,6 +72,37 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 		return runRouterOnlyCollect(ctx, deps, usageDB, log, out, client, req, recordFailure)
 	}
 
+	// mimocode Desktop 拆分 reconciliation：仅在显式 mimocode 采集或全
+	// 客户端入口（client==""）检查 pending——其他客户端的采集与 watcher
+	// 事件绝不被 mimocode 的 reconciliation 故障拖累；router-only 路径已在
+	// 上方提前返回、不触发。daemon catch-up 逐 client 调用本函数，故每个
+	// startup 只在 mimocode 的那次触发一次。失败保留 pending，recordError=true
+	// 时记录 collection_errors，不阻塞常规采集——下次采集自动重试；未启用时悬置。
+	if client == "" || client == "mimocode" {
+		var reconcileReady = true
+		if shouldRearmMimoFullReconcile(deps, client, req) {
+			if err := db.MimoReconcileRearm(ctx, usageDB); err != nil {
+				log.Error("mimocode split reconcile re-arm failed", "error", err)
+				if recordError {
+					recordMimoReconcileFailure(ctx, usageDB, log, err)
+				}
+				result.Err = errors.Join(result.Err, err)
+				reconcileReady = false
+			}
+		}
+		if reconcileReady {
+			if err := runMimoReconciliationIfPending(ctx, deps, usageDB, log, out); err != nil {
+				log.Error("mimocode split reconcile failed, will retry on next collect", "error", err)
+				// 与其余采集阶段保持同一 recordError 合同：普通采集记录失败；
+				// collect retry 传 false，只更新既有错误的 retry_count，不得再造一条。
+				if recordError {
+					recordMimoReconcileFailure(ctx, usageDB, log, err)
+				}
+				result.Err = errors.Join(result.Err, err)
+			}
+		}
+	}
+
 	for _, c := range deps.collectors {
 		if client != "" && c.Name() != client {
 			continue
@@ -239,8 +270,9 @@ func requestForCollector(
 }
 
 // persistClientBatch 是单次 client batch 的事务边界。defer Rollback 只存在该 helper 内。
-// 顺序：UpsertMessages → UpsertSessionMeta → UpsertRawRouterLogs（若有）→
-// （router 消息回填）→ 完整成功时写完成状态与 cursor → Commit。
+// 顺序：mimocode 双向历史 re-key（其他 client 无操作）→ UpsertMessages →
+// UpsertSessionMeta → 删除 mimocode 源侧历史并关闭 bypass → UpsertRawRouterLogs
+// （若有）→（router 消息回填）→ 完整成功时写完成状态与 cursor → Commit。
 //
 // collected.PartialErr != nil 时仍保存成功解析的数据，但不写 collection_log、不解决旧错误、
 // 不推进 cursor。这样下次普通采集或 retry 会幂等重放仍有缺口的区间，而不会被完成状态跳过。
@@ -255,11 +287,18 @@ func persistClientBatch(
 	router collector.RouterAdapter,
 	log *slog.Logger,
 ) error {
+	mimoRekey, err := buildMimoPersistRekeyPlan(client, collected)
+	if err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("prepare mimocode client re-key", "准备 mimocode client 重归属"), err)
+	}
 	tx, err := usageDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("%s: %w", ui.Bi("open write transaction", "开启写事务"), err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := mimoRekey.begin(ctx, tx); err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("merge mimocode client history", "合并 mimocode client 历史"), err)
+	}
 
 	if len(collected.Messages) > 0 {
 		if _, err := db.UpsertMessages(ctx, tx, collected.Messages); err != nil {
@@ -270,6 +309,9 @@ func persistClientBatch(
 		if _, err := db.UpsertSessionMeta(ctx, tx, collected.Sessions); err != nil {
 			return fmt.Errorf("%s: %w", ui.Bi("save session metadata", "保存 session metadata"), err)
 		}
+	}
+	if err := mimoRekey.finish(ctx, tx); err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("finish mimocode client re-key", "完成 mimocode client 重归属"), err)
 	}
 	if routerFetched && len(routerResult.Logs) > 0 {
 		if _, err := db.UpsertRawRouterLogs(ctx, tx, routerResult.Logs); err != nil {

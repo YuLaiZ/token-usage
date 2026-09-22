@@ -39,6 +39,7 @@ func createTestMimoCodeDB(t *testing.T, dbPath string) {
 		parent_id TEXT,
 		directory TEXT,
 		title TEXT,
+		version TEXT NOT NULL DEFAULT '',
 		time_created INTEGER NOT NULL DEFAULT 0,
 		time_updated INTEGER NOT NULL DEFAULT 0
 	);
@@ -60,6 +61,7 @@ type mcSessionRow struct {
 	parentID    string
 	directory   string
 	title       string
+	version     string
 	timeCreated int64
 	timeUpdated int64
 }
@@ -71,8 +73,8 @@ func insertMCSession(t *testing.T, dbPath string, s mcSessionRow) {
 		t.Fatalf("open db 失败: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`INSERT INTO session (id,parent_id,directory,title,time_created,time_updated) VALUES (?,?,?,?,?,?)`,
-		s.id, s.parentID, s.directory, s.title, s.timeCreated, s.timeUpdated); err != nil {
+	if _, err := db.Exec(`INSERT INTO session (id,parent_id,directory,title,version,time_created,time_updated) VALUES (?,?,?,?,?,?,?)`,
+		s.id, s.parentID, s.directory, s.title, s.version, s.timeCreated, s.timeUpdated); err != nil {
 		t.Fatalf("插入 session %s 失败: %v", s.id, err)
 	}
 }
@@ -653,5 +655,69 @@ func TestMimoCodeCollect_ContextCancelled(t *testing.T) {
 	cancel()
 	if _, err := newTestMimoCodeCollector(t, dbPath).Collect(ctx, CollectRequest{}, nil); err == nil {
 		t.Error("ctx 取消应返回 error")
+	}
+}
+
+// TestMimoCodeCollect_DesktopVersionDispatch：同 provider 下不同 version 的
+// 两个会话分派到不同正式 client（provider/model 不参与判别）；同会话的消息
+// 与元数据恒同 client；空 version 会话归 MiMo Code。
+func TestMimoCodeCollect_DesktopVersionDispatch(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "mimo.db")
+	createTestMimoCodeDB(t, dbPath)
+	insertMCSession(t, dbPath, mcSessionRow{id: "ses_desktop", version: "desktop-abc123", timeCreated: 1000, timeUpdated: 2000})
+	insertMCSession(t, dbPath, mcSessionRow{id: "ses_cli", version: "0.1.14", timeCreated: 1000, timeUpdated: 2000})
+	insertMCSession(t, dbPath, mcSessionRow{id: "ses_plain", timeCreated: 1000, timeUpdated: 2000})
+	for _, ses := range []string{"ses_desktop", "ses_cli", "ses_plain"} {
+		insertMCMessage(t, dbPath, mcMessageRow{
+			id: "msg_" + ses, sessionID: ses,
+			data:        `{"id":"msg_` + ses + `","sessionID":"` + ses + `","role":"assistant","providerID":"xiaomi","modelID":"same-model","time":{"created":1789031164233,"completed":1789031164233},"tokens":{"total":100,"input":90,"output":10}}`,
+			timeUpdated: 3000,
+		})
+	}
+	result, err := newTestMimoCodeCollector(t, dbPath).Collect(context.Background(), CollectRequest{}, nil)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	bySession := map[string]model.Message{}
+	for _, m := range result.Messages {
+		bySession[m.SessionID] = m
+	}
+	if got := bySession["ses_desktop"].Client; got != model.ClientMiMoDesktop {
+		t.Errorf("desktop-<hash> 会话消息 client = %q, want %q", got, model.ClientMiMoDesktop)
+	}
+	if got := bySession["ses_cli"].Client; got != model.ClientMiMoCode {
+		t.Errorf("0.x 会话消息 client = %q, want %q", got, model.ClientMiMoCode)
+	}
+	if got := bySession["ses_plain"].Client; got != model.ClientMiMoCode {
+		t.Errorf("空 version 会话消息 client = %q, want %q", got, model.ClientMiMoCode)
+	}
+	sessClients := map[string]string{}
+	for _, s := range result.Sessions {
+		sessClients[s.ID] = s.Client
+	}
+	if sessClients["ses_desktop"] != model.ClientMiMoDesktop || sessClients["ses_cli"] != model.ClientMiMoCode || sessClients["ses_plain"] != model.ClientMiMoCode {
+		t.Errorf("会话元数据应与消息恒同 client: %v", sessClients)
+	}
+}
+
+// TestMimoCodeAssignments：归属清单覆盖全部会话（含无消息会话——供历史行
+// re-key 判定），按 id 字典序返回。
+func TestMimoCodeAssignments(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "mimo.db")
+	createTestMimoCodeDB(t, dbPath)
+	insertMCSession(t, dbPath, mcSessionRow{id: "ses_b", version: "desktop-abc123"})
+	insertMCSession(t, dbPath, mcSessionRow{id: "ses_a_empty", version: "2.1.156"}) // 无消息空会话
+	assignments, err := newTestMimoCodeCollector(t, dbPath).Assignments(context.Background())
+	if err != nil {
+		t.Fatalf("Assignments: %v", err)
+	}
+	if len(assignments) != 2 {
+		t.Fatalf("assignments = %d, want 2（含无消息会话）", len(assignments))
+	}
+	if assignments[0].ID != "ses_a_empty" || assignments[0].Version != "2.1.156" {
+		t.Errorf("assignments[0] = %+v, want ses_a_empty/2.1.156（字典序）", assignments[0])
+	}
+	if assignments[1].ID != "ses_b" || assignments[1].Version != "desktop-abc123" {
+		t.Errorf("assignments[1] = %+v, want ses_b/desktop-abc123", assignments[1])
 	}
 }

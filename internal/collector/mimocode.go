@@ -21,9 +21,10 @@ import (
 // ~/.local/share/mimocode/mimocode.db 采集逐消息 token 用量。
 // 单源采集：message 表 JOIN session 表，取 completed 且带 tokens.total 的
 // assistant 行。event 表当前为空，不做双源；session 表无 model 列，无会话级
-// 模型兜底。Desktop 与 CLI 共库且库内无来源标记，统一归为正式 client
-// MiMo Code（model.ClientMiMoCode）；旧长名仅作为数据库迁移与旧版回写兼容
-// 的 legacy 值存在（见 model.LegacyClientXiaomiMiMoCode）。
+// 模型兜底。Desktop 与 CLI 共库：会话按 session.version 经 model.MiMoSessionClient
+// 判别归属 MiMo Desktop（严格 desktop-<hash>）或 MiMo Code（其余全部）；旧长名
+// 仅作为数据库迁移与旧版回写兼容的 legacy 值存在（见
+// model.LegacyClientXiaomiMiMoCode）。
 type MimoCodeCollector struct {
 	cfg    *config.Config
 	dbPath string
@@ -86,11 +87,13 @@ type mimoCodeInfo struct {
 }
 
 // mimoSessionData 携带 session 表元数据。与 OpenCode 的差异：无 model 列，
-// 因此无 modelJSON 会话级兜底。
+// 因此无 modelJSON 会话级兜底；version 是产品归属标记（判别见
+// model.MiMoSessionClient）。
 type mimoSessionData struct {
 	parentID    string
 	directory   string
 	title       string
+	version     string
 	timeCreated int64
 	timeUpdated int64
 }
@@ -142,7 +145,7 @@ func (c *MimoCodeCollector) Collect(ctx context.Context, req CollectRequest, log
 	defer db.Close()
 
 	query := `SELECT m.id,m.session_id,m.time_updated,m.data,
-       COALESCE(s.parent_id,''),COALESCE(s.directory,''),COALESCE(s.title,''),
+       COALESCE(s.parent_id,''),COALESCE(s.directory,''),COALESCE(s.title,''),s.version,
        COALESCE(s.time_created,0),COALESCE(s.time_updated,0)
 FROM message m JOIN session s ON m.session_id=s.id
 WHERE json_extract(m.data,'$.role')='assistant'
@@ -202,11 +205,11 @@ func scanMimoCodeRows(ctx context.Context, db *sql.DB, query string, args []inte
 	for rows.Next() {
 		var id, sessionID, data string
 		var timeUpdated int64
-		var sessParentID, sessDirectory, sessTitle string
+		var sessParentID, sessDirectory, sessTitle, sessVersion string
 		var sessTimeCreated, sessTimeUpdated int64
 		if err := rows.Scan(
 			&id, &sessionID, &timeUpdated, &data,
-			&sessParentID, &sessDirectory, &sessTitle,
+			&sessParentID, &sessDirectory, &sessTitle, &sessVersion,
 			&sessTimeCreated, &sessTimeUpdated,
 		); err != nil {
 			return nil, nil, model.SyncCursor{}, fmt.Errorf("扫描 mimocode message 行失败: %w", err)
@@ -232,6 +235,7 @@ func scanMimoCodeRows(ctx context.Context, db *sql.DB, query string, args []inte
 				parentID:    sessParentID,
 				directory:   sessDirectory,
 				title:       sessTitle,
+				version:     sessVersion,
 				timeCreated: sessTimeCreated,
 				timeUpdated: sessTimeUpdated,
 			}
@@ -245,12 +249,13 @@ func scanMimoCodeRows(ctx context.Context, db *sql.DB, query string, args []inte
 
 	// 按 (client,sessionID) 去重生成 Session 元数据；first/last 从 session 表取，
 	// 不从 token 明细反推。sessionOrder 保持首次出现顺序（time_updated 升序扫描）。
+	// client 按 session.version 判别（MiMoSessionClient），同会话消息恒同 client。
 	sessions := make([]model.Session, 0, len(sessionOrder))
 	for _, sid := range sessionOrder {
 		sd := sessionInfos[sid]
 		sessions = append(sessions, model.Session{
 			ID:        sid,
-			Client:    model.ClientMiMoCode,
+			Client:    model.MiMoSessionClient(sd.version),
 			Directory: sd.directory,
 			Project:   projectNameFromDir(sd.directory),
 			Title:     sd.title,
@@ -264,7 +269,7 @@ func scanMimoCodeRows(ctx context.Context, db *sql.DB, query string, args []inte
 
 // mimoCodeMessage 把源行转换为 model.Message。
 // FreshInputTokens 直赋 tokens.input（实测恒等式 total==input+output+cache_read，
-// input 为纯新输入），不做 SubtractCache。
+// input 为纯新输入），不做 SubtractCache。client 按所属会话 version 判别。
 func mimoCodeMessage(info mimoCodeInfo, session mimoSessionData) model.Message {
 	provider := info.ProviderID
 	if mapped := mimoCodeProviderDisplayNames[info.ProviderID]; mapped != "" {
@@ -273,7 +278,7 @@ func mimoCodeMessage(info mimoCodeInfo, session mimoSessionData) model.Message {
 	return model.Message{
 		ID:                info.ID,
 		SessionID:         info.SessionID,
-		Client:            model.ClientMiMoCode,
+		Client:            model.MiMoSessionClient(session.version),
 		Date:              time.UnixMilli(info.Time.Completed).Format("2006-01-02"),
 		TS:                info.Time.Completed,
 		Model:             info.ModelID,
@@ -299,4 +304,51 @@ func sortMimoCodeMessages(messages []model.Message) {
 		}
 		return messages[i].ID < messages[j].ID
 	})
+}
+
+// MimoSessionAssignment 是源库会话归属清单条目：session.id + session.version。
+// ID 按 Client 语义无关的字典序返回，供 reconciliation 分批游标使用。
+type MimoSessionAssignment struct {
+	ID      string
+	Version string
+}
+
+// Assignments 返回源库全部会话的 id+version 归属清单（按 id 字典序）。
+// 关键语义：清单覆盖所有 session——不依赖「该会话当前仍有符合采集条件的
+// completed usage message」。空会话（如 2.1.x 线）也在清单内，使 reconciliation
+// 能对「历史有消息、源库消息已被清理」的会话完成无损 re-key。version 判别
+// 由 model.MiMoSessionClient 单一来源完成，本方法不做判别。
+func (c *MimoCodeCollector) Assignments(ctx context.Context) ([]MimoSessionAssignment, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if c == nil || c.dbPath == "" {
+		return nil, fmt.Errorf("mimocode DB 路径未配置")
+	}
+	if _, err := os.Stat(c.dbPath); err != nil {
+		return nil, fmt.Errorf("访问 mimocode DB 失败: %w", err)
+	}
+	db, err := openSQLiteReadOnly(c.dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("打开 mimocode DB 失败: %w", err)
+	}
+	defer db.Close()
+
+	rows, err := db.QueryContext(ctx, `SELECT id, version FROM session ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("查询 mimocode session 归属清单失败: %w", err)
+	}
+	defer rows.Close()
+	assignments := make([]MimoSessionAssignment, 0, 16)
+	for rows.Next() {
+		var a MimoSessionAssignment
+		if err := rows.Scan(&a.ID, &a.Version); err != nil {
+			return nil, fmt.Errorf("扫描 mimocode session 归属行失败: %w", err)
+		}
+		assignments = append(assignments, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历 mimocode session 归属行失败: %w", err)
+	}
+	return assignments, nil
 }

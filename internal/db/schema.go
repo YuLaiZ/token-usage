@@ -9,8 +9,10 @@ import (
 // 状态表（v1 布局是死表，无生产数据）；v3 为 raw_router_logs 加 data_source 列
 // （区分 proxy 直录与 codex_session 同步行，codex 归因只消费前者）；v4 把存量
 // mimocode 落库名 "Xiaomi MiMo / MiMo Code" 统一改名并折叠为 "MiMo Code"，
-// 并创建持久化 trigger 兼容旧版二进制回滚后继续写旧名（见 migrateV4）。
-const currentSchemaVersion = 4
+// 并创建持久化 trigger 兼容旧版二进制回滚后继续写旧名（见 migrateV4）；v5
+// 赋予 MiMo Desktop 拆分能力（split trigger + 自动 reconciliation pending，
+// 见 migrateV5）。v4 与 v5 同属一个 v0.1.11。
+const currentSchemaVersion = 5
 
 // ParserVersion 是 JSONL 解析/映射逻辑的版本号（file_scan_log.parser_version）。
 // 任何影响 JSONL 采集产出语义的解析/映射修复都必须递增此值：跳过门按版本整表
@@ -41,6 +43,12 @@ func ensureSchema(db *sql.DB) error {
 	if version < 4 {
 		if err := migrateV4(db); err != nil {
 			return fmt.Errorf("迁移到 v4 失败: %w", err)
+		}
+	}
+	version = getUserVersion(db)
+	if version < 5 {
+		if err := migrateV5(db); err != nil {
+			return fmt.Errorf("迁移到 v5 失败: %w", err)
 		}
 	}
 
@@ -415,6 +423,190 @@ func migrateV4(db *sql.DB) error {
 	}
 	if _, err := tx.Exec(`PRAGMA user_version = 4`); err != nil {
 		return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, `PRAGMA user_version = 4`)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交迁移事务失败: %w", err)
+	}
+	return nil
+}
+
+// V5ReconcileSource 是 mimocode Desktop 拆分 reconciliation 的持久化 pending
+// 标记键：sync_state(client='mimocode', source=本常量) 行存在即未完成。
+// cursor_value 兼作 generation：旧版二进制回滚期的旧名写入经 UPSERT 把
+// generation+1 并清空游标（cursor_id），使 reconciliation 从头重跑、字典序
+// 小于已推进游标的新会话不被跳过；批次游标推进与最终清除均按 generation
+// CAS（见 db.MimoReconcileAdvanceCursor / MimoReconcileClearPendingCAS），
+// 清除未命中（期间被重新置位）时不得宣布完成，须按新 generation 重跑。
+const V5ReconcileSource = "split_reconcile_v5"
+
+// V5ReconcileBypassSource 是 reconciliation 批事务内的 split trigger bypass
+// 标志：批事务开头写入本行、提交前删除，使受控 re-key 的 'MiMo Code' 写入
+// （target=Code 方向，此时源侧 Desktop 行仍在库）不被 split trigger 改写回
+// Desktop 后吞掉。行仅在事务内存在（回滚即消失）；SQLite 写事务串行化保证
+// 外部旧版写入不会越过该保护窗口；批外 split trigger 照常拦截。
+const V5ReconcileBypassSource = "split_reconcile_bypass"
+
+const v5ReconcilePendingUpsert = `INSERT INTO sync_state(client,source,cursor_value,cursor_id,updated_at)
+VALUES('mimocode','` + V5ReconcileSource + `',1,'',datetime('now'))
+ON CONFLICT(client,source) DO UPDATE SET
+ cursor_value = cursor_value + 1,
+ cursor_id = '',
+ updated_at = datetime('now')`
+
+// v5MigrationStatements 是 schema v5 迁移的完整冻结语句序列（MiMo Desktop
+// 拆分能力），按执行顺序：① DROP v4 版 legacy trigger（改写语义不变，重建为
+// 增强版）；② 增强版 legacy trigger：旧长名写入 → 按 v4 冻结语义改写为
+// 'MiMo Code' upsert + 同事务重置 reconciliation pending + RAISE(IGNORE)；
+// ③ split trigger：'MiMo Code' 写入且该 session 在 messages 或 sessions 已有
+// 'MiMo Desktop' 行（双依据，规避引擎先 messages 后 sessions 的写序漏判）
+// → 改写为 'MiMo Desktop' upsert（冲突合并语义冻结自当前 DAO 合同，同 v4
+// 基准）+ RAISE(IGNORE)；④ 写入初始 pending 行；⑤ 最后 PRAGMA user_version=5。
+//
+// 冻结说明同 v4：trigger 内 upsert 语义为 migration-local 合同，不随当前 DAO
+// 常量演进；行为正确性由 schema_v5_test 的升级链/回滚兼容测试锁定。
+// 链式触发前提：trigger body 内 INSERT 是新语句，会触发下一级 trigger（与
+// PRAGMA recursive_triggers=OFF 无关）——旧名 →(legacy)→ 'MiMo Code'
+// →(split，session 已知 Desktop)→ 'MiMo Desktop' 两级链成立；'MiMo Desktop'
+// 值不满足任何 WHEN，无环。
+var v5MigrationStatements = []string{
+	`DROP TRIGGER IF EXISTS messages_legacy_mimo_client_rewrite`,
+	`DROP TRIGGER IF EXISTS sessions_legacy_mimo_client_rewrite`,
+
+	// ② 增强版 legacy trigger（messages）：v4 改写语义 + 重置 pending。
+	`CREATE TRIGGER IF NOT EXISTS messages_legacy_mimo_client_rewrite
+BEFORE INSERT ON messages
+WHEN NEW.client = 'Xiaomi MiMo / MiMo Code'
+BEGIN
+    INSERT INTO messages (id, session_id, client, date, ts, model, provider, router_provider, router_model, router_name, directory, project, input_tokens, fresh_input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, reasoning_tokens, total_tokens) VALUES (NEW.id, NEW.session_id, 'MiMo Code', NEW.date, NEW.ts, NEW.model, NEW.provider, NEW.router_provider, NEW.router_model, NEW.router_name, NEW.directory, NEW.project, NEW.input_tokens, NEW.fresh_input_tokens, NEW.output_tokens, NEW.cache_read_tokens, NEW.cache_create_tokens, NEW.reasoning_tokens, NEW.total_tokens) ON CONFLICT(client, id) DO UPDATE SET
+		ts = CASE WHEN excluded.ts < messages.ts THEN excluded.ts ELSE messages.ts END,
+		date = CASE WHEN excluded.ts < messages.ts THEN excluded.date ELSE messages.date END,
+		session_id = CASE WHEN excluded.ts < messages.ts THEN excluded.session_id ELSE messages.session_id END,
+		directory = CASE WHEN excluded.ts < messages.ts THEN excluded.directory ELSE messages.directory END,
+		project = CASE WHEN excluded.ts < messages.ts THEN excluded.project ELSE messages.project END,
+		model = excluded.model,
+		provider = excluded.provider,
+		router_provider = CASE WHEN excluded.router_provider != '' THEN excluded.router_provider ELSE messages.router_provider END,
+		router_model = CASE WHEN excluded.router_model != '' THEN excluded.router_model ELSE messages.router_model END,
+		router_name = CASE WHEN excluded.router_name != '' THEN excluded.router_name ELSE messages.router_name END,
+		input_tokens = excluded.input_tokens,
+		fresh_input_tokens = excluded.fresh_input_tokens,
+		output_tokens = excluded.output_tokens,
+		cache_read_tokens = excluded.cache_read_tokens,
+		cache_create_tokens = excluded.cache_create_tokens,
+		reasoning_tokens = excluded.reasoning_tokens,
+		total_tokens = excluded.total_tokens;
+    INSERT INTO sync_state(client,source,cursor_value,cursor_id,updated_at)
+    VALUES('mimocode','split_reconcile_v5',1,'',datetime('now'))
+    ON CONFLICT(client,source) DO UPDATE SET
+     cursor_value = cursor_value + 1,
+     cursor_id = '',
+     updated_at = datetime('now');
+    SELECT RAISE(IGNORE);
+END`,
+	// ② 增强版 legacy trigger（sessions）。
+	`CREATE TRIGGER IF NOT EXISTS sessions_legacy_mimo_client_rewrite
+BEFORE INSERT ON sessions
+WHEN NEW.client = 'Xiaomi MiMo / MiMo Code'
+BEGIN
+    INSERT INTO sessions (id, client, directory, project, title, parent_id, first_ts, last_ts) VALUES (NEW.id, 'MiMo Code', NEW.directory, NEW.project, NEW.title, NEW.parent_id, NEW.first_ts, NEW.last_ts) ON CONFLICT(id,client) DO UPDATE SET
+	 directory=excluded.directory,
+	 project=excluded.project,
+	 title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE sessions.title END,
+	 parent_id=excluded.parent_id,
+	 first_ts=CASE WHEN sessions.first_ts=0 OR (excluded.first_ts>0 AND excluded.first_ts<sessions.first_ts) THEN excluded.first_ts ELSE sessions.first_ts END,
+	 last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END;
+    INSERT INTO sync_state(client,source,cursor_value,cursor_id,updated_at)
+    VALUES('mimocode','split_reconcile_v5',1,'',datetime('now'))
+    ON CONFLICT(client,source) DO UPDATE SET
+     cursor_value = cursor_value + 1,
+     cursor_id = '',
+     updated_at = datetime('now');
+    SELECT RAISE(IGNORE);
+END`,
+
+	// ③ split trigger（messages）：session 已知 Desktop 时 'MiMo Code' 写入
+	// 改写为 'MiMo Desktop'（不置 pending——正常 CLI 写入高频，pending 只由
+	// 旧名链与 v5 migration 置位）。
+	`CREATE TRIGGER IF NOT EXISTS messages_mimo_split_rewrite
+BEFORE INSERT ON messages
+WHEN NEW.client = 'MiMo Code'
+ AND NOT EXISTS(SELECT 1 FROM sync_state WHERE client='mimocode' AND source='split_reconcile_bypass')
+ AND (EXISTS(SELECT 1 FROM messages WHERE session_id = NEW.session_id AND client = 'MiMo Desktop')
+   OR EXISTS(SELECT 1 FROM sessions WHERE id = NEW.session_id AND client = 'MiMo Desktop'))
+BEGIN
+    INSERT INTO messages (id, session_id, client, date, ts, model, provider, router_provider, router_model, router_name, directory, project, input_tokens, fresh_input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, reasoning_tokens, total_tokens) VALUES (NEW.id, NEW.session_id, 'MiMo Desktop', NEW.date, NEW.ts, NEW.model, NEW.provider, NEW.router_provider, NEW.router_model, NEW.router_name, NEW.directory, NEW.project, NEW.input_tokens, NEW.fresh_input_tokens, NEW.output_tokens, NEW.cache_read_tokens, NEW.cache_create_tokens, NEW.reasoning_tokens, NEW.total_tokens) ON CONFLICT(client, id) DO UPDATE SET
+		ts = CASE WHEN excluded.ts < messages.ts THEN excluded.ts ELSE messages.ts END,
+		date = CASE WHEN excluded.ts < messages.ts THEN excluded.date ELSE messages.date END,
+		session_id = CASE WHEN excluded.ts < messages.ts THEN excluded.session_id ELSE messages.session_id END,
+		directory = CASE WHEN excluded.ts < messages.ts THEN excluded.directory ELSE messages.directory END,
+		project = CASE WHEN excluded.ts < messages.ts THEN excluded.project ELSE messages.project END,
+		model = excluded.model,
+		provider = excluded.provider,
+		router_provider = CASE WHEN excluded.router_provider != '' THEN excluded.router_provider ELSE messages.router_provider END,
+		router_model = CASE WHEN excluded.router_model != '' THEN excluded.router_model ELSE messages.router_model END,
+		router_name = CASE WHEN excluded.router_name != '' THEN excluded.router_name ELSE messages.router_name END,
+		input_tokens = excluded.input_tokens,
+		fresh_input_tokens = excluded.fresh_input_tokens,
+		output_tokens = excluded.output_tokens,
+		cache_read_tokens = excluded.cache_read_tokens,
+		cache_create_tokens = excluded.cache_create_tokens,
+		reasoning_tokens = excluded.reasoning_tokens,
+		total_tokens = excluded.total_tokens;
+    SELECT RAISE(IGNORE);
+END`,
+	// ③ split trigger（sessions）。
+	`CREATE TRIGGER IF NOT EXISTS sessions_mimo_split_rewrite
+BEFORE INSERT ON sessions
+WHEN NEW.client = 'MiMo Code'
+ AND NOT EXISTS(SELECT 1 FROM sync_state WHERE client='mimocode' AND source='split_reconcile_bypass')
+ AND (EXISTS(SELECT 1 FROM sessions WHERE id = NEW.id AND client = 'MiMo Desktop')
+   OR EXISTS(SELECT 1 FROM messages WHERE session_id = NEW.id AND client = 'MiMo Desktop'))
+BEGIN
+    INSERT INTO sessions (id, client, directory, project, title, parent_id, first_ts, last_ts) VALUES (NEW.id, 'MiMo Desktop', NEW.directory, NEW.project, NEW.title, NEW.parent_id, NEW.first_ts, NEW.last_ts) ON CONFLICT(id,client) DO UPDATE SET
+	 directory=excluded.directory,
+	 project=excluded.project,
+	 title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE sessions.title END,
+	 parent_id=excluded.parent_id,
+	 first_ts=CASE WHEN sessions.first_ts=0 OR (excluded.first_ts>0 AND excluded.first_ts<sessions.first_ts) THEN excluded.first_ts ELSE sessions.first_ts END,
+	 last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END;
+    SELECT RAISE(IGNORE);
+END`,
+
+	v5ReconcilePendingUpsert,
+
+	`PRAGMA user_version = 5`,
+}
+
+// migrateV5PostStatementsHook 仅供测试注入：在全部 v5 语句执行成功之后、
+// PRAGMA user_version 之前执行，返回错误时整个迁移事务回滚（trigger、pending
+// 行、版本号三者整体回滚，不留半套）。生产恒为 nil。
+var migrateV5PostStatementsHook func() error
+
+// migrateV5 赋予库 MiMo Desktop 拆分能力：重建 legacy trigger 为增强版
+// （改写语义不变 + 旧名写入重置 reconciliation pending）、创建 split
+// trigger（session 已知 Desktop 时 'MiMo Code' 写入改写为 'MiMo Desktop'）、
+// 写入初始 reconciliation pending（engine 发现后自动执行全量无损重归属，
+// 独立于普通增量 cursor）、最后提升 user_version=5。单事务：任一步失败整体
+// 回滚保持 v4，重试幂等（user_version 门控 + DROP/IF NOT EXISTS）。
+func migrateV5(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("开启迁移事务失败: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	lastIdx := len(v5MigrationStatements) - 1
+	for i, stmt := range v5MigrationStatements {
+		if i == lastIdx {
+			// 版本号最后设置：此前全部语句成功。
+			if migrateV5PostStatementsHook != nil {
+				if err := migrateV5PostStatementsHook(); err != nil {
+					return fmt.Errorf("迁移中段注入失败: %w", err)
+				}
+			}
+		}
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, stmt)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("提交迁移事务失败: %w", err)
