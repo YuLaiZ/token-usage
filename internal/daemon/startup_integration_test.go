@@ -198,7 +198,7 @@ func TestStartupCatchUp_AllSourceTypes_ReadyBeforeInject(t *testing.T) {
 				{ID: "zc-1", Client: model.ClientZCode, Date: "2026-07-29", SessionID: "s-zc", TotalTokens: 20},
 			},
 			sourceKey("mimocode", collector.CollectSourceClient, true): {
-				{ID: "mc-1", Client: model.ClientXiaomiMiMoCode, Date: "2026-07-29", SessionID: "s-mc", TotalTokens: 25},
+				{ID: "mc-1", Client: model.ClientMiMoCode, Date: "2026-07-29", SessionID: "s-mc", TotalTokens: 25},
 			},
 			// JSONL client 无日期全扫（Incremental=false）。
 			sourceKey("claude", collector.CollectSourceClient, false): {
@@ -281,7 +281,7 @@ func TestStartupCatchUp_AllSourceTypes_ReadyBeforeInject(t *testing.T) {
 	if n := countMessagesByClient(t, usageDB, model.ClientZCode); n != 1 {
 		t.Errorf("zcode messages = %d, want 1", n)
 	}
-	if n := countMessagesByClient(t, usageDB, model.ClientXiaomiMiMoCode); n != 1 {
+	if n := countMessagesByClient(t, usageDB, model.ClientMiMoCode); n != 1 {
 		t.Errorf("mimocode messages = %d, want 1", n)
 	}
 	if n := countMessagesByClient(t, usageDB, model.ClientWorkBuddy); n != 1 {

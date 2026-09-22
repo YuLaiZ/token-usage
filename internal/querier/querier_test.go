@@ -14,6 +14,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/model"
+	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
 // setupMessageFixture 构造消息账本 fixture：
@@ -778,6 +779,138 @@ func TestSessionRows_RawProjectAndSameOrderAsSessions(t *testing.T) {
 	}
 	if !(strings.Index(out, "no-proj") < strings.Index(out, "fix-login")) {
 		t.Errorf("Sessions 渲染行序应与 SessionRows 一致:\n%s", out)
+	}
+}
+
+// client 维度正常路径：落库即正式名 MiMo Code（migrateV4 后库内不再有 legacy
+// 长名），渲染原样；防御路径：异常残留的 legacy 行（模拟未迁移库被直接查询）
+// 经 ClientDisplayName 兜底渲染为 MiMo Code，长名不外泄。
+func TestAggregateDimensionView_ClientRendersMiMoCodeWithLegacyFallback(t *testing.T) {
+	q := setupMessageFixture(t)
+	if _, err := db.UpsertSessionMeta(context.Background(), q.db, []model.Session{{
+		ID: "sess-mimo", Client: model.ClientMiMoCode, Directory: "/m", Project: "proj-M", Title: "mimo-work", FirstTS: 1000, LastTS: 2000,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	// 正常行用正式名落库；legacy 残留行先按新名 INSERT 再 UPDATE 改回 legacy
+	// （v4 库的兼容 trigger 会拦截旧名 INSERT，UPDATE 不触发它——以此模拟
+	// 绕过正常写入路径的异常残留数据）。
+	if _, err := db.UpsertMessages(context.Background(), q.db, []model.Message{
+		{ID: "msg-mimo-1", SessionID: "sess-mimo", Client: model.ClientMiMoCode, Date: "2026-07-10", TS: 3000, Model: "mimo-pro", TotalTokens: 400},
+		{ID: "msg-mimo-2", SessionID: "sess-mimo", Client: model.ClientMiMoCode, Date: "2026-07-10", TS: 3100, Model: "mimo-pro", TotalTokens: 60},
+		{ID: "msg-legacy-leak", SessionID: "sess-mimo", Client: model.ClientMiMoCode, Date: "2026-07-10", TS: 3200, TotalTokens: 10},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.db.Exec(
+		`UPDATE messages SET client=? WHERE id='msg-legacy-leak'`, model.LegacyClientXiaomiMiMoCode); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, _, err := q.AggregateDimensionView(context.Background(), bothDates, DimensionView{Dimensions: []string{"client"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawMiMo, sawClaude bool
+	for _, r := range rows {
+		if strings.Contains(strings.Join(r.Keys, "\x00"), "Xiaomi MiMo") {
+			t.Errorf("client 维度渲染不应外泄 legacy 长名,行键: %v", r.Keys)
+		}
+		switch r.Keys[0] {
+		case model.ClientMiMoCode:
+			sawMiMo = true
+			// 正常行（460）与防御兜底行（10）合并为一行显示。
+			if r.Agg.Requests != 3 || r.Agg.TotalTokens != 470 {
+				t.Errorf("MiMo Code 行聚合错误: requests=%d total=%d, want 3/470", r.Agg.Requests, r.Agg.TotalTokens)
+			}
+		case model.ClientClaudeCode:
+			sawClaude = true
+		}
+	}
+	if !sawMiMo || !sawClaude {
+		t.Errorf("应同时出现 MiMo Code 与 Claude Code 两行,实际: %+v", rows)
+	}
+
+	// Summary 的 Clients 计数与分组侧兜底口径一致：canonical + legacy 残留
+	// 经 ClientDisplayName 归一后与 Claude Code 合计 2 个客户端；若
+	// distinctClientCount 缺该归一会计成 3，断言即失败。
+	summary, err := q.Summary(context.Background(), bothDates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLine := ui.Bi("Clients", "客户端数") + ": 2"
+	if !strings.Contains(summary, wantLine) {
+		t.Errorf("Summary 客户端数应为 2（Claude Code + MiMo 归一合并）, want 片段 %q:\n%s", wantLine, summary)
+	}
+}
+
+// SessionRows 的 client 列正常路径返回落库正式名 MiMo Code（CLI sessions 表格
+// 与 dashboard Top Sessions 共用）；防御路径：异常残留 legacy 行兜底渲染。
+func TestSessionRows_ClientRendersMiMoCodeWithLegacyFallback(t *testing.T) {
+	q := setupMessageFixture(t)
+	if _, err := db.UpsertSessionMeta(context.Background(), q.db, []model.Session{{
+		ID: "sess-mimo", Client: model.ClientMiMoCode, Directory: "/m", Project: "proj-M", Title: "mimo-work", FirstTS: 1000, LastTS: 2000,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, []model.Message{{
+		ID: "msg-mimo-1", SessionID: "sess-mimo", Client: model.ClientMiMoCode, Date: "2026-07-09", TS: 1500, TotalTokens: 500,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	// 异常残留：先按新名 INSERT 再 UPDATE 改回 legacy（trigger 只拦 INSERT，
+	// 模拟绕过正常写入路径的残留数据）。
+	if _, err := db.UpsertSessionMeta(context.Background(), q.db, []model.Session{{
+		ID: "sess-legacy", Client: model.ClientMiMoCode, Title: "legacy-work", FirstTS: 100, LastTS: 200,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertMessages(context.Background(), q.db, []model.Message{
+		{ID: "msg-legacy-1", SessionID: "sess-legacy", Client: model.ClientMiMoCode, Date: "2026-07-09", TS: 1600, TotalTokens: 50},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.db.Exec(`UPDATE sessions SET client=? WHERE id='sess-legacy'`, model.LegacyClientXiaomiMiMoCode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.db.Exec(`UPDATE messages SET client=? WHERE id='msg-legacy-1'`, model.LegacyClientXiaomiMiMoCode); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := q.SessionRows(context.Background(), []string{"2026-07-09"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Client == model.LegacyClientXiaomiMiMoCode {
+			t.Errorf("SessionRows.Client 不应外泄 legacy 长名: %+v", r)
+		}
+	}
+	var sawMiMo, sawFallback bool
+	for _, r := range rows {
+		switch r.Title {
+		case "mimo-work":
+			sawMiMo = true
+			if r.Client != model.ClientMiMoCode {
+				t.Errorf("正常行 Client = %q, want %q", r.Client, model.ClientMiMoCode)
+			}
+		case "legacy-work":
+			sawFallback = true
+			if r.Client != model.ClientMiMoCode {
+				t.Errorf("legacy 残留行应兜底渲染为 %q, got %q", model.ClientMiMoCode, r.Client)
+			}
+		}
+	}
+	if !sawMiMo || !sawFallback {
+		t.Errorf("应同时出现正常行与 legacy 残留行,实际: %+v", rows)
+	}
+	// CLI 渲染出口同步不外泄长名。
+	out, err := q.Sessions(context.Background(), []string{"2026-07-09"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, model.ClientMiMoCode) || strings.Contains(out, "Xiaomi MiMo") {
+		t.Errorf("Sessions 渲染应显示 %q 且不外泄 legacy 长名:\n%s", model.ClientMiMoCode, out)
 	}
 }
 

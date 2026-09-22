@@ -508,9 +508,11 @@ ORDER BY created_at, request_id;`
 
 // GetMessageIDsByDisplayNames 按显示名列表查询 messages.id。
 //
-// 注意（C2 修复）：传入的是显示名（如 "Claude Code"），非配置 key（如 "claude"）。
-// messages.client 字段存的是显示名（collector 写入时经 model.RawClientToClient 映射）。
-// 配置 key → 显示名列表的映射见 model.ClientToDisplayNames。
+// 注意（C2 修复）：传入的是显示名（如 "Claude Code"、"MiMo Code"），非配置 key
+// （如 "claude"、"mimocode"）。messages.client 字段存的是显示名（collector 写入
+// 时经 model.RawClientToClient 映射）。配置 key → 显示名列表的映射见
+// model.ClientToDisplayNames。历史 legacy 长名 "Xiaomi MiMo / MiMo Code" 已由
+// migrateV4 改名并经兼容 trigger 阻止回写，正常查询不会遇到。
 //
 // 利用 messages 表主键 (client, id) 的前缀匹配（schema.go:102）。
 // 空列表返回空切片（不生成非法的 IN () SQL）。

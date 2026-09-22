@@ -21,7 +21,9 @@ import (
 // ~/.local/share/mimocode/mimocode.db 采集逐消息 token 用量。
 // 单源采集：message 表 JOIN session 表，取 completed 且带 tokens.total 的
 // assistant 行。event 表当前为空，不做双源；session 表无 model 列，无会话级
-// 模型兜底。Desktop 与 CLI 共库且库内无来源标记，统一显示为 Xiaomi MiMo / MiMo Code。
+// 模型兜底。Desktop 与 CLI 共库且库内无来源标记，统一归为正式 client
+// MiMo Code（model.ClientMiMoCode）；旧长名仅作为数据库迁移与旧版回写兼容
+// 的 legacy 值存在（见 model.LegacyClientXiaomiMiMoCode）。
 type MimoCodeCollector struct {
 	cfg    *config.Config
 	dbPath string
@@ -248,7 +250,7 @@ func scanMimoCodeRows(ctx context.Context, db *sql.DB, query string, args []inte
 		sd := sessionInfos[sid]
 		sessions = append(sessions, model.Session{
 			ID:        sid,
-			Client:    model.ClientXiaomiMiMoCode,
+			Client:    model.ClientMiMoCode,
 			Directory: sd.directory,
 			Project:   projectNameFromDir(sd.directory),
 			Title:     sd.title,
@@ -271,7 +273,7 @@ func mimoCodeMessage(info mimoCodeInfo, session mimoSessionData) model.Message {
 	return model.Message{
 		ID:                info.ID,
 		SessionID:         info.SessionID,
-		Client:            model.ClientXiaomiMiMoCode,
+		Client:            model.ClientMiMoCode,
 		Date:              time.UnixMilli(info.Time.Completed).Format("2006-01-02"),
 		TS:                info.Time.Completed,
 		Model:             info.ModelID,

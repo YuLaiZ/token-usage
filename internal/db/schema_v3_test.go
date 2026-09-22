@@ -49,13 +49,14 @@ func rawRouterDataSource(t *testing.T, q interface {
 	return ds
 }
 
-// TestFreshDBReachesV3：全新库 Open 后 user_version=3 且 raw_router_logs 含
-// data_source 列、新行默认 'proxy'。
+// TestFreshDBReachesV3：全新库 Open 后 v3 合同达成（user_version>=3 且
+// raw_router_logs 含 data_source 列、新行默认 'proxy'）。最终 schema 版本由
+// schema_v4_test.go 的 TestFreshDBReachesV4 断言。
 func TestFreshDBReachesV3(t *testing.T) {
 	d := openFreshDB(t)
 	defer d.Close()
-	if got := userVersion(t, d); got != 3 {
-		t.Fatalf("fresh DB user_version = %d, want 3", got)
+	if got := userVersion(t, d); got < 3 {
+		t.Fatalf("fresh DB user_version = %d, want >= 3", got)
 	}
 	if !rawRouterHasDataSource(t, d) {
 		t.Fatal("fresh DB raw_router_logs 应含 data_source 列")
@@ -82,8 +83,8 @@ func TestV2UpgradeBackfillsDataSource(t *testing.T) {
 		t.Fatalf("open v2 db: %v", err)
 	}
 	defer upgraded.Close()
-	if got := userVersion(t, upgraded); got != 3 {
-		t.Fatalf("upgraded user_version = %d, want 3", got)
+	if got := userVersion(t, upgraded); got < 3 {
+		t.Fatalf("upgraded user_version = %d, want >= 3", got)
 	}
 	if !rawRouterHasDataSource(t, upgraded) {
 		t.Fatal("升级后 raw_router_logs 应含 data_source 列")
@@ -175,6 +176,41 @@ func sqlDumpV2(t *testing.T, path string) error {
 	}
 	defer raw.Close()
 	stmts := []string{
+		// v2 真实库含 v1 布局的 messages/sessions（migrateV4 会折叠改名这两表
+		// 并建 trigger，全部列被引用），夹具缺表缺列都会让升级链误报。
+		`CREATE TABLE messages (
+			id                  TEXT NOT NULL,
+			session_id          TEXT NOT NULL,
+			client              TEXT NOT NULL,
+			date                TEXT NOT NULL,
+			ts                  INTEGER NOT NULL,
+			model               TEXT NOT NULL DEFAULT '',
+			provider            TEXT NOT NULL DEFAULT '',
+			router_provider     TEXT NOT NULL DEFAULT '',
+			router_model        TEXT NOT NULL DEFAULT '',
+			router_name         TEXT NOT NULL DEFAULT '',
+			directory           TEXT NOT NULL DEFAULT '',
+			project             TEXT NOT NULL DEFAULT '',
+			input_tokens        INTEGER NOT NULL DEFAULT 0,
+			fresh_input_tokens  INTEGER NOT NULL DEFAULT 0,
+			output_tokens       INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+			cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+			reasoning_tokens    INTEGER NOT NULL DEFAULT 0,
+			total_tokens        INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (client, id)
+		)`,
+		`CREATE TABLE sessions (
+			id        TEXT NOT NULL,
+			client    TEXT NOT NULL,
+			directory TEXT NOT NULL DEFAULT '',
+			project   TEXT NOT NULL DEFAULT '',
+			title     TEXT NOT NULL DEFAULT '',
+			parent_id TEXT NOT NULL DEFAULT '',
+			first_ts  INTEGER NOT NULL DEFAULT 0,
+			last_ts   INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (id, client)
+		)`,
 		`CREATE TABLE raw_router_logs (
 			request_id              TEXT NOT NULL,
 			message_id              TEXT NOT NULL DEFAULT '',

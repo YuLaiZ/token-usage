@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/YuLaiZ/token-usage/internal/db"
+	"github.com/YuLaiZ/token-usage/internal/model"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
@@ -460,8 +461,13 @@ func aliasLookup(aliases map[string]string, raw string) string {
 
 // displayKey 把 SQL 返回的原始键值映射为显示键:provider 应用 alias 与未归因,
 // project 应用未分类,hour 补 ":00" 后缀表示小时起点,weekday 映射为双语星期
-// 名,client/model 保持源字段空值。
+// 名,client 应用 legacy 名防御兜底（mimocode 正式落库名已是 MiMo Code，
+// migrateV4 与兼容 trigger 保证库内无 legacy 名；此处仅防御异常残留的未迁移
+// 旧数据,见 model.ClientDisplayName）,model 保持源字段空值。
 func (d dimension) displayKey(raw string, aliases map[string]string) string {
+	if d.name == "client" {
+		return model.ClientDisplayName(raw)
+	}
 	if d.name == "hour" {
 		// strftime '%H' 恒为两位数字,后缀仅作显示;防御非两位形态原样返回。
 		if len(raw) == 2 {
@@ -1164,6 +1170,11 @@ func (q *Querier) SessionRows(ctx context.Context, dates []string) ([]SessionRow
 		); err != nil {
 			return nil, fmt.Errorf("%s: %w", ui.Bi("scan session detail rows failed", "扫描会话明细结果失败"), err)
 		}
+		// client 正常落库即显示名（MiMo Code），此处仅做 legacy 名防御兜底
+		// （异常残留的未迁移旧数据渲染为正式名，不外泄长名；两个消费方 CLI
+		// sessions 表格与 dashboard Top Sessions 共用）；project 的「(未分类)」
+		// 空值映射仍留在各渲染侧。
+		row.Client = model.ClientDisplayName(row.Client)
 		result = append(result, row)
 	}
 	if err := rows.Err(); err != nil {
@@ -1295,7 +1306,9 @@ func (q *Querier) Summary(ctx context.Context, dates []string) (string, error) {
 }
 
 // distinctClientCount 返回日期范围内按 foldKey 大小写折叠去重后的客户端数,
-// 与 client 维度分组严格同键同语义;client 基数低,DISTINCT 拉取后 Go 侧计数。
+// 与 client 维度分组严格同键同语义(含 legacy 名防御兜底:异常残留的旧名先经
+// ClientDisplayName 归一,与 displayKey 分组合并口径一致);client 基数低,
+// DISTINCT 拉取后 Go 侧计数。
 func (q *Querier) distinctClientCount(ctx context.Context, placeholders string, args []interface{}) (int64, error) {
 	rows, err := q.queryContext(ctx, fmt.Sprintf(
 		"SELECT DISTINCT client FROM messages WHERE date IN (%s)", placeholders), args...)
@@ -1309,7 +1322,7 @@ func (q *Querier) distinctClientCount(ctx context.Context, placeholders string, 
 		if err := rows.Scan(&client); err != nil {
 			return 0, fmt.Errorf("%s: %w", ui.Bi("scan client rows failed", "扫描客户端行失败"), err)
 		}
-		key := foldKey(client)
+		key := foldKey(model.ClientDisplayName(client))
 		if !seen[key] {
 			seen[key] = true
 		}

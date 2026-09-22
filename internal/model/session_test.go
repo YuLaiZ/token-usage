@@ -18,7 +18,7 @@ func TestRawClientToClient_Mapping(t *testing.T) {
 		{RawClientCodexApp, ClientCodexApp},
 		{RawClientWorkBuddy, ClientWorkBuddy},
 		{RawClientZhipuAutoClaw, ClientZhipuAutoClaw},
-		{RawClientMimoCode, ClientXiaomiMiMoCode},
+		{RawClientMimoCode, ClientMiMoCode},
 	}
 
 	for _, tt := range tests {
@@ -66,22 +66,62 @@ func TestRawClientToClient_AutoClaw(t *testing.T) {
 	}
 }
 
-// TestRawClientToClient_MimoCode 固定 raw client 字符串值与显示名。
-// 配置 key/raw 值/显示名三者刻意不同（mimocode / "mimocode" / Xiaomi MiMo / MiMo Code），
-// 防止后续重构漂移；Desktop 与 CLI 共库，单显示名。
+// TestRawClientToClient_MimoCode 固定 raw client 字符串值与正式 client 名。
+// 配置 key/raw 值/正式名三者刻意不同（mimocode / "mimocode" / "MiMo Code"），
+// 防止后续重构漂移；Desktop 与 CLI 共库且不可区分，统一归为 MiMo Code
+// （未来可区分时可能另行拆分 MiMo Desktop）。LegacyClientXiaomiMiMoCode
+// 仅供 migration 与旧版回写兼容 trigger 使用（见 db.migrateV4），不是正式 client。
 func TestRawClientToClient_MimoCode(t *testing.T) {
 	got, ok := RawClientToClient[RawClientMimoCode]
 	if !ok {
 		t.Fatalf("RawClientToClient[%q] not found", RawClientMimoCode)
 	}
-	if got != ClientXiaomiMiMoCode {
-		t.Errorf("RawClientToClient[%q] = %q, want %q", RawClientMimoCode, got, ClientXiaomiMiMoCode)
+	if got != ClientMiMoCode {
+		t.Errorf("RawClientToClient[%q] = %q, want %q", RawClientMimoCode, got, ClientMiMoCode)
 	}
 	if RawClientMimoCode != "mimocode" {
 		t.Errorf("RawClientMimoCode = %q, want %q", RawClientMimoCode, "mimocode")
 	}
-	if ClientXiaomiMiMoCode != "Xiaomi MiMo / MiMo Code" {
-		t.Errorf("ClientXiaomiMiMoCode = %q, want %q", ClientXiaomiMiMoCode, "Xiaomi MiMo / MiMo Code")
+	if ClientMiMoCode != "MiMo Code" {
+		t.Errorf("ClientMiMoCode = %q, want %q", ClientMiMoCode, "MiMo Code")
+	}
+	if LegacyClientXiaomiMiMoCode != "Xiaomi MiMo / MiMo Code" {
+		t.Errorf("LegacyClientXiaomiMiMoCode = %q, want %q", LegacyClientXiaomiMiMoCode, "Xiaomi MiMo / MiMo Code")
+	}
+	if ClientMiMoCode == LegacyClientXiaomiMiMoCode {
+		t.Error("正式名与 legacy 名不得相等")
+	}
+}
+
+// TestClientToDisplayNames_MimoCode：mimocode 的查询过滤名必须是正式落库名
+// MiMo Code（router backfill 等按显示名查 messages 的路径据此命中）。
+func TestClientToDisplayNames_MimoCode(t *testing.T) {
+	names, ok := ClientToDisplayNames["mimocode"]
+	if !ok {
+		t.Fatal("ClientToDisplayNames 缺少 mimocode 配置 key")
+	}
+	if len(names) != 1 || names[0] != ClientMiMoCode {
+		t.Errorf("ClientToDisplayNames[mimocode] = %v, want [%q]", names, ClientMiMoCode)
+	}
+}
+
+// TestClientDisplayName 是防御性历史兼容兜底：legacy 长名只在异常残留
+// （未迁移库被直接查询等）时出现，渲染为正式名；其余 client 恒等返回。
+func TestClientDisplayName(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{LegacyClientXiaomiMiMoCode, ClientMiMoCode},
+		{ClientMiMoCode, ClientMiMoCode},
+		{ClientClaudeCode, ClientClaudeCode},
+		{ClientZCode, ClientZCode},
+		{"", ""},
+		{"unknown", "unknown"},
+	}
+	for _, c := range cases {
+		if got := ClientDisplayName(c.in); got != c.want {
+			t.Errorf("ClientDisplayName(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 

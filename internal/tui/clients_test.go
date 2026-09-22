@@ -7,12 +7,27 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func TestClientLabel_MimoCodeShowsBothProducts(t *testing.T) {
-	if got := clientLabel("mimocode"); got != "Xiaomi MiMo / MiMo Code" {
-		t.Errorf("clientLabel(mimocode) = %q", got)
+// TestClientsPage_MimoCodeShowsConfigKey 验证列表页直接显示配置键 mimocode，
+// 不再用旧长显示名 "Xiaomi MiMo / MiMo Code"（其余客户端本就按配置键展示）。
+func TestClientsPage_MimoCodeShowsConfigKey(t *testing.T) {
+	edit := &config.Config{Clients: map[string]config.Client{"mimocode": {Enabled: true}}}
+	a := newAppForTest(edit, edit, nil)
+	p := newClientsPage(a)
+	view := p.View()
+	if !contains(view, "mimocode") {
+		t.Errorf("客户端列表应显示配置键 mimocode, got:\n%s", view)
 	}
-	if got := clientLabel("codex"); got != "codex" {
-		t.Errorf("clientLabel(codex) = %q, want unchanged key", got)
+	if contains(view, "Xiaomi") {
+		t.Errorf("客户端列表不应再出现旧长显示名, got:\n%s", view)
+	}
+	// 详情页标题与视图同样按配置键展示（防后续在详情页重新引入显示名映射）。
+	detail := newClientDetailPage(a, "mimocode")
+	if got := detail.title(); !contains(got, "mimocode") || contains(got, "Xiaomi") {
+		t.Errorf("详情页 title = %q, 应含配置键 mimocode 且无旧长显示名", got)
+	}
+	dv := detail.View()
+	if !contains(dv, "mimocode") || contains(dv, "Xiaomi") {
+		t.Errorf("详情页 View 应含配置键 mimocode 且无旧长显示名, got:\n%s", dv)
 	}
 }
 

@@ -55,11 +55,12 @@ func userVersion(t *testing.T, d *DB) int {
 	return v
 }
 
-// TestSchemaCurrentVersionIsThree：当前 schema 版本常量守护（v3 起 data_source
-// 列合同由 schema_v3_test.go 断言；升级 schema 时同步本断言）。
-func TestSchemaCurrentVersionIsThree(t *testing.T) {
-	if currentSchemaVersion != 3 {
-		t.Fatalf("currentSchemaVersion = %d, want 3", currentSchemaVersion)
+// TestSchemaCurrentVersionIsFour：当前 schema 版本常量守护（v3 起 data_source
+// 列合同由 schema_v3_test.go、v4 起 mimocode 改名与兼容 trigger 合同由
+// schema_v4_test.go 断言；升级 schema 时同步本断言）。
+func TestSchemaCurrentVersionIsFour(t *testing.T) {
+	if currentSchemaVersion != 4 {
+		t.Fatalf("currentSchemaVersion = %d, want 4", currentSchemaVersion)
 	}
 }
 
@@ -213,7 +214,42 @@ func sqlDumpV1(t *testing.T, path string) error {
 	}
 	defer raw.Close()
 	stmts := []string{
-		`CREATE TABLE messages (id TEXT NOT NULL, client TEXT NOT NULL, date TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (client, id))`,
+		// messages/sessions 复刻 v1 全列布局（migrateV1 的 DDL 同款）：v4 冻结
+		// 语句（折叠改名与兼容 trigger，语义冻结自 v0.1.10 DAO upsert 合同）
+		// 引用两表全部历史列，列子集会让升级链误报 no such column。
+		`CREATE TABLE messages (
+			id                  TEXT NOT NULL,
+			session_id          TEXT NOT NULL,
+			client              TEXT NOT NULL,
+			date                TEXT NOT NULL,
+			ts                  INTEGER NOT NULL,
+			model               TEXT NOT NULL DEFAULT '',
+			provider            TEXT NOT NULL DEFAULT '',
+			router_provider     TEXT NOT NULL DEFAULT '',
+			router_model        TEXT NOT NULL DEFAULT '',
+			router_name         TEXT NOT NULL DEFAULT '',
+			directory           TEXT NOT NULL DEFAULT '',
+			project             TEXT NOT NULL DEFAULT '',
+			input_tokens        INTEGER NOT NULL DEFAULT 0,
+			fresh_input_tokens  INTEGER NOT NULL DEFAULT 0,
+			output_tokens       INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+			cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+			reasoning_tokens    INTEGER NOT NULL DEFAULT 0,
+			total_tokens        INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (client, id)
+		)`,
+		`CREATE TABLE sessions (
+			id        TEXT NOT NULL,
+			client    TEXT NOT NULL,
+			directory TEXT NOT NULL DEFAULT '',
+			project   TEXT NOT NULL DEFAULT '',
+			title     TEXT NOT NULL DEFAULT '',
+			parent_id TEXT NOT NULL DEFAULT '',
+			first_ts  INTEGER NOT NULL DEFAULT 0,
+			last_ts   INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (id, client)
+		)`,
 		`CREATE TABLE raw_router_logs (
 			request_id              TEXT NOT NULL,
 			message_id              TEXT NOT NULL DEFAULT '',

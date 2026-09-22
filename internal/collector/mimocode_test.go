@@ -193,8 +193,8 @@ func TestMimoCodeCollect_FullScan_FieldMapping(t *testing.T) {
 	if m.ID != "msg_1" || m.SessionID != "ses_1" {
 		t.Errorf("ID/SessionID = %q/%q, want msg_1/ses_1", m.ID, m.SessionID)
 	}
-	if m.Client != model.ClientXiaomiMiMoCode {
-		t.Errorf("Client = %q, want %q", m.Client, model.ClientXiaomiMiMoCode)
+	if m.Client != model.ClientMiMoCode {
+		t.Errorf("Client = %q, want %q", m.Client, model.ClientMiMoCode)
 	}
 	if m.TS != 1789031164233 || m.Date != time.UnixMilli(1789031164233).Format("2006-01-02") {
 		t.Errorf("TS/Date = %d/%q", m.TS, m.Date)
@@ -610,7 +610,7 @@ func TestMimoCodeCollect_SessionMetadata(t *testing.T) {
 		byID[s.ID] = s
 	}
 	p := byID["ses_parent"]
-	if p.Client != model.ClientXiaomiMiMoCode || p.Directory != "/home/u/parent" || p.Project != "parent" ||
+	if p.Client != model.ClientMiMoCode || p.Directory != "/home/u/parent" || p.Project != "parent" ||
 		p.ParentID != "" || p.FirstTS != 1 || p.LastTS != 2 {
 		t.Errorf("parent session = %+v", p)
 	}

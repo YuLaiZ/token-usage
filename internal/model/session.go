@@ -2,16 +2,37 @@
 package model
 
 const (
-	ClientClaudeCode     = "Claude Code"
-	ClientClaudeDesktop  = "Claude Desktop"
-	ClientOpenCode       = "OpenCode"
-	ClientCodexCLI       = "Codex CLI"
-	ClientCodexApp       = "Codex App"
-	ClientWorkBuddy      = "WorkBuddy"
-	ClientZCode          = "ZCode"
-	ClientZhipuAutoClaw  = "Zhipu-AutoClaw"
-	ClientXiaomiMiMoCode = "Xiaomi MiMo / MiMo Code"
+	ClientClaudeCode    = "Claude Code"
+	ClientClaudeDesktop = "Claude Desktop"
+	ClientOpenCode      = "OpenCode"
+	ClientCodexCLI      = "Codex CLI"
+	ClientCodexApp      = "Codex App"
+	ClientWorkBuddy     = "WorkBuddy"
+	ClientZCode         = "ZCode"
+	ClientZhipuAutoClaw = "Zhipu-AutoClaw"
+	// ClientMiMoCode 是 mimocode 的当前正式 client 名：collector 落库
+	// （messages.client / sessions.client 及主键成分）、RawClientToClient 映射
+	// 与查询过滤全部使用它。当前数据源（Desktop/CLI 共库）无法区分两个产品，
+	// 统一归为 MiMo Code；若未来数据源可可靠区分，可能像 Claude Desktop 一样
+	// 另行拆分 MiMo Desktop。
+	ClientMiMoCode = "MiMo Code"
 )
+
+// LegacyClientXiaomiMiMoCode 是 v0.1.10 及之前版本写入 messages/sessions 的
+// mimocode 落库名。仅用于：db.migrateV4 存量迁移、旧版二进制回滚后继续写旧名
+// 的兼容 trigger（BEFORE INSERT 改写为 ClientMiMoCode）、以及 ClientDisplayName
+// 对异常残留旧数据的防御性渲染。它不代表任何当前正式 client。
+const LegacyClientXiaomiMiMoCode = "Xiaomi MiMo / MiMo Code"
+
+// ClientDisplayName 是防御性的历史兼容兜底：migrateV4 已把存量旧名改名、
+// trigger 已把旧版二进制回写的旧名改写，正常数据落库即 ClientMiMoCode；
+// 此映射仅防御异常残留（如迁移未完成的库被直接查询），不得作为主实现依赖。
+func ClientDisplayName(c string) string {
+	if c == LegacyClientXiaomiMiMoCode {
+		return ClientMiMoCode
+	}
+	return c
+}
 
 const (
 	RawClientClaudeCode    = "claude_code"
@@ -34,7 +55,7 @@ var RawClientToClient = map[string]string{
 	RawClientWorkBuddy:     ClientWorkBuddy,
 	RawClientZCode:         ClientZCode,
 	RawClientZhipuAutoClaw: ClientZhipuAutoClaw,
-	RawClientMimoCode:      ClientXiaomiMiMoCode,
+	RawClientMimoCode:      ClientMiMoCode,
 }
 
 // ClientToDisplayNames 配置 key（cfg.Clients map key，如 "claude"）→ 显示名列表的映射。
@@ -58,8 +79,9 @@ var ClientToDisplayNames = map[string][]string{
 	"zcode":     {ClientZCode},
 	"autoclaw":  {ClientZhipuAutoClaw},
 	// mimocode 一个 key 覆盖 Xiaomi MiMo Desktop 与 MiMo Code CLI（两者共用同一
-	// ~/.local/share/mimocode/mimocode.db，库内无 Desktop/CLI 标记，不拆显示名）。
-	"mimocode": {ClientXiaomiMiMoCode},
+	// ~/.local/share/mimocode/mimocode.db，库内无 Desktop/CLI 标记，统一归为
+	// ClientMiMoCode；未来可可靠区分时可能另行拆分 MiMo Desktop）。
+	"mimocode": {ClientMiMoCode},
 }
 
 type Message struct {

@@ -60,7 +60,7 @@
 | WorkBuddy | JSONL (primary source) + SQLite (title lookup only) | `~/.workbuddy/projects`, `~/.workbuddy/workbuddy.db` |
 | ZCode | SQLite | `~/.zcode/cli/db/db.sqlite` |
 | Zhipu-AutoClaw | JSONL (full scan by file) | `~/.openclaw-autoclaw/agents` |
-| Xiaomi MiMo / MiMo Code | SQLite (one shared database) | `~/.local/share/mimocode/mimocode.db` |
+| MiMo Code (Xiaomi MiMo Desktop / MiMo Code CLI) | SQLite (one shared database) | `~/.local/share/mimocode/mimocode.db` |
 
 **Router middleware**:
 
@@ -109,6 +109,14 @@ The schema is in `migrateV1` in `internal/db/schema.go` (`user_version=1`).
 | `collection_errors` | Collection-failure records with `retry_count` and `resolved` state. |
 | `file_scan_log` | File-scan checkpoints (`mtime`/`size`/`last_line_offset`). |
 | `raw_client_sessions` | Legacy session staging table; unused by the current production path. |
+
+### Schema Migrations
+
+`user_version` gates forward-only migrations, each committed in a single transaction: v2 rebuilt `file_scan_log` as the startup scan-gate state table; v3 added `raw_router_logs.data_source` (separating proxy-direct rows from `codex_session` sync rows); v4 renamed the stored mimocode client from the legacy `Xiaomi MiMo / MiMo Code` to `MiMo Code` in both `messages` and `sessions`. Because `client` is part of both tables' primary keys, v4 does not run a bare UPDATE: it folds legacy rows into `MiMo Code` rows via the same `ON CONFLICT` semantics as the DAO upserts (deterministic merge when the same id exists under both names — no primary-key conflict, no duplicated tokens), deletes the legacy rows, then creates two persistent `BEFORE INSERT` triggers that rewrite any legacy-name write coming from an older rolled-back binary into a `MiMo Code` upsert, and finally bumps `user_version` to 4.
+
+### Client Identity
+
+The canonical client name for the mimocode source is `MiMo Code`: the collector writes it to `messages.client`/`sessions.client`, and queries, the dashboard, and CSV exports read it back directly. `mimocode` is only the config key (config.toml, CLI flags, and the config TUI). The current data source (one SQLite database shared by Xiaomi MiMo Desktop and MiMo Code CLI) cannot distinguish the two products, so all collected data is attributed to `MiMo Code`; if the source becomes reliably distinguishable in the future, a separate `MiMo Desktop` client may be split out like Claude Desktop. The legacy long name survives only as `model.LegacyClientXiaomiMiMoCode` for the v4 migration, the rollback-compatibility triggers, and a defensive display fallback — it is not a current client name.
 
 ### Token Columns in `messages`
 

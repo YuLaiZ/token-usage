@@ -60,7 +60,7 @@
 | WorkBuddy | JSONL（主源）+ SQLite（仅查 title） | `~/.workbuddy/projects`、`~/.workbuddy/workbuddy.db` |
 | ZCode | SQLite | `~/.zcode/cli/db/db.sqlite` |
 | Zhipu-AutoClaw | JSONL（全量按文件扫描） | `~/.openclaw-autoclaw/agents` |
-| Xiaomi MiMo / MiMo Code | SQLite（共用同一数据库） | `~/.local/share/mimocode/mimocode.db` |
+| MiMo Code（Xiaomi MiMo Desktop / MiMo Code CLI） | SQLite（共用同一数据库） | `~/.local/share/mimocode/mimocode.db` |
 
 **路由中间件**：
 
@@ -109,6 +109,14 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 | `collection_errors` | 采集失败记录，带 retry_count/resolved 状态 |
 | `file_scan_log` | 文件扫描断点（mtime/size/last_line_offset） |
 | `raw_client_sessions` | 旧版 session staging 表，当前生产路径不使用 |
+
+### Schema 迁移
+
+`user_version` 门控向前迁移，每个迁移单事务提交：v2 重建 `file_scan_log` 为 startup 跳过门状态表；v3 为 `raw_router_logs` 加 `data_source` 列（区分 proxy 直录与 `codex_session` 同步行）；v4 把 `messages` 与 `sessions` 中存量 mimocode client 从 legacy 长名 `Xiaomi MiMo / MiMo Code` 改名为 `MiMo Code`。由于 `client` 是两表主键成分，v4 不是裸 UPDATE：先按与 DAO upsert 相同的 `ON CONFLICT` 语义把 legacy 行折叠进 `MiMo Code` 行（同 id 新旧名并存时确定性合并——不报主键冲突、token 不重复计数），删除 legacy 行，再创建两个持久化 `BEFORE INSERT` trigger 把旧版回滚二进制写入的 legacy 名改写为 `MiMo Code` upsert，最后才把 `user_version` 提升到 4。
+
+### Client 身份
+
+mimocode 数据源的正式 client 名是 `MiMo Code`：collector 写入 `messages.client`/`sessions.client`，query、dashboard、CSV 导出直接读回。`mimocode` 只是配置键（config.toml、CLI 参数与配置 TUI）。当前数据源（Xiaomi MiMo Desktop 与 MiMo Code CLI 共用的同一 SQLite 库）无法区分两个产品，全部采集数据统一归为 `MiMo Code`；未来数据源可可靠区分时，可能像 Claude Desktop 一样另行拆分 `MiMo Desktop`。旧长名仅以 `model.LegacyClientXiaomiMiMoCode` 形式存在于 v4 迁移、旧版回滚兼容 trigger 与防御性展示兜底中，不是当前 client 名。
 
 ### messages 表 token 字段
 
