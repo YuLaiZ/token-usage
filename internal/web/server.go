@@ -1,42 +1,53 @@
-// Package web 提供 serve 命令的本地只读 HTTP 服务:为内嵌的 HTML 仪表板
-// 提供 JSON(/api/meta、/api/dashboard)与 SVG(/api/chart/{kind}.svg)接口,
-// 以及静态资产(/ 与 /assets/)。全部数据接口只读,服务端不写数据库与配置;
-// 本地仅涉及生命周期文件 serve.json/serve.log(由 cli 层维护);无 CORS
-// 头,按同源使用;响应统一禁用缓存(开发期所见即所得)。
+// Package web 提供 serve 命令的本地 HTTP 服务:为仪表板提供 JSON
+// (/api/meta、/api/dashboard、/api/config)与静态资产(/ 与 /assets/)。
+// 数据接口中 meta/dashboard 只读;config 接口经 ConfigStore 走 configapp
+// 的锁内原子写回。本地仅涉及生命周期文件 serve.json/serve.log(由 cli 层
+// 维护);无 CORS 头,按同源使用;响应统一禁用缓存(开发期所见即所得)。
 package web
 
 import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/querier"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
-// server 持有 HTTP 服务的只读依赖:查询器、版本串与可选的 provider 显示别名。
+// server 持有 HTTP 服务的依赖:查询器、版本串、每请求配置源与配置读写
+// store。configFn 与 configStore 均可缺省(测试/最小装配):无 configFn 时
+// provider 别名与自定义视图不生效;无 configStore 时 /api/config 返回 501。
 type server struct {
-	q               *querier.Querier
-	version         string
-	providerAliases map[string]string
+	q           *querier.Querier
+	version     string
+	configFn    func() *config.Config
+	configStore ConfigStore
 }
 
 // ServerOption 是 NewServer 的可选参数。
 type ServerOption func(*server)
 
-// WithProviderAliases 注入 [provider_aliases] 配置。仅 provider 维度消费
-// (与 cli 侧 dimensionAliases 同构,见 aliasesFor);缺省时 provider 维度
-// 不做别名合并,其余维度语义不受影响。
-func WithProviderAliases(m map[string]string) ServerOption {
-	return func(s *server) { s.providerAliases = m }
+// WithConfigProvider 注入每请求配置源:provider 维度别名与自定义视图
+// (query.subqueries)按当前配置即时生效;返回 nil 视为无配置。配置在
+// 生产装配方每请求重读磁盘快照(serve_dashboard.go),配置保存与外部
+// 编辑都在下一次请求即生效。
+func WithConfigProvider(fn func() *config.Config) ServerOption {
+	return func(s *server) { s.configFn = fn }
+}
+
+// WithConfigStore 注入配置读写 store(/api/config 的 GET/PUT)。
+func WithConfigStore(store ConfigStore) ServerOption {
+	return func(s *server) { s.configStore = store }
 }
 
 // NewServer 构造本地仪表板服务的 HTTP Handler。路由:
 //
-//	GET /api/meta              服务版本与数据边界
-//	GET /api/dashboard         区间汇总 + 8 维度行 + 活动热力矩阵 + Top sessions
-//	GET /api/chart/{kind}.svg  单维度柱状/饼图与热力矩阵(独立取图接口)
-//	GET /                      内嵌仪表板首页
-//	GET /assets/               内嵌静态资产
+//	GET /api/meta       服务版本与数据边界
+//	GET /api/dashboard  区间汇总 + 四维度行 + 日期×小时热力 + 自定义视图 + Top sessions
+//	GET /api/config     配置编辑模型与 revision
+//	PUT /api/config     应用配置草稿(revision 冲突 409/校验失败 400)
+//	GET /               内嵌仪表板首页
+//	GET /assets/        内嵌静态资产
 func NewServer(q *querier.Querier, version string, opts ...ServerOption) http.Handler {
 	s := &server{q: q, version: version}
 	for _, opt := range opts {
@@ -47,8 +58,18 @@ func NewServer(q *querier.Querier, version string, opts ...ServerOption) http.Ha
 	mux.HandleFunc("GET /assets/", s.handleAssets)
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
 	mux.HandleFunc("GET /api/dashboard", s.handleDashboard)
-	mux.HandleFunc("GET /api/chart/", s.handleChart)
+	mux.HandleFunc("GET /api/config", s.handleConfigGet)
+	mux.HandleFunc("PUT /api/config", s.handleConfigPut)
 	return noStore(mux)
+}
+
+// currentConfig 返回当前配置与 provider 别名;无配置源时返回 nil(维度
+// 聚合核对 nil map 读取安全,provider 维度不做别名合并)。
+func (s *server) currentConfig() *config.Config {
+	if s.configFn == nil {
+		return nil
+	}
+	return s.configFn()
 }
 
 // noStore 中间件:全部响应(含静态资产)携带 Cache-Control: no-store。

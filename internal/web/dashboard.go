@@ -1,15 +1,22 @@
 package web
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"time"
 
-	"github.com/YuLaiZ/token-usage/internal/fmtx"
+	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/querier"
+	"github.com/YuLaiZ/token-usage/internal/querydef"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
+
+// dashboard.go 输出 GET /api/dashboard 的载荷(v3):区间汇总、四个内置
+// 维度行、与范围匹配的日期×小时热力数据、按 query.subqueries 配置生成
+// 的自定义视图与 Top sessions。compare/forecast 区块已随仪表板重做移除
+// (定稿页面无此两区);图表全部由前端消费数值行自绘,服务端不产 SVG。
+// 全部查询在同一读事务内完成(同一 WAL 快照),totals、各维度行、自定义
+// 视图、sessions 与热力数据互相一致。
 
 // rangeDaysLimit 是 from/to 区间的天数上限(含两端):与 cli 侧日期参数的
 // 366 天上限同口径(恰好容纳一个闰年)。
@@ -18,9 +25,11 @@ const rangeDaysLimit = 366
 // dashboardSessionLimit 是仪表板 Top sessions 的截断行数。
 const dashboardSessionLimit = 10
 
-// dashboardDimensions 是仪表板固定聚合的 8 个维度:顺序即聚合次序,JSON
-// 键名与维度名一致(键序无关,前端按名取用)。
-var dashboardDimensions = []string{"day", "hour", "weekday", "month", "client", "model", "provider", "project"}
+// dashboardDimensions 是仪表板固定聚合的四个业务维度:JSON 键名与维度名
+// 一致(键序无关,前端按名取用)。时间形态(day/hour/weekday/month)不再
+// 作为独立维度键输出:趋势与热力图统一消费 heatmap 的日期×小时数据,
+// 由前端按范围形态确定性派生。
+var dashboardDimensions = []string{"client", "model", "provider", "project"}
 
 // metaResponse 是 GET /api/meta 的载荷;四个日期/时间字段在无数据时为 null。
 type metaResponse struct {
@@ -61,8 +70,50 @@ type dimensionRowJSON struct {
 	Total       int64  `json:"total"`
 }
 
+// heatmapDayJSON 是热力数据的一行:某日全天 total 与 24 个小时格
+// (本机时区归属);无数据日照常返回(total 与全部小时格为 0),日期范围
+// 由调用方的 from/to 决定。
+type heatmapDayJSON struct {
+	Date  string  `json:"date"`
+	Total int64   `json:"total"`
+	Hours []int64 `json:"hours"`
+}
+
+// heatmapJSON 是与查询范围匹配的热力数据:days 覆盖范围内每一天(含零值
+// 日,升序),Hours 键固定 "00".."23"。单日范围即 1 行;2~7 天逐日逐小时;
+// 8~31 天的 4 小时时段与 32 天以上的逐日日历由前端按本数据确定性合并,
+// 后端不复制短期数据伪造长周期。
+type heatmapJSON struct {
+	From string           `json:"from"`
+	To   string           `json:"to"`
+	Days []heatmapDayJSON `json:"days"`
+}
+
+// customViewRowJSON 是自定义视图的一行:Keys 按视图维度声明顺序取显示键
+// (provider 维度已合并别名),七项指标与维度行同构。
+type customViewRowJSON struct {
+	Keys        []string `json:"keys"`
+	Requests    int64    `json:"requests"`
+	FreshInput  int64    `json:"fresh_input"`
+	Output      int64    `json:"output"`
+	CacheRead   int64    `json:"cache_read"`
+	CacheCreate int64    `json:"cache_create"`
+	Reasoning   int64    `json:"reasoning"`
+	Total       int64    `json:"total"`
+}
+
+// customViewJSON 是一个自定义视图(query.subqueries 中的一项)的聚合结果:
+// Dimensions 为配置声明顺序的维度名。行间七项合计与区间 totals 逐项守恒
+// (同一读事务、同一选区聚合)。
+type customViewJSON struct {
+	Name       string              `json:"name"`
+	Dimensions []string            `json:"dimensions"`
+	Rows       []customViewRowJSON `json:"rows"`
+}
+
 // sessionRowJSON 是一条会话排行行;FirstTS/LastTS 为毫秒时间戳,
-// DurationMS 为首末消息跨度,格式化交给前端。
+// DurationMS 为首末消息跨度,格式化交给前端。Title 为数据源原文,
+// 不做清洗或重写。
 type sessionRowJSON struct {
 	Client     string `json:"client"`
 	Project    string `json:"project"`
@@ -74,84 +125,24 @@ type sessionRowJSON struct {
 	Total      int64  `json:"total"`
 }
 
-// compareRowJSON 是环比对比表的预计算行:显示串与着色 class 由服务端按
-// cli 侧共享格式化助手(fmtx)统一生成,前端零逻辑直绘。
-type compareRowJSON struct {
-	Label       string `json:"label"`
-	Current     string `json:"current"`
-	Base        string `json:"base"`
-	Change      string `json:"change"`
-	ChangeClass string `json:"change_class"`
-	ChangePct   string `json:"change_pct"`
-}
-
-// compareDayJSON 是环比基线窗口的逐日行:与 dimensions.day 同构(缺口
-// 填充至基线窗口长度),供前端绘制「当前区间 vs 基线窗口」逐日对比曲线。
-type compareDayJSON struct {
-	Key      string `json:"key"`
-	Requests int64  `json:"requests"`
-	Total    int64  `json:"total"`
-}
-
-// compareJSON 是环比对比区块:基线窗口、基线总量、8 行预计算对比行与基线
-// 窗口逐日行(缺口填充,键即日期)。基线窗口无数据时各行为零值行照常返回
-// (compare 恒填充,不序列化为 null)。
-type compareJSON struct {
-	BaseStart string           `json:"base_start"`
-	BaseEnd   string           `json:"base_end"`
-	Totals    totalsJSON       `json:"totals"`
-	Rows      []compareRowJSON `json:"rows"`
-	Daily     []compareDayJSON `json:"daily"`
-}
-
-// forecastRowJSON 是预估表的一行:显示串由服务端按 cli forecast 口径预
-// 计算,前端零逻辑直绘;窗口无数据时数值四项均为 "—"。
-type forecastRowJSON struct {
-	Label    string `json:"label"`    // "Last 7 days / 最近 7 天"、"Last 30 days / 最近 30 天"
-	Total    string `json:"total"`    // FormatTokens;无数据 "—"
-	AvgDay   string `json:"avg_day"`  // FormatTokens(avg);无数据 "—"
-	Active   string `json:"active"`   // "5/7"(ActiveDays/days);无数据 "—"
-	Estimate string `json:"estimate"` // FormatTokens(avg*days);无数据 "—"
-}
-
-// forecastJSON 是预估区块:今日至今总量与恒 2 行(最近 7/30 天)回看窗口
-// 行。窗口固定回看、不含今天,与仪表板 from/to 选区无关;与 compare 同理
-// 恒填充,不序列化为 null。
-type forecastJSON struct {
-	TodaySoFar string            `json:"today_so_far"` // FormatTokens(今日至今总量)
-	Rows       []forecastRowJSON `json:"rows"`         // 恒 2 行(7/30)
-}
-
-// heatmapJSON 是活动热力矩阵:Values 形状恒 7×24,行=星期(Weekdays 为双语
-// 显示名,ISO 周序周一在首)、列=小时(Hours 为 "00:00".."23:00");
-// Values[wi][hi] 为该交点的总 token 数,无数据交点为 0。数值矩阵交给前端
-// 自绘,格式化与配色全部在展示层。
-type heatmapJSON struct {
-	Weekdays []string  `json:"weekdays"`
-	Hours    []string  `json:"hours"`
-	Values   [][]int64 `json:"values"`
-}
-
-// dashboardResponse 是 GET /api/dashboard 的载荷。dimensions 固定 8 键
-// (day/hour/weekday/month/client/model/provider/project);compare、forecast、
-// heatmap 恒存在(基线/回看窗口/热力矩阵零值也照常返回);columns 是 query
-// 输出列布局的指标 ID 序列,供前端把指标条对齐 query 的可见列;图表不再
-// 内嵌 SVG,前端消费 dimensions/heatmap 的数值行自绘,与 totals/sessions
-// 同一读事务快照(encoding/json 对 map 按键排序输出,载荷确定)。
+// dashboardResponse 是 GET /api/dashboard 的载荷。dimensions 固定四键
+// (client/model/provider/project);heatmap.days 覆盖范围逐日(含零值日);
+// custom_views 随 query.subqueries 配置生成,无配置时为空数组;columns 是
+// query 输出列布局的指标 ID 序列,只影响明细表,顶部七项概览独立于此。
 type dashboardResponse struct {
-	Range      rangeJSON                     `json:"range"`
-	Totals     totalsJSON                    `json:"totals"`
-	Compare    compareJSON                   `json:"compare"`
-	Forecast   forecastJSON                  `json:"forecast"`
-	Columns    []string                      `json:"columns"`
-	Dimensions map[string][]dimensionRowJSON `json:"dimensions"`
-	Heatmap    heatmapJSON                   `json:"heatmap"`
-	Sessions   []sessionRowJSON              `json:"sessions"`
+	Range       rangeJSON                     `json:"range"`
+	Totals      totalsJSON                    `json:"totals"`
+	Columns     []string                      `json:"columns"`
+	Dimensions  map[string][]dimensionRowJSON `json:"dimensions"`
+	Heatmap     heatmapJSON                   `json:"heatmap"`
+	CustomViews []customViewJSON              `json:"custom_views"`
+	Sessions    []sessionRowJSON              `json:"sessions"`
 }
 
 // handleMeta 输出服务版本与全库数据边界:最小/最大日期、数据截至
 // (全库最大消息时间)与最近一次成功采集时间。同一读事务内取齐,保证
-// 边界三项互相一致。
+// 边界三项互相一致。在线状态由页面成功连接本服务这一事实表达,不在
+// 载荷中重复下发。
 func (s *server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	resp := metaResponse{Version: s.version}
@@ -189,23 +180,31 @@ func (s *server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleDashboard 输出统计区间内的汇总、8 个维度行、会话排行与活动热力
-// 矩阵。全部查询在同一读事务内完成(同一 WAL 快照),并发采集写入下 totals、
-// 各维度行、sessions 与热力矩阵互相一致;localhost 串行请求不要求并行取数。
-// 图表由前端按本载荷的数值行自绘,刷新只需 dashboard+meta 两个请求。
+// handleDashboard 输出统计区间内的汇总、四个业务维度行、日期×小时热力
+// 数据、自定义视图与 Top sessions。区间缺省 to=今天、from=to-29;前端不
+// 限制日期,未来或无数据范围返回结构完整的零值(不回退到最后有数据日期)。
 func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	// 同一请求统一取一次时钟:区间缺省与预估窗口共用,防跨午夜瞬间口径错位。
+	// 同一请求统一取一次时钟:区间缺省口径唯一,防跨午夜瞬间错位。
 	now := time.Now()
-	dates, from, to, fromT, toT, perr := parseRangeQuery(r, now)
+	dates, from, to, _, _, perr := parseRangeQuery(r, now)
 	if perr != nil {
 		writeError(w, *perr)
 		return
 	}
 	ctx := r.Context()
+	// 配置在事务外读取:provider 别名、自定义视图定义与输出列布局都是
+	// 配置面,不参与数据快照;每请求重读,配置保存后的下一次请求即时生效。
+	cfg := s.currentConfig()
+	aliases := providerAliasesOf(cfg)
+	views := customViewDefs(cfg)
+	columns := outputColumnsFor(cfg)
+
 	resp := dashboardResponse{
-		Range:      rangeJSON{From: from, To: to},
-		Dimensions: make(map[string][]dimensionRowJSON, len(dashboardDimensions)),
-		Sessions:   []sessionRowJSON{},
+		Range:       rangeJSON{From: from, To: to},
+		Dimensions:  make(map[string][]dimensionRowJSON, len(dashboardDimensions)),
+		Heatmap:     heatmapJSON{From: from, To: to, Days: []heatmapDayJSON{}},
+		CustomViews: []customViewJSON{},
+		Sessions:    []sessionRowJSON{},
 	}
 	err := s.q.ReadTx(ctx, func(tq *querier.Querier) error {
 		stats, err := tq.StatsBetween(ctx, from, to)
@@ -222,27 +221,12 @@ func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			Total:       stats.Total.TotalTokens,
 			ActiveDays:  stats.ActiveDays,
 		}
-		// 输出列布局是 querier 状态,与数据无关,但仍在同一事务回调内读取。
-		resp.Columns = tq.OutputColumnIDs()
-		// 环比对比与 totals 同快照取基线,两窗口数据互相一致。
-		compare, err := buildCompareJSON(ctx, tq, fromT, toT, stats)
-		if err != nil {
-			return err
-		}
-		resp.Compare = compare
-		// 预估区块与 cli forecast 同窗口同口径:固定回看窗口、与 from/to
-		// 选区无关;同一读事务内取数,与 totals/compare 同快照一致。
-		fc, err := buildForecastJSON(ctx, tq, now)
-		if err != nil {
-			return err
-		}
-		resp.Forecast = fc
-		// 维度循环只产出 JSON 行;数值行交给前端自绘图表,区间汇总由
-		// AggregateDimensionView 随行返回,这里不再单独消费。
+		resp.Columns = columns
+		// 业务维度循环只产出 JSON 行,数值行交给前端自绘。
 		for _, dim := range dashboardDimensions {
 			rows, _, err := tq.AggregateDimensionView(ctx, dates, querier.DimensionView{
 				Dimensions: []string{dim},
-				Aliases:    aliasesFor(dim, s.providerAliases),
+				Aliases:    aliasesFor(dim, aliases),
 				TitleEn:    "dashboard", TitleZh: "dashboard",
 			})
 			if err != nil {
@@ -250,18 +234,40 @@ func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			}
 			resp.Dimensions[dim] = toDimensionRows(rows)
 		}
+		// 自定义视图:按配置维度顺序的多维组合聚合,与四维度同一选区、
+		// 同一事务,行间合计与 totals 逐项守恒。
+		for _, view := range views {
+			rows, _, err := tq.AggregateDimensionView(ctx, dates, querier.DimensionView{
+				Dimensions: view.dimensions,
+				Aliases:    aliases,
+				TitleEn:    view.name, TitleZh: view.name,
+			})
+			if err != nil {
+				return err
+			}
+			resp.CustomViews = append(resp.CustomViews, customViewJSON{
+				Name:       view.name,
+				Dimensions: view.dimensionNames,
+				Rows:       toCustomViewRows(rows),
+			})
+		}
 		sessions, err := tq.SessionRows(ctx, dates)
 		if err != nil {
 			return err
 		}
 		// 会话排行按总量排序后截前 10 行。
 		resp.Sessions = toSessionRows(querier.TruncateTopRows(querier.SortTopRows(sessions), dashboardSessionLimit))
-		// 活动热力矩阵在同一事务内取数,与 totals/dimensions/sessions 同快照。
-		hm, err := tq.HeatmapMatrix(ctx, dates)
+		// 日期×小时热力数据在同一事务内取数,与 totals/dimensions/sessions
+		// 同快照;days 与请求范围逐日对齐(含零值日)。
+		hm, err := tq.DayHourMatrix(ctx, dates)
 		if err != nil {
 			return err
 		}
-		resp.Heatmap = heatmapJSON{Weekdays: hm.Weekdays, Hours: hm.Hours, Values: hm.Values}
+		days := make([]heatmapDayJSON, 0, len(hm.Days))
+		for i, date := range hm.Days {
+			days = append(days, heatmapDayJSON{Date: date, Total: hm.Totals[i], Hours: hm.Values[i]})
+		}
+		resp.Heatmap.Days = days
 		return nil
 	})
 	if err != nil {
@@ -271,14 +277,86 @@ func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// toCustomViewRows 把多维组合聚合行转换为 JSON 行:Keys 保留全部维度的
+// 显示键(顺序即视图维度声明顺序)。
+func toCustomViewRows(rows []querier.DimensionRow) []customViewRowJSON {
+	out := make([]customViewRowJSON, 0, len(rows))
+	for _, row := range rows {
+		keys := append([]string(nil), row.Keys...)
+		out = append(out, customViewRowJSON{
+			Keys:        keys,
+			Requests:    row.Agg.Requests,
+			FreshInput:  row.Agg.FreshInput,
+			Output:      row.Agg.OutputTokens,
+			CacheRead:   row.Agg.CacheRead,
+			CacheCreate: row.Agg.CacheCreate,
+			Reasoning:   row.Agg.Reasoning,
+			Total:       row.Agg.TotalTokens,
+		})
+	}
+	return out
+}
+
+// outputColumnsFor 从当前配置解析输出列布局,与 cli 侧
+// staticTableOutputLayout 同语义:query 顶层问题态回退默认布局,query.output
+// 自身解析失败也回退默认(仪表板是只读展示,诊断由 /api/config 下发)。
+// 每请求调用——列布局不再依赖服务启动时的 Querier 状态,网页保存新列后
+// 下一次仪表板请求即生效。
+func outputColumnsFor(cfg *config.Config) []string {
+	if cfg == nil || len(cfg.RawQueryTopLevelIssues) > 0 {
+		return ui.DefaultOutputColumns()
+	}
+	cols, err := querydef.ParseOutputLayout(querydef.Input{RawQuery: cfg.RawQuery})
+	if err != nil {
+		return ui.DefaultOutputColumns()
+	}
+	return cols
+}
+
+// providerAliasesOf 安全取配置中的供应商别名(nil 配置返回 nil)。
+func providerAliasesOf(cfg *config.Config) map[string]string {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.ProviderAliases
+}
+
+// customViewDef 是一个待查询的自定义视图定义:querydef 维度值序列与
+// 名字切片(Dimensions 的字符串形态,供 JSON 输出)。
+type customViewDef struct {
+	name           string
+	dimensions     []string
+	dimensionNames []string
+}
+
+// customViewDefs 从配置解析 query.subqueries;解析失败(配置损坏)时返回
+// 空列表——仪表板是只读展示,损坏配置的诊断由 /api/config 下发,不在
+// 数据接口报错。
+func customViewDefs(cfg *config.Config) []customViewDef {
+	if cfg == nil {
+		return nil
+	}
+	defs, err := querydef.ParseViews(querydef.Input{RawQuery: cfg.RawQuery})
+	if err != nil {
+		return nil
+	}
+	out := make([]customViewDef, 0, len(defs.Subqueries))
+	for _, sq := range defs.Subqueries {
+		def := customViewDef{name: sq.Name, dimensionNames: make([]string, 0, len(sq.Dimensions))}
+		for _, dim := range sq.Dimensions {
+			def.dimensions = append(def.dimensions, string(dim))
+			def.dimensionNames = append(def.dimensionNames, string(dim))
+		}
+		out = append(out, def)
+	}
+	return out
+}
+
 // parseRangeQuery 解析 from/to 查询参数为逐日闭区间(YYYY-MM-DD 列表),
-// 并带回解析后的 fromT/toT(供环比对比推导基线窗口)。缺省 to=今天、
-// from=to-29 天(共 30 天);校验:格式严格 YYYY-MM-DD、from<=to、跨度
-// (含两端)不超过 rangeDaysLimit。违规返回 400 双语错误。
-// /api/dashboard 与 /api/chart 共用本函数,保证两个接口的日期口径一致。
-// now 由调用方传入:同一请求的区间缺省与预估窗口必须取同一时钟,防止本地
-// 午夜瞬间两次 time.Now() 各落一天,导致 forecast 的「今天」与 range 缺省
-// 口径错位。
+// 并带回解析后的 fromT/toT。缺省 to=今天、from=to-29 天(共 30 天);校验:
+// 格式严格 YYYY-MM-DD、from<=to、跨度(含两端)不超过 rangeDaysLimit。违规
+// 返回 400 双语错误。前端不设置日期边界,未来范围原样进入本函数并返回
+// 结构完整的零值载荷。
 func parseRangeQuery(r *http.Request, now time.Time) (dates []string, from, to string, fromT, toT time.Time, perr *apiError) {
 	q := r.URL.Query()
 	from, to = q.Get("from"), q.Get("to")
@@ -379,131 +457,4 @@ func toSessionRows(rows []querier.SessionRow) []sessionRowJSON {
 		})
 	}
 	return out
-}
-
-// buildCompareJSON 推导环比基线窗口、取基线总量并预构造 8 行对比行。基线
-// 窗口经 querier.CompareBaseWindow 区间模式推导(等长窗口结束于开始日前
-// 一天;from==to 的单日区间自然退化为前一天,与单日粒度结果一致)。
-// 显示串与着色 class 走 fmtx 共享助手(计数行千分位、token 行 K/M/B 缩写、
-// 基线为 0 时变化% 为 "--"),前端零逻辑直绘。
-func buildCompareJSON(ctx context.Context, tq *querier.Querier, fromT, toT time.Time, cur querier.RangeStats) (compareJSON, error) {
-	baseStartT, baseEndT := querier.CompareBaseWindow(fromT, toT, 0)
-	baseStats, err := tq.StatsBetween(ctx, baseStartT.Format("2006-01-02"), baseEndT.Format("2006-01-02"))
-	if err != nil {
-		return compareJSON{}, err
-	}
-	// 基线窗口逐日行(单维时间视图缺口填充至窗口长度),供前端绘制两期
-	// 逐日对比曲线;与基线总量同一读事务快照。
-	baseDates := make([]string, 0, 8)
-	for d := baseStartT; !d.After(baseEndT); d = d.AddDate(0, 0, 1) {
-		baseDates = append(baseDates, d.Format("2006-01-02"))
-	}
-	baseDailyRows, _, err := tq.AggregateDimensionView(ctx, baseDates, querier.DimensionView{
-		Dimensions: []string{"day"},
-		TitleEn:    "dashboard", TitleZh: "dashboard",
-	})
-	if err != nil {
-		return compareJSON{}, err
-	}
-	baseDaily := make([]compareDayJSON, 0, len(baseDailyRows))
-	for _, row := range baseDailyRows {
-		key := ""
-		if len(row.Keys) > 0 {
-			key = row.Keys[0]
-		}
-		baseDaily = append(baseDaily, compareDayJSON{Key: key, Requests: row.Agg.Requests, Total: row.Agg.TotalTokens})
-	}
-	c := compareJSON{
-		BaseStart: baseStartT.Format("2006-01-02"),
-		BaseEnd:   baseEndT.Format("2006-01-02"),
-		Totals: totalsJSON{
-			Requests:    baseStats.Total.Requests,
-			FreshInput:  baseStats.Total.FreshInput,
-			Output:      baseStats.Total.OutputTokens,
-			CacheRead:   baseStats.Total.CacheRead,
-			CacheCreate: baseStats.Total.CacheCreate,
-			Reasoning:   baseStats.Total.Reasoning,
-			Total:       baseStats.Total.TotalTokens,
-			ActiveDays:  baseStats.ActiveDays,
-		},
-		Rows:  make([]compareRowJSON, 0, 8),
-		Daily: baseDaily,
-	}
-	countRow := func(label string, curV, baseV int64) {
-		c.Rows = append(c.Rows, compareRowJSON{
-			Label:       label,
-			Current:     fmtx.Thousands(curV),
-			Base:        fmtx.Thousands(baseV),
-			Change:      fmtx.CountChange(curV - baseV),
-			ChangeClass: fmtx.ChangeClass(curV - baseV),
-			ChangePct:   fmtx.ChangePercent(curV, baseV),
-		})
-	}
-	tokenRow := func(label string, curV, baseV int64) {
-		c.Rows = append(c.Rows, compareRowJSON{
-			Label:       label,
-			Current:     querier.FormatTokens(curV),
-			Base:        querier.FormatTokens(baseV),
-			Change:      fmtx.SignedTokens(curV - baseV),
-			ChangeClass: fmtx.ChangeClass(curV - baseV),
-			ChangePct:   fmtx.ChangePercent(curV, baseV),
-		})
-	}
-	countRow(ui.Bi("Active days", "活跃天"), cur.ActiveDays, baseStats.ActiveDays)
-	countRow(ui.ColRequests, cur.Total.Requests, baseStats.Total.Requests)
-	tokenRow(ui.ColInput, cur.Total.FreshInput, baseStats.Total.FreshInput)
-	tokenRow(ui.ColOutput, cur.Total.OutputTokens, baseStats.Total.OutputTokens)
-	tokenRow(ui.ColCacheRead, cur.Total.CacheRead, baseStats.Total.CacheRead)
-	tokenRow(ui.ColCacheCreate, cur.Total.CacheCreate, baseStats.Total.CacheCreate)
-	tokenRow(ui.ColReasoning, cur.Total.Reasoning, baseStats.Total.Reasoning)
-	tokenRow(ui.ColTotal, cur.Total.TotalTokens, baseStats.Total.TotalTokens)
-	return c, nil
-}
-
-// buildForecastJSON 构造预测面板数据:today so far 取今天区间(now 由
-// handler 在请求入口统一取);回看窗口
-// last7=[今天-7, 今天-1]、last30=[今天-30, 今天-1] 均不含今天(今天尚未
-// 结束,计入会低估日均)。avg = TotalTokens/ActiveDays 整数除法,预估 =
-// avg×未来天数(假设未来保持同等活跃强度)。窗口固定回看,与仪表板
-// from/to 选区无关。
-func buildForecastJSON(ctx context.Context, tq *querier.Querier, now time.Time) (forecastJSON, error) {
-	day := func(offset int) string { return now.AddDate(0, 0, offset).Format("2006-01-02") }
-	todayStats, err := tq.StatsBetween(ctx, day(0), day(0))
-	if err != nil {
-		return forecastJSON{}, err
-	}
-	last7, err := tq.StatsBetween(ctx, day(-7), day(-1))
-	if err != nil {
-		return forecastJSON{}, err
-	}
-	last30, err := tq.StatsBetween(ctx, day(-30), day(-1))
-	if err != nil {
-		return forecastJSON{}, err
-	}
-	f := forecastJSON{
-		TodaySoFar: querier.FormatTokens(todayStats.Total.TotalTokens),
-		Rows:       make([]forecastRowJSON, 0, 2),
-	}
-	f.Rows = append(f.Rows,
-		forecastRow(ui.Bi("Last 7 days", "最近 7 天"), 7, last7),
-		forecastRow(ui.Bi("Last 30 days", "最近 30 天"), 30, last30))
-	return f, nil
-}
-
-// forecastRow 按一个回看窗口预构造预估行:总量、日均(整数除法)、活跃天
-// 占比与预估,与 cli 侧 writeWindowLine/writeProjectionLine 同口径;无数据
-// 判定同为 ActiveDays==0。CLI 在窗口无数据时省略对应预测行,表格形态恒
-// 2 行,以 "—" 表达同一「无预测依据」语义。
-func forecastRow(label string, days int, s querier.RangeStats) forecastRowJSON {
-	if s.ActiveDays == 0 {
-		return forecastRowJSON{Label: label, Total: "—", AvgDay: "—", Active: "—", Estimate: "—"}
-	}
-	avg := s.Total.TotalTokens / s.ActiveDays
-	return forecastRowJSON{
-		Label:    label,
-		Total:    querier.FormatTokens(s.Total.TotalTokens),
-		AvgDay:   querier.FormatTokens(avg),
-		Active:   fmt.Sprintf("%d/%d", s.ActiveDays, days),
-		Estimate: querier.FormatTokens(avg * int64(days)),
-	}
 }

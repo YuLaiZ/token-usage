@@ -12,6 +12,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -45,6 +46,12 @@ func newServeRunCmd(version string) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 			}
+			// 配置读写能力指向真实用户主目录:网页配置保存与 provider 别名/
+			// 自定义视图的即时生效都作用于该目录下的 config.toml。
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("%s: %w", ui.Bi("failed to get user home directory", "获取用户主目录失败"), err)
+			}
 			usageDB, err := db.Open(filepath.Join(cfg.DataDir, "usage.db"))
 			if err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("failed to open database", "打开数据库失败"), err)
@@ -52,7 +59,7 @@ func newServeRunCmd(version string) *cobra.Command {
 			defer usageDB.Close()
 
 			// 输出全部落入 serve.log（writer 非 TTY，启动行自动降级纯文本）。
-			return serveDashboard(cfg, usageDB, version, addr, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return serveDashboard(cfg, usageDB, version, addr, cmd.OutOrStdout(), cmd.ErrOrStderr(), WithConfigWriteHome(home))
 		},
 	}
 	cmd.Flags().String("addr", "", ui.Bi(

@@ -44,6 +44,14 @@ var ErrConfigChangedExternally = errors.New(ui.Bi(
 	"配置已被其他进程修改，本次未写入",
 ))
 
+// ErrConfigValidation 是写入前配置校验失败（ValidateUserConfigForWrite）的
+// 稳定错误标识：ApplyConfig 锁内以 %w 包装具体原因返回，外部调用方（web
+// 配置 API 等）用 errors.Is 把这类错误映射为「校验失败（400）」而非内部错误，
+// 不依赖错误文案字符串匹配。
+var ErrConfigValidation = errors.New(ui.Bi(
+	"config validation failed", "配置校验失败",
+))
+
 // errDataDirMigrationNotConfirmed data_dir 变化但未传确认参数。
 var errDataDirMigrationNotConfirmed = errors.New(ui.Bi(
 	"data_dir change requires explicit migration confirmation (pass confirmDataDirMigration=true)",
@@ -227,6 +235,17 @@ func Revision(raw []byte) []byte {
 	return sha256Sum(raw)
 }
 
+// SnapshotRevision 返回配置快照的 revision：文件不存在用 missingFileSentinel
+// （与 ApplyConfig 锁内重读同语义），存在时按 raw bytes hash。供外部读取方
+// （web 配置 API 的 GET 与 PUT 前置校验）与写入方共用同一 revision 口径，
+// 避免读取侧自行实现「缺失文件」判定导致口径分叉。
+func SnapshotRevision(snap runtimecfg.UserSnapshot) []byte {
+	if !snap.Exists {
+		return missingFileSentinel
+	}
+	return Revision(snap.Raw)
+}
+
 // sha256Sum 返回 SHA-256 的切片副本（长度 32）。
 func sha256Sum(data []byte) []byte {
 	sum := sha256.Sum256(data)
@@ -280,7 +299,7 @@ func (a *Application) ApplyConfig(
 
 		// ---- 步骤 4：校验 current，再 ResolveEffectiveConfig(previous/current) ----
 		if err := runtimecfg.ValidateUserConfigForWrite(currentUser); err != nil {
-			return fmt.Errorf("%s: %w", ui.Bi("config validation failed", "配置校验失败"), err)
+			return fmt.Errorf("%w: %w", ErrConfigValidation, err)
 		}
 		// previous 为 nil（首次写入）时，以合法空用户配置解析默认 effective。
 		previousForResolve := previous

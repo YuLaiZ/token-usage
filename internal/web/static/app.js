@@ -1,1657 +1,2310 @@
-"use strict";
+/* token-usage 仪表板生产脚本（配合 index.html + app.css）。
+   数据全部来自本地服务真实接口：GET /api/meta（版本与数据边界）、
+   GET /api/dashboard（区间汇总/维度行/热力/自定义视图/会话）、
+   GET|PUT /api/config（配置草稿读写）。
+   浏览器本地偏好键统一 tu- 前缀：tu-locale、tu-theme、tu-palette、tu-side；
+   自定义统计区间记忆使用 sessionStorage['tu-range']。
+   无第三方依赖，单 IIFE，ES5 语法。 */
+(function(){
+'use strict';
+var el = function(id){ return document.getElementById(id); };
+var root = document.documentElement;
+function esc(v){
+  return String(v==null?'':v).replace(/[&<>"']/g,function(ch){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]; });
+}
+function clone(v){ return v==null ? v : JSON.parse(JSON.stringify(v)); }
 
-(() => {
-  // ---------- 常量 ----------
-
-  // 维度顺序与后端 dimensions 的 8 个键一致。
-  const DIMENSIONS = ["day", "hour", "weekday", "month", "client", "model", "provider", "project"];
-  const TIME_DIMS = ["day", "hour", "weekday", "month"];
-  const PIE_DIMS = ["client", "model", "provider", "project"];
-
-  // 五类 token 的固定识别色:KPI 构成条带、堆叠柱、图例全程共用同一套,
-  // 页面只教一次图例。key 与 /api/dashboard 的 totals 字段名一致。
-  const METRICS = [
-    { key: "fresh_input",  label: "Fresh input",  zh: "新输入",  color: "#5cc8ff" },
-    { key: "output",       label: "Output",       zh: "输出",    color: "#ffb454" },
-    { key: "cache_read",   label: "Cache read",   zh: "缓存读",  color: "#57d9a3" },
-    { key: "cache_create", label: "Cache create", zh: "缓存写",  color: "#7a9eff" },
-    { key: "reasoning",    label: "Reasoning",    zh: "推理",    color: "#d98ce5" }
-  ];
-
-  // 指标条列元数据:键为载荷 columns 里的 query 指标 ID,field 是 totals 里的
-  // 取数字段。指标条按 columns 的顺序与可见性动态渲染(total/requests/
-  // cache_hit 由 KPI 行承载,不在条内),与用户配置的 query 输出列完全一致。
-  const STRIP_FIELDS = {
-    input:        { field: "fresh_input",  label: "Input",        zh: "输入",   color: "#5cc8ff" },
-    output:       { field: "output",       label: "Output",       zh: "输出",   color: "#ffb454" },
-    cache_read:   { field: "cache_read",   label: "Cache read",   zh: "缓存读", color: "#57d9a3" },
-    cache_create: { field: "cache_create", label: "Cache create", zh: "缓存写", color: "#7a9eff" },
-    reasoning:    { field: "reasoning",    label: "Reasoning",    zh: "推理",   color: "#d98ce5" }
-  };
-
-  // 配置可见的 token 类别(METRICS 子集):每次载荷到达时由 columns 重推导,
-  // 构成条带/图例/按天堆叠段/类别图例全部据此渲染——配置列的可见性与顺序
-  // 完整反映到页面。
-  let activeKindSet = null;
-  function syncActiveKinds(columns) {
-    if (!columns) return;
-    const ids = new Set(columns);
-    activeKindSet = new Set();
-    METRICS.forEach((m) => {
-      const colId = m.key === "fresh_input" ? "input" : m.key;
-      if (ids.has(colId)) activeKindSet.add(m.key);
+/* ---------- 界面语言：中英文即时切换，中文原文即 key ---------- */
+var LOCALE = root.getAttribute('data-locale')==='en' ? 'en' : 'zh-CN';
+function ui(zh, en){ return LOCALE==='en' ? en : zh; }
+var UI_TEXT = {
+  '页面导航':'Page navigation','仪表盘':'Dashboard','配置':'Config',
+  '在 GitHub 查看 Token Usage':'View Token Usage on GitHub',
+  '收起侧边栏':'Collapse sidebar','展开侧边栏':'Expand sidebar',
+  '语言与外观':'Language and appearance','界面语言':'Interface language','切换主题':'Switch theme','选择主题配色':'Choose color palette',
+  '主题配色':'Color palette','配色方案候选':'Color palette options',
+  '用量概览':'Usage overview','按客户端、供应商、模型和项目查看用量':'Explore usage by client, provider, model, and project','查看数值单位说明':'View value unit definitions','数值单位':'Value units','十进制':'Decimal','一千':'thousand','一百万':'million','十亿':'billion',
+  '统计区间':'Date range','自定义统计区间':'Custom date range','今日':'Today','本周':'This week','本月':'This month','本年':'This year','近 7 天':'Last 7 days','近 30 天':'Last 30 days','近 1 年':'Last 12 months',
+  '上一月':'Previous month','下一月':'Next month','请选择开始与结束日期':'Select a start and end date','查询':'Apply',
+  '按维度查看':'Explore by dimension','维度切换':'Dimension switcher','客户端':'Client','供应商':'Provider','模型':'Model','项目':'Project',
+  '分组视图':'Group view','列表':'List','构成':'Composition','时间序列图表':'Time-series chart',
+  '用量与缓存命中率趋势':'Token and Cache Hit trend','图表类型':'Chart type','趋势':'Trend','热力':'Heatmap',
+  '用量趋势':'Usage trend','用量':'Tokens','峰值 ':'Peak ','按小时':'Hourly','按周':'Weekly','按日':'Daily',
+  '空白为尚未发生':'Blank = not yet','低':'Low','高':'High',
+  '用量最高的会话':'Highest-usage sessions','跟随当前时间范围':'Uses the current date range',
+  '会话':'Session','时长':'Duration','查看完整会话标题':'View full session title','完整会话标题':'Full session title','关闭':'Close',
+  '该区间暂无会话':'No sessions in this range','加载中':'Loading','数据加载失败':'Failed to load data',
+  '本地设置':'Local settings','管理本机采集、查询与显示设置':'Manage local collection, query, and display settings',
+  '采集与日志':'Collection and logs','管理数据来源、采集调度和运行日志':'Manage data sources, collection scheduling, and runtime logs',
+  '客户端设置':'Clients','设置各客户端的数据来源与路由归因':'Configure each client data source and router attribution',
+  '守护进程':'Daemon','设置自动采集的运行方式':'Configure automatic collection behavior','轮询间隔 poll_interval':'Polling interval · poll_interval',
+  'SQLite 轮询间隔（秒），默认 30':'SQLite polling interval in seconds; default 30','轮询间隔（秒）':'Polling interval in seconds',
+  '开机自启 autostart':'Launch at login · autostart','登录后自动拉起守护进程':'Start the daemon automatically after login','开机自启':'Launch at login',
+  '日志':'Logging','设置日志级别、保留周期与目录':'Configure log level, retention, and directory','级别 level':'Level · level','default 跟随运行时默认值':'default follows the runtime default',
+  '保留天数 max_days':'Retention days · max_days','超期日志自动清理，默认 7':'Automatically remove expired logs; default 7','日志保留天数':'Log retention days',
+  '目录 dir':'Directory · dir','日志输出目录':'Log output directory',
+  '查询与展示':'Queries and display','设置默认视图、输出列、自定义视图和组合查询':'Configure the default view, output columns, custom views, and groups',
+  '默认视图':'Default view','选择打开仪表盘时首先展示的视图':'Choose the view shown when the dashboard opens',
+  '默认打开':'Open by default','可选择内置视图、自定义视图或组合查询':'Choose a built-in view, custom view, or group',
+  '恢复为 client':'Restore to client','将启动视图恢复为内置 client':'Restore the startup view to the built-in client view',
+  '输出列':'Output columns','统一控制内置表格与自定义视图的指标列及顺序，不影响顶部概览':'Controls metric columns and order for built-in tables and custom views; does not affect the overview',
+  '恢复默认七列':'Restore seven default columns','输出列已恢复为默认七列':'Output columns restored to the default seven',
+  '已选输出列':'Selected output columns','可选输出列':'Available output columns','至少保留一列指标':'Keep at least one metric column',
+  '组合查询':'Grouped queries','按顺序组合内置视图和自定义视图，一次输出多张表':'Combine built-in and custom views in order and output multiple tables at once',
+  '自定义视图':'Custom views','选择至少两个内置维度，维度顺序就是结果表的列顺序':'Choose at least two built-in dimensions; their order becomes the result table column order',
+  '新组合查询名':'New grouped query name','新增组合查询':'Add grouped query','新自定义视图名':'New custom view name','新增自定义视图':'Add custom view',
+  '已选成员':'Selected members','可选视图':'Available views','组合查询至少需要 2 个成员':'A group needs at least two members','自定义视图至少需要 2 个维度':'A custom view needs at least two dimensions',
+  '名称须为小写标识符（字母开头）':'Name must be a lowercase identifier beginning with a letter','保留名不可用':'Reserved names cannot be used','名称已存在':'Name already exists','名称已被另一张表使用':'Name is already used by another query',
+  '供应商别名':'Provider aliases','将原始供应商标识替换为易读名称；修改时请删除后重新添加':'Replace raw provider identifiers with readable names; delete and re-add an entry to change it',
+  '原始标签':'Raw identifier','显示名称':'Display name','例如 account:provider-plan':'e.g. account:provider-plan','例如 Provider Pro':'e.g. Provider Pro',
+  '新别名 key':'New alias key','新别名 value':'New alias value','添加':'Add','删除':'Delete',
+  'key 和 value 不能为空':'key and value are required','key 已存在':'key already exists',
+  '恢复全部默认值':'Restore all defaults','恢复全部默认值？':'Restore all defaults?','客户端、路由、守护进程、日志、查询与展示设置和供应商别名都将载入为全部默认值（尚未保存）；确认后请再点击“保存”才会写入配置。':'Clients, routing, daemon, log, query & display settings, and provider aliases will be loaded as all-default values (not saved yet); confirm, then click Save to write the config.',
+  '客户端、路由、查询、输出列和供应商别名都将恢复为服务端当前已保存的配置，当前未保存修改会丢失。':'Clients, routing, queries, output columns, and provider aliases will be restored to the configuration currently saved on the server. Unsaved changes will be lost.',
+  '已恢复为已保存配置':'Restored saved config',
+  '有未保存的修改':'Unsaved changes','已保存':'Saved','已修改（未保存）':'Modified (unsaved)','该区间暂无用量':'No usage in this range','已载入全部默认值（未保存）':'Defaults loaded (unsaved)','读取默认配置失败':'Failed to load defaults','离线 · 无法连接本地服务':'Offline · cannot reach the local service','离线':'Offline',
+  '路由中间件选项':'Routing middleware options','修改路由中间件':'Change routing middleware','取消':'Cancel','保存':'Save','保存中…':'Saving…','应用':'Apply',
+  '配置已保存':'Config saved','配置未变化':'No changes','已保存，但需要注意':'Saved, but attention needed','保存失败':'Save failed','读取配置失败':'Failed to load config',
+  '配置已在别处被修改，请刷新页面后重试；当前修改已保留':'Config was changed elsewhere; reload the page and retry. Local edits are kept.',
+  '查询配置存在解析问题，页面按默认值运行；悬停查看诊断':'Query config has parse issues; defaults are in effect. Hover for details.',
+  '数据来源':'Data source','启用':'Enabled','路由中间件':'Routing middleware','未对接':'None','该客户端不支持路由归因':'This client does not support routing attribution',
+  '路由中间件未发生变化':'Routing middleware unchanged',
+  '名称':'Name','合计':'Total','总计':'Total','核心概览':'Key metrics','无':'None',
+  '请选择开始和结束日期':'Select a start and end date','已选 ':'Selected ','已选开始 ':'Start ','，请选择结束日期':' selected; choose an end date',
+  '已应用自定义区间 ':'Custom range applied: ','自定义区间':'Custom range','点击打开日历选择自定义区间':'Open the calendar to choose a custom range',
+  '上移 ':'Move up ','下移 ':'Move down ','移除 ':'Remove ','点击加入':'Add','已上移 ':'Moved up ','已下移 ':'Moved down ','已加入 ':'Added ','已移除 ':'Removed ','顺序已更新':'Order updated',
+  '切换到中文':'Switch to Chinese','切换到英文':'Switch to English',
+  '当前浅色模式 · 点击切换到深色模式':'Light mode · Switch to dark mode','当前深色模式 · 点击切换到浅色模式':'Dark mode · Switch to light mode',
+  '钴蓝':'Cobalt','湛蓝':'Azure','湖蓝':'Lake','藏青':'Navy','冰青':'Glacier','高对比、清晰':'High contrast and crisp','明亮、通透':'Bright and airy','青蓝、柔和':'Soft cyan blue','沉稳、低饱和':'Calm and muted','冷调、轻盈':'Cool and light'
+};
+var UI_REVERSE = {};
+Object.keys(UI_TEXT).forEach(function(k){ UI_REVERSE[UI_TEXT[k]]=k; });
+var textNodes = new WeakMap(), attrValues = new WeakMap();
+function applyStaticLocale(scope){
+  scope = scope || document.body;
+  var walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, {
+    acceptNode:function(n){ return n.parentElement && !/^(SCRIPT|STYLE)$/.test(n.parentElement.tagName) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT; }
+  });
+  var nodes=[], n;
+  while((n=walker.nextNode())) nodes.push(n);
+  nodes.forEach(function(node){
+    var key=textNodes.get(node), raw=node.nodeValue.trim();
+    if(!key && UI_TEXT[raw]){ key=raw; textNodes.set(node,key); }
+    else if(!key && UI_REVERSE[raw]){ key=UI_REVERSE[raw]; textNodes.set(node,key); }
+    if(!key) return;
+    var lead=node.nodeValue.match(/^\s*/)[0], tail=node.nodeValue.match(/\s*$/)[0];
+    node.nodeValue=lead+ui(key,UI_TEXT[key])+tail;
+  });
+  scope.querySelectorAll('*').forEach(function(node){
+    var stored=attrValues.get(node)||{};
+    ['aria-label','title','placeholder'].forEach(function(attr){
+      var cur=node.getAttribute(attr), key=stored[attr];
+      if(!key && cur && UI_TEXT[cur]){ key=cur; stored[attr]=key; }
+      else if(!key && cur && UI_REVERSE[cur]){ key=UI_REVERSE[cur]; stored[attr]=key; }
+      if(key) node.setAttribute(attr,ui(key,UI_TEXT[key]));
     });
+    attrValues.set(node,stored);
+  });
+}
+function rangeName(i){ return ui(['今日','本周','本月','本年','近 7 天','近 30 天','近 1 年','自定义'][i],['Today','This week','This month','This year','Last 7 days','Last 30 days','Last 12 months','Custom'][i]); }
+var DIM_LABELS_EN = { model:'Model', provider:'Provider', client:'Client', project:'Project', day:'Date', month:'Month', hour:'Hour', weekday:'Weekday' };
+var DIM_LABELS_ZH = { model:'模型', provider:'供应商', client:'客户端', project:'项目', day:'日期', month:'月份', hour:'小时', weekday:'星期' };
+function dimLabel(d){ return (LOCALE==='en'?DIM_LABELS_EN:DIM_LABELS_ZH)[d]||d; }
+applyStaticLocale(document.body);
+
+/* ---------- 输出指标列：ID 为 /api/config query.output_columns 契约字面量；
+   field 是 /api/dashboard 行内取数字段（input → fresh_input）。 ---------- */
+var COLS = [
+  { id:'requests',    field:'requests',    label:'Requests',    zh:'请求数',   shortEn:'Req',     shortZh:'请求' },
+  { id:'input',       field:'fresh_input', label:'Input',       zh:'输入',     shortEn:'In',      shortZh:'输入' },
+  { id:'output',      field:'output',      label:'Output',      zh:'输出',     shortEn:'Out',     shortZh:'输出' },
+  { id:'cache_read',  field:'cache_read',  label:'Cache Read',  zh:'缓存读取', shortEn:'C.Read',  shortZh:'缓存读' },
+  { id:'reasoning',   field:'reasoning',   label:'Reasoning',   zh:'推理',     shortEn:'Reason',  shortZh:'推理' },
+  { id:'total',       field:'total',       label:'Total',       zh:'总量',     shortEn:'Total',   shortZh:'总量' },
+  { id:'cache_hit',   field:'cache_hit',   label:'Cache Hit',   zh:'缓存命中率', shortEn:'Hit',   shortZh:'命中率' },
+  { id:'cache_create',field:'cache_create',label:'Cache Create',zh:'缓存写入', shortEn:'C.Create',shortZh:'缓存写' }
+];
+/* 默认七列（不含 cache_create），对齐服务端 ui.DefaultOutputColumns */
+var DEFAULT_OUT = ['requests','input','output','cache_read','reasoning','total','cache_hit'];
+function colById(id){ for(var i=0;i<COLS.length;i++){ if(COLS[i].id===id) return COLS[i]; } return null; }
+function colLabel(c){ return c ? (LOCALE==='en' ? c.label : c.zh) : ''; }
+function colShort(c){ return c ? (LOCALE==='en' ? c.shortEn : c.shortZh) : ''; }
+/* 生效输出列：配置草稿已加载时跟随草稿，否则用默认七列 */
+function colIds(){
+  var c = CFG.draft && CFG.draft.query && CFG.draft.query.output_columns;
+  if(Array.isArray(c) && c.length){
+    var out=[], seen={};
+    c.forEach(function(k){ if(colById(k) && !seen[k]){ seen[k]=1; out.push(k); } });
+    if(out.length) return out;
   }
-  function activeMetrics() {
-    return activeKindSet ? METRICS.filter((m) => activeKindSet.has(m.key)) : METRICS;
+  return DEFAULT_OUT.slice();
+}
+
+/* ---------- 数值与日期格式化 ---------- */
+function fmtInt(n){ return (n||0).toLocaleString('en-US'); }
+/* 十进制 K/M/B（1K=1e3）；<1000 显示整数。入参为真实 token 数。 */
+function fmtTok(v){
+  v = +v||0;
+  if(v>=1e9) return (v/1e9).toFixed(2)+'B';
+  if(v>=1e8) return Math.round(v/1e6)+'M';
+  if(v>=1e7) return (v/1e6).toFixed(1)+'M';
+  if(v>=1e6) return (v/1e6).toFixed(2)+'M';
+  if(v>=1e3) return (v/1e3).toFixed(v>=1e5?0:2)+'K';
+  return fmtInt(Math.round(v));
+}
+function axisFmt(v){
+  v = +v||0;
+  if(v>=1e9) return (v/1e9).toFixed(1)+'B';
+  if(v>=1e6) return (v/1e6)>=10 ? Math.round(v/1e6)+'M' : (Math.round(v/1e6*10)/10)+'M';
+  if(v>=1e3) return (v/1e3)>=10 ? Math.round(v/1e3)+'K' : (Math.round(v/1e3*10)/10)+'K';
+  return String(Math.round(v));
+}
+function niceMax(v){
+  if(v<=0) return 1;
+  var p = Math.pow(10, Math.floor(Math.log(v)/Math.LN10));
+  var steps=[1,2,2.5,5,10];
+  for(var i=0;i<steps.length;i++){ if(v <= steps[i]*p) return steps[i]*p; }
+  return 10*p;
+}
+/* 命中率 = cache_read / (fresh_input + cache_read + cache_create)；分母 0 → null（显示 —/断线） */
+function hitOf(inp, cr, cc){
+  var den=(+inp||0)+(+cr||0)+(+cc||0);
+  return den ? (+cr||0)/den : null;
+}
+function pctText(frac, dec){ return frac==null ? '—' : (frac*100).toFixed(dec)+'%'; }
+function pad2(n){ return (n<10?'0':'')+n; }
+function ymd(d){ return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate()); }
+function fmtMD(d){ return pad2(d.getMonth()+1)+'-'+pad2(d.getDate()); }
+function dateOf(ds){ var p=String(ds||'').split('-'); return new Date(+p[0], +p[1]-1, +p[2]); }
+function startToday(){ var d=new Date(); return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+function fmtDur(ms){
+  ms = +ms||0; if(ms<0) ms=0;
+  var h=Math.floor(ms/3600000), m=Math.floor((ms%3600000)/60000);
+  return h+'h '+pad2(m)+'m';
+}
+
+/* ---------- 全局状态 ---------- */
+var state = { range:0, view:'list', mode:'trend', meta:{}, data:null, heat:[] };
+var CUSTOM = null;            /* 自定义区间 {s,e} 日期串；预设区间时恒为 null */
+var DIMROWS = {};             /* 各维度当前展示行（构成图联动用） */
+var fetchSeq = 0;             /* 区间请求序号：丢弃过期响应 */
+var RANGE_KEY = 'tu-range';
+function rangeBoundsFor(i){
+  var t = startToday();
+  if(i===7 && CUSTOM){
+    var cs=dateOf(CUSTOM.s), ce=dateOf(CUSTOM.e);
+    if(cs>ce){ var ct=cs; cs=ce; ce=ct; }
+    return { s:cs, e:ce };
   }
-
-  // 占比类维度(环形图)的分类色板。
-  const PIE_PALETTE = [
-    "#5cc8ff", "#ffb454", "#57d9a3", "#d98ce5", "#ff8a66", "#7a9eff",
-    "#ffd166", "#63d3ff", "#9ae6b4", "#f2789f", "#b3a4ff", "#8ce0db"
-  ];
-
-  // 热力色阶:0 → 无数据底色,其余按 sqrt(v/max) 分 6 档。
-  const HEAT_STEPS = ["#12324a", "#1b4d6e", "#26719c", "#3898c6", "#5cc8ff", "#a5e6ff"];
-
-  const SVG_NS = "http://www.w3.org/2000/svg";
-
-  const state = {
-    from: "",
-    to: "",
-    auto: 30000, // 默认 30s
-    timer: null,
-    loading: false,
-    dirty: false, // 加载期间范围又变化,结束后补一次加载
-    meta: null
-  };
-
-  const $ = (id) => document.getElementById(id);
-
-  // ---------- 格式化 ----------
-
-  // 千分位整数,与明细表 td.num 的 data-v 精确值配套。
-  function formatInt(v) {
-    return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  }
-
-  // 镜像 internal/querier/querier.go 的 formatTokens:
-  // >=1e9 → %.2f B;>=1e6 → %.2f M;>=1e3 → %.2f K;否则原样整数。
-  function formatTokens(tokens) {
-    if (tokens >= 1000000000) return (tokens / 1000000000).toFixed(2) + " B";
-    if (tokens >= 1000000) return (tokens / 1000000).toFixed(2) + " M";
-    if (tokens >= 1000) return (tokens / 1000).toFixed(2) + " K";
-    return String(tokens);
-  }
-
-  // duration_ms → 1h 2m / 3m 4s / 45s / <1s
-  function formatDuration(ms) {
-    if (typeof ms !== "number" || !isFinite(ms) || ms < 1000) return "<1s";
-    const total = Math.floor(ms / 1000);
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const s = total % 60;
-    if (h > 0) return m > 0 ? h + "h " + m + "m" : h + "h";
-    if (m > 0) return m + "m " + s + "s";
-    return s + "s";
-  }
-
-  // 缓存命中率,镜像 querier.formatCacheHit:
-  // cache_read / (fresh_input + cache_read + cache_create),两位小数;无输入 0.00%。
-  function cacheHit(freshInput, cacheRead, cacheCreate) {
-    const denom = freshInput + cacheRead + cacheCreate;
-    if (denom <= 0) return 0;
-    return (cacheRead * 100) / denom;
-  }
-
-  // 变化率:基线为 0 时返回 null(调用方显示 "–")。
-  function changePct(cur, base) {
-    if (!base || base <= 0) return null;
-    return ((cur - base) * 100) / base;
-  }
-
-  // ---------- 日期工具(全部本地时区) ----------
-
-  function pad2(n) {
-    return (n < 10 ? "0" : "") + n;
-  }
-
-  function toDateStr(d) {
-    return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
-  }
-
-  function todayStr() {
-    return toDateStr(new Date());
-  }
-
-  function addDaysStr(dateStr, n) {
-    const y = Number(dateStr.slice(0, 4));
-    const m = Number(dateStr.slice(5, 7));
-    const d = Number(dateStr.slice(8, 10));
-    return toDateStr(new Date(y, m - 1, d + n));
-  }
-
-  function firstOfMonthStr() {
-    return todayStr().slice(0, 8) + "01";
-  }
-
-  // 服务端(/api/dashboard)的区间天数上限,前端预检同口径。
-  const RANGE_LIMIT = 366;
-
-  // spanDays 统计闭区间天数(含两端):按 UTC 解析避免 DST 偏移。
-  function spanDays(from, to) {
-    const a = new Date(from + "T00:00:00Z");
-    const b = new Date(to + "T00:00:00Z");
-    return Math.round((b - a) / 86400000) + 1;
-  }
-
-  // ---------- tooltip ----------
-
-  // WeakMap:渲染随自动刷新反复重建图表元素,弱引用让旧元素可被回收,
-  // 避免 tooltip 内容随挂机时长无界累积。
-  const tipStore = new WeakMap(); // element → {title, rows:[{color,label,value}]}
-
-  function setTip(el, content) {
-    el.dataset.tip = "1";
-    tipStore.set(el, content);
-  }
-
-  function tipRow(color, label, value) {
-    return { color, label, value };
-  }
-
-  function showTooltip(content, x, y) {
-    const tip = $("tooltip");
-    tip.textContent = "";
-    if (content.title) {
-      const t = document.createElement("div");
-      t.className = "tt-title";
-      t.textContent = content.title;
-      tip.appendChild(t);
+  if(i===1){ var ws=new Date(t); ws.setDate(ws.getDate()-((ws.getDay()+6)%7)); return { s:ws, e:t }; }
+  if(i===2) return { s:new Date(t.getFullYear(), t.getMonth(), 1), e:t };
+  if(i===3) return { s:new Date(t.getFullYear(), 0, 1), e:t };
+  var back=[0,0,0,0,6,29,364][i];
+  var s=new Date(t); s.setDate(s.getDate()-back);
+  return { s:s, e:t };
+}
+function rangeBounds(){ return rangeBoundsFor(state.range); }
+function rangeDateText(){
+  var b = rangeBounds();
+  if(b.s.getFullYear()!==b.e.getFullYear()) return ymd(b.s)+' ~ '+ymd(b.e);
+  return fmtMD(b.s)===fmtMD(b.e) ? fmtMD(b.s) : fmtMD(b.s)+' ~ '+fmtMD(b.e);
+}
+function restoreSavedRange(){
+  CUSTOM=null; state.range=0;
+  var raw=null;
+  try{ raw=sessionStorage.getItem(RANGE_KEY); }catch(e){}
+  if(!raw) return;
+  try{
+    var v=JSON.parse(raw);
+    if(v && /^\d{4}-\d{2}-\d{2}$/.test(v.s||'') && /^\d{4}-\d{2}-\d{2}$/.test(v.e||'')){
+      CUSTOM={ s:v.s, e:v.e }; state.range=7;
     }
-    (content.rows || []).forEach((r) => {
-      const row = document.createElement("div");
-      row.className = "tt-row";
-      if (r.color) {
-        const i = document.createElement("i");
-        i.style.background = r.color;
-        row.appendChild(i);
-      }
-      const lab = document.createElement("span");
-      lab.textContent = r.label;
-      row.appendChild(lab);
-      const b = document.createElement("b");
-      b.textContent = r.value;
-      row.appendChild(b);
-      tip.appendChild(row);
-    });
-    tip.hidden = false;
-    const rect = tip.getBoundingClientRect();
-    let left = x + 14;
-    let top = y + 16;
-    if (left + rect.width > window.innerWidth - 8) left = x - rect.width - 12;
-    if (top + rect.height > window.innerHeight - 8) top = y - rect.height - 12;
-    tip.style.left = Math.max(4, left) + "px";
-    tip.style.top = Math.max(4, top) + "px";
+  }catch(e){}
+}
+function saveCustomRange(){
+  try{
+    if(state.range===7 && CUSTOM) sessionStorage.setItem(RANGE_KEY, JSON.stringify({s:CUSTOM.s, e:CUSTOM.e}));
+    else sessionStorage.removeItem(RANGE_KEY);
+  }catch(e){}
+}
+
+/* ---------- toast ---------- */
+var toastT = null;
+function toast(msg){
+  var t = el('toast');
+  if(!t) return;
+  t.textContent = msg;
+  t.setAttribute('data-show','true');
+  clearTimeout(toastT);
+  toastT = setTimeout(function(){ t.setAttribute('data-show','false'); }, 3600);
+}
+
+/* ---------- 主题与配色 ---------- */
+var PAL_NAMES = {
+  cobalt:{zh:'钴蓝',en:'Cobalt'}, azure:{zh:'湛蓝',en:'Azure'}, lake:{zh:'湖蓝',en:'Lake'},
+  navy:{zh:'藏青',en:'Navy'}, glacier:{zh:'冰青',en:'Glacier'}
+};
+function paletteName(k){ var p=PAL_NAMES[k]; return p ? (LOCALE==='en'?p.en:p.zh) : k; }
+function setPalettePop(open){
+  var pop=el('palette-pop'), btn=el('palette-toggle');
+  if(!pop || !btn) return;
+  pop.hidden=!open;
+  btn.setAttribute('aria-expanded', open?'true':'false');
+}
+el('palette-toggle').addEventListener('click', function(e){
+  e.stopPropagation();
+  if(typeof calpop!=='undefined' && calpop && !calpop.hidden) closeCal();
+  if(typeof DV!=='undefined' && DV && DV.open) dvClose(false);
+  if(el('unit-pop') && !el('unit-pop').hidden) setUnitPop(false);
+  setPalettePop(el('palette-pop').hidden);
+});
+el('palette-pop').addEventListener('click', function(e){ e.stopPropagation(); });
+document.addEventListener('click', function(){ setPalettePop(false); });
+document.addEventListener('keydown', function(e){
+  if(e.key==='Escape' && el('palette-pop') && !el('palette-pop').hidden){ setPalettePop(false); el('palette-toggle').focus(); }
+});
+el('palette-dots').addEventListener('click', function(e){
+  var b = e.target.closest('[data-pal]'); if(!b) return;
+  root.setAttribute('data-palette', b.dataset.pal);
+  try{ localStorage.setItem('tu-palette', b.dataset.pal); }catch(_){}
+  syncPalette();
+  setPalettePop(false);
+  el('palette-toggle').focus();
+});
+function syncPalette(){
+  var cur = root.getAttribute('data-palette');
+  document.querySelectorAll('.palette-choice').forEach(function(b){
+    b.setAttribute('aria-pressed', b.dataset.pal===cur ? 'true':'false');
+  });
+  var pn = el('pal-name');
+  if(pn) pn.textContent = paletteName(cur);
+  var pt=el('palette-toggle');
+  if(pt){
+    var pl=ui('当前配色：'+paletteName(cur)+' · 点击选择主题配色','Current palette: '+paletteName(cur)+' · Choose a color palette');
+    pt.setAttribute('aria-label',pl); pt.setAttribute('title',pl);
   }
+  document.querySelectorAll('.palette-choice').forEach(function(b){
+    var name=paletteName(b.dataset.pal), lab=ui('切换配色：'+name,'Switch palette: '+name);
+    b.title=name; b.setAttribute('aria-label',lab);
+  });
+}
+/* 深浅主题：单按钮表示下一步动作；tu-theme 持久化，不入 Config 保存流程 */
+function applyTheme(next){
+  root.setAttribute('data-theme', next);
+  try{ localStorage.setItem('tu-theme', next); }catch(_){}
+  syncThemeSeg();
+}
+function syncThemeSeg(){
+  var t = root.getAttribute('data-theme');
+  var sw = el('theme-toggle');
+  if(!sw) return;
+  var next = t==='light' ? 'dark' : 'light';
+  var lab = t==='light'
+    ? ui('当前浅色模式 · 点击切换到深色模式','Light mode · Switch to dark mode')
+    : ui('当前深色模式 · 点击切换到浅色模式','Dark mode · Switch to light mode');
+  sw.setAttribute('aria-label', lab);
+  sw.setAttribute('title', lab);
+  var use=el('theme-toggle-use');
+  if(use) use.setAttribute('href', next==='light' ? '#i-sun' : '#i-moon');
+}
+el('theme-toggle').addEventListener('click', function(){
+  applyTheme(root.getAttribute('data-theme')==='light' ? 'dark' : 'light');
+});
+syncThemeSeg();
+try{
+  matchMedia('(prefers-color-scheme: light)').addEventListener('change', function(e){
+    var t=null; try{ t=localStorage.getItem('tu-theme'); }catch(_){}
+    if(!t) applyTheme(e.matches?'light':'dark');
+  });
+}catch(_){}
+syncPalette();
 
-  function hideTooltip() {
-    $("tooltip").hidden = true;
+/* ---------- 导航（仅处理带 data-page 的导航行） ---------- */
+document.querySelectorAll('.nav-button[data-page]').forEach(function(b){
+  b.addEventListener('click', function(){
+    setPalettePop(false);
+    if(typeof calpop!=='undefined' && calpop && !calpop.hidden) closeCal();
+    if(typeof DV!=='undefined' && DV && DV.open) dvClose(false);
+    document.querySelectorAll('.nav-button').forEach(function(x){ x.removeAttribute('aria-current'); });
+    b.setAttribute('aria-current','page');
+    document.querySelectorAll('.page').forEach(function(p){ p.removeAttribute('data-active'); p.setAttribute('aria-hidden','true'); p.hidden=true; });
+    var targetPage=el('page-'+b.dataset.page);
+    targetPage.hidden=false;
+    targetPage.setAttribute('aria-hidden','false');
+    targetPage.setAttribute('data-active','true');
+    window.scrollTo(0, 0);
+    if(b.dataset.page==='dash' && state.data) drawChart();
+    if(b.dataset.page==='config' && !CFG.loaded && !CFG.loading) loadConfig();
+  });
+});
+
+/* ---------- 工具条：区间 / 视图 / 形态 ---------- */
+function bindSeg(id, fn){
+  var host=el(id); if(!host) return;
+  host.addEventListener('click', function(e){
+    var b = e.target.closest('button'); if(!b) return;
+    host.querySelectorAll('button').forEach(function(x){ x.setAttribute('aria-pressed', x===b?'true':'false'); });
+    fn(b.dataset.v);
+  });
+}
+function syncRangeSeg(){
+  el('range-seg').querySelectorAll('button').forEach(function(b){
+    b.setAttribute('aria-pressed', +b.dataset.v===state.range?'true':'false');
+  });
+  var on = state.range===7;
+  el('range-custom').classList.toggle('on', on);
+  el('range-custom').setAttribute('aria-pressed', on?'true':'false');
+  syncCustomTxt();
+}
+function syncCustomTxt(){
+  /* 日期入口 = 当前查询实际区间的反馈 + 日历入口；自定义半选时临时显示已选开始 */
+  var b = rangeBounds();
+  var s = ymd(b.s), e = ymd(b.e);
+  var full, short;
+  if(state.range===7 && CAL.selS && !CAL.selE){
+    full = CAL.selS; short = CAL.selS.slice(5);
+  }else{
+    full = s===e ? s : s+' ~ '+e;
+    short = fmtMD(b.s)===fmtMD(b.e) ? fmtMD(b.s) : fmtMD(b.s)+' ~ '+fmtMD(b.e);
   }
+  el('range-custom-txt').textContent = full;
+  el('range-custom-short').textContent = short;
+  var tip = (state.range===7 ? ui('自定义区间','Custom range') : rangeName(state.range))+' '+full+' · '+ui('点击打开日历选择自定义区间','Open the calendar to choose a custom range');
+  el('range-custom').title = tip;
+  el('range-custom').setAttribute('aria-label', tip);
+}
+bindSeg('range-seg', function(v){
+  setPalettePop(false);
+  if(!calpop.hidden) closeCal();
+  state.range = +v;
+  CUSTOM = state.range===7 ? CUSTOM : null;
+  if(state.range!==7) saveCustomRange();
+  var b = rangeBounds();
+  setCalSel(ymd(b.s), ymd(b.e));
+  renderCal();
+  syncCustomTxt();
+  loadDashboard();
+});
+bindSeg('view-seg', function(v){ state.view=v; if(state.data) renderGroups(); });
+bindSeg('mode-seg', function(v){ state.mode=v; drawChart(); });
 
-  function initTooltip() {
-    document.addEventListener("mouseover", (e) => {
-      const el = e.target.closest && e.target.closest("[data-tip]");
-      if (el && tipStore.has(el)) showTooltip(tipStore.get(el), e.clientX, e.clientY);
-      else if (!el) hideTooltip();
-    });
-    document.addEventListener("mousemove", (e) => {
-      const el = e.target.closest && e.target.closest("[data-tip]");
-      if (el && tipStore.has(el) && !$("tooltip").hidden) showTooltip(tipStore.get(el), e.clientX, e.clientY);
-    });
-    document.addEventListener("scroll", hideTooltip, true);
+/* ---------- 自定义区间：双月日历选择器（点起止两端 + hover 预览 + 查询应用） ---------- */
+var CAL = { view:null, selS:null, selE:null, hover:null };
+var calpop = el('calpop'), calGrids = el('cal-grids');
+var WDH_ZH = ['一','二','三','四','五','六','日'];
+var WDH_EN = ['M','T','W','T','F','S','S'];
+function setCalSel(s, e){
+  CAL.selS = s; CAL.selE = e; CAL.hover = null;
+  var p = s.split('-');
+  CAL.view = new Date(+p[0], +p[1]-1, 1);
+}
+function openCal(){
+  /* 打开日历即预选当前查询范围：丢弃未应用的残留半选，始终从当前区间出发 */
+  if(!(state.range===7 && CAL.selS && CAL.selE)){
+    var b = rangeBounds();
+    setCalSel(ymd(b.s), ymd(b.e));
+    renderCal();
   }
-
-  // ---------- SVG 基元 ----------
-
-  function svgEl(tag, attrs) {
-    const el = document.createElementNS(SVG_NS, tag);
-    for (const k in attrs) el.setAttribute(k, attrs[k]);
-    return el;
-  }
-
-  // y 轴取整:向上取到 1/2/2.5/5 × 10^k,网格线数值好看。
-  function niceMax(v) {
-    if (v <= 0) return 1;
-    const exp = Math.pow(10, Math.floor(Math.log10(v)));
-    for (const m of [1, 2, 2.5, 5, 10]) {
-      if (v <= m * exp) return m * exp;
+  calpop.hidden = false;
+  el('range-custom').setAttribute('aria-expanded','true');
+}
+function closeCal(){
+  calpop.hidden = true;
+  el('range-custom').setAttribute('aria-expanded','false');
+}
+function calShift(dir){
+  CAL.view = new Date(CAL.view.getFullYear(), CAL.view.getMonth()+dir, 1);
+  renderCal();
+}
+function calCell(d){
+  var ds = ymd(d);
+  var cls = 'cal-d';
+  var lo = null, hi = null;
+  if(CAL.selS && CAL.selE){ lo = CAL.selS<CAL.selE?CAL.selS:CAL.selE; hi = CAL.selS<CAL.selE?CAL.selE:CAL.selS; }
+  else if(CAL.selS && CAL.hover){ lo = CAL.selS<CAL.hover?CAL.selS:CAL.hover; hi = CAL.selS<CAL.hover?CAL.hover:CAL.selS; }
+  if(ds===CAL.selS || ds===CAL.selE) cls += ' sel';
+  else if(lo && hi && ds>=lo && ds<=hi) cls += (CAL.selS && !CAL.selE) ? ' pv' : ' in';
+  var dateLabel=LOCALE==='en'?d.toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'}):ds.replace(/-/g,' 年 ').replace(' 年 '+pad2(d.getDate()),' 月 '+pad2(d.getDate())+' 日');
+  return '<button type="button" class="'+cls+'" data-d="'+ds+'" aria-label="'+dateLabel+'" aria-pressed="'+(ds===CAL.selS||ds===CAL.selE)+'">'+d.getDate()+'</button>';
+}
+function renderCal(){
+  var html = '';
+  for(var mi=0; mi<2; mi++){
+    var y = CAL.view.getFullYear(), m = CAL.view.getMonth()+mi;
+    var off = (new Date(y, m, 1).getDay()+6)%7;
+    var dim = new Date(y, m+1, 0).getDate();
+    var rows = Math.ceil((off+dim)/7);
+    var wd=LOCALE==='en'?WDH_EN:WDH_ZH;
+    var mlabel = LOCALE==='en' ? new Date(y,m,1).toLocaleDateString('en-US',{month:'long',year:'numeric'}) : y+' 年 '+(m+1)+' 月';
+    html += '<div class="cal-grid" role="grid" aria-label="'+mlabel+'"><div class="cal-mt">'+mlabel+'</div><div class="cal-wd">'+wd.map(function(w){ return '<span>'+w+'</span>'; }).join('')+'</div><div class="cal-days">';
+    for(var i=0;i<rows*7;i++){
+      if(i<off || i>=off+dim){ html += '<span class="cal-pad"></span>'; continue; }
+      html += calCell(new Date(y, m, 1-off+i));
     }
-    return 10 * exp;
+    html += '</div></div>';
   }
+  calGrids.innerHTML = html;
+  el('cal-next').disabled=false;
+  el('cal-range-txt').textContent = (CAL.selS && CAL.selE)
+    ? ui('已选 ','Selected ')+CAL.selS.slice(5).replace('-','/')+' ~ '+CAL.selE.slice(5).replace('-','/')
+    : (CAL.selS ? ui('已选开始 '+CAL.selS.slice(5)+'，请选择结束日期','Start '+CAL.selS.slice(5)+' selected; choose an end date') : ui('请选择开始与结束日期','Select a start and end date'));
+}
+function calPick(ds){
+  if(!CAL.selS || (CAL.selS && CAL.selE)){ CAL.selS = ds; CAL.selE = null; }
+  else if(ds === CAL.selS){ CAL.selE = ds; }
+  else if(ds < CAL.selS){ CAL.selE = CAL.selS; CAL.selS = ds; }
+  else { CAL.selE = ds; }
+  renderCal();
+  syncCustomTxt();
+}
+el('range-custom').addEventListener('click', function(e){
+  e.stopPropagation();
+  setPalettePop(false);
+  if(typeof DV!=='undefined' && DV && DV.open) dvClose(false);
+  if(el('unit-pop') && !el('unit-pop').hidden) setUnitPop(false);
+  if(calpop.hidden) openCal(); else closeCal();
+});
+calGrids.addEventListener('click', function(e){
+  e.stopPropagation();
+  var b = e.target.closest('button.cal-d'); if(!b) return;
+  calPick(b.dataset.d);
+});
+calGrids.addEventListener('mouseover', function(e){
+  var b = e.target.closest('button.cal-d'); if(!b) return;
+  if(CAL.hover !== b.dataset.d){ CAL.hover = b.dataset.d; renderCal(); }
+});
+calGrids.addEventListener('mouseleave', function(){
+  if(CAL.hover !== null){ CAL.hover = null; renderCal(); }
+});
+el('cal-prev').addEventListener('click', function(){ calShift(-1); });
+el('cal-next').addEventListener('click', function(){ calShift(1); });
+el('cal-apply').addEventListener('click', function(){
+  if(!CAL.selS || !CAL.selE){ toast(ui('请选择开始和结束日期','Select a start and end date')); return; }
+  CUSTOM = { s: CAL.selS, e: CAL.selE };
+  state.range = 7;
+  saveCustomRange();
+  closeCal();
+  syncRangeSeg();
+  loadDashboard();
+  toast(ui('已应用自定义区间 ','Custom range applied: ')+rangeDateText());
+});
+document.addEventListener('click', function(e){
+  if(!calpop.hidden && !e.target.closest('.calwrap') && !e.target.closest('#range-seg')) closeCal();
+});
+document.addEventListener('keydown', function(e){
+  if(e.key!=='Escape') return;
+  if(!calpop.hidden){ closeCal(); el('range-custom').focus(); }
+});
 
-  // ---------- 柱状图(单列或五类堆叠) ----------
-
-  // rows: [{label, requests, fresh_input, output, cache_read, cache_create, reasoning, total}]
-  // stacked=true 时按 METRICS 分段着色,否则单色;onLabelClick 提供柱条点击
-  // 钻取(按天/按月图把点击的桶设为选区),null 表示不可点。
-  function renderBarChart(container, rows, stacked, onLabelClick) {
-    container.textContent = "";
-    if (!rows.length) {
-      container.appendChild(emptyNote());
-      return;
-    }
-    const maxRow = Math.max(...rows.map((r) => r.total || 0));
-    if (maxRow <= 0) {
-      // 区间内全为零时空坐标轴没有信息量,直接给无数据提示。
-      container.appendChild(emptyNote("no data in range / 区间内无数据"));
-      return;
-    }
-    const W = 720, H = 240;
-    const padL = 52, padR = 8, padT = 12, padB = 24;
-    const plotW = W - padL - padR;
-    const plotH = H - padT - padB;
-    const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
-
-    const maxVal = niceMax(Math.max(...rows.map((r) => r.total || 0)));
-    const yOf = (v) => padT + plotH - (v / maxVal) * plotH;
-
-    // 网格线与 y 轴刻度(0/50%/100% 共 5 条,首尾必有)。
-    for (let i = 0; i <= 4; i++) {
-      const v = (maxVal * i) / 4;
-      const y = yOf(v);
-      svg.appendChild(svgEl("line", {
-        x1: padL, x2: W - padR, y1: y, y2: y,
-        stroke: i === 0 ? "#31435a" : "#223041", "stroke-width": 1
-      }));
-      const lab = svgEl("text", {
-        x: padL - 8, y: y + 3.5, "text-anchor": "end",
-        fill: "#5b6e80", "font-size": 9.5
-      });
-      // 轴标签去掉缩写后的小数零(750.00 M → 750 M),网格更清爽。
-      lab.textContent = formatTokens(v).replace(/\.00\s(?=[KMB])/g, " ");
-      svg.appendChild(lab);
-    }
-
-    const n = rows.length;
-    const slot = plotW / n;
-    const barW = Math.max(2, Math.min(slot * 0.7, 44));
-    // X 轴标签:采样密度按像素间隙自适应(≥30px 才落一个标签),双语标签
-    // 取中文短段(如 "Monday / 周一" → "周一"),末标签恒绘制且无近邻挤压。
-    const labelStep = Math.max(Math.ceil(30 / slot), Math.ceil(n / 14));
-    const nearEnd = (i) => (n - 1 - i) * slot < 30;
-    rows.forEach((r, i) => {
-      const x = padL + slot * i + (slot - barW) / 2;
-      let acc = 0;
-      const segEls = [];
-      if (stacked) {
-        activeMetrics().forEach((m) => {
-          const v = r[m.key] || 0;
-          if (v <= 0) return;
-          const y0 = yOf(acc);
-          const y1 = yOf(acc + v);
-          const rect = svgEl("rect", {
-            x, y: y1, width: barW, height: Math.max(0.5, y0 - y1),
-            fill: m.color, rx: Math.min(2, barW / 4)
-          });
-          svg.appendChild(rect);
-          segEls.push(tipRow(m.color, m.label + " " + m.zh, formatTokens(v)));
-          acc += v;
-        });
-      } else {
-        const v = r.total || 0;
-        if (v > 0) {
-          const y0 = yOf(v);
-          const rect = svgEl("rect", {
-            x, y: y0, width: barW, height: Math.max(0.5, padT + plotH - y0),
-            fill: "#5cc8ff", rx: Math.min(2, barW / 4)
-          });
-          svg.appendChild(rect);
-        }
-        segEls.push(tipRow("#5cc8ff", "Total 总量", formatTokens(v)));
-      }
-
-      // 悬停命中区:整列高,柱体不变色,只出 tooltip;提供 onLabelClick 时
-      // 柱条可点击钻取(整列命中区也可点)。
-      const hit = svgEl("rect", {
-        x: padL + slot * i, y: padT, width: slot, height: plotH,
-        fill: "transparent"
-      });
-      const tip = {
-        title: r.key,
-        rows: [...segEls, tipRow(null, "Requests 请求", formatInt(r.requests || 0))]
-      };
-      if (onLabelClick) {
-        tip.rows.push(tipRow(null, "▸ click to focus / 点击聚焦", shortLabel(r.key)));
-        hit.style.cursor = "pointer";
-        hit.addEventListener("click", () => onLabelClick(r.key));
-      }
-      setTip(hit, tip);
-      svg.appendChild(hit);
-
-      if ((i % labelStep === 0 && !nearEnd(i)) || i === n - 1) {
-        const lab = svgEl("text", {
-          x: padL + slot * i + slot / 2, y: H - 8, "text-anchor": "middle",
-          fill: "#5b6e80", "font-size": 9.5
-        });
-        lab.textContent = shortLabel(axisShort(r.key || ""));
-        svg.appendChild(lab);
-      }
-    });
-    container.appendChild(svg);
+/* ---------- 有序点选器：已选=单列排序列表（纵向拖拽 + 上移/下移键盘操作），可选=chip 点击加入 ---------- */
+function pchip(v, text){
+  return '<button type="button" class="pchip" data-k="'+esc(v)+'" title="'+ui('点击加入','Add')+'">'+esc(text||v)+'</button>';
+}
+function ordItemHtml(k, text, i, n){
+  return '<div class="ord-item" draggable="true" data-k="'+esc(k)+'">' +
+    '<span class="ord-grip" aria-hidden="true"><i></i></span>' +
+    '<span class="ord-idx">'+(i+1)+'</span>' +
+    '<span class="ord-name" title="'+esc(text)+'">'+esc(text)+'</span>' +
+    '<button type="button" class="ord-btn" data-move="up" aria-label="'+ui('上移 ','Move up ')+esc(text)+'"'+(i===0?' disabled':'')+'><svg class="ic" style="transform:rotate(90deg)"><use href="#i-chev-l"/></svg></button>' +
+    '<button type="button" class="ord-btn" data-move="down" aria-label="'+ui('下移 ','Move down ')+esc(text)+'"'+(i===n-1?' disabled':'')+'><svg class="ic" style="transform:rotate(-90deg)"><use href="#i-chev-l"/></svg></button>' +
+    '<button type="button" class="ord-btn del" data-remove aria-label="'+ui('移除 ','Remove ')+esc(text)+'"><svg class="ic" style="transform:rotate(45deg)"><use href="#i-plus"/></svg></button>' +
+    '</div>';
+}
+function makeOrderedPick(mount, cfg){
+  var host = typeof mount==='string' ? el(mount) : mount;
+  function sel(){
+    return [].slice.call(host.querySelectorAll('.ord-item')).map(function(c){ return c.dataset.k; });
   }
-
-  // 按周聚合阈值:超过该天数按 ISO 周聚合(周一为首)。
-  const WEEKLY_ROLLUP_THRESHOLD = 92;
-
-  // rollupWeeks 把逐日行按 ISO 周(周一为首)聚合:七类指标与请求数求和,
-  // key 取周起始日;首尾周天然为残周(由选区边界决定)。输出保持周起始日
-  // 升序,字段名与维度行一致(key/requests/…/total),可直接进 renderBarChart。
-  function rollupWeeks(rows) {
-    const SUM_KEYS = ["requests", "fresh_input", "output", "cache_read", "cache_create", "reasoning", "total"];
-    const out = [];
-    const byWeek = new Map();
-    rows.forEach((r) => {
-      // 服务端 day 键按契约恒为 YYYY-MM-DD;渲染层对越界形态容灾跳过。
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(r.key || "")) return;
-      const d = new Date(r.key + "T00:00:00");
-      const wk = new Date(d);
-      wk.setDate(wk.getDate() - ((d.getDay() + 6) % 7)); // 回退到本周周一
-      const k = toDateStr(wk);
-      let agg = byWeek.get(k);
-      if (!agg) {
-        agg = { key: k };
-        SUM_KEYS.forEach((sk) => { agg[sk] = 0; });
-        byWeek.set(k, agg);
-        out.push(agg);
-      }
-      SUM_KEYS.forEach((sk) => { agg[sk] += r[sk] || 0; });
-    });
-    return out;
+  /* commit = 以 cfg.selected 为唯一事实源重新渲染，再通知外部 */
+  function commit(message){
+    render();
+    if(cfg.onChange) cfg.onChange();
+    if(message) toast(message);
   }
-
-  function shortLabel(s) {
-    // 日期标签 "2026-09-08" → "09-08";其余原样。
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s.slice(5);
-    return s;
+  function move(k, dir){
+    var i = cfg.selected.indexOf(k), j = i+dir;
+    if(i<0 || j<0 || j>=cfg.selected.length) return;
+    var a = cfg.selected.slice();
+    a[i] = cfg.selected[j]; a[j] = cfg.selected[i];
+    cfg.selected = a;
+    commit((dir<0 ? ui('已上移 ','Moved up ') : ui('已下移 ','Moved down '))+cfg.text(k));
   }
-
-  // axisShort 取双语标签的中文段("Monday / 周一" → "周一"),压缩轴标签宽度;
-  // 无 " / " 分隔的标签原样返回。
-  function axisShort(s) {
-    const k = s.indexOf(" / ");
-    return k >= 0 ? s.slice(k + 3) : s;
-  }
-
-  function emptyNote(text) {
-    const div = document.createElement("div");
-    div.className = "chart-empty";
-    div.textContent = text || "no data / 无数据";
-    return div;
-  }
-
-  // ---------- 环形图 ----------
-
-  // rows 同柱状图;返回 donut svg + HTML 图例,悬停双向联动。
-  function renderDonut(container, rows) {
-    container.textContent = "";
-    const data = rows
-      .filter((r) => (r.total || 0) > 0)
-      .sort((a, b) => (b.total || 0) - (a.total || 0));
-    if (!data.length) {
-      container.appendChild(emptyNote());
-      return;
-    }
-    // 超 9 项合并为 Other,防小扇区淹没图例。
-    let slices = data;
-    let other = 0;
-    if (data.length > 9) {
-      slices = data.slice(0, 9);
-      data.slice(9).forEach((r) => { other += r.total || 0; });
-    }
-    const grand = data.reduce((s, r) => s + (r.total || 0), 0);
-
-    const wrap = document.createElement("div");
-    wrap.style.display = "flex";
-    wrap.style.flexDirection = "column";
-    wrap.style.alignItems = "center";
-    wrap.style.gap = "10px";
-    wrap.style.width = "100%";
-
-    const size = 190, cx = size / 2, cy = size / 2, R = 82, r = 52;
-    const svg = svgEl("svg", {
-      viewBox: `0 0 ${size} ${size}`, width: size, height: size, role: "img",
-      style: "width:100%;max-width:190px;height:auto;display:block"
-    });
-    const centerTotal = document.createElementNS(SVG_NS, "text");
-    const centerLabel = document.createElementNS(SVG_NS, "text");
-
-    const sliceEls = [];
-    let a0 = -Math.PI / 2;
-    slices.forEach((row, i) => {
-      const frac = (row.total || 0) / grand;
-      const a1 = a0 + frac * Math.PI * 2;
-      const color = PIE_PALETTE[i % PIE_PALETTE.length];
-      const path = svgEl("path", {
-        d: arcPath(cx, cy, R, r, a0, Math.min(a1, a0 + Math.PI * 2 - 0.0001)),
-        fill: color, stroke: "#131a22", "stroke-width": 2
-      });
-      const content = {
-        title: row.key,
-        rows: [
-          tipRow(color, "Total 总量", formatTokens(row.total || 0)),
-          tipRow(null, "Share 占比", (frac * 100).toFixed(1) + "%"),
-          tipRow(null, "Requests 请求", formatInt(row.requests || 0))
-        ]
-      };
-      setTip(path, content);
-      path.style.cursor = "default";
-      path.addEventListener("mouseenter", () => highlight(i, true));
-      path.addEventListener("mouseleave", () => highlight(i, false));
-      svg.appendChild(path);
-      sliceEls.push({ path, color });
-      a0 = a1;
-    });
-    if (other > 0) {
-      const frac = other / grand;
-      const a1 = a0 + frac * Math.PI * 2;
-      const color = PIE_PALETTE[9 % PIE_PALETTE.length];
-      const path = svgEl("path", {
-        d: arcPath(cx, cy, R, r, a0, Math.min(a1, a0 + Math.PI * 2 - 0.0001)),
-        fill: color, stroke: "#131a22", "stroke-width": 2
-      });
-      setTip(path, {
-        title: "Other 其他",
-        rows: [tipRow(color, "Total 总量", formatTokens(other)), tipRow(null, "Share 占比", (frac * 100).toFixed(1) + "%")]
-      });
-      path.addEventListener("mouseenter", () => highlight(9, true));
-      path.addEventListener("mouseleave", () => highlight(9, false));
-      svg.appendChild(path);
-      sliceEls.push({ path, color });
-    }
-
-    centerTotal.setAttribute("x", cx);
-    centerTotal.setAttribute("y", cy);
-    centerTotal.setAttribute("text-anchor", "middle");
-    centerTotal.setAttribute("fill", "#dee8f2");
-    centerTotal.setAttribute("font-size", "15");
-    centerTotal.setAttribute("font-weight", "700");
-    centerTotal.textContent = formatTokens(grand);
-    centerLabel.setAttribute("x", cx);
-    centerLabel.setAttribute("y", cy + 14);
-    centerLabel.setAttribute("text-anchor", "middle");
-    centerLabel.setAttribute("fill", "#5b6e80");
-    centerLabel.setAttribute("font-size", "8.5");
-    centerLabel.textContent = "TOTAL TOKENS";
-    svg.appendChild(centerTotal);
-    svg.appendChild(centerLabel);
-    wrap.appendChild(svg);
-
-    const legend = document.createElement("div");
-    legend.style.width = "100%";
-    legend.style.display = "flex";
-    legend.style.flexDirection = "column";
-    legend.style.gap = "3px";
-
-    const legendRows = [];
-    const addLegendRow = (label, color, value, frac, idx) => {
-      const row = document.createElement("div");
-      row.style.display = "flex";
-      row.style.alignItems = "center";
-      row.style.gap = "7px";
-      row.style.fontSize = "11px";
-      row.style.padding = "2px 6px";
-      row.style.borderRadius = "5px";
-      const dot = document.createElement("i");
-      dot.style.cssText = `width:8px;height:8px;border-radius:2px;background:${color};flex:none`;
-      row.appendChild(dot);
-      const name = document.createElement("span");
-      name.textContent = label;
-      name.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8ca0b4";
-      row.appendChild(name);
-      const val = document.createElement("b");
-      val.textContent = (frac * 100).toFixed(1) + "%";
-      val.style.cssText = "margin-left:auto;color:#dee8f2;font-weight:600;font-variant-numeric:tabular-nums";
-      row.appendChild(val);
-      row.title = value;
-      row.addEventListener("mouseenter", () => highlight(idx, true));
-      row.addEventListener("mouseleave", () => highlight(idx, false));
-      legend.appendChild(row);
-      legendRows[idx] = row;
-    };
-    slices.forEach((row, i) => {
-      addLegendRow(row.key, PIE_PALETTE[i % PIE_PALETTE.length], formatTokens(row.total || 0), (row.total || 0) / grand, i);
-    });
-    if (other > 0) addLegendRow("Other 其他", PIE_PALETTE[9 % PIE_PALETTE.length], formatTokens(other), other / grand, 9);
-
-    function highlight(idx, on) {
-      sliceEls.forEach((s, i) => {
-        s.path.style.opacity = on && i !== idx ? 0.35 : 1;
-      });
-      legendRows.forEach((row, i) => {
-        if (!row) return;
-        row.style.background = on && i === idx ? "rgba(92,200,255,.09)" : "";
-      });
-    }
-
-    wrap.appendChild(legend);
-    container.appendChild(wrap);
-  }
-
-  // 环形弧线路径:a0/a1 为弧度;接近整圆时拆两个半弧避免 path 退化。
-  function arcPath(cx, cy, R, r, a0, a1) {
-    if (a1 - a0 >= Math.PI * 2 - 0.001) a1 = a0 + Math.PI * 2 - 0.001;
-    const large = a1 - a0 > Math.PI ? 1 : 0;
-    const x0o = cx + R * Math.cos(a0), y0o = cy + R * Math.sin(a0);
-    const x1o = cx + R * Math.cos(a1), y1o = cy + R * Math.sin(a1);
-    const x1i = cx + r * Math.cos(a1), y1i = cy + r * Math.sin(a1);
-    const x0i = cx + r * Math.cos(a0), y0i = cy + r * Math.sin(a0);
-    return `M ${x0o} ${y0o} A ${R} ${R} 0 ${large} 1 ${x1o} ${y1o}` +
-      ` L ${x1i} ${y1i} A ${r} ${r} 0 ${large} 0 ${x0i} ${y0i} Z`;
-  }
-
-  // ---------- 热力图 ----------
-
-  // hm: {weekdays:[7], hours:[24], values:[[7]×[24]]}
-  function renderHeatmap(container, legendEl, hm) {
-    container.textContent = "";
-    legendEl.textContent = "";
-    const values = (hm && hm.values) || [];
-    if (values.length !== 7 || !values[0] || values[0].length !== 24) {
-      container.appendChild(emptyNote());
-      return;
-    }
-    let max = 0;
-    values.forEach((row) => row.forEach((v) => { if (v > max) max = v; }));
-
-    // 行/列合计(对齐 query heatmap 终端视图的尾列/尾行语义):行合计=星期
-    // 全天总量,列合计=小时跨七天总量,右下角为全表总量。
-    const hourSums = new Array(24).fill(0);
-    let grand = 0;
-    const daySums = values.map((row) => {
-      let s = 0;
-      row.forEach((v, hi) => {
-        s += v;
-        hourSums[hi] += v;
-        grand += v;
-      });
-      return s;
-    });
-    let hourMax = 0;
-    hourSums.forEach((v) => { if (v > hourMax) hourMax = v; });
-
-    const grid = document.createElement("div");
-    grid.className = "hm-grid";
-    grid.appendChild(Object.assign(document.createElement("div"), { className: "hm-corner" }));
-    for (let h = 0; h < 24; h++) {
-      const lab = document.createElement("div");
-      lab.className = "hm-x";
-      // 每 2 小时显示一个刻度,奇数列占位保持网格对齐。
-      lab.style.visibility = h % 2 === 0 ? "visible" : "hidden";
-      lab.textContent = (hm.hours && hm.hours[h]) || String(h).padStart(2, "0") + ":00";
-      grid.appendChild(lab);
-    }
-    grid.appendChild(Object.assign(document.createElement("div"), { className: "hm-x" }));
-
-    // 热力取色:相对给定最大值走同一色阶;空值回落到底色。
-    const heat = (v, maxV) => {
-      if (v <= 0 || maxV <= 0) return null;
-      const t = Math.sqrt(v / maxV);
-      return HEAT_STEPS[Math.min(HEAT_STEPS.length - 1, Math.floor(t * HEAT_STEPS.length))];
-    };
-
-    values.forEach((row, wi) => {
-      const y = document.createElement("div");
-      y.className = "hm-y";
-      y.textContent = shortWeekday((hm.weekdays && hm.weekdays[wi]) || "");
-      grid.appendChild(y);
-      row.forEach((v, hi) => {
-        const cell = document.createElement("div");
-        cell.className = "hm-cell";
-        const bg = heat(v, max);
-        if (bg) cell.style.background = bg;
-        setTip(cell, {
-          title: ((hm.weekdays && hm.weekdays[wi]) || "") + " " + ((hm.hours && hm.hours[hi]) || pad2(hi) + ":00"),
-          rows: [
-            tipRow(null, "Total 总量", formatTokens(v)),
-            tipRow(null, "Weekday total 该日全天", formatTokens(daySums[wi] || 0))
-          ]
-        });
-        grid.appendChild(cell);
-      });
-      // 行合计列:该星期全天总量(文本)。
-      const total = document.createElement("div");
-      total.className = "hm-total";
-      total.textContent = formatTokens(daySums[wi]);
-      total.title = formatInt(daySums[wi]);
-      grid.appendChild(total);
-    });
-
-    // 合计行:各小时跨七天总量(按小时最大值取色)+ 右下角全表总量。
-    const totalY = document.createElement("div");
-    totalY.className = "hm-y";
-    totalY.textContent = "Total";
-    grid.appendChild(totalY);
-    hourSums.forEach((v, hi) => {
-      const cell = document.createElement("div");
-      cell.className = "hm-cell hm-sum";
-      const bg = heat(v, hourMax);
-      if (bg) cell.style.background = bg;
-      setTip(cell, {
-        title: (hm.hours && hm.hours[hi]) || pad2(hi) + ":00",
-        rows: [tipRow(null, "Total 总量", formatTokens(v))]
-      });
-      grid.appendChild(cell);
-    });
-    const grandCell = document.createElement("div");
-    grandCell.className = "hm-total";
-    grandCell.textContent = formatTokens(grand);
-    grandCell.title = formatInt(grand);
-    grandCell.style.fontWeight = "700";
-    grid.appendChild(grandCell);
-
-    // 首行即小时刻度行(奇数列占位保持网格对齐),其后每行=星期标签+24 格。
-    container.appendChild(grid);
-
-    // 图例:0 → max 渐变块。
-    if (max > 0) {
-      const frag = document.createDocumentFragment();
-      const zero = document.createElement("span");
-      zero.textContent = "0";
-      frag.appendChild(zero);
-      HEAT_STEPS.forEach((c) => {
-        const i = document.createElement("i");
-        i.style.background = c;
-        frag.appendChild(i);
-      });
-      const top = document.createElement("span");
-      top.textContent = formatTokens(max);
-      frag.appendChild(top);
-      legendEl.appendChild(frag);
-    }
-  }
-
-  function shortWeekday(s) {
-    // "周一 Mon" 形态取前两字符中文;纯 ASCII 取前 3 字符。
-    if (/^[\u4e00-\u9fa5]/.test(s)) return s.slice(0, 2);
-    return s.slice(0, 3);
-  }
-
-  // ---------- 状态条与 meta ----------
-
-  function metaReady() {
-    return !!(state.meta && state.meta.min_date && state.meta.max_date);
-  }
-
-  function renderStatus() {
-    const el = $("status-line");
-    const m = state.meta;
-    el.textContent = "";
-    el.title = "data through 数据截至 · last collection 最近采集";
-    const rows = [
-      ["数据截至 data thru", m && m.data_through],
-      ["最近采集 collected", m && m.last_collection]
-    ];
-    rows.forEach(([label, value]) => {
-      const row = document.createElement("span");
-      row.className = "status-row";
-      const lab = document.createElement("span");
-      lab.className = "status-label";
-      lab.textContent = label;
-      const b = document.createElement("b");
-      b.textContent = value || "–";
-      row.appendChild(lab);
-      row.appendChild(b);
-      el.appendChild(row);
-    });
-  }
-
-  function applyMeta(m) {
-    state.meta = m && typeof m === "object" ? m : null;
-    $("ver-chip").textContent = (state.meta && state.meta.version) || "–";
-    document.querySelector('[data-preset="all"]').disabled = !metaReady();
-    renderStatus();
-  }
-
-  // ---------- KPI ----------
-
-  function deltaChip(el, cur, base, suffix, title) {
-    el.textContent = "";
-    el.title = title || "";
-    const p = changePct(cur, base);
-    const span = document.createElement("span");
-    if (p === null) {
-      span.className = "flat";
-      span.textContent = suffix ? "– " + suffix : "–";
-    } else {
-      span.className = p >= 0 ? "up" : "down";
-      span.textContent = (p >= 0 ? "▲ " : "▼ ") + Math.abs(p).toFixed(1) + "%" + (suffix ? " " + suffix : "");
-    }
-    el.appendChild(span);
-  }
-
-  function renderKpis(totals, compare, columns) {
-    const base = (compare && compare.totals) || {};
-    // KPI 行随配置列显隐:total/requests/cache_hit 配置了才展示。
-    const hasColumn = (id) => !columns || columns.includes(id);
-    $("kpi-total-card").hidden = !hasColumn("total");
-    $("kpi-requests-card").hidden = !hasColumn("requests");
-    $("kpi-hit-card").hidden = !hasColumn("cache_hit");
-    const baseLabel = compare && compare.base_start ? "vs " + compare.base_start + " ~ " + compare.base_end : "";
-    $("kpi-total").textContent = formatTokens(totals.total || 0);
-    $("kpi-total").title = formatInt(totals.total || 0);
-    deltaChip($("kpi-total-delta"), totals.total || 0, base.total || 0, baseLabel);
-
-    $("kpi-requests").textContent = formatInt(totals.requests || 0);
-    deltaChip($("kpi-requests-delta"), totals.requests || 0, base.requests || 0, "", baseLabel);
-    $("kpi-days").textContent = formatInt(totals.active_days || 0);
-    deltaChip($("kpi-days-delta"), totals.active_days || 0, base.active_days || 0, "", baseLabel);
-    const hit = cacheHit(totals.fresh_input || 0, totals.cache_read || 0, totals.cache_create || 0);
-    const baseHit = cacheHit(base.fresh_input || 0, base.cache_read || 0, base.cache_create || 0);
-    $("kpi-hit").textContent = hit.toFixed(2) + "%";
-    // 命中率变化用百分点差,不用百分比变化。
-    const pp = hit - baseHit;
-    const hitEl = $("kpi-hit-delta");
-    hitEl.textContent = "";
-    hitEl.title = baseLabel;
-    const span = document.createElement("span");
-    if (Math.abs(pp) < 0.005) {
-      span.className = "flat";
-      span.textContent = "± 0.00pp";
-    } else {
-      span.className = pp > 0 ? "up" : "down";
-      span.textContent = (pp > 0 ? "▲ " : "▼ ") + Math.abs(pp).toFixed(2) + "pp";
-    }
-    hitEl.appendChild(span);
-
-    // 指标条:按载荷 columns(query 配置的输出列)动态渲染,去掉已升格 KPI 的
-    // requests/total/cache_hit——剩余 token 类别与 query 可见列一致。
-    const strip = $("metric-strip");
-    strip.textContent = "";
-    (columns || []).forEach((id) => {
-      const def = STRIP_FIELDS[id];
-      if (!def) return;
-      const v = totals[def.field] || 0;
-      const card = document.createElement("div");
-      card.className = "card metric";
-      const dot = document.createElement("div");
-      dot.className = "dot";
-      dot.style.background = def.color;
-      const label = document.createElement("div");
-      label.className = "card-label";
-      label.textContent = def.label + " " + def.zh;
-      const value = document.createElement("div");
-      value.className = "metric-value";
-      value.textContent = formatTokens(v);
-      value.title = formatInt(v);
-      const delta = document.createElement("div");
-      delta.className = "delta";
-      // 基线窗口日期只进 title,防长标签挤爆小卡片。
-      deltaChip(delta, v, base[def.field] || 0, "", baseLabel);
-      card.appendChild(dot);
-      card.appendChild(label);
-      card.appendChild(value);
-      card.appendChild(delta);
-      strip.appendChild(card);
-    });
-
-    // 五类构成条带 + 图例(图例只列实际有量的类别)。
-    const ribbon = $("kpi-ribbon");
-    const legend = $("kpi-ribbon-legend");
-    ribbon.textContent = "";
-    legend.textContent = "";
-    const grand = totals.total || 0;
-    activeMetrics().forEach((m) => {
-      const v = totals[m.key] || 0;
-      if (grand > 0 && v > 0) {
-        const seg = document.createElement("span");
-        seg.style.cssText = `width:${(v * 100) / grand}%;background:${m.color}`;
-        setTip(seg, {
-          title: m.label + " " + m.zh,
-          rows: [tipRow(m.color, "Total 总量", formatTokens(v)), tipRow(null, "Share 占比", ((v * 100) / grand).toFixed(1) + "%")]
-        });
-        ribbon.appendChild(seg);
-      }
-      if (v <= 0) return; // 图例只列实际有量的类别,恒零字段不占位
-      const lg = document.createElement("span");
-      lg.className = "lg";
-      const dot = document.createElement("i");
-      dot.style.background = m.color;
-      lg.appendChild(dot);
-      lg.appendChild(document.createTextNode(m.label + " "));
-      const b = document.createElement("b");
-      b.textContent = ((v * 100) / grand).toFixed(1) + "%";
-      lg.appendChild(b);
-      legend.appendChild(lg);
-    });
-  }
-
-  // ---------- 对比表 / 预估表 ----------
-
-  function renderCompare(c, range, curDayRows) {
-    if (!c) return;
-    const meta = $("compare-meta");
-    meta.textContent = "";
-    meta.appendChild(document.createTextNode("Current 当前 "));
-    let b = document.createElement("b");
-    b.textContent = ((range && range.from) || "–") + " .. " + ((range && range.to) || "–");
-    meta.appendChild(b);
-    meta.appendChild(document.createTextNode(" · Base 基线(等长前一窗口) "));
-    b = document.createElement("b");
-    b.textContent = (c.base_start || "–") + " .. " + (c.base_end || "–");
-    meta.appendChild(b);
-
-    renderCompareChart($("chart-compare"), curDayRows || [], c.daily || []);
-
-    const tbody = $("compare-body");
-    tbody.textContent = "";
-    (c.rows || []).forEach((r) => {
-      const tr = document.createElement("tr");
-      addCell(tr, r.label || "");
-      addCell(tr, r.current || "", "num");
-      addCell(tr, r.base || "", "num muted");
-      const cls = r.change_class === "pos" ? "num pos" : r.change_class === "neg" ? "num neg" : "num flat";
-      addCell(tr, r.change || "", cls);
-      addCell(tr, r.change_pct || "", "num");
-      tbody.appendChild(tr);
-    });
-  }
-
-  // ---------- 两期逐日对比曲线 ----------
-
-  // renderCompareChart 在环比面板绘制当前区间与基线窗口的逐日总量折线:
-  // 两条线按「窗口内第 N 天」对齐(两侧日期不同),悬停给出两侧日期与数值。
-  function renderCompareChart(container, curRows, baseRows) {
-    container.textContent = "";
-    if (curRows.length < 2 || curRows.length !== baseRows.length) {
-      container.appendChild(emptyNote("insufficient span / 跨度不足"));
-      return;
-    }
-    const W = 720, H = 200;
-    const padL = 52, padR = 8, padT = 10, padB = 24;
-    const plotW = W - padL - padR;
-    const plotH = H - padT - padB;
-    const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
-
-    const maxVal = niceMax(Math.max(
-      Math.max(...curRows.map((r) => r.total || 0)),
-      Math.max(...baseRows.map((r) => r.total || 0))
-    ));
-    const yOf = (v) => padT + plotH - (v / maxVal) * plotH;
-    for (let i = 0; i <= 4; i++) {
-      const v = (maxVal * i) / 4;
-      const y = yOf(v);
-      svg.appendChild(svgEl("line", {
-        x1: padL, x2: W - padR, y1: y, y2: y,
-        stroke: i === 0 ? "#31435a" : "#223041", "stroke-width": 1
-      }));
-      const lab = svgEl("text", {
-        x: padL - 8, y: y + 3.5, "text-anchor": "end",
-        fill: "#5b6e80", "font-size": 9.5
-      });
-      lab.textContent = formatTokens(v).replace(/\.00\s(?=[KMB])/g, " ");
-      svg.appendChild(lab);
-    }
-
-    const n = curRows.length;
-    const xOf = (i) => padL + (n === 1 ? plotW / 2 : (plotW * i) / (n - 1));
-    const line = (rows) => rows
-      .map((r, i) => `${xOf(i).toFixed(1)},${yOf(r.total || 0).toFixed(1)}`)
-      .join(" ");
-    svg.appendChild(svgEl("polyline", {
-      points: line(baseRows), fill: "none",
-      stroke: "#8ca0b4", "stroke-width": 1.5, "stroke-dasharray": "5 4"
-    }));
-    svg.appendChild(svgEl("polyline", {
-      points: line(curRows), fill: "none",
-      stroke: "#5cc8ff", "stroke-width": 2
-    }));
-
-    // 悬停命中区:整列,tooltip 同时给两侧日期与数值。
-    const slot = plotW / (n - 1 || 1);
-    const labelStep = Math.ceil(n / 8);
-    curRows.forEach((r, i) => {
-      const hit = svgEl("rect", {
-        x: padL + slot * i - slot / 2, y: padT, width: slot, height: plotH,
-        fill: "transparent"
-      });
-      setTip(hit, {
-        title: "Day " + (i + 1) + " / 第 " + (i + 1) + " 天",
-        rows: [
-          tipRow("#5cc8ff", "Current 当前 " + shortLabel(r.key || ""), formatTokens(r.total || 0)),
-          tipRow("#8ca0b4", "Base 基线 " + shortLabel((baseRows[i] && baseRows[i].key) || ""), formatTokens((baseRows[i] && baseRows[i].total) || 0))
-        ]
-      });
-      svg.appendChild(hit);
-      if (i % labelStep === 0 || i === n - 1) {
-        // 首标签左对齐、末标签右对齐防裁剪;与末标签相邻的两个采样点跳过,
-        // 避免中锚标签与右锚末标签挤压粘连。
-        if ((i === n - 2 || i === n - 3) && n > 3) return;
-        const anchor = i === 0 ? "start" : i === n - 1 ? "end" : "middle";
-        const x = i === 0 ? padL : i === n - 1 ? W - padR : xOf(i);
-        const lab = svgEl("text", {
-          x, y: H - 8, "text-anchor": anchor,
-          fill: "#5b6e80", "font-size": 9.5
-        });
-        lab.textContent = shortLabel(r.key || "");
-        svg.appendChild(lab);
-      }
-    });
-    container.appendChild(svg);
-  }
-
-  function renderForecast(f) {
-    if (!f) return;
-    $("forecast-today").textContent = f.today_so_far || "–";
-    const tbody = $("forecast-body");
-    tbody.textContent = "";
-    (f.rows || []).forEach((r) => {
-      const tr = document.createElement("tr");
-      addCell(tr, r.label || "");
-      addCell(tr, r.total || "", "num");
-      addCell(tr, r.avg_day || "", "num");
-      addCell(tr, r.active || "", "num");
-      const est = document.createElement("td");
-      est.className = "num";
-      est.style.fontWeight = "700";
-      est.textContent = r.estimate || "";
-      tr.appendChild(est);
-      tbody.appendChild(tr);
-    });
-  }
-
-  function addCell(tr, text, className) {
-    const td = document.createElement("td");
-    td.textContent = text;
-    if (className) td.className = className;
-    tr.appendChild(td);
-    return td;
-  }
-
-  function emptyRow(tbody, colSpan) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = colSpan;
-    td.className = "empty";
-    td.textContent = "no data / 无数据";
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-  }
-
-  // ---------- 会话排行 ----------
-
-  function renderSessions(list) {
-    const tbody = $("sessions-body");
-    tbody.textContent = "";
-    const cnt = $("count-sessions");
-    if (cnt) cnt.textContent = list.length + " rows";
-    const btn = $("export-sessions");
-    if (btn) btn.disabled = list.length === 0;
-    if (!list.length) {
-      emptyRow(tbody, 8);
-      return;
-    }
-    const maxTotal = Math.max(...list.map((s) => s.total || 0));
-    list.forEach((s, i) => {
-      const tr = document.createElement("tr");
-      const rank = addCell(tr, String(i + 1), "muted");
-      rank.dataset.v = String(i + 1);
-      const title = addCell(tr, s.title || "(untitled / 无标题)", "title-cell");
-      title.title = s.title || "";
-      const client = addCell(tr, s.client || "–");
-      client.innerHTML = "";
-      const tag = document.createElement("span");
-      tag.className = "tag";
-      tag.textContent = s.client || "–";
-      client.appendChild(tag);
-      const proj = addCell(tr, s.project || "–");
-      proj.innerHTML = "";
-      const ptag = document.createElement("span");
-      ptag.className = "tag";
-      ptag.textContent = s.project || "–";
-      proj.appendChild(ptag);
-      const dur = addCell(tr, formatDuration(s.duration_ms || 0), "num muted");
-      dur.dataset.v = String(s.duration_ms || 0);
-      const req = addCell(tr, formatInt(s.requests || 0), "num");
-      req.dataset.v = String(s.requests || 0);
-      const tot = addCell(tr, formatTokens(s.total || 0), "num");
-      tot.dataset.v = String(s.total || 0);
-      tot.title = formatInt(s.total || 0);
-      const bar = document.createElement("td");
-      const track = document.createElement("span");
-      track.className = "bar-track";
-      const fill = document.createElement("span");
-      fill.className = "bar-fill";
-      fill.style.width = (maxTotal > 0 ? ((s.total || 0) * 100) / maxTotal : 0) + "%";
-      track.appendChild(fill);
-      bar.appendChild(track);
-      tr.appendChild(bar);
-      tbody.appendChild(tr);
-    });
-    reapplySort(tbody);
-  }
-
-  // ---------- 数据明细(折叠块) ----------
-
-  const DIM_TITLES = {
-    day: ["Day", "按天"], hour: ["Hour", "按小时"], weekday: ["Weekday", "按星期"],
-    month: ["Month", "按月"], client: ["Client", "客户端"], model: ["Model", "模型"],
-    provider: ["Provider", "供应商"], project: ["Project", "项目"]
-  };
-
-  function buildDataBlocks() {
-    const root = $("data-blocks");
-    root.textContent = "";
-    DIMENSIONS.forEach((dim) => {
-      const d = document.createElement("details");
-      d.className = "data-block";
-      d.id = "block-" + dim;
-      const summary = document.createElement("summary");
-      const name = document.createElement("span");
-      name.textContent = DIM_TITLES[dim][0] + " ";
-      const zh = document.createElement("span");
-      zh.className = "muted";
-      zh.textContent = DIM_TITLES[dim][1];
-      name.appendChild(zh);
-      const right = document.createElement("span");
-      right.style.display = "inline-flex";
-      right.style.alignItems = "center";
-      right.style.gap = "10px";
-      const exportBtn = document.createElement("button");
-      exportBtn.type = "button";
-      exportBtn.className = "export-btn";
-      exportBtn.id = "export-" + dim;
-      exportBtn.textContent = "Export CSV";
-      exportBtn.title = "export current rows as CSV / 按当前排序导出 CSV";
-      // 阻止冒泡:点导出不应折叠/展开明细块。
-      exportBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        exportDimensionCSV(dim);
-      });
-      const cnt = document.createElement("span");
-      cnt.className = "cnt";
-      cnt.id = "count-" + dim;
-      cnt.textContent = "0 rows";
-      right.appendChild(exportBtn);
-      right.appendChild(cnt);
-      summary.appendChild(name);
-      summary.appendChild(right);
-      const wrap = document.createElement("div");
-      wrap.className = "tbl-wrap";
-      const table = document.createElement("table");
-      const thead = document.createElement("thead");
-      const hrow = document.createElement("tr");
-      ["Key", "Requests", "Fresh input", "Output", "Cache read", "Cache create", "Reasoning", "Total"].forEach((h, i) => {
-        const th = document.createElement("th");
-        th.className = i === 0 ? "sortable" : "sortable num";
-        th.textContent = h;
-        hrow.appendChild(th);
-      });
-      thead.appendChild(hrow);
-      const tbody = document.createElement("tbody");
-      tbody.id = "tbl-" + dim;
-      table.appendChild(thead);
-      table.appendChild(tbody);
-      wrap.appendChild(table);
-      d.appendChild(summary);
-      d.appendChild(wrap);
-      root.appendChild(d);
-    });
-  }
-
-  function renderDimension(dim, rows) {
-    const count = $("count-" + dim);
-    if (count) count.textContent = rows.length + " rows";
-    const exportBtn = $("export-" + dim);
-    if (exportBtn) exportBtn.disabled = rows.length === 0;
-    const tbody = $("tbl-" + dim);
-    tbody.textContent = "";
-    if (!rows.length) {
-      emptyRow(tbody, 8);
-      return;
-    }
-    rows.forEach((r) => {
-      const tr = document.createElement("tr");
-      addCell(tr, r.key || "–");
-      [["requests", formatInt], ["fresh_input", formatInt], ["output", formatInt],
-       ["cache_read", formatInt], ["cache_create", formatInt], ["reasoning", formatInt],
-       ["total", formatInt]].forEach(([k, fmt]) => {
-        const td = addCell(tr, fmt(r[k] || 0), "num");
-        td.dataset.v = String(r[k] || 0);
-      });
-      tbody.appendChild(tr);
-    });
-    reapplySort(tbody);
-  }
-
-  // ---------- CSV 导出 ----------
-
-  // csvField 按 RFC 4180 转义:含逗号/引号/换行的字段加引号并翻倍内部引号。
-  function csvField(v) {
-    const s = String(v);
-    if (/[",\r\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
-    return s;
-  }
-
-  // downloadCSV 统一下载:CRLF 行尾 + UTF-8 BOM(便于 Excel 识别),临时
-  // <a download> 触发后释放对象 URL。
-  function downloadCSV(lines, filename) {
-    const blob = new Blob(["\uFEFF" + lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
-  // exportDimensionCSV 把该维度明细表按当前排序所见导出为 CSV:键列取文本,
-  // 数值列取 data-v 的原始整数(与 export 命令的机器 schema 同为精确值);
-  // 文件名含维度与区间。
-  function exportDimensionCSV(dim) {
-    const tbody = $("tbl-" + dim);
-    if (!tbody) return;
-    if (tbody.querySelector("td.empty")) return;
-    const header = ["Key", "Requests", "Fresh input", "Output", "Cache read", "Cache create", "Reasoning", "Total"];
-    const lines = [header.map(csvField).join(",")];
-    Array.prototype.forEach.call(tbody.rows, (tr) => {
-      const fields = [tr.cells[0].textContent.trim()];
-      for (let i = 1; i < tr.cells.length; i++) {
-        const td = tr.cells[i];
-        fields.push(td.dataset.v !== undefined && td.dataset.v !== "" ? td.dataset.v : "0");
-      }
-      lines.push(fields.map(csvField).join(","));
-    });
-    downloadCSV(lines, "token-usage-" + dim + "-" + state.from + "_" + state.to + ".csv");
-  }
-
-  // exportSessionsCSV 导出会话排行:Duration 列取 data-v 毫秒原值,文本列
-  // 原样转义;条形列(末列)不参与。
-  function exportSessionsCSV() {
-    const tbody = $("sessions-body");
-    if (!tbody || tbody.querySelector("td.empty")) return;
-    const header = ["Rank", "Title", "Client", "Project", "DurationMS", "Requests", "Total"];
-    const lines = [header.map(csvField).join(",")];
-    Array.prototype.forEach.call(tbody.rows, (tr) => {
-      const num = (i) => (tr.cells[i] && tr.cells[i].dataset.v) || "0";
-      const text = (i) => (tr.cells[i] ? tr.cells[i].textContent.trim() : "");
-      lines.push([text(0), text(1), text(2), text(3), num(4), num(5), num(6)].map(csvField).join(","));
-    });
-    downloadCSV(lines, "token-usage-sessions-" + state.from + "_" + state.to + ".csv");
-  }
-
-  // ---------- 图表装配与区间自适应 ----------
-
-  function renderCharts(data) {
-    const dims = data.dimensions || {};
-    const singleDay = state.from === state.to;
-
-    // 按天:堆叠柱;单日或不足两桶时退化为提示(小时视图接管日内分布)。
-    // 点击柱条钻取:把点击的那一天设为选区;超过 92 天(约一个季度)自动
-    // 按 ISO 周聚合(周一为首),长区间柱群更可读,此时禁用逐日钻取。
-    const dayRows = dims.day || [];
-    setNote("note-day", "");
-    if (singleDay || dayRows.length < 2) {
-      $("card-day").hidden = true;
-    } else if (dayRows.length > WEEKLY_ROLLUP_THRESHOLD) {
-      $("card-day").hidden = false;
-      renderBarChart($("chart-day"), rollupWeeks(dayRows), true, null);
-      setNote("note-day", "aggregated by week (Mon) / 超过 92 天按周聚合");
-      renderKindLegend($("legend-day"));
-    } else {
-      $("card-day").hidden = false;
-      renderBarChart($("chart-day"), dayRows, true, (label) => setRange(label, label, null));
-      setNote("note-day", "click a bar to focus that day / 点击柱条聚焦该日");
-      renderKindLegend($("legend-day"));
-    }
-
-    // 按小时:仅单日选区展示(多日区间的日内分布被按天/按周聚合覆盖);
-    // 按星期:单日选区无意义,隐藏。
-    $("card-hour").hidden = !singleDay;
-    if (singleDay) renderBarChart($("chart-hour"), dims.hour || [], false);
-    $("card-weekday").hidden = singleDay;
-    if (!singleDay) renderBarChart($("chart-weekday"), dims.weekday || [], false);
-
-    // 按月:跨度不足两个自然月时同样退化;点击柱条聚焦该月整月。
-    const monthRows = dims.month || [];
-    setNote("note-month", "");
-    if (monthRows.length < 2) {
-      $("card-month").hidden = true;
-    } else {
-      $("card-month").hidden = false;
-      renderBarChart($("chart-month"), monthRows, false, monthLabelRange);
-      setNote("note-month", "click a bar to focus that month / 点击柱条聚焦该月");
-    }
-
-    // 趋势区仅剩一张可见卡时占满整行,避免 2 列网格留空槽。
-    const visibleTrend = ["card-day", "card-hour", "card-weekday", "card-month"]
-      .filter((id) => !$(id).hidden).length;
-    document.querySelector("#trends .grid").classList.toggle("single-col", visibleTrend === 1);
-
-    PIE_DIMS.forEach((dim) => renderDonut($("chart-" + dim), dims[dim] || []));
-    renderHeatmap($("chart-heatmap"), $("hm-legend"), data.heatmap);
-  }
-
-  // monthLabelRange 把 "YYYY-MM" 月桶映射为整月选区;当月终点钳到今天,
-  // 防止把未来日期发成 400。
-  function monthLabelRange(label) {
-    if (!/^\d{4}-\d{2}$/.test(label)) return;
-    const y = Number(label.slice(0, 4));
-    const m = Number(label.slice(5, 7));
-    const from = label + "-01";
-    const last = new Date(y, m, 0);
-    let to = toDateStr(last);
-    const today = todayStr();
-    if (to > today) to = today;
-    setRange(from, to, null);
-  }
-
-  function renderKindLegend(container) {
-    container.textContent = "";
-    activeMetrics().forEach((m) => {
-      const lg = document.createElement("span");
-      lg.className = "lg";
-      const dot = document.createElement("i");
-      dot.style.background = m.color;
-      lg.appendChild(dot);
-      lg.appendChild(document.createTextNode(m.label + " " + m.zh));
-      container.appendChild(lg);
-    });
-  }
-
-  function setNote(id, text) {
-    const el = $(id);
-    if (el) el.textContent = text;
-  }
-
-  // 单日选区:退化的环比表隐藏(KPI 增减 chips 仍指向基线窗口);活跃天数
-  // 恒为 1、星期×小时热力图退化为单行,均无信息量,一并隐藏。
-  function applyRangeMode() {
-    const single = state.from === state.to;
-    document.body.classList.toggle("single-day", single);
-    const daysCard = $("kpi-days-card");
-    if (daysCard) daysCard.hidden = single;
-    const heatSection = document.getElementById("heatmap");
-    if (heatSection) heatSection.hidden = single;
-  }
-
-  function renderDashboard(data) {
-    applyRangeMode();
-    syncActiveKinds(data.columns);
-    renderKpis(data.totals || {}, data.compare, data.columns);
-    renderCompare(data.compare, data.range, (data.dimensions || {}).day || []);
-    renderForecast(data.forecast);
-    renderSessions(data.sessions || []);
-    const dims = data.dimensions || {};
-    DIMENSIONS.forEach((dim) => renderDimension(dim, dims[dim] || []));
-    renderCharts(data);
-  }
-
-  // ---------- 载荷缓存:消除刷新时的空窗闪烁 ----------
-
-  // 上一次成功渲染的载荷存 sessionStorage:刷新/重开页面时先立即渲染缓存
-  // 数据(无空窗),后台拉到新数据后再整体替换。缓存与选区一起存取,范围
-  // 不一致时不用缓存(避免拿旧选区的数据渲染新选区)。
-  const CACHE_KEY = "tu-payload";
-  function savePayloadCache(from, to, data) {
-    try {
-      sessionStorage.setItem(CACHE_KEY, JSON.stringify({ from, to, data }));
-    } catch (_) {
-      // 存储不可用(隐私模式/配额)时静默降级:刷新回落到占位符渲染。
-    }
-  }
-  function loadPayloadCache() {
-    try {
-      return JSON.parse(sessionStorage.getItem(CACHE_KEY) || "null");
-    } catch (_) {
-      return null;
-    }
-  }
-
-  // ---------- 排序(数值列读 data-v,文本列读 textContent) ----------
-
-  // sortState 记住每个表(以 tbody id 为键)的排序列与方向:自动刷新会整体
-  // 重绘行,若不回放,用户排好的序每 30s 被打回服务端行序。
-  const sortState = new Map(); // tbody id → {idx, desc}
-
-  function sortRows(tbody, idx, desc) {
-    const table = tbody.closest("table");
-    const valueOf = (tr) => {
-      const td = tr.cells[idx];
-      if (!td) return "";
-      if (td.dataset.v !== undefined && td.dataset.v !== "") return parseFloat(td.dataset.v);
-      return td.textContent.trim();
-    };
-    const rows = Array.prototype.slice.call(tbody.rows);
-    rows.sort((a, b) => {
-      const va = valueOf(a);
-      const vb = valueOf(b);
-      let c;
-      if (typeof va === "number" && typeof vb === "number") c = va - vb;
-      else c = String(va).localeCompare(String(vb), "zh-Hans-CN");
-      return desc ? -c : c;
-    });
-    rows.forEach((r) => tbody.appendChild(r));
-    Array.prototype.forEach.call(table.querySelectorAll("th.sortable"), (h) => {
-      h.classList.remove("sorted-asc", "sorted-desc");
-    });
-    const th = table.querySelectorAll("thead th")[idx];
-    if (th) th.classList.add(desc ? "sorted-desc" : "sorted-asc");
-  }
-
-  function sortTable(th) {
-    const table = th.closest("table");
-    if (!table) return;
-    const tbody = table.tBodies[0];
-    if (!tbody || tbody.rows.length <= 1) return;
-    const idx = th.cellIndex;
-    const desc = !th.classList.contains("sorted-desc");
-    if (tbody.id) sortState.set(tbody.id, { idx, desc });
-    sortRows(tbody, idx, desc);
-  }
-
-  // reapplySort 在数据重绘后回放该表记住的排序;无记录则保持服务端行序。
-  function reapplySort(tbody) {
-    if (!tbody || !tbody.id || !sortState.has(tbody.id)) return;
-    const { idx, desc } = sortState.get(tbody.id);
-    sortRows(tbody, idx, desc);
-  }
-
-  // ---------- fetch ----------
-
-  async function errorMessage(res) {
-    try {
-      const body = await res.json();
-      if (body && body.error && body.error.message) return body.error.message;
-    } catch (_) {
-      // 响应体非 JSON,退回状态码
-    }
-    return "HTTP " + res.status;
-  }
-
-  async function fetchJSON(url) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(await errorMessage(res));
-    return res.json();
-  }
-
-  function errText(reason) {
-    if (reason instanceof TypeError) return "network error / 网络错误";
-    return reason && reason.message ? reason.message : String(reason);
-  }
-
-  function showNoticeLoading() {
-    const notice = $("notice");
-    notice.classList.add("show", "loading");
-    notice.textContent = "loading / 加载中…";
-  }
-
-  function hideNotice() {
-    const notice = $("notice");
-    notice.classList.remove("show", "loading");
-    notice.textContent = "";
-  }
-
-  function showError(messages) {
-    const notice = $("notice");
-    notice.classList.remove("loading");
-    notice.classList.add("show");
-    notice.textContent = "";
-    const span = document.createElement("span");
-    span.textContent = messages.join(" · ");
-    notice.appendChild(span);
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = "retry / 重试";
-    btn.addEventListener("click", () => requestLoad());
-    notice.appendChild(btn);
-  }
-
-  // ---------- 加载 ----------
-
-  function setBusy(busy) {
-    document.querySelectorAll("#presets button").forEach((b) => {
-      b.disabled = busy ? true : b.dataset.preset === "all" && !metaReady();
-    });
-    $("refresh-btn").disabled = busy;
-    document.body.classList.toggle("loading", busy);
-  }
-
-  async function load() {
-    if (state.loading) {
-      state.dirty = true;
-      return;
-    }
-    state.loading = true;
-    state.dirty = false;
-    setBusy(true);
-    // 加载过程静默:旧渲染(或缓存渲染)保持原样,不弹横幅;错误才提示。
-    document.body.classList.add("loading");
-    const qs = "from=" + encodeURIComponent(state.from) + "&to=" + encodeURIComponent(state.to);
-    // 仅 dashboard + meta 两个请求并行;图表全部由前端按数值载荷自绘,
-    // KPI/明细/图表天然同一读事务快照。
-    const settled = await Promise.allSettled([
-      fetchJSON("/api/dashboard?" + qs),
-      fetchJSON("/api/meta")
-    ]);
-    const errors = [];
-
-    const dashRes = settled[0];
-    if (dashRes.status === "fulfilled") {
-      try {
-        renderDashboard(dashRes.value);
-        savePayloadCache(state.from, state.to, dashRes.value);
-      } catch (e) {
-        // 渲染层异常按加载失败处理,横幅可见且 loading 状态可靠复位。
-        errors.push("render: " + errText(e));
-      }
-    } else {
-      errors.push("dashboard: " + errText(dashRes.reason));
-    }
-
-    const metaRes = settled[1];
-    if (metaRes.status === "fulfilled") {
-      applyMeta(metaRes.value);
-    } else {
-      errors.push("meta: " + errText(metaRes.reason));
-    }
-
-    document.body.classList.remove("loading");
-    if (errors.length) showError(errors);
-    else hideNotice();
-    state.loading = false;
-    setBusy(false);
-    if (state.dirty) load();
-  }
-
-  function requestLoad() {
-    if (state.loading) {
-      state.dirty = true;
-      return;
-    }
-    load();
-  }
-
-  // ---------- 范围预设 ----------
-
-  const PRESETS = {
-    today: () => {
-      const t = todayStr();
-      return [t, t];
-    },
-    d7: () => [addDaysStr(todayStr(), -6), todayStr()],
-    d30: () => [addDaysStr(todayStr(), -29), todayStr()],
-    d90: () => [addDaysStr(todayStr(), -89), todayStr()],
-    month: () => [firstOfMonthStr(), todayStr()],
-    // 「全部」= meta 的 min_date..max_date(meta 未就绪时按钮本就禁用)。
-    all: () => [state.meta.min_date, state.meta.max_date]
-  };
-
-  function setRange(from, to, presetName) {
-    if (from > to) {
-      const tmp = from;
-      from = to;
-      to = tmp;
-    }
-    state.from = from;
-    state.to = to;
-    $("date-from").value = from;
-    $("date-to").value = to;
-    // presetName 为 null 表示手改 inputs,清除全部预设高亮。
-    document.querySelectorAll("[data-preset]").forEach((b) => {
-      b.classList.toggle("active", b.dataset.preset === presetName);
-    });
-    // 记住选区:仅本标签页 reload 时恢复(见 init 的导航类型判定),新开页面一律默认 Today。
-    try {
-      sessionStorage.setItem("tu-range", JSON.stringify({ from, to }));
-    } catch (_) {
-      // 隐私模式等存储不可用场景静默降级为不记忆。
-    }
-    requestLoad();
-  }
-
-  function applyPreset(name) {
-    if (name === "all" && !metaReady()) return;
-    const maker = PRESETS[name];
-    if (!maker) return;
-    const range = maker();
-    if (!range[0] || !range[1]) return;
-    // 服务端对区间有 366 天上限,「全部」随数据积累迟早越界:预检给出
-    // 双语提示,不发必然 400 的请求。
-    if (spanDays(range[0], range[1]) > RANGE_LIMIT) {
-      showError(["range " + range[0] + ".." + range[1] + " exceeds the " + RANGE_LIMIT +
-        "-day limit; pick a shorter range / 区间 " + range[0] + ".." + range[1] +
-        " 超过 " + RANGE_LIMIT + " 天上限,请改用更短范围"]);
-      return;
-    }
-    setRange(range[0], range[1], name);
-  }
-
-  function onDateInput() {
-    const from = $("date-from").value;
-    const to = $("date-to").value;
-    if (!from || !to) return;
-    setRange(from, to, null);
-  }
-
-  // ---------- 自动刷新 ----------
-
-  function resetTimer() {
-    if (state.timer) {
-      clearInterval(state.timer);
-      state.timer = null;
-    }
-    if (state.auto > 0) {
-      state.timer = setInterval(() => {
-        if (document.hidden) return; // 后台标签页跳过轮询
-        load();
-      }, state.auto);
-    }
-  }
-
-  // ---------- 导航滚动高亮 ----------
-
-  // 用滚动位置判定当前章节(顶栏下方判定线以上最近的 section)。轮询而非
-  // 监听 scroll:嵌 WebView/自动化环境下 scroll 事件可能不派发、rAF 可能被
-  // 节流,而 400ms 一次的 6 次几何读取开销可忽略且在任何环境都能工作。
-  function initNavHighlight() {
-    const links = Array.prototype.slice.call(document.querySelectorAll(".bar-inner nav a"));
-    if (!links.length) return;
-    const ids = links.map((a) => a.getAttribute("href").slice(1));
-    const update = () => {
-      const line = 140;
-      let current = ids[0];
-      ids.forEach((id) => {
-        const sec = document.getElementById(id);
-        if (sec && !sec.hidden && sec.getBoundingClientRect().top <= line) current = id;
-      });
-      links.forEach((a) => {
-        a.classList.toggle("active", a.getAttribute("href").slice(1) === current);
-      });
-    };
-    update();
-    setInterval(update, 400);
-  }
-
-  // ---------- 初始化 ----------
-
-  // 本文档是否以 reload 方式导航。带 opener 打开的新标签页会先复制来源页的
-  // sessionStorage 副本,因此恢复选区不能只看存储有无值,必须以导航类型兜底;
-  // performance 整体缺失或 Navigation Timing 不可用时按非 reload 处理——恢复
-  // 宁可缺失,不可在新浏览上下文误恢复。
-  function isReloadNavigation() {
-    const entries = typeof performance !== "undefined" && performance.getEntriesByType
-      ? performance.getEntriesByType("navigation")
-      : [];
-    return entries.length > 0 && entries[0].type === "reload";
-  }
-
-  function init() {
-    buildDataBlocks();
-    initTooltip();
-    document.querySelectorAll("[data-preset]").forEach((b) => {
-      b.addEventListener("click", () => applyPreset(b.dataset.preset));
-    });
-    $("date-from").addEventListener("change", onDateInput);
-    $("date-to").addEventListener("change", onDateInput);
-    $("refresh-btn").addEventListener("click", () => requestLoad());
-    $("auto-select").addEventListener("change", () => {
-      state.auto = Number($("auto-select").value) || 0;
-      resetTimer();
-    });
-    // 表格排序:统一事件委托。
-    document.addEventListener("click", (e) => {
-      const th = e.target.closest("th.sortable");
-      if (th) sortTable(th);
-    });
-    $("export-sessions").addEventListener("click", exportSessionsCSV);
-    // 回到前台时重新对齐计时,避免恢复后立刻撞上滞留的旧周期。
-    document.addEventListener("visibilitychange", () => {
-      if (!document.hidden && state.auto > 0) resetTimer();
-    });
-    initNavHighlight();
-
-    // 初始范围:仅真正的 reload 恢复上次选区;其余导航一律默认 Today——
-    // 新开页面(含带 opener 继承 sessionStorage 副本的新标签页)即属此列。
-    // 恢复的上次选区若恰为某预设区间,回亮对应预设按钮,否则清除全部预设高亮。
-    let initialFrom = todayStr();
-    let initialTo = todayStr();
-    let initialPreset = "today";
-    if (isReloadNavigation()) {
-      try {
-        const saved = JSON.parse(sessionStorage.getItem("tu-range") || "null");
-        if (saved && /^\d{4}-\d{2}-\d{2}$/.test(saved.from) && /^\d{4}-\d{2}-\d{2}$/.test(saved.to) && saved.from <= saved.to) {
-          initialFrom = saved.from;
-          initialTo = saved.to;
-          initialPreset = null;
-          for (const name of Object.keys(PRESETS)) {
-            if (name === "all" && !metaReady()) continue;
-            const r = PRESETS[name]();
-            if (r[0] === initialFrom && r[1] === initialTo) { initialPreset = name; break; }
+  function render(){
+    var s = cfg.selected.slice();
+    var off = cfg.values.filter(function(v){ return s.indexOf(v)<0; });
+    host.innerHTML =
+      '<div class="pz"><span class="pz-l">'+cfg.labelOn+'</span><div class="ord-list">' +
+      (s.length ? s.map(function(v,i){ return ordItemHtml(v, cfg.text(v), i, s.length); }).join('') : '<span class="pz-empty">'+ui('无','None')+'</span>') +
+      '</div></div>' +
+      '<div class="pz"><span class="pz-l">'+cfg.labelOff+'</span><div class="pz-chips">' +
+      (off.length ? off.map(function(v){ return pchip(v, cfg.text(v)); }).join('') : '<span class="pz-empty">'+ui('无','None')+'</span>') +
+      '</div></div>';
+    /* 可选区：一般追加；输出列按候选规范位置重新插入 */
+    host.querySelectorAll('.pz-chips .pchip').forEach(function(c){
+      c.addEventListener('click', function(){
+        var k = c.dataset.k;
+        if(cfg.insertByReference){
+          var ref = cfg.values.indexOf(k), at = cfg.selected.length;
+          for(var i=0;i<cfg.selected.length;i++){
+            if(cfg.values.indexOf(cfg.selected[i])>ref){ at=i; break; }
           }
+          cfg.selected.splice(at,0,k);
+        }else{
+          cfg.selected.push(k);
         }
-      } catch (_) {
-        // 存储不可用或内容损坏,回退默认 Today。
-      }
-    }
-    setRange(initialFrom, initialTo, initialPreset);
-    resetTimer();
+        commit(ui('已加入 ','Added ')+cfg.text(k));
+      });
+    });
+    /* 已选区：移除 / 上移 / 下移（键盘可达，min 保护） */
+    host.querySelectorAll('.ord-item').forEach(function(item){
+      var k = item.dataset.k;
+      item.querySelector('[data-remove]').addEventListener('click', function(){
+        if(cfg.selected.length<=cfg.min){ toast(cfg.minMsg); return; }
+        cfg.selected = cfg.selected.filter(function(x){ return x!==k; });
+        commit(ui('已移除 ','Removed ')+cfg.text(k));
+      });
+      item.querySelector('[data-move="up"]').addEventListener('click', function(){ move(k,-1); });
+      item.querySelector('[data-move="down"]').addEventListener('click', function(){ move(k,1); });
+    });
+    /* 纵向拖拽：单列整行按中线判定前后 */
+    var list = host.querySelector('.ord-list');
+    if(!list) return;
+    var dragging = null;
+    list.addEventListener('dragstart', function(e){
+      var item = e.target.closest('.ord-item'); if(!item) return;
+      dragging = item;
+      e.dataTransfer.setData('text/plain', item.dataset.k);
+      e.dataTransfer.effectAllowed = 'move';
+      requestAnimationFrame(function(){ item.classList.add('dragging'); });
+    });
+    list.addEventListener('dragover', function(e){
+      if(!dragging) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      var over = e.target.closest('.ord-item');
+      if(!over || over===dragging) return;
+      var r = over.getBoundingClientRect();
+      if(e.clientY < r.top + r.height/2){ if(over.previousSibling!==dragging) list.insertBefore(dragging, over); }
+      else if(over.nextSibling!==dragging){ list.insertBefore(dragging, over.nextSibling); }
+    });
+    list.addEventListener('drop', function(e){ e.preventDefault(); });
+    list.addEventListener('dragend', function(){
+      if(!dragging) return;
+      dragging.classList.remove('dragging');
+      dragging = null;
+      var order = sel();
+      if(order.join(',') !== cfg.selected.join(',')){ cfg.selected = order; commit(ui('顺序已更新','Order updated')); }
+    });
+  }
+  render();
+  return {
+    get: function(){ return sel(); },
+    set: function(arr){ cfg.selected = arr.slice(); render(); if(cfg.onChange) cfg.onChange(); }
+  };
+}
 
-    // 缓存渲染:有与当前选区一致的缓存载荷时立即渲染(消除刷新空窗),
-    // 随后 load() 拉到新数据会整体替换;形状异常(旧载荷)则弃用缓存。
-    const cached = loadPayloadCache();
-    if (cached && cached.from === state.from && cached.to === state.to && cached.data) {
-      try {
-        renderDashboard(cached.data);
-      } catch (_) {
-        sessionStorage.removeItem(CACHE_KEY);
+/* ---------- 输出列编辑器：编辑直接写入配置草稿（保存后生效，不写 localStorage） ---------- */
+var colsPick = null;
+function buildColsEditor(){
+  var host = el('cols-editor');
+  if(!host) return;
+  if(!CFG.draft){ host.innerHTML=''; colsPick=null; return; }
+  colsPick = makeOrderedPick(host, {
+    values: COLS.map(function(c){ return c.id; }),
+    selected: colIds(),
+    labelOn:ui('已选输出列','Selected output columns'), labelOff:ui('可选输出列','Available output columns'),
+    insertByReference:true,
+    min:1, minMsg:ui('至少保留一列指标','Keep at least one metric column'),
+    text: function(k){ var c = colById(k); return c ? colLabel(c) : k; },
+    onChange: function(){
+      if(colsPick) CFG.draft.query.output_columns = colsPick.get();
+      recomputeDirty();
+      if(state.data && state.view==='list') renderGroups();
+      renderCustomViews();
+    }
+  });
+}
+el('cols-default').addEventListener('click', function(){
+  if(!CFG.draft) return;
+  CFG.draft.query.output_columns = DEFAULT_OUT.slice();
+  buildColsEditor();
+  if(state.data && state.view==='list') renderGroups();
+  renderCustomViews();
+  recomputeDirty();
+  toast(ui('输出列已恢复为默认七列','Output columns restored to the default seven'));
+});
+
+/* ---------- 侧栏收起/展开（64px 图标栏，选择持久化） ---------- */
+var appEl = document.querySelector('.app');
+var sideBtn = el('side-toggle');
+function syncSide(){
+  var min = false;
+  try{ min = localStorage.getItem('tu-side')==='min'; }catch(e){}
+  appEl.classList.toggle('side-min', min);
+  sideBtn.setAttribute('aria-expanded', min?'false':'true');
+  sideBtn.setAttribute('aria-label', min?ui('展开侧边栏','Expand sidebar'):ui('收起侧边栏','Collapse sidebar'));
+}
+sideBtn.addEventListener('click', function(){
+  var min = !appEl.classList.contains('side-min');
+  appEl.classList.toggle('side-min', min);
+  try{ localStorage.setItem('tu-side', min?'min':'full'); }catch(e){}
+  syncSide();
+  if(el('page-dash').getAttribute('data-active')==='true' && state.data) drawChart();
+});
+syncSide();
+
+/* ---------- KPI ---------- */
+function kpiValueHTML(value, explicitUnit){
+  var text=String(value), unit=explicitUnit || '';
+  if(!unit){
+    var match=text.match(/^(.+?)([KMB%])$/);
+    if(match){ text=match[1]; unit=match[2]; }
+  }
+  return '<span>'+esc(text)+'</span>'+(unit?'<small class="metric-unit">'+unit+'</small>':'');
+}
+function renderKPIs(){
+  var host = el('kpis');
+  if(!host) return;
+  if(!state.data){
+    host.innerHTML = '<p class="page-note">'+ui('加载中','Loading')+'</p>';
+    return;
+  }
+  var T = state.data.totals||{};
+  var hit = hitOf(T.fresh_input, T.cache_read, T.cache_create);
+  var cReq=colById('requests'), cIn=colById('input'), cOut=colById('output'), cCr=colById('cache_read'), cRs=colById('reasoning'), cHit=colById('cache_hit'), cTot=colById('total');
+  var metrics = [
+    [colLabel(cReq), fmtInt(T.requests)],
+    [colLabel(cIn), fmtTok(T.fresh_input)],
+    [colLabel(cOut), fmtTok(T.output)],
+    [colLabel(cCr), fmtTok(T.cache_read)],
+    [colLabel(cRs), fmtTok(T.reasoning)],
+    [colLabel(cHit), pctText(hit, 2)]
+  ];
+  var metricHTML=metrics.map(function(m){
+    return '<div class="kpi-metric"><p class="stat-label">'+m[0]+'</p><span class="metric-value">'+kpiValueHTML(m[1])+'</span></div>';
+  }).join('');
+  /* 核心概览：七项固定口径均可读，不随 Config「输出列」变化 */
+  host.innerHTML =
+    '<section class="kpi-rail" aria-label="'+ui('核心概览','Key metrics')+'">' +
+      '<div class="kpi-metric kpi-metric-total"><p class="stat-label">'+colLabel(cTot)+' · '+rangeName(state.range)+'</p><span class="metric-value">'+kpiValueHTML(fmtTok(T.total))+'</span></div>' +
+      '<div class="kpi-support">'+metricHTML+'</div>' +
+    '</section>';
+}
+
+function setUnitPop(open){
+  var pop=el('unit-pop'), btn=el('unit-trigger');
+  if(!pop || !btn) return;
+  pop.hidden=!open;
+  btn.setAttribute('aria-expanded',open?'true':'false');
+}
+el('unit-trigger').addEventListener('click',function(e){
+  e.stopPropagation();
+  if(!el('palette-pop').hidden) setPalettePop(false);
+  if(!calpop.hidden) closeCal();
+  if(typeof DV!=='undefined' && DV && DV.open) dvClose(false);
+  setUnitPop(el('unit-pop').hidden);
+});
+el('unit-pop').addEventListener('click',function(e){ e.stopPropagation(); });
+document.addEventListener('click',function(){ setUnitPop(false); });
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape' && el('unit-pop') && !el('unit-pop').hidden){ setUnitPop(false); el('unit-trigger').focus(); }
+});
+
+/* ---------- 按维度查看：真实区间聚合行，直接渲染 ---------- */
+var HUES = { client:'--d1', provider:'--d2', model:'--d3', project:'--d4' };
+var DIMS = ['client','provider','model','project'];
+function normRows(raw){
+  return (raw||[]).map(function(r){
+    var o = {
+      name: r.key||'',
+      requests: +r.requests||0, fresh_input: +r.fresh_input||0, output: +r.output||0,
+      cache_read: +r.cache_read||0, cache_create: +r.cache_create||0, reasoning: +r.reasoning||0,
+      total: +r.total||0, hit: null, isOther:false, hiddenCount:0
+    };
+    o.hit = hitOf(o.fresh_input, o.cache_read, o.cache_create);
+    return o;
+  });
+}
+function rowVal(r, id){
+  var c = colById(id);
+  if(!c) return 0;
+  if(c.id==='cache_hit') return r.hit;
+  return r[c.field];
+}
+function aggRows(rows){
+  var t={requests:0,fresh_input:0,output:0,cache_read:0,cache_create:0,reasoning:0,total:0,hit:null};
+  rows.forEach(function(r){
+    t.requests+=r.requests; t.fresh_input+=r.fresh_input; t.output+=r.output;
+    t.cache_read+=r.cache_read; t.cache_create+=r.cache_create||0; t.reasoning+=r.reasoning; t.total+=r.total;
+  });
+  t.hit = hitOf(t.fresh_input, t.cache_read, t.cache_create);
+  return t;
+}
+/* 尾部小项收拢：≥4 独立项、候选份额<5%、并入后不超过前一项；并入 ≥2 项才聚合成唯一的“其他”行 */
+function compactDimensionTail(rows){
+  var ordered=rows.slice().sort(function(a,b){ return b.total-a.total || String(a.name).localeCompare(String(b.name)); });
+  var total=aggRows(ordered).total, picked=[], mergedTotal=0;
+  while(ordered.length>4){
+    var candidate=ordered[ordered.length-1], previous=ordered[ordered.length-2];
+    if(!total || candidate.total/total>=0.05 || mergedTotal+candidate.total>=previous.total) break;
+    picked.unshift(ordered.pop());
+    mergedTotal+=candidate.total;
+  }
+  if(picked.length<2){
+    while(picked.length) ordered.push(picked.shift());
+    return ordered.sort(function(a,b){ return b.total-a.total || String(a.name).localeCompare(String(b.name)); });
+  }
+  var other={name:ui('其他（'+picked.length+' 项）','Other ('+picked.length+')'),isOther:true,hiddenCount:picked.length,
+    requests:0,fresh_input:0,output:0,cache_read:0,cache_create:0,reasoning:0,total:0,hit:null};
+  picked.forEach(function(r){
+    other.requests+=r.requests; other.fresh_input+=r.fresh_input; other.output+=r.output;
+    other.cache_read+=r.cache_read; other.cache_create+=r.cache_create||0; other.reasoning+=r.reasoning; other.total+=r.total;
+  });
+  other.hit = hitOf(other.fresh_input, other.cache_read, other.cache_create);
+  ordered.push(other); /* “其他”是尾部小项的合计，固定最后，不参与降序插队 */
+  return ordered;
+}
+function cellFor(k, r, extra){
+  if(k==='cache_hit') return '<span class="nv">'+pctText(r.hit,1)+'</span>';
+  if(k==='total') return '<span class="nv">'+fmtTok(rowVal(r,k))+'</span><i class="mb mb-a" style="width:'+extra+'%"></i>';
+  if(k==='requests') return fmtInt(rowVal(r,k));
+  return '<span class="nv">'+fmtTok(rowVal(r,k))+'</span>';
+}
+function cellAgg(k, T){
+  if(k==='cache_hit') return pctText(T.hit,1);
+  if(k==='requests') return fmtInt(T.requests);
+  return fmtTok(rowVal(T,k));
+}
+function tableView(rows){
+  var ids=colIds();
+  var maxT = rows.length && rows[0].total>0 ? rows[0].total : 1, T = aggRows(rows);
+  var colgroup = '<colgroup><col style="width:21%">'+ids.map(function(){ return '<col>'; }).join('')+'</colgroup>';
+  var head = ids.map(function(k){
+    var c = colById(k);
+    return '<th scope="col" title="'+colLabel(c)+'">'+colShort(c)+'</th>';
+  }).join('');
+  var h = '<div class="group-table"><div class="table-wrap group-rows"><table>'+colgroup+'<thead><tr><th scope="col">'+ui('名称','Name')+'</th>' + head +
+    '</tr></thead><tbody>';
+  rows.forEach(function(r){
+    h += '<tr class="group-row" tabindex="0" aria-expanded="false"><th scope="row" class="tname">'+esc(r.name)+'</th>' +
+      ids.map(function(k){
+        return '<td class="num'+(k==='total'?' tot':'')+'" data-k="'+k+'" data-label="'+colLabel(colById(k))+'">'+cellFor(k, r, (r.total/maxT*100).toFixed(1))+'</td>';
+      }).join('') + '</tr>';
+  });
+  h += '</tbody></table></div><div class="table-wrap group-summary"><table aria-label="'+ui('合计','Total')+'">'+colgroup+'<tbody><tr class="trow"><th scope="row">'+ui('合计','Total')+'</th>' +
+    ids.map(function(k){ return '<td class="num'+(k==='total'?' tot':'')+'" data-k="'+k+'" data-label="'+colLabel(colById(k))+'">'+cellAgg(k, T)+'</td>'; }).join('') +
+    '</tr>';
+  return h + '</tbody></table></div></div>';
+}
+var RAMP = [100,83,67,52,39,27];
+function arcPath(r1, r2, a0, a1){
+  var rad = function(a){ return (a-90)*Math.PI/180; };
+  var pt = function(r, a){ return (100 + r*Math.cos(rad(a))).toFixed(2)+' '+(100 + r*Math.sin(rad(a))).toFixed(2); };
+  var large = (a1-a0) > 180 ? 1 : 0;
+  return 'M '+pt(r2,a0)+' A '+r2+' '+r2+' 0 '+large+' 1 '+pt(r2,a1)+
+         ' L '+pt(r1,a1)+' A '+r1+' '+r1+' 0 '+large+' 0 '+pt(r1,a0)+' Z';
+}
+/* 构成图小份额合并：isOther 行或排名≥3 且份额<5% 的扇区并入图例“其他”（标注成员数） */
+function donutMetas(rows){
+  var T = aggRows(rows), metas = [], otherN = 0, otherTotal = 0;
+  rows.forEach(function(r,i){
+    if(r.isOther){
+      /* hiddenCount 由聚合方显式给出;数字正则只作旧数据兜底 */
+      otherN += r.hiddenCount!=null ? r.hiddenCount : (String(r.name||'').match(/\d+/) ? +String(r.name).match(/\d+/)[0] : 1);
+      otherTotal += r.total;
+      return;
+    }
+    if(i>=3 && T.total && r.total/T.total<0.05){ otherN++; otherTotal += r.total; return; }
+    metas.push({ name:r.name, total:r.total });
+  });
+  if(otherN) metas.push({ name:ui('其他（'+otherN+' 项）','Other ('+otherN+')'), total:otherTotal });
+  return { metas:metas, T:T };
+}
+function composeView(dimId, rows){
+  var meta = donutMetas(rows), T = meta.T, metas = meta.metas;
+  var title = dimLabel(dimId);
+  var segs = '', acc = 0, GAP = 1.2;
+  metas.forEach(function(m,i){
+    var share = T.total ? m.total/T.total : 0;
+    var a0 = acc*360, a1 = Math.min((acc + share)*360, 360);
+    acc += share;
+    var s0 = a0 + GAP/2, s1 = Math.max(a1 - GAP/2, s0 + 0.4);
+    segs += '<path class="seg-d" data-i="'+i+'" d="'+arcPath(50, 94, s0, s1)+'" fill="color-mix(in srgb, var(--gh) '+RAMP[i%RAMP.length]+'%, var(--raised))">' +
+      '<title>'+esc(m.name)+' · '+(share*100).toFixed(1)+'% · '+fmtTok(m.total)+'</title></path>';
+  });
+  var lg = metas.map(function(m,i){
+    var share = T.total ? m.total/T.total : 0;
+    return '<li tabindex="0" data-i="'+i+'" aria-label="'+esc(m.name)+ui('，占比 ',', ')+(share*100).toFixed(1)+'%, '+fmtTok(m.total)+'">' +
+      '<i class="lg-dot" style="background:color-mix(in srgb, var(--gh) '+RAMP[i%RAMP.length]+'%, var(--raised))"></i>' +
+      '<span class="lg-name">'+esc(m.name)+'</span><span class="lg-val">'+(share*100).toFixed(1)+'%</span></li>';
+  }).join('');
+  return '<div class="compose"><div class="donut-wrap">' +
+    '<svg class="donut" viewBox="0 0 200 200" role="img" aria-label="'+title+ui('构成图',' composition chart')+'">' +
+    '<circle cx="100" cy="100" r="72" fill="none" stroke-width="44" style="stroke:color-mix(in srgb, var(--gh) 14%, var(--raised))"/>' +
+    '<g transform="rotate(-90 100 100)">'+segs+'</g></svg>' +
+    '<div class="donut-c"><b>'+fmtTok(T.total)+'</b><span>'+title+' · '+colLabel(colById('total'))+'</span></div></div>' +
+    '<ul class="legend">'+lg+'</ul></div>';
+}
+function renderGroups(){
+  var host = el('groups');
+  if(!host) return;
+  if(!state.data){ host.innerHTML='<p class="page-note">'+ui('加载中','Loading')+'</p>'; return; }
+  var dims = (state.data.dimensions)||{};
+  var html = '';
+  DIMS.forEach(function(id){
+    var rows = compactDimensionTail(normRows(dims[id]));
+    DIMROWS[id] = rows;
+    html += '<article class="group" data-gid="'+id+'" style="--gh:var('+HUES[id]+')">' +
+      '<header class="group-head"><div class="group-title"><i class="g-dot"></i>' +
+      '<div><h4>'+dimLabel(id)+'</h4></div></div></header>' +
+      (state.view==='list' ? tableView(rows) : composeView(id, rows)) +
+      '</article>';
+  });
+  host.innerHTML = html;
+  applyNarrowDim();
+  if(state.view==='compose'){
+    DIMS.forEach(function(id){
+      var art = groupsEl.querySelector('.group[data-gid="'+id+'"]');
+      if(art) art._donut = donutMetas(DIMROWS[id]);
+    });
+  }
+}
+/* 构成图联动高亮 */
+var groupsEl = el('groups');
+groupsEl.addEventListener('mouseover', function(e){
+  var art = e.target.closest('.group'); if(!art) return;
+  var rows = DIMROWS[art.dataset.gid]; if(!rows) return;
+  var seg = e.target.closest('.seg-d');
+  var li = e.target.closest('.legend [data-i]');
+  var i = seg ? +seg.dataset.i : (li ? +li.dataset.i : -1);
+  highlightDonut(art, rows, i);
+});
+groupsEl.addEventListener('mouseout', function(e){
+  var art = e.target.closest('.group');
+  if(art && !art.contains(e.relatedTarget)) highlightDonut(art, DIMROWS[art.dataset.gid]||[], -1);
+});
+function highlightDonut(art, rows, i){
+  var wrap = art.querySelector('.donut-wrap');
+  if(wrap) wrap.classList.toggle('has-hl', i>=0);
+  var circles = art.querySelectorAll('.seg-d');
+  circles.forEach(function(c,j){ c.classList.toggle('hl', j===i); });
+  art.querySelectorAll('.legend li').forEach(function(li,j){ li.classList.toggle('on', j===i); });
+  var cb = art.querySelector('.donut-c b'), cs = art.querySelector('.donut-c span');
+  if(!cb || !cs) return;
+  var meta = art._donut;
+  if(i>=0 && meta && meta.metas[i]){
+    cb.textContent = fmtTok(meta.metas[i].total);
+    cs.textContent = meta.metas[i].name+' · '+(meta.T.total ? (meta.metas[i].total/meta.T.total*100).toFixed(1) : '0.0')+'%';
+  }else if(i>=0 && rows[i]){
+    var T = aggRows(rows);
+    cb.textContent = fmtTok(rows[i].total);
+    cs.textContent = rows[i].name+' · '+(T.total ? (rows[i].total/T.total*100).toFixed(1) : '0.0')+'%';
+  }else{
+    cb.textContent = art.dataset.defVal||''; cs.textContent = art.dataset.defLab||'';
+  }
+}
+groupsEl.addEventListener('mouseover', function(e){
+  var art = e.target.closest('.group'); if(!art || art.dataset.defVal) return;
+  var rows = DIMROWS[art.dataset.gid]; if(!rows) return;
+  var T = aggRows(rows);
+  art.dataset.defVal = fmtTok(T.total);
+  art.dataset.defLab = dimLabel(art.dataset.gid)+' · '+colLabel(colById('total'));
+});
+
+/* ---------- 窄屏维度切换：一次只显示一个维度 ---------- */
+var narrowMQ = window.matchMedia ? window.matchMedia('(max-width:768px)') : null;
+var narrowDim = 'client';
+function applyNarrowDim(){
+  var active = !!(narrowMQ && narrowMQ.matches);
+  DIMS.forEach(function(id){
+    var art = groupsEl.querySelector('.group[data-gid="'+id+'"]');
+    if(!art) return;
+    if(active){ art.hidden = (id!==narrowDim); }
+    else if(art.hidden){ art.hidden = false; }
+  });
+  el('dim-seg').querySelectorAll('button').forEach(function(b){
+    b.setAttribute('aria-pressed', b.dataset.v===narrowDim ? 'true':'false');
+  });
+}
+el('dim-seg').addEventListener('click', function(e){
+  var b = e.target.closest('button'); if(!b) return;
+  narrowDim = b.dataset.v;
+  applyNarrowDim();
+});
+if(narrowMQ){
+  var onNarrowChange = function(){ applyNarrowDim(); };
+  if(narrowMQ.addEventListener) narrowMQ.addEventListener('change', onNarrowChange);
+  else if(narrowMQ.addListener) narrowMQ.addListener(onNarrowChange);
+}
+/* 窄屏记录卡：点按展开/收起全部字段（合计行除外） */
+groupsEl.addEventListener('click', function(e){
+  if(!narrowMQ || !narrowMQ.matches) return;
+  var tr = e.target.closest('tr');
+  if(!tr || !groupsEl.contains(tr) || tr.classList.contains('trow')) return;
+  if(!tr.parentElement || tr.parentElement.tagName!=='TBODY') return;
+  tr.classList.toggle('expanded');
+  tr.setAttribute('aria-expanded',tr.classList.contains('expanded')?'true':'false');
+});
+groupsEl.addEventListener('keydown',function(e){
+  if(!narrowMQ || !narrowMQ.matches || (e.key!=='Enter'&&e.key!==' ')) return;
+  var tr=e.target.closest('.group-row'); if(!tr) return;
+  e.preventDefault(); tr.classList.toggle('expanded'); tr.setAttribute('aria-expanded',tr.classList.contains('expanded')?'true':'false');
+});
+
+/* ---------- 构成图非鼠标交互：图例可聚焦、回车/空格高亮、触屏点按 ---------- */
+groupsEl.addEventListener('focusin', function(e){
+  var li = e.target.closest('.legend [data-i]'); if(!li) return;
+  var art = li.closest('.group'); var rows = DIMROWS[art.dataset.gid]; if(!rows) return;
+  highlightDonut(art, rows, +li.dataset.i);
+});
+groupsEl.addEventListener('focusout', function(e){
+  var art = e.target.closest('.group'); if(!art) return;
+  if(art.contains(e.relatedTarget)) return;
+  var rows = DIMROWS[art.dataset.gid]; if(!rows) return;
+  highlightDonut(art, rows, -1);
+});
+groupsEl.addEventListener('keydown', function(e){
+  if(e.key!=='Enter' && e.key!==' ') return;
+  var li = e.target.closest('.legend [data-i]'); if(!li) return;
+  e.preventDefault();
+  var art = li.closest('.group'); var rows = DIMROWS[art.dataset.gid]; if(!rows) return;
+  highlightDonut(art, rows, li.classList.contains('on') ? -1 : +li.dataset.i);
+});
+groupsEl.addEventListener('click', function(e){
+  var li = e.target.closest('.legend [data-i]'); if(!li) return;
+  var art = li.closest('.group'); var rows = DIMROWS[art.dataset.gid]; if(!rows) return;
+  highlightDonut(art, rows, li.classList.contains('on') ? -1 : +li.dataset.i);
+});
+
+/* ---------- 图表：趋势=每日/每周总量柱；热力=真实日期×小时数据 ---------- */
+var svg = el('chart'), frame = el('chart-frame'), tip = el('tip');
+var CUR = { t:[], labels:[], hourly:false, granularity:'day' };
+var HEATVALS = [], HEATLAB = [], HEATSCOPE = '', HEATTIPS = [];
+var WD_ZH = ['一','二','三','四','五','六','日'];
+var WD_EN = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+/* “尚未发生”分界=今天(本机时钟):日期晚于今天的格子是尚未发生的未来,
+   显示空白;今天及之前的零用量日期显示最低档色(data_through 只表达数据
+   新鲜度,不作为空白分界——最后一条消息之后的已过去日期是真实零值)。 */
+function isFutureDate(ds){
+  var today = ymd(new Date());
+  return ds > today;
+}
+function heatMap(){
+  var m = {};
+  (state.heat||[]).forEach(function(d){ m[d.date]=d; });
+  return m;
+}
+function heatDay(ds){
+  var days = state.heat||[];
+  for(var i=0;i<days.length;i++){ if(days[i].date===ds) return days[i]; }
+  return null;
+}
+/* 趋势序列：单日=24 小时柱；≤62 天=每日柱；更长=按周聚合柱。数据来自 heatmap.days */
+function seriesFor(){
+  var days = state.heat||[];
+  if(!days.length) return { t:[], labels:[], hourly:false, granularity:'day' };
+  var b = rangeBounds(), s = ymd(b.s), e = ymd(b.e);
+  if(s===e){
+    var day = heatDay(s);
+    var hours = (day && day.hours) ? day.hours.map(function(v){ return +v||0; }) : [];
+    return { t:hours, labels:hours.map(function(_,i){ return i+ui('时',':00'); }), hourly:true, granularity:'hour' };
+  }
+  var t = days.map(function(d){ return +d.total||0; });
+  var labels = days.map(function(d){ return String(d.date).slice(5); });
+  /* 年度或较长自定义区间按周聚合，避免数百根窄柱失去可读性 */
+  if(t.length>62){
+    var wt=[], wl=[];
+    for(var j=0;j<t.length;j+=7){
+      var sum=0;
+      for(var k=j;k<Math.min(j+7,t.length);k++) sum+=t[k];
+      wt.push(sum);
+      wl.push(labels[Math.min(j+6, labels.length-1)]);
+    }
+    return { t:wt, labels:wl, hourly:false, granularity:'week' };
+  }
+  return { t:t, labels:labels, hourly:false, granularity:'day' };
+}
+function drawChart(){
+  syncModeSeg();
+  if(state.mode==='trend') drawTrend(); else drawHeat();
+}
+function syncModeSeg(){
+  var hb = el('mode-heat-btn');
+  if(!hb) return;
+  hb.disabled = false;
+  hb.title = ui('按当前区间查看用量热力','View a usage heatmap for the current range');
+  el('mode-seg').querySelectorAll('button').forEach(function(x){
+    x.setAttribute('aria-pressed', x.dataset.v===state.mode ? 'true':'false');
+  });
+}
+function drawTrend(){
+  frame.classList.remove('calendar-layout');
+  var W = Math.max(320, frame.clientWidth-24), H = frame.clientHeight || 260;
+  var s = seriesFor();
+  CUR = { t:s.t, labels:s.labels, hourly:s.hourly, granularity:s.granularity };
+  /* 空区间(全零序列,零请求即零用量):显示明确空状态,不渲染「峰值 0」
+     的假图表;未来范围与无数据范围同语义。 */
+  var empty = true;
+  for(var zi=0; zi<s.t.length; zi++){ if(s.t[zi]>0){ empty=false; break; } }
+  if(!s.t.length || empty){
+    svg.setAttribute('viewBox','0 0 '+W+' '+H);
+    svg.innerHTML = '<text class="ax ta-c" x="'+(W/2).toFixed(1)+'" y="'+(H/2).toFixed(1)+'">'+ui('该区间暂无用量','No usage in this range')+'</text>';
+    el('chart-title-h').textContent = ui('用量趋势','Usage trend');
+    el('chart-sub').textContent = rangeName(state.range)+' · '+rangeDateText();
+    return;
+  }
+  var padL=46, padR=40, padT=12, padB=20, pw=W-padL-padR, ph=H-padT-padB;
+  var tmax = niceMax(Math.max.apply(null, s.t));
+  var X = function(i){ return padL+(i+0.5)*pw/s.t.length; };
+  var Y = function(v){ return padT+ph-(v/tmax)*ph; };
+  var out = '';
+  for(var g=0; g<=4; g++){
+    var gv = tmax*g/4, y = Y(gv);
+    out += '<line class="gl" x1="'+padL+'" x2="'+(W-padR)+'" y1="'+y.toFixed(1)+'" y2="'+y.toFixed(1)+'"/>';
+    out += '<text class="ax ta-e" x="'+(padL-6)+'" y="'+(y+3).toFixed(1)+'">'+axisFmt(gv)+'</text>';
+  }
+  var n = s.t.length, slot = pw/n, bw = Math.min(slot*0.6, 34);
+  var peakI = 0;
+  s.t.forEach(function(v,i){ if(v>s.t[peakI]) peakI = i; });
+  s.t.forEach(function(v,i){
+    var x = X(i)-bw/2, y = Y(v);
+    out += '<rect class="bar-t" x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+Math.max(padT+ph-y,0).toFixed(1)+'" rx="2.5"/>';
+  });
+  out += '<text class="ax-strong ta-c" x="'+X(peakI).toFixed(1)+'" y="'+Math.max(Y(s.t[peakI])-7, 11).toFixed(1)+'">'+fmtTok(s.t[peakI])+'</text>';
+  /* 刻度数按绘图区宽度与标签实际宽度动态抽稀:窄屏不拥挤,宽屏不过疏 */
+  var labW = ((s.labels[0]||'').length||3)*6.4+16, minGap = Math.max(48, labW);
+  var maxLabels = Math.max(3, Math.floor(pw/minGap));
+  var step = Math.ceil(n/maxLabels), labelIdx = [];
+  s.labels.forEach(function(_,i){ if(i%step===0) labelIdx.push(i); });
+  if(labelIdx[labelIdx.length-1]!==n-1){
+    if(labelIdx.length>1 && X(n-1)-X(labelIdx[labelIdx.length-1])<minGap) labelIdx.pop();
+    labelIdx.push(n-1);
+  }
+  labelIdx.forEach(function(i){
+    out += '<text class="ax ta-c" x="'+X(i).toFixed(1)+'" y="'+(H-5)+'">'+s.labels[i]+'</text>';
+  });
+  s.t.forEach(function(_,i){
+    out += '<rect x="'+(padL+i*slot).toFixed(1)+'" y="'+padT+'" width="'+slot.toFixed(1)+'" height="'+ph+'" fill="transparent" data-i="'+i+'"/>';
+  });
+  svg.setAttribute('viewBox','0 0 '+W+' '+H);
+  svg.setAttribute('aria-label', rangeName(state.range)+ui(' 用量柱状图',' tokens bar chart'));
+  svg.innerHTML = out;
+  decorateChartTargets();
+  el('chart-title-h').textContent = ui('用量趋势','Usage trend');
+  var grain = CUR.granularity==='hour' ? ui('按小时','Hourly') : (CUR.granularity==='week' ? ui('按周','Weekly') : ui('按日','Daily'));
+  el('chart-sub').innerHTML = ui('峰值 ','Peak ')+s.labels[peakI]+' '+fmtTok(s.t[peakI])+' · '+rangeName(state.range)+' · '+rangeDateText()+' · '+grain+' · <i class="key-dot"></i>'+ui('用量','Tokens');
+}
+function drawHeat(){
+  var b = rangeBounds(), days = Math.round((b.e-b.s)/86400000)+1;
+  frame.classList.toggle('calendar-layout',days>31);
+  var W = Math.max(320, frame.clientWidth-24), H = frame.clientHeight || 260;
+  var map = heatMap();
+  HEATVALS=[]; HEATLAB=[]; HEATTIPS=[]; HEATSCOPE=rangeDateText();
+  var out='', sub2='', maxCell=1, hasBlank=false;
+
+  if(days<=7){
+    /* 1–7 天：每个日期一行、每小时一格，值为该小时真实用量 */
+    var rows=[];
+    for(var di=0;di<days;di++){
+      var d=new Date(b.s); d.setDate(d.getDate()+di);
+      var ds=ymd(d), wi=(d.getDay()+6)%7;
+      var future=isFutureDate(ds), rec=map[ds];
+      var vals=[];
+      if(future || !rec){
+        for(var z=0;z<24;z++) vals.push(null);
+        if(future) hasBlank=true;
+      }else{
+        vals=(rec.hours||[]).map(function(v){ return +v||0; });
+        while(vals.length<24) vals.push(0);
       }
+      rows.push({label:LOCALE==='en'?WD_EN[wi]+' '+fmtMD(d):fmtMD(d)+' 周'+WD_ZH[wi],date:ds,vals:vals});
+    }
+    rows.forEach(function(r){r.vals.forEach(function(v){if(v!=null&&v>maxCell)maxCell=v;});});
+    var padT=8,padB=18,padL=76,padR=8,gap=2;
+    var cw=Math.min((W-padL-padR-23*gap)/24,42), ch=(H-padT-padB-(rows.length-1)*gap)/rows.length;
+    var gridW=24*cw+23*gap,x0=padL+Math.max((W-padL-padR-gridW)/2,0);
+    rows.forEach(function(r,ri){
+      HEATVALS.push(r.vals); HEATLAB.push(r.label); HEATTIPS.push([]);
+      var y=padT+ri*(ch+gap);
+      out+='<text class="ax ta-e" x="'+(x0-8)+'" y="'+(y+ch/2+3).toFixed(1)+'">'+r.label+'</text>';
+      r.vals.forEach(function(val,c){
+        if(val===null){ out+='<rect class="hc-empty" x="'+(x0+c*(cw+gap)).toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+cw.toFixed(1)+'" height="'+ch.toFixed(1)+'" rx="2"/>'; return; }
+        HEATTIPS[ri][c]=r.date+' · '+pad2(c)+':00';
+        var op=Math.round(7+93*Math.pow(Math.min(val/maxCell,1),.8));
+        out+='<rect class="hc" data-r="'+ri+'" data-c="'+c+'" x="'+(x0+c*(cw+gap)).toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+cw.toFixed(1)+'" height="'+ch.toFixed(1)+'" rx="2" style="fill:color-mix(in srgb,var(--accent) '+op+'%,transparent)"/>';
+      });
+    });
+    [0,6,12,18].forEach(function(c){out+='<text class="ax ta-c" x="'+(x0+c*(cw+gap)+cw/2).toFixed(1)+'" y="'+(H-4)+'">'+c+ui('时',':00')+'</text>';});
+    sub2=days===1?ui('当天 · 小时分布','Single day · hourly'):ui('日期 × 小时','Date × hour');
+  }else if(days<=31){
+    /* 8–31 天：横轴保留每一天，纵轴压缩成 4 小时时段；本月预设保留完整自然月 */
+    var blocks=['00–04','04–08','08–12','12–16','16–20','20–24'];
+    var vals=blocks.map(function(){return [];});
+    var tips=blocks.map(function(){return [];});
+    var dates=[], monthFuture=false, ds0=ymd(b.s), ds1=ymd(b.e), displayDs1=ds1;
+    if(state.range===2){
+      var monthEnd=new Date(b.e.getFullYear(),b.e.getMonth()+1,0);
+      displayDs1=ymd(monthEnd); monthFuture=displayDs1>ds1;
+    }
+    var cur=new Date(dateOf(ds0));
+    while(ymd(cur)<=displayDs1){
+      var dstr=ymd(cur);
+      dates.push(dstr);
+      var rec2=map[dstr], active=!!rec2 && !isFutureDate(dstr) && dstr>=ds0 && dstr<=ds1;
+      if(rec2 && isFutureDate(dstr)) hasBlank=true;
+      if(monthFuture && dstr>ds1) hasBlank=true;
+      for(var bi=0;bi<6;bi++){
+        var v=null;
+        if(active){
+          v=0;
+          for(var h=bi*4;h<bi*4+4;h++) v += +((rec2.hours||[])[h])||0;
+        }
+        vals[bi].push(v); tips[bi].push(active?dstr+' · '+blocks[bi]:'');
+        if(v!==null&&v>maxCell)maxCell=v;
+      }
+      cur.setDate(cur.getDate()+1);
+    }
+    var pT=8,pB=20,pL=52,pR=8,g=2;
+    var cW=Math.min((W-pL-pR-(dates.length-1)*g)/dates.length,64),cH=(H-pT-pB-5*g)/6;
+    var gw=dates.length*cW+(dates.length-1)*g,xStart=pL+Math.max((W-pL-pR-gw)/2,0);
+    vals.forEach(function(row,ri){
+      HEATVALS.push(row); HEATLAB.push(blocks[ri]); HEATTIPS.push(tips[ri]);
+      var y=pT+ri*(cH+g);
+      out+='<text class="ax ta-e" x="'+(xStart-8)+'" y="'+(y+cH/2+3).toFixed(1)+'">'+blocks[ri]+'</text>';
+      row.forEach(function(val,c){
+        if(val===null){
+          out+='<rect class="hc-empty" x="'+(xStart+c*(cW+g)).toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+cW.toFixed(1)+'" height="'+cH.toFixed(1)+'" rx="2"/>';
+          return;
+        }
+        var op=Math.round(7+93*Math.pow(Math.min(val/maxCell,1),.8));
+        out+='<rect class="hc" data-r="'+ri+'" data-c="'+c+'" x="'+(xStart+c*(cW+g)).toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+cW.toFixed(1)+'" height="'+cH.toFixed(1)+'" rx="2" style="fill:color-mix(in srgb,var(--accent) '+op+'%,transparent)"/>';
+      });
+    });
+    var step=Math.max(1,Math.ceil(dates.length/6));
+    dates.forEach(function(dsx,c){if(c%step===0||c===dates.length-1)out+='<text class="ax ta-c" x="'+(xStart+c*(cW+g)+cW/2).toFixed(1)+'" y="'+(H-4)+'">'+dsx.slice(5)+'</text>';});
+    sub2=ui('日期 × 4 小时时段','Date × 4-hour block');
+  }else{
+    /* 32 天以上：GitHub 式日历热力图；本年保留完整自然年的周列 */
+    var start=new Date(b.s), displayEnd=state.range===3?new Date(b.e.getFullYear(),11,31):new Date(b.e);
+    var displayDays=Math.round((displayEnd-start)/86400000)+1, yearFuture=displayDays>days;
+    var offset=(start.getDay()+6)%7, weeks=Math.ceil((offset+displayDays)/7);
+    var pt=24,pb=8,pl=34,pr=8,gp=2;
+    var cellW=Math.min((W-pl-pr-(weeks-1)*gp)/weeks,34),cellH=Math.min((H-pt-pb-6*gp)/7,24);
+    var calW=weeks*cellW+(weeks-1)*gp,calH=7*cellH+6*gp;
+    var sx=pl+Math.max((W-pl-pr-calW)/2,0),sy=pt+Math.max((H-pt-pb-calH)/2,0);
+    var rI,cI;
+    HEATVALS=[]; for(rI=0;rI<7;rI++){ HEATVALS.push([]); for(cI=0;cI<weeks;cI++) HEATVALS[rI].push(null); }
+    HEATLAB=(LOCALE==='en'?WD_EN:WD_ZH.map(function(w){return '周'+w;}));
+    HEATTIPS=[]; for(rI=0;rI<7;rI++){ HEATTIPS.push([]); for(cI=0;cI<weeks;cI++) HEATTIPS[rI].push(''); }
+    var cells=[],months={},dailyMax=1;
+    for(var n2=0;n2<displayDays;n2++){
+      var cd=new Date(start); cd.setDate(cd.getDate()+n2);
+      var cds=ymd(cd),pos=offset+n2,row=pos%7,col=Math.floor(pos/7);
+      var rec3=map[cds], active2=!!rec3 && !isFutureDate(cds);
+      var val=active2?(+rec3.total||0):null;
+      if(rec3 && isFutureDate(cds)) hasBlank=true;
+      if(yearFuture && n2>=days) hasBlank=true;
+      HEATVALS[row][col]=val; HEATTIPS[row][col]=active2?cds:'';
+      if(val!==null&&val>dailyMax)dailyMax=val;
+      cells.push({row:row,col:col,val:val,date:cd});
+      var mk=cd.getFullYear()+'-'+cd.getMonth(); if(months[mk]===undefined)months[mk]=col;
+    }
+    HEATLAB.forEach(function(label,r){
+      out+='<text class="ax ta-e" x="'+(sx-8)+'" y="'+(sy+r*(cellH+gp)+cellH/2+3).toFixed(1)+'">'+label+'</text>';
+    });
+    cells.forEach(function(c){
+      if(c.val===null){
+        out+='<rect class="hc-empty" x="'+(sx+c.col*(cellW+gp)).toFixed(1)+'" y="'+(sy+c.row*(cellH+gp)).toFixed(1)+'" width="'+cellW.toFixed(1)+'" height="'+cellH.toFixed(1)+'" rx="2"/>';
+        return;
+      }
+      var op=Math.round(7+93*Math.pow(Math.min(c.val/dailyMax,1),.8));
+      out+='<rect class="hc" data-r="'+c.row+'" data-c="'+c.col+'" x="'+(sx+c.col*(cellW+gp)).toFixed(1)+'" y="'+(sy+c.row*(cellH+gp)).toFixed(1)+'" width="'+cellW.toFixed(1)+'" height="'+cellH.toFixed(1)+'" rx="2" style="fill:color-mix(in srgb,var(--accent) '+op+'%,transparent)"/>';
+    });
+    Object.keys(months).forEach(function(key){
+      var mp=key.split('-'),label=LOCALE==='en'?new Date(+mp[0],+mp[1],1).toLocaleDateString('en-US',{month:'short'}):(+mp[1]+1)+'月';
+      out+='<text class="ax" x="'+(sx+months[key]*(cellW+gp)).toFixed(1)+'" y="14">'+label+'</text>';
+    });
+    maxCell=dailyMax; sub2=ui('日历热力图 · 每格 1 天','Calendar heatmap · 1 day per cell');
+  }
+  svg.setAttribute('viewBox','0 0 '+W+' '+H);
+  svg.setAttribute('aria-label',ui('用量热力图：','Usage heatmap: ')+rangeDateText()+' · '+sub2);
+  svg.innerHTML=out;
+  decorateChartTargets();
+  el('chart-title-h').textContent=ui('用量热力图','Usage heatmap');
+  if(hasBlank) sub2+=' · '+ui('空白为尚未发生','Blank = not yet');
+  el('chart-sub').innerHTML=rangeName(state.range)+' · '+rangeDateText()+' · '+sub2+' · <span class="heat-scale">'+ui('低','Low')+'<i></i>'+ui('高','High')+'</span>';
+}
+function chartTargetLabel(tg){
+  if(!tg || !tg.dataset) return '';
+  if(tg.dataset.i!==undefined){
+    var i=+tg.dataset.i;
+    return CUR.labels[i]+ui('，用量 ',', tokens ')+fmtTok(CUR.t[i]);
+  }
+  if(tg.dataset.r!==undefined){
+    var rr=+tg.dataset.r,cc=+tg.dataset.c;
+    var v=(HEATVALS[rr]&&HEATVALS[rr][cc]);
+    return ((HEATTIPS[rr]&&HEATTIPS[rr][cc])||HEATLAB[rr]||'')+ui('，用量 ',', tokens ')+fmtTok(v);
+  }
+  return '';
+}
+function decorateChartTargets(){
+  svg.querySelectorAll('[data-i],[data-r]').forEach(function(tg){
+    tg.setAttribute('tabindex','0'); tg.setAttribute('role','img'); tg.setAttribute('aria-label',chartTargetLabel(tg));
+  });
+}
+function showChartTarget(tg){
+  if(!tg || !tg.dataset) return;
+  var f = frame.getBoundingClientRect(), r = tg.getBoundingClientRect();
+  var x = r.left-f.left+r.width/2, y = r.top-f.top;
+  if(tg.dataset.i!==undefined){
+    var i = +tg.dataset.i;
+    showTip('<b>'+CUR.labels[i]+'</b><span>'+fmtTok(CUR.t[i])+ui(' tokens',' tokens')+'</span>', x, y);
+  }else if(tg.dataset.r!==undefined){
+    var rr = +tg.dataset.r, cc = +tg.dataset.c;
+    showTip('<b>'+((HEATTIPS[rr]&&HEATTIPS[rr][cc])||HEATLAB[rr]||'')+'</b><span>'+HEATSCOPE+' · '+fmtTok(HEATVALS[rr]&&HEATVALS[rr][cc])+'</span>', x, y);
+  }
+}
+svg.addEventListener('mouseover', function(e){
+  showChartTarget(e.target);
+});
+svg.addEventListener('focusin',function(e){ showChartTarget(e.target); });
+svg.addEventListener('focusout',function(){ tip.hidden=true; });
+svg.addEventListener('mouseleave', function(){ tip.hidden = true; });
+function showTip(html, x, y){
+  tip.innerHTML = html;
+  tip.hidden = false;
+  var tw = tip.offsetWidth, fw = frame.getBoundingClientRect().width;
+  tip.style.left = Math.min(Math.max(x-tw/2, 6), Math.max(fw-tw-6, 6))+'px';
+  tip.style.top = Math.max(y-tip.offsetHeight-10, 4)+'px';
+}
+var rzT = null;
+window.addEventListener('resize', function(){
+  clearTimeout(rzT);
+  rzT = setTimeout(function(){
+    if(el('page-dash').getAttribute('data-active')==='true' && state.data) drawChart();
+  }, 120);
+});
+
+/* ---------- 数据获取：/api/meta 与 /api/dashboard ---------- */
+function api(url, opts){
+  return fetch(url, opts).then(function(res){
+    return res.json().catch(function(){ return null; }).then(function(body){
+      return { ok:res.ok, status:res.status, body:body };
+    });
+  });
+}
+function renderMeta(){
+  var m = state.meta||{};
+  var v = m.version||'';
+  var badge = el('version-badge');
+  if(badge){
+    if(v){
+      badge.textContent = v;
+      badge.title = v;
+      badge.setAttribute('aria-label', ui('版本 ','Version ')+v);
+      badge.hidden = false;
+    }else{
+      badge.hidden = true;
     }
   }
+  /* 在线状态只来自「本页已成功取得 /api/meta」这一事实;请求失败一律
+     显示离线态,不保留任何写死的在线字样。 */
+  var online = !!state.meta;
+  var last = (state.meta && m.last_collection)||'';
+  var dot = document.querySelector('.asof .dot');
+  var asof = document.querySelector('.asof');
+  if(asof) asof.classList.toggle('offline', !online);
+  if(dot && dot!==asof) dot.classList.toggle('offline', !online);
+  var ft, st;
+  if(!online){
+    ft = ui('离线 · 无法连接本地服务','Offline · cannot reach the local service');
+    st = ui('离线','Offline');
+  }else if(last){
+    ft = ui('在线 · 最近同步 ','Online · Last synced ')+last;
+    st = ui('在线 · ','Online · ')+(last.length>=16 ? last.slice(5,16) : last);
+  }else{
+    ft = ui('在线','Online');
+    st = ui('在线','Online');
+  }
+  var full = el('asof-t'), short = document.querySelector('.asof-short');
+  if(full) full.textContent = ft;
+  if(short) short.textContent = st;
+}
+function fetchMeta(){
+  return api('/api/meta').then(function(r){
+    state.meta = (r.ok && r.body) ? r.body : null;
+    renderMeta();
+  }, function(){
+    state.meta = null;
+    renderMeta();
+  });
+}
+function setDashLoading(){
+  if(state.data) return; /* 已有内容：区间切换保持旧画面直到新数据到达，不闪烁 */
+  el('kpis').innerHTML = '<p class="page-note">'+ui('加载中','Loading')+'</p>';
+  el('groups').innerHTML = '<p class="page-note">'+ui('加载中','Loading')+'</p>';
+  el('cviews').innerHTML = '';
+  el('sessions-body').innerHTML = '';
+  el('sessions-sub').textContent = rangeName(state.range)+' · '+rangeDateText();
+  var b=rangeBounds();
+  svg.setAttribute('viewBox','0 0 600 200');
+  svg.innerHTML='<text class="ax ta-c" x="300" y="100">'+ui('加载中','Loading')+'</text>';
+  el('chart-title-h').textContent = ui('用量趋势','Usage trend');
+  el('chart-sub').textContent = ui('加载中','Loading')+' · '+ymd(b.s)+' ~ '+ymd(b.e);
+}
+function showDashError(msg){
+  /* 失败态覆盖整块仪表板:清掉旧区间数据,避免「新区间标签+旧区间统计」
+     的误读;首次失败也不停留在「加载中」。恢复只需重新切换区间或刷新。 */
+  state.data = null;
+  state.heat = [];
+  var note = '<p class="page-note">'+esc(msg)+'</p>';
+  el('kpis').innerHTML = note;
+  el('groups').innerHTML = note;
+  el('cviews').innerHTML = note;
+  el('sessions-body').innerHTML = '';
+  el('sessions-sub').textContent = msg;
+  el('chart-sub').textContent = msg;
+  svg.setAttribute('viewBox','0 0 600 200');
+  svg.innerHTML = '<text class="ax ta-c" x="300" y="100">'+esc(msg)+'</text>';
+  toast(msg);
+}
+function loadDashboard(){
+  var b = rangeBounds(), from = ymd(b.s), to = ymd(b.e);
+  var seq = ++fetchSeq;
+  setDashLoading();
+  api('/api/dashboard?from='+from+'&to='+to).then(function(r){
+    if(seq!==fetchSeq) return;
+    if(!r.ok){
+      showDashError((r.body && r.body.error && r.body.error.message) || ui('数据加载失败','Failed to load data'));
+      return;
+    }
+    state.data = r.body||{};
+    state.heat = (state.data.heatmap && state.data.heatmap.days) || [];
+    renderAll();
+  }, function(){
+    if(seq!==fetchSeq) return;
+    showDashError(ui('数据加载失败','Failed to load data'));
+  });
+}
 
-  init();
+/* ---------- 用量最高的会话：真实区间会话，直接渲染 ---------- */
+function renderSessions(){
+  var body = el('sessions-body');
+  if(!body) return;
+  var rows = (state.data && state.data.sessions) || [];
+  if(!rows.length){
+    body.innerHTML = '<tr class="session-row"><td colspan="6" class="tl">'+ui('该区间暂无会话','No sessions in this range')+'</td></tr>';
+  }else{
+    body.innerHTML = rows.map(function(r){
+      var full=esc(r.title||'');
+      return '<tr class="session-row"><th scope="row" class="tname"><div class="session-title-wrap"><span class="session-title-text" title="'+full+'">'+full+'</span>'+
+        '<button type="button" class="session-title-detail" data-full="'+full+'" aria-label="'+ui('查看完整会话标题','View full session title')+'" title="'+ui('查看完整会话标题','View full session title')+'"><svg class="ic"><use href="#i-info"/></svg></button></div></th>' +
+        '<td class="num tl" data-label="'+dimLabel('client')+'">'+esc(r.client||'')+'</td><td class="num tl" data-label="'+dimLabel('project')+'">'+esc(r.project||'')+'</td>' +
+        '<td class="num" data-label="'+ui('时长','Duration')+'">'+fmtDur(r.duration_ms)+'</td><td class="num" data-label="'+colLabel(colById('requests'))+'">'+fmtInt(r.requests)+'</td>' +
+        '<td class="num tot" data-label="'+colLabel(colById('total'))+'"><span class="nv">'+fmtTok(r.total)+'</span></td></tr>';
+    }).join('');
+  }
+  el('sessions-sub').textContent = rangeName(state.range)+' · '+rangeDateText();
+}
+var sessionTitleModal=el('session-title-modal'), sessionTitleOpener=null;
+function openSessionTitle(button){
+  sessionTitleOpener=button;
+  el('session-title-modal-text').textContent=button.getAttribute('data-full')||'';
+  sessionTitleModal.hidden=false;
+  el('session-title-modal-close').focus();
+}
+function closeSessionTitle(){
+  sessionTitleModal.hidden=true;
+  if(sessionTitleOpener && document.contains(sessionTitleOpener)) sessionTitleOpener.focus();
+  sessionTitleOpener=null;
+}
+el('sessions-body').addEventListener('click',function(e){
+  var button=e.target.closest('.session-title-detail');
+  if(button) openSessionTitle(button);
+});
+el('session-title-modal-close').addEventListener('click',closeSessionTitle);
+sessionTitleModal.addEventListener('click',function(e){
+  if(e.target.classList.contains('modal-scrim')) closeSessionTitle();
+});
+sessionTitleModal.addEventListener('keydown',function(e){
+  if(sessionTitleModal.hidden) return;
+  if(e.key==='Escape'){ e.preventDefault(); closeSessionTitle(); return; }
+  if(e.key==='Tab'){ e.preventDefault(); el('session-title-modal-close').focus(); }
+});
+
+/* ---------- 自定义视图：/api/dashboard.custom_views，Top N + 唯一“其他组合”守恒行 ---------- */
+function cellCv(k, r, extra){
+  if(k==='cache_hit') return '<span class="nv">'+pctText(r.hit,2)+'</span>';
+  if(k==='total') return '<span class="nv">'+fmtTok(rowVal(r,k))+'</span><i class="mb mb-a" style="width:'+extra+'%"></i>';
+  if(k==='requests') return fmtInt(rowVal(r,k));
+  return '<span class="nv">'+fmtTok(rowVal(r,k))+'</span>';
+}
+function cellAggCv(k, T){
+  if(k==='cache_hit') return pctText(T.hit,2);
+  if(k==='requests') return fmtInt(T.requests);
+  return fmtTok(rowVal(T,k));
+}
+var CV_TOP_N = 8;
+function renderCustomViews(){
+  var host = el('cviews');
+  if(!host) return;
+  if(!state.data){ host.innerHTML=''; return; }
+  var views = state.data.custom_views||[];
+  if(!views.length){
+    host.innerHTML = '<section class="sessions-card"><div class="sessions-head"><div><h3>'+ui('自定义视图','Custom views')+'</h3>' +
+      '<p>'+ui('尚未配置自定义视图','No custom views configured')+'</p></div></div></section>';
+    return;
+  }
+  var ids = colIds();
+  host.innerHTML = views.map(function(v){
+    var dims = v.dimensions||[];
+    var rows = (v.rows||[]).map(function(r){
+      var o = {
+        keys:(r.keys||[]).slice(),
+        requests:+r.requests||0, fresh_input:+r.fresh_input||0, output:+r.output||0,
+        cache_read:+r.cache_read||0, cache_create:+r.cache_create||0, reasoning:+r.reasoning||0,
+        total:+r.total||0, hit:null, isOther:false
+      };
+      o.hit = hitOf(o.fresh_input, o.cache_read, o.cache_create);
+      return o;
+    }).sort(function(a,b){ return b.total-a.total; });
+    /* 尾部收拢:从最小项向内并入,直到并入会使「其他组合」总量不再严格
+       小于紧邻的独立项为止(交接合同:其他必须小于每个独立项,不满足时
+       多展示或全部展示,不生成会排到中间的假其他行);CV_TOP_N 为展示上限。 */
+    var shownCount = Math.min(rows.length, CV_TOP_N), hidden = [];
+    while(shownCount < rows.length){
+      var cand = rows[shownCount];
+      var prevShownTotal = rows[shownCount-1] ? rows[shownCount-1].total : Infinity;
+      var futureSum = cand.total;
+      for(var hi2=shownCount+1; hi2<rows.length; hi2++) futureSum += rows[hi2].total;
+      if(futureSum < prevShownTotal) break; /* 已满足:剩余全部并入 */
+      shownCount++; /* 并入会越位:该行独立展示 */
+    }
+    var shown = rows.slice(0, shownCount), hidden = rows.slice(shownCount);
+    if(hidden.length){
+      /* 其他组合行 = 全部行求和 − 已展示行求和（逐项守恒，防负） */
+      var sumShown = aggRows(shown), sumAll = aggRows(rows);
+      var other = {
+        keys: dims.map(function(d,i){ return i===0 ? ui('其他组合（'+hidden.length+' 项）','Other combos ('+hidden.length+' items)') : '—'; }),
+        requests:Math.max(0,sumAll.requests-sumShown.requests),
+        fresh_input:Math.max(0,sumAll.fresh_input-sumShown.fresh_input),
+        output:Math.max(0,sumAll.output-sumShown.output),
+        cache_read:Math.max(0,sumAll.cache_read-sumShown.cache_read),
+        cache_create:Math.max(0,sumAll.cache_create-sumShown.cache_create),
+        reasoning:Math.max(0,sumAll.reasoning-sumShown.reasoning),
+        total:Math.max(0,sumAll.total-sumShown.total),
+        hit:null, isOther:true, hiddenCount:hidden.length
+      };
+      other.hit = hitOf(other.fresh_input, other.cache_read, other.cache_create);
+      shown.push(other);
+    }
+    var T = aggRows(shown), maxTotal = shown.length && shown[0].total>0 ? shown[0].total : 1;
+    var dimHeads = dims.map(function(d){ return '<th scope="col">'+dimLabel(d)+'</th>'; }).join('');
+    var colHeads = ids.map(function(k){
+      var c = colById(k);
+      return '<th scope="col" title="'+colLabel(c)+'">'+colShort(c)+'</th>';
+    }).join('');
+    var viewTitle = dims.map(dimLabel).join(' × ');
+    var h = '<section class="sessions-card" aria-label="'+esc(viewTitle)+'">' +
+      '<div class="sessions-head"><div><h3>'+esc(viewTitle)+'</h3></div><span class="toml-tag">'+esc(v.name||'')+'</span></div>' +
+      '<div class="table-wrap"><table class="cvx"><thead><tr>' + dimHeads + colHeads +
+      '</tr></thead><tbody>';
+    shown.forEach(function(r){
+      h += '<tr class="cv-row" tabindex="0" aria-expanded="false">' + dims.map(function(d,i){
+        var val = String((r.keys||[])[i]!=null ? r.keys[i] : '');
+        var safe=esc(val);
+        var disp = val.length>26 ? val.slice(0,12)+'…'+val.slice(-8) : val;
+        return '<th scope="row" class="tname" title="'+safe+'" data-label="'+dimLabel(d)+'">'+esc(disp)+'</th>';
+      }).join('') +
+      ids.map(function(k){
+        return '<td class="num'+(k==='total'?' tot':'')+'" data-k="'+k+'" data-label="'+colLabel(colById(k))+'">'+cellCv(k, r, (r.total/maxTotal*100).toFixed(1))+'</td>';
+      }).join('') + '</tr>';
+    });
+    h += '<tr class="trow"><th scope="row" class="tname" colspan="'+dims.length+'">'+ui('总计','Total')+'</th>' +
+      ids.map(function(k){ return '<td class="num'+(k==='total'?' tot':'')+'" data-k="'+k+'" data-label="'+colLabel(colById(k))+'">'+cellAggCv(k, T)+'</td>'; }).join('') +
+      '</tr></tbody></table></div></section>';
+    return h;
+  }).join('');
+}
+function toggleCustomRow(row){
+  var on = !row.classList.contains('expanded');
+  row.classList.toggle('expanded', on);
+  row.setAttribute('aria-expanded', on?'true':'false');
+}
+el('cviews').addEventListener('click', function(e){
+  var row = e.target.closest('.cv-row');
+  if(row && matchMedia('(max-width:768px)').matches) toggleCustomRow(row);
+});
+el('cviews').addEventListener('keydown', function(e){
+  var row = e.target.closest('.cv-row');
+  if(row && matchMedia('(max-width:768px)').matches && (e.key==='Enter'||e.key===' ')){
+    e.preventDefault(); toggleCustomRow(row);
+  }
+});
+
+/* ---------- 仪表板整体渲染 ---------- */
+function renderAll(){
+  syncRangeSeg();
+  syncModeSeg();
+  renderKPIs();
+  renderGroups();
+  drawChart();
+  renderCustomViews();
+  renderSessions();
+}
+
+/* ---------- 配置页：草稿对象为唯一真相源，GET/PUT 真实接线 ---------- */
+var CFG = {
+  loaded:false, loading:false, saving:false,
+  saved:null,        /* 最近一次已保存（或初始 GET）的草稿深拷贝 */
+  savedRevision:'',
+  draft:null,        /* 当前编辑中的草稿深拷贝 */
+  diag:[],           /* GET 下发的 query 解析诊断（不回传 PUT） */
+  /* 恢复全部默认值时置位:即使用户没有手工编辑 query(问题态下 GET 是
+     回退草稿,queryTouched 为 false),保存也必须携带 query 覆盖磁盘问题态,
+     否则「全部默认值」无法修复坏掉的查询配置。 */
+  forceQueryRewrite:false
+};
+var Q_RESERVED = ['client','model','provider','project','session','summary','day','month','hour','weekday','heatmap','custom','list'];
+var Q_DIMS = ['client','model','provider','project','day','month','hour','weekday'];
+/* query.default 的合法内置值域=全部 8 个内置维度(querydef.parseDefault 同域):
+   只列 4 个业务维度会把 CLI 配的 day/month 等静默改写为 client。 */
+var BUILTIN_VIEWS = ['client','model','provider','project','day','month','hour','weekday'];
+var ROUTER_CAPABLE = ['claude','codex'];
+function sanitizeCols(list){
+  var out=[], seen={};
+  (Array.isArray(list)?list:[]).forEach(function(k){ if(colById(k) && !seen[k]){ seen[k]=1; out.push(k); } });
+  return out.length ? out : DEFAULT_OUT.slice();
+}
+function normalizeDraft(d){
+  d = d||{};
+  var q = d.query||{};
+  function str(v){ return v==null ? '' : String(v); }
+  function num(v, def){ var n=+v; return isNaN(n) ? (def||0) : n; }
+  return {
+    daemon:{ poll_interval:num(d.daemon&&d.daemon.poll_interval,0), autostart:!!(d.daemon&&d.daemon.autostart) },
+    log:{ level:str(d.log&&d.log.level), dir:str(d.log&&d.log.dir), max_days:num(d.log&&d.log.max_days,0) },
+    clients:(d.clients||[]).map(function(c){ return { name:str(c.name), enabled:!!c.enabled, router:str(c.router), paths:clone(c.paths)||{} }; }),
+    routers:(d.routers||[]).map(function(r){ return { name:str(r.name), db_path:str(r.db_path) }; }),
+    provider_aliases:(d.provider_aliases||[]).map(function(a){ return { key:str(a.key), value:str(a.value) }; }),
+    query:{
+      default:str(q.default)||'client',
+      subqueries:clone(q.subqueries)||{},
+      groups:clone(q.groups)||{},
+      output_columns:sanitizeCols(q.output_columns)
+    }
+  };
+}
+/* 脏状态：两个草稿展平为标量映射后比对——clients/routers 按名对齐，aliases 保序 */
+function mapEntries(mp){
+  return Object.keys(mp||{}).sort().map(function(k){ return k+'='+mp[k]; }).join('\u0001');
+}
+function flattenDraft(d){
+  var m={};
+  m['daemon.poll_interval']=String(+d.daemon.poll_interval||0);
+  m['daemon.autostart']=!!d.daemon.autostart;
+  m['log.level']=String(d.log.level||'');
+  m['log.dir']=String(d.log.dir||'');
+  m['log.max_days']=String(+d.log.max_days||0);
+  var cs=(d.clients||[]).slice().sort(function(a,b){ return a.name<b.name?-1:a.name>b.name?1:0; });
+  cs.forEach(function(c){
+    var pk=Object.keys(c.paths||{}).sort().map(function(k){ return k+'='+c.paths[k]; }).join('\u0001');
+    m['client.'+c.name+'.enabled']=!!c.enabled;
+    m['client.'+c.name+'.router']=String(c.router||'');
+    m['client.'+c.name+'.paths']=pk;
+  });
+  var rs=(d.routers||[]).slice().sort(function(a,b){ return a.name<b.name?-1:a.name>b.name?1:0; });
+  rs.forEach(function(r){ m['router.'+r.name+'.db_path']=String(r.db_path||''); });
+  m['aliases']=(d.provider_aliases||[]).map(function(a){ return String(a.key)+'\u0001'+String(a.value); }).join('|');
+  m['query.default']=String(d.query.default||'');
+  m['query.subqueries']=mapEntries(d.query.subqueries);
+  m['query.groups']=mapEntries(d.query.groups);
+  m['query.output_columns']=(d.query.output_columns||[]).join(',');
+  return m;
+}
+function diffDraft(a, b){
+  var fa=flattenDraft(a), fb=flattenDraft(b), n=0, k;
+  for(k in fa){ if(fa[k]!==fb[k]) n++; }
+  for(k in fb){ if(!(k in fa)) n++; }
+  return n;
+}
+function recomputeDirty(){
+  if(!CFG.saved) return;
+  var n = diffDraft(CFG.saved, CFG.draft);
+  if(n===0 && CFG.forceQueryRewrite) n=1; /* 待重写的 query 段计入修改 */
+  var b = el('cfg-save');
+  el('dirty-pill').textContent = n>0 ? ui(n+' 项修改', n+' change'+(n===1?'':'s')) : ui('已保存','Saved');
+  el('dirty-pill').setAttribute('data-show', n>0 ? 'true' : 'false');
+  b.disabled = n===0 || CFG.saving;
+  b.textContent = CFG.saving ? ui('保存中…','Saving…') : (n>0 ? ui('保存','Save') : ui('已保存','Saved'));
+  b.classList.toggle('primary', n>0);
+  el('cfg-actions').setAttribute('data-dirty', n>0?'true':'false');
+}
+function markDirty(){
+  recomputeDirty();
+  /* 只有值实际变化时才提示:改回原值立即恢复「已保存」,不再叠加修改提示 */
+  if(el('cfg-save').disabled) return;
+  toast(ui('已修改（未保存）','Modified (unsaved)'));
+}
+/* 拉取配置并填充 CFG 状态(不渲染配置页控件)。返回 Promise:
+   成功 resolve(true);配置接口未启用(501)或网络失败 resolve(false)——
+   仪表板明细列回退默认七列,不视为错误。 */
+function fetchConfigState(){
+  if(CFG.loaded) return Promise.resolve(true);
+  if(CFG.loading) return CFG.pending || Promise.resolve(false);
+  CFG.loading = true;
+  CFG.pending = api('/api/config').then(function(r){
+    CFG.loading = false; CFG.pending = null;
+    if(!r.ok){
+      /* 501=服务未装配配置能力;400/500 才值得提示(且仅在用户主动进入配置页时) */
+      return false;
+    }
+    CFG.savedRevision = (r.body && r.body.revision) || '';
+    CFG.draft = normalizeDraft(r.body && r.body.config);
+    CFG.diag = (r.body && r.body.config && r.body.config.query && r.body.config.query.diagnostics) || [];
+    CFG.saved = clone(CFG.draft);
+    CFG.querySnapshot = JSON.stringify(serializeQueryDraft());
+    CFG.forceQueryRewrite = false;
+    CFG.loaded = true;
+    /* 预载即渲染配置页控件:nav 切换的 !CFG.loaded 短路不会再触发 loadConfig,
+       不在这里渲染的话,预载成功(生产常态)时进入配置页会是空表单 */
+    renderAllConfig();
+    recomputeDirty();
+    return true;
+  }, function(){
+    CFG.loading = false; CFG.pending = null;
+    return false;
+  });
+  return CFG.pending;
+}
+function loadConfig(){
+  fetchConfigState().then(function(ok){
+    if(!ok){
+      toast(ui('读取配置失败','Failed to load config'));
+      return;
+    }
+    renderAllConfig();
+    recomputeDirty();
+    /* 输出列可能随配置变化：刷新仪表板明细表 */
+    if(state.data){
+      if(state.view==='list') renderGroups();
+      renderCustomViews();
+    }
+  });
+}
+function renderAllConfig(){
+  if(!CFG.draft) return;
+  renderDaemonCfg();
+  renderLogCfg();
+  renderClients();
+  renderDefaultView();
+  buildColsEditor();
+  renderQDefs();
+  renderAliases(false);
+  renderDiag();
+}
+function renderDiag(){
+  var title = el('config-query-title');
+  if(!title || !title.closest) return;
+  var host = title.closest('.config-section');
+  if(!host) return;
+  var old = host.querySelector('.query-diag');
+  if(old) host.removeChild(old);
+  if(!CFG.diag.length) return;
+  var box = document.createElement('div');
+  box.className = 'config-card query-diag';
+  box.style.borderColor = 'color-mix(in srgb, #e0a43a 60%, var(--line))';
+  var p = document.createElement('p');
+  p.className = 'page-note';
+  p.title = CFG.diag.join('\n');
+  p.textContent = ui('查询配置存在解析问题，页面按默认值运行；悬停查看诊断','Query config has parse issues; defaults are in effect. Hover for details');
+  box.appendChild(p);
+  host.insertBefore(box, host.firstChild);
+}
+
+/* 守护进程 / 日志卡片 */
+function renderDaemonCfg(){
+  el('cfg-poll-interval').value = String(CFG.draft.daemon.poll_interval);
+  el('cfg-autostart').setAttribute('aria-checked', CFG.draft.daemon.autostart?'true':'false');
+}
+function renderLogCfg(){
+  var level = CFG.draft.log.level||'default';
+  el('cfg-log-level').querySelectorAll('.chip').forEach(function(c){
+    c.setAttribute('aria-pressed', c.textContent.trim()===level ? 'true':'false');
+  });
+  el('cfg-max-days').value = String(CFG.draft.log.max_days);
+  el('cfg-log-dir').value = CFG.draft.log.dir;
+}
+
+/* 客户端表：四列（客户端/启用/数据来源/路由中间件） */
+function clientPathCell(c){
+  var keys = Object.keys(c.paths||{});
+  if(!keys.length) return { html:'<span class="ct-na">—</span>', title:'' };
+  var full = keys.map(function(k){ return k+' = '+c.paths[k]; }).join(' / ');
+  var lines = keys.map(function(k){ return esc(String(c.paths[k])); });
+  var html = lines.slice(0,2).join('<br>') + (lines.length>2 ? '<br>…' : '');
+  return { html:'<span class="ct-path-value">'+html+'</span>', title:full };
+}
+function renderClients(){
+  el('client-table').innerHTML =
+    '<thead><tr><th scope="col">'+ui('客户端','Client')+'</th><th scope="col">'+ui('启用','Enabled')+'</th><th scope="col">'+ui('数据来源','Data source')+'</th><th scope="col">'+ui('路由中间件','Routing middleware')+'</th></tr></thead><tbody>' +
+    CFG.draft.clients.map(function(c){
+      var router;
+      if(ROUTER_CAPABLE.indexOf(c.name)<0){
+        router = '<span class="ct-na" title="'+ui('该客户端不支持路由归因','This client does not support routing attribution')+'">-</span>';
+      }else if(c.router){
+        router = '<span class="rt-cur">'+esc(c.router)+'</span><button type="button" class="rt-edit" data-edit="'+esc(c.name)+'" aria-label="'+esc(ui('修改 ','Change ')+c.name+ui(' 的路由中间件',' routing middleware'))+'">'+ui('修改','Change')+'</button>';
+      }else{
+        router = '<span class="rt-cur rt-off">'+ui('未对接','None')+'</span><button type="button" class="rt-edit" data-edit="'+esc(c.name)+'" aria-label="'+esc(ui('修改 ','Change ')+c.name+ui(' 的路由中间件',' routing middleware'))+'">'+ui('修改','Change')+'</button>';
+      }
+      var pn = clientPathCell(c);
+      return '<tr><th scope="row" class="ct-name"><b>'+esc(c.name)+'</b></th>' +
+        '<td class="ct-enabled" data-label="'+ui('启用','Enabled')+'"><button type="button" class="toggle" role="switch" aria-checked="'+(c.enabled?'true':'false')+'" aria-label="'+esc(ui('启用 ','Enable ')+c.name)+'" data-enable="'+esc(c.name)+'"></button></td>' +
+        '<td class="ct-path" data-label="'+ui('数据来源','Data source')+'"'+(pn.title?' title="'+esc(pn.title)+'"':'')+'>'+pn.html+'</td>' +
+        '<td class="ct-router-cell" data-label="'+ui('路由中间件','Routing middleware')+'"><span class="ct-router">'+router+'</span></td></tr>';
+    }).join('') + '</tbody>';
+}
+
+/* 路由选择弹窗：单选（未对接 + 已配置路由）；应用写入草稿 */
+var rtModal = el('rt-modal'), rtEditing = null, rtChoice = '', rtOpener = null;
+function openRouterModal(name, opener){
+  var c = null;
+  CFG.draft.clients.forEach(function(x){ if(x.name===name) c=x; });
+  if(!c || ROUTER_CAPABLE.indexOf(name)<0) return;
+  el('toast').setAttribute('data-show','false');
+  rtEditing = name; rtChoice = c.router; rtOpener = opener || null;
+  el('rt-modal-title').textContent = ui('修改 '+name+' 的路由中间件','Change routing middleware for '+name);
+  var opts = [{ v:'', label:ui('未对接','None'), note:ui('不绑定任何路由中间件','Do not bind routing middleware') }].concat(
+    CFG.draft.routers.map(function(r){ return { v:r.name, label:r.name, note:r.db_path }; })
+  );
+  el('rt-opts').innerHTML = opts.map(function(o){
+    var on = rtChoice===o.v;
+    return '<button type="button" class="rt-opt" role="radio" aria-checked="'+on+'" data-v="'+esc(o.v)+'"><b>'+esc(o.label)+'</b><small>'+esc(o.note||'')+'</small></button>';
+  }).join('');
+  rtModal.hidden = false;
+  var cur = el('rt-opts').querySelector('[aria-checked="true"]') || el('rt-opts').querySelector('.rt-opt');
+  if(cur) cur.focus();
+}
+function closeRouterModal(){
+  rtModal.hidden = true;
+  if(rtOpener){ rtOpener.focus(); rtOpener = null; }
+}
+el('rt-opts').addEventListener('click', function(e){
+  var o = e.target.closest('.rt-opt'); if(!o) return;
+  rtChoice = o.dataset.v;
+  el('rt-opts').querySelectorAll('.rt-opt').forEach(function(x){
+    x.setAttribute('aria-checked', x===o ? 'true' : 'false');
+  });
+});
+rtModal.addEventListener('keydown', function(e){
+  if(rtModal.hidden) return;
+  var opt=e.target.closest('.rt-opt');
+  if(opt && /^(ArrowDown|ArrowRight|ArrowUp|ArrowLeft)$/.test(e.key)){
+    e.preventDefault();
+    var opts=[].slice.call(el('rt-opts').querySelectorAll('.rt-opt'));
+    var i=opts.indexOf(opt), step=(e.key==='ArrowDown'||e.key==='ArrowRight')?1:-1;
+    var next=opts[(i+step+opts.length)%opts.length];
+    rtChoice=next.dataset.v;
+    opts.forEach(function(x){ x.setAttribute('aria-checked',x===next?'true':'false'); });
+    next.focus();
+    return;
+  }
+  if(e.key==='Tab'){
+    var focusable=[].slice.call(rtModal.querySelectorAll('button:not([disabled])'));
+    if(!focusable.length) return;
+    var first=focusable[0], last=focusable[focusable.length-1];
+    if(e.shiftKey && document.activeElement===first){ e.preventDefault(); last.focus(); }
+    else if(!e.shiftKey && document.activeElement===last){ e.preventDefault(); first.focus(); }
+  }
+});
+el('rt-save').addEventListener('click', function(){
+  var c = null;
+  CFG.draft.clients.forEach(function(x){ if(x.name===rtEditing) c=x; });
+  var changed = false;
+  if(c && c.router !== rtChoice){
+    c.router = rtChoice;
+    changed = true;
+    renderClients();
+    markDirty();
+  }
+  closeRouterModal();
+  if(c && !changed) toast(ui('路由中间件未发生变化','Routing middleware unchanged'));
+});
+el('rt-cancel').addEventListener('click', closeRouterModal);
+rtModal.addEventListener('click', function(e){
+  if(e.target.classList.contains('modal-scrim')) closeRouterModal();
+});
+document.addEventListener('keydown', function(e){
+  if(e.key==='Escape' && !rtModal.hidden) closeRouterModal();
+});
+
+/* 默认视图 listbox：内置视图 + 自定义视图 + 组合查询 */
+function subNames(){ return Object.keys(CFG.draft.query.subqueries); }
+function groupNames(){ return Object.keys(CFG.draft.query.groups); }
+function dvValue(){ return (CFG.draft && CFG.draft.query.default) || 'client'; }
+/* 默认视图候选的显示名:内置维度用本地化标签,自定义视图与组合查询显示原始 key */
+function dvLabel(v){ return Q_DIMS.indexOf(v)>=0 ? dimLabel(v) : v; }
+var DV = { open:false, active:-1, opts:[] };
+function dvRender(){
+  if(!CFG.draft) return;
+  var cur = dvValue();
+  var g = groupNames(), s = subNames();
+  var opt = function(v){ return '<div class="dv-opt" role="option" data-v="'+esc(v)+'" aria-selected="'+(v===cur)+'" tabindex="-1"><svg class="ic"><use href="#i-check"/></svg>'+esc(dvLabel(v))+'</div>'; };
+  el('dv-pop').innerHTML =
+    '<div class="dv-grp">'+ui('内置视图','Built-in views')+'</div>' + BUILTIN_VIEWS.map(opt).join('') +
+    (g.length ? '<div class="dv-grp">'+ui('组合查询','Groups')+'</div>' + g.map(opt).join('') : '') +
+    (s.length ? '<div class="dv-grp">'+ui('自定义视图','Custom views')+'</div>' + s.map(opt).join('') : '');
+  DV.opts = [].slice.call(el('dv-pop').querySelectorAll('.dv-opt'));
+  DV.active = -1;
+  DV.opts.forEach(function(o,i){ if(o.dataset.v===cur) DV.active = i; });
+  el('dv-cur').textContent = dvLabel(cur);
+}
+function renderDefaultView(){
+  buildDefaultSelect();
+  if(DV.open) dvRender();
+}
+function dvSetActive(i, scroll){
+  if(!DV.opts.length) return;
+  if(DV.active>=0) DV.opts[DV.active].classList.remove('active');
+  DV.active = Math.max(0, Math.min(DV.opts.length-1, i));
+  DV.opts[DV.active].classList.add('active');
+  if(scroll!==false && DV.opts[DV.active].scrollIntoView) DV.opts[DV.active].scrollIntoView({block:'nearest'});
+}
+function dvOpen(){
+  DV.open = true;
+  dvRender();
+  el('q-default').closest('.config-card').classList.add('dv-open');
+  el('dv-pop').hidden = false;
+  el('q-default').setAttribute('aria-expanded','true');
+  dvSetActive(DV.active>=0 ? DV.active : 0, false);
+}
+function dvClose(refocus){
+  if(!DV.open) return;
+  DV.open = false;
+  el('q-default').closest('.config-card').classList.remove('dv-open');
+  el('dv-pop').hidden = true;
+  el('q-default').setAttribute('aria-expanded','false');
+  if(refocus) el('q-default').focus();
+}
+function dvPick(v){
+  var changed = v !== dvValue();
+  CFG.draft.query.default = v;
+  el('q-default').dataset.value = v;
+  el('dv-cur').textContent = dvLabel(v);
+  dvClose(true);
+  if(changed) markDirty();
+}
+/* 候选变化（组合查询/自定义视图增删）后校验当前默认视图仍有效 */
+function buildDefaultSelect(){
+  var cur = dvValue();
+  var names = BUILTIN_VIEWS.concat(subNames()).concat(groupNames());
+  if(names.indexOf(cur)<0) cur = 'client';
+  CFG.draft.query.default = cur;
+  el('q-default').dataset.value = cur;
+  el('dv-cur').textContent = dvLabel(cur);
+}
+el('q-default').addEventListener('click', function(){
+  if(!CFG.draft) return;
+  setPalettePop(false);
+  if(!calpop.hidden) closeCal();
+  DV.open ? dvClose(true) : dvOpen();
+});
+el('q-default').addEventListener('keydown', function(e){
+  if(!CFG.draft) return;
+  if(e.key==='ArrowDown' || e.key==='ArrowUp'){
+    e.preventDefault();
+    if(!DV.open){ dvOpen(); return; }
+    dvSetActive(DV.active + (e.key==='ArrowDown' ? 1 : -1));
+  }else if(e.key==='Enter'){
+    e.preventDefault();
+    if(!DV.open){ dvOpen(); return; }
+    if(DV.active>=0) dvPick(DV.opts[DV.active].dataset.v);
+  }else if(e.key==='Escape' && DV.open){
+    e.stopPropagation();
+    dvClose(true);
+  }
+});
+el('dv-pop').addEventListener('keydown', function(e){
+  if(e.key==='ArrowDown' || e.key==='ArrowUp'){
+    e.preventDefault();
+    dvSetActive(DV.active + (e.key==='ArrowDown' ? 1 : -1));
+  }else if(e.key==='Enter'){
+    e.preventDefault();
+    if(DV.active>=0) dvPick(DV.opts[DV.active].dataset.v);
+  }else if(e.key==='Escape'){
+    dvClose(true);
+  }
+});
+el('dv-pop').addEventListener('click', function(e){
+  var o = e.target.closest('.dv-opt'); if(!o) return;
+  dvPick(o.dataset.v);
+});
+document.addEventListener('click', function(e){
+  if(DV.open && !e.target.closest('.selwrap')) dvClose(false);
+});
+el('q-default-reset').addEventListener('click', function(){
+  if(!CFG.draft) return;
+  CFG.draft.query.default = 'client';
+  el('q-default').dataset.value = 'client';
+  el('dv-cur').textContent = 'client';
+  if(DV.open) dvRender();
+  markDirty();
+  toast(ui('默认视图已恢复为 client','Default view restored to client'));
+});
+
+/* 组合查询 / 自定义视图编辑器：行 = 成员 pick 控件；草稿 map 为真相源 */
+function qdefRowHtml(kind, name){
+  return '<div class="qdef-row" data-key="'+esc(name)+'" data-kind="'+kind+'">' +
+    '<div class="qdef-head"><span class="qdef-name">'+esc(name)+'</span>' +
+    '<button class="icon-button qdef-del" aria-label="'+esc(ui('删除 ','Delete ')+name)+'">×</button></div>' +
+    '<div class="pick"></div></div>';
+}
+function mountRowPick(row){
+  var kind = row.dataset.kind, name = row.dataset.key;
+  var map = kind==='group' ? CFG.draft.query.groups : CFG.draft.query.subqueries;
+  var initial = String(map[name]||'').split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+  row._pick = makeOrderedPick(row.querySelector('.pick'), {
+    values: kind==='group' ? Q_DIMS.concat(subNames()) : Q_DIMS.slice(),
+    selected: initial,
+    labelOn:ui('已选成员','Selected members'), labelOff:ui('可选视图','Available views'),
+    min:2, minMsg: kind==='group' ? ui('组合查询至少需要 2 个成员','A group needs at least two members') : ui('自定义视图至少需要 2 个维度','A custom view needs at least two dimensions'),
+    text: function(v){ return v; },
+    onChange: function(){ map[name] = row._pick.get().join(','); recomputeDirty(); }
+  });
+}
+function renderQDefs(){
+  el('q-groups').innerHTML = groupNames().map(function(name){ return qdefRowHtml('group', name); }).join('');
+  el('q-subs').innerHTML = subNames().map(function(name){ return qdefRowHtml('sub', name); }).join('');
+  el('q-groups').querySelectorAll('.qdef-row').forEach(mountRowPick);
+  el('q-subs').querySelectorAll('.qdef-row').forEach(mountRowPick);
+  buildDefaultSelect();
+}
+function groupRefs(name){
+  var refs = [];
+  Object.keys(CFG.draft.query.groups).forEach(function(g){
+    var members=String(CFG.draft.query.groups[g]||'').split(',').map(function(s){ return s.trim(); });
+    if(members.indexOf(name)>=0) refs.push(g);
+  });
+  return refs;
+}
+el('q-groups').addEventListener('click', function(e){
+  if(!CFG.draft) return;
+  var del = e.target.closest('.qdef-del'); if(!del) return;
+  var row = del.closest('.qdef-row'), name = row.dataset.key;
+  if(dvValue()===name){ toast(ui('组合查询 '+name+' 被默认视图引用，无法删除','Grouped query '+name+' is the default view and cannot be deleted')); return; }
+  delete CFG.draft.query.groups[name];
+  renderQDefs(); markDirty();
+  toast(ui('已删除组合查询 '+name,'Grouped query '+name+' deleted'));
+});
+el('q-subs').addEventListener('click', function(e){
+  if(!CFG.draft) return;
+  var del = e.target.closest('.qdef-del'); if(!del) return;
+  var row = del.closest('.qdef-row'), name = row.dataset.key;
+  var refs = groupRefs(name);
+  if(refs.length){ toast(ui('自定义视图 '+name+' 被组合查询引用: ','Custom view '+name+' is referenced by: ')+refs.join(', ')); return; }
+  if(dvValue()===name){ toast(ui('自定义视图 '+name+' 被默认视图引用，无法删除','Custom view '+name+' is the default view and cannot be deleted')); return; }
+  delete CFG.draft.query.subqueries[name];
+  renderQDefs(); markDirty();
+  toast(ui('已删除自定义视图 '+name,'Custom view '+name+' deleted'));
+});
+document.querySelectorAll('.qdef-addbar [data-add]').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    if(!CFG.draft) return;
+    var listId = btn.dataset.add;
+    var name = btn.closest('.qdef-addbar').querySelector('input').value.trim();
+    if(!/^[a-z][a-z0-9_-]*$/.test(name)){ toast(ui('名称须为小写标识符（字母开头）','Name must be a lowercase identifier beginning with a letter')); return; }
+    if(Q_RESERVED.indexOf(name)>=0){ toast(ui('保留名不可用','Reserved names cannot be used')); return; }
+    if(listId==='q-groups' ? (CFG.draft.query.groups[name]!==undefined || CFG.draft.query.subqueries[name]!==undefined)
+                            : (CFG.draft.query.subqueries[name]!==undefined || CFG.draft.query.groups[name]!==undefined)){
+      toast(ui('名称已存在','Name already exists')); return;
+    }
+    var kind = listId==='q-groups' ? 'group' : 'sub';
+    var map = kind==='group' ? CFG.draft.query.groups : CFG.draft.query.subqueries;
+    map[name] = '';
+    renderQDefs();
+    btn.closest('.qdef-addbar').querySelector('input').value='';
+    markDirty();
+    toast(ui('已新增 '+name+'，点选至少 2 个成员',name+' added; select at least two members'));
+  });
+});
+
+/* 供应商别名：数组保序；新增置顶高亮，删除即从草稿移除 */
+function aliasKeyDisp(k){ return k.length>26 ? k.slice(0,12)+'…'+k.slice(-8) : k; }
+function renderAliases(flashFirst){
+  var list = el('alias-list');
+  list.innerHTML = CFG.draft.provider_aliases.map(function(a){
+    return '<div class="alias-row" data-key="'+esc(a.key)+'"><span class="alias-key" title="'+esc(a.key)+'">'+esc(aliasKeyDisp(a.key))+'</span><b class="alias-val">'+esc(a.value)+'</b>' +
+      '<button class="alias-del" data-key="'+esc(a.key)+'" aria-label="'+esc(ui('删除 ','Delete ')+a.key)+'" title="'+esc(ui('删除 ','Delete ')+a.key)+'">'+ui('删除','Delete')+'</button></div>';
+  }).join('');
+  if(flashFirst && list.firstChild){
+    list.firstChild.classList.add('flash');
+    if(list.firstChild.scrollIntoView) list.firstChild.scrollIntoView({block:'nearest'});
+    var del=list.firstChild.querySelector('.alias-del');
+    if(del) del.focus();
+  }
+}
+el('alias-add-btn').addEventListener('click', function(){
+  if(!CFG.draft) return;
+  var k = el('alias-add-key').value.trim(), v = el('alias-add-val').value.trim();
+  if(!k || !v){ toast(ui('key 和 value 不能为空','key and value are required')); return; }
+  var dup = CFG.draft.provider_aliases.some(function(a){ return a.key===k; });
+  if(dup){ toast(ui('key 已存在','key already exists')); return; }
+  CFG.draft.provider_aliases.unshift({ key:k, value:v });
+  renderAliases(true);
+  el('alias-add-key').value=''; el('alias-add-val').value='';
+  markDirty();
+  toast(ui('已新增供应商别名 '+k,'Provider alias '+k+' added'));
+});
+el('alias-list').addEventListener('click', function(e){
+  if(!CFG.draft) return;
+  var del = e.target.closest('.alias-del'); if(!del) return;
+  var key = del.dataset.key, idx = -1;
+  CFG.draft.provider_aliases.forEach(function(a,i){ if(idx<0 && a.key===key) idx=i; });
+  if(idx>=0) CFG.draft.provider_aliases.splice(idx,1);
+  renderAliases(false);
+  markDirty();
+  toast(ui('已删除供应商别名 '+key,'Provider alias '+key+' deleted'));
+});
+
+/* 配置页事件委托：开关 / 级别 chips / 文本输入；打开弹层与聚焦不产生任何草稿效果 */
+var cfgPage = el('page-config');
+cfgPage.addEventListener('click', function(e){
+  if(!CFG.draft || CFG.saving) return;
+  if(e.target.closest('.cfg-actions')) return;
+  var chip = e.target.closest('#cfg-log-level .chip');
+  if(chip){
+    var level = chip.textContent.trim();
+    CFG.draft.log.level = level==='default' ? '' : level;
+    renderLogCfg();
+    markDirty();
+    return;
+  }
+  var tgl = e.target.closest('#cfg-autostart');
+  if(tgl){
+    CFG.draft.daemon.autostart = !CFG.draft.daemon.autostart;
+    tgl.setAttribute('aria-checked', CFG.draft.daemon.autostart?'true':'false');
+    markDirty();
+    return;
+  }
+  var en = e.target.closest('[data-enable]');
+  if(en){
+    var name = en.dataset.enable;
+    CFG.draft.clients.forEach(function(c){ if(c.name===name) c.enabled = !c.enabled; });
+    renderClients();
+    markDirty();
+    return;
+  }
+  var ed = e.target.closest('[data-edit]');
+  if(ed){ openRouterModal(ed.dataset.edit, ed); return; }
+});
+function cfgNum(t){
+  var n = parseInt(t.value, 10);
+  return isNaN(n) ? 0 : n;
+}
+cfgPage.addEventListener('input', function(e){
+  if(!CFG.draft || CFG.saving) return;
+  var t = e.target;
+  if(t.id==='cfg-poll-interval'){ CFG.draft.daemon.poll_interval = cfgNum(t); recomputeDirty(); return; }
+  if(t.id==='cfg-max-days'){ CFG.draft.log.max_days = cfgNum(t); recomputeDirty(); return; }
+  if(t.id==='cfg-log-dir'){ CFG.draft.log.dir = t.value; recomputeDirty(); return; }
+});
+cfgPage.addEventListener('focusin', function(e){
+  var input = e.target.closest('input.ti');
+  if(!input || input.closest('.qdef-addbar,.alias-addbar')) return;
+  input.dataset.focusValue = input.value;
+});
+cfgPage.addEventListener('focusout', function(e){
+  var input = e.target.closest('input.ti');
+  if(!input || input.closest('.qdef-addbar,.alias-addbar') || input.dataset.focusValue===input.value) return;
+  /* 与 markDirty 同口径:草稿已回到已保存值(改回原值)时不提示 */
+  if(el('cfg-save').disabled) return;
+  toast(ui('已修改（未保存）','Modified (unsaved)'));
+});
+
+/* 保存：PUT 成功以响应 config+revision 为新真相；409 不覆盖草稿不自动重试 */
+function buildPutBody(){
+  var config = {
+    daemon:{ poll_interval:+CFG.draft.daemon.poll_interval||0, autostart:!!CFG.draft.daemon.autostart },
+    log:{ level:CFG.draft.log.level||'', dir:CFG.draft.log.dir||'', max_days:+CFG.draft.log.max_days||0 },
+    clients: CFG.draft.clients.map(function(c){ return { name:c.name, enabled:!!c.enabled, router:c.router||'', paths:clone(c.paths)||{} }; }),
+    routers: CFG.draft.routers.map(function(r){ return { name:r.name, db_path:r.db_path||'' }; }),
+    provider_aliases: CFG.draft.provider_aliases.map(function(a){ return { key:a.key, value:a.value }; })
+  };
+  /* query 段仅在用户明确编辑过后回传:GET 时 query 处于问题态(解析失败
+     附 diagnostics)的话,回退草稿写回会静默清掉既有查询定义——未编辑
+     即省略 query,服务端保持磁盘原样。 */
+  if(queryTouched() || CFG.forceQueryRewrite){
+    config.query = {
+      default: CFG.draft.query.default||'',
+      subqueries: clone(CFG.draft.query.subqueries)||{},
+      groups: clone(CFG.draft.query.groups)||{},
+      output_columns: (CFG.draft.query.output_columns||[]).slice()
+    };
+  }
+  return { revision: CFG.savedRevision, config: config };
+}
+/* query 段是否相对最近一次已接受的服务端快照被修改过 */
+function queryTouched(){
+  if(!CFG.querySnapshot) return true; /* 无快照(理论上不发生)时按修改处理 */
+  return JSON.stringify(serializeQueryDraft()) !== CFG.querySnapshot;
+}
+function serializeQueryDraft(){
+  return {
+    default: CFG.draft.query.default||'',
+    subqueries: clone(CFG.draft.query.subqueries)||{},
+    groups: clone(CFG.draft.query.groups)||{},
+    output_columns: (CFG.draft.query.output_columns||[]).slice()
+  };
+}
+function saveConfig(){
+  if(!CFG.saved || CFG.saving) return;
+  CFG.saving = true;
+  recomputeDirty();
+  api('/api/config', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(buildPutBody()) }).then(function(r){
+    CFG.saving = false;
+    if(r.status===200 && r.body){
+      /* 保存成功：以响应里的 config 与 revision 替换本地已保存快照 */
+      CFG.savedRevision = r.body.revision || CFG.savedRevision;
+      CFG.saved = normalizeDraft(r.body.config);
+      CFG.draft = clone(CFG.saved);
+      CFG.diag = (r.body.config && r.body.config.query && r.body.config.query.diagnostics) || [];
+      CFG.querySnapshot = JSON.stringify(serializeQueryDraft());
+      CFG.forceQueryRewrite = false;
+      renderAllConfig();
+      recomputeDirty();
+      var w = r.body.warnings||[];
+      if(w.length){
+        toast(ui('已保存，但需要注意','Saved, but attention needed')+'：'+w.join(ui('；','; ')));
+      }else if(r.body.changed){
+        toast(ui('配置已保存','Config saved'));
+      }else{
+        toast(ui('配置未变化','No changes'));
+      }
+      /* 保存会即时改变 provider 别名与自定义视图定义：重新拉取仪表板 */
+      if(state.data) loadDashboard();
+      return;
+    }
+    if(r.status===409){
+      /* revision 冲突：不覆盖他处修改、不自动重试；保留本地草稿，由用户刷新 */
+      toast(ui('配置已在别处被修改，请刷新页面后重试；当前修改已保留','Config was changed elsewhere; reload the page and retry. Local edits are kept.'));
+    }else if(r.status===400){
+      toast((r.body && r.body.error && r.body.error.message) || ui('保存失败','Save failed'));
+    }else{
+      toast(ui('保存失败','Save failed'));
+    }
+    recomputeDirty();
+  }, function(){
+    CFG.saving = false;
+    toast(ui('保存失败','Save failed'));
+    recomputeDirty();
+  });
+}
+el('cfg-save').addEventListener('click', saveConfig);
+
+/* 恢复全部默认值:从服务端拉取全默认编辑模型作为待保存草稿(默认值定义
+   只在后端,前端不复制第二套);不直接落盘,需再点保存才生效。 */
+function resetAllConfig(){
+  if(!CFG.saved) return;
+  api('/api/config?defaults=1').then(function(r){
+    if(!r.ok || !r.body || !r.body.config){
+      toast((r.body && r.body.error && r.body.error.message) || ui('读取默认配置失败','Failed to load defaults'));
+      return;
+    }
+    CFG.draft = normalizeDraft(r.body.config);
+    /* 默认草稿的 query 与问题态下的 GET 回退草稿可能完全相同:显式标记
+       待重写,保证保存携带 query、dirty 不清零 */
+    CFG.forceQueryRewrite = true;
+    renderAllConfig();
+    recomputeDirty();
+    toast(ui('已载入全部默认值（未保存）','Defaults loaded (unsaved)'));
+  }, function(){
+    toast(ui('读取默认配置失败','Failed to load defaults'));
+  });
+}
+var resetModal=el('reset-modal'), resetOpener=null;
+function closeResetModal(){
+  resetModal.hidden=true;
+  if(resetOpener){ resetOpener.focus(); resetOpener=null; }
+}
+el('cfg-reset').addEventListener('click',function(e){
+  if(!CFG.saved) return;
+  el('toast').setAttribute('data-show','false');
+  resetOpener=e.currentTarget;
+  resetModal.hidden=false;
+  el('reset-cancel').focus();
+});
+el('reset-cancel').addEventListener('click',closeResetModal);
+el('reset-confirm').addEventListener('click',function(){ closeResetModal(); resetAllConfig(); });
+resetModal.addEventListener('click',function(e){ if(e.target.classList.contains('modal-scrim')) closeResetModal(); });
+resetModal.addEventListener('keydown',function(e){
+  if(resetModal.hidden) return;
+  if(e.key==='Escape'){ e.preventDefault(); closeResetModal(); return; }
+  if(e.key==='Tab'){
+    var a=[el('reset-cancel'),el('reset-confirm')], first=a[0], last=a[1];
+    if(e.shiftKey&&document.activeElement===first){ e.preventDefault(); last.focus(); }
+    else if(!e.shiftKey&&document.activeElement===last){ e.preventDefault(); first.focus(); }
+  }
+});
+
+/* ---------- 语言切换：静态文案 TreeWalker + 动态区重建 ---------- */
+function syncLocaleUI(){
+  root.lang=LOCALE;
+  root.setAttribute('data-locale',LOCALE);
+  document.title=LOCALE==='en' ? 'Token Usage Dashboard' : 'Token Usage 仪表盘';
+  el('appearance-control').setAttribute('aria-label',ui('语言与外观','Language and appearance'));
+  el('locale-switch').setAttribute('aria-label',ui('界面语言','Interface language'));
+  el('locale-switch').querySelectorAll('button').forEach(function(b){
+    var on=b.dataset.locale===LOCALE;
+    b.setAttribute('aria-pressed',on?'true':'false');
+    var label=b.dataset.locale==='zh-CN' ? ui('切换到中文','Switch to Chinese') : ui('切换到英文','Switch to English');
+    b.setAttribute('aria-label',label); b.title=label;
+  });
+  var sth=document.querySelectorAll('.top-sessions thead th');
+  [ui('会话','Session'),dimLabel('client'),dimLabel('project'),ui('时长','Duration'),colLabel(colById('requests')),colLabel(colById('total'))].forEach(function(label,i){ if(sth[i]) sth[i].textContent=label; });
+  applyStaticLocale(document.body);
+  syncThemeSeg();
+  syncPalette();
+  syncSide();
+  renderMeta();
+  renderCal();
+  buildColsEditor();
+  if(CFG.draft){
+    el('q-groups').querySelectorAll('.qdef-row').forEach(mountRowPick);
+    el('q-subs').querySelectorAll('.qdef-row').forEach(mountRowPick);
+    document.querySelectorAll('.qdef-row').forEach(function(row){
+      var del=row.querySelector('.qdef-del');
+      if(del) del.setAttribute('aria-label',ui('删除 ','Delete ')+row.dataset.key);
+    });
+    el('alias-list').querySelectorAll('.alias-row').forEach(function(row){
+      var del=row.querySelector('.alias-del'), k=row.dataset.key;
+      del.textContent=ui('删除','Delete'); del.setAttribute('aria-label',ui('删除 ','Delete ')+k); del.title=ui('删除 ','Delete ')+k;
+    });
+    renderDiag();
+    renderClients();
+  }
+  if(DV.open) dvRender();
+  renderAll();
+  recomputeDirty();
+}
+el('locale-switch').addEventListener('click',function(e){
+  var b=e.target.closest('[data-locale]');
+  if(!b || b.dataset.locale===LOCALE) return;
+  LOCALE=b.dataset.locale;
+  try{ localStorage.setItem('tu-locale',LOCALE); }catch(_){}
+  syncLocaleUI();
+});
+
+/* ---------- 初始引导：恢复选区 → 日历预选 → 静态本地化 → 拉取 meta 与仪表板 ---------- */
+restoreSavedRange();
+CAL.view = (function(){ var t=startToday(); return new Date(t.getFullYear(), t.getMonth(), 1); })();
+var b0 = rangeBounds();
+setCalSel(ymd(b0.s), ymd(b0.e));
+syncLocaleUI();
+renderCal();
+fetchMeta().then(function(){
+  /* 配置预加载(输出列首开生效);失败不阻塞仪表板数据 */
+  return fetchConfigState();
+}, function(){
+  return fetchConfigState();
+}).then(loadDashboard, loadDashboard);
 })();

@@ -1,6 +1,7 @@
-// Package charts 是柱状/折线/饼图/热力矩阵 SVG 的唯一构建实现:cli 的
-// chart/report 命令与 web 仪表板的 /api/chart 接口共用同一份几何、取色与
-// 悬停文案,防止多入口图表漂移。
+// Package charts 是柱状/折线/饼图/热力矩阵 SVG 的独立构建实现:几何、
+// 取色与悬停文案集中于此,防止多入口图表漂移。曾由 cli chart/report 命令
+// 与 web 仪表板的 /api/chart 接口共用,两者移除后暂无包外消费方,包与
+// 测试保留作为 SVG 构建能力的独立维护单元。
 package charts
 
 import (

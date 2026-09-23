@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/model"
 	"github.com/YuLaiZ/token-usage/internal/querier"
@@ -18,21 +19,19 @@ import (
 
 // serveFixture 是内存库夹具的期望值集合:由构造函数一并算好,测试逐项断言。
 type serveFixture struct {
-	minDate    string
-	maxDate    string
-	dataThru   string // data_through 的 time.DateTime 本地形态
-	totals     totalsJSON
-	todayRow   dimensionRowJSON // day 维度中今天的行(升序第二行)
-	oldRow     dimensionRowJSON // day 维度中 5 天前的行(升序第一行)
-	topTotal   int64            // 会话排行首行 total
-	dateFormat string           // 日期键的参考形态
+	minDate  string
+	maxDate  string
+	dataThru string // data_through 的 time.DateTime 本地形态
+	totals   totalsJSON
+	todayRow dimensionRowJSON // client 维度中 claude-code 的行
+	topTotal int64            // 会话排行首行 total
 }
 
 // newTestServer 构造内存库 + 夹具数据 + NewServer(版本串 "test-version")。
 // 数据形态:今天 12 个会话各 1 条消息(会话 i 总量 i*100),其中 s12 追加一条
 // 一小时后 +200 的消息(覆盖时长与首末时间戳);5 天前 1 条 999 的消息
-// (跨日的 min_date 与 day 维度两行)。全部时间戳按 time.Local 构造,与
-// 聚合核的 hour/weekday 本机时分桶同口径。
+// (跨日的 min_date 与两日热力行)。全部时间戳按 time.Local 构造,与
+// 聚合核的 hour 本机时分桶同口径。
 func newTestServer(t *testing.T, opts ...ServerOption) (http.Handler, serveFixture) {
 	t.Helper()
 	usageDB, err := db.Open(":memory:")
@@ -105,11 +104,21 @@ func newTestServer(t *testing.T, opts ...ServerOption) (http.Handler, serveFixtu
 		totals: totalsJSON{
 			Requests: reqTotal, Total: tokTotal, ActiveDays: 2,
 		},
-		todayRow: dimensionRowJSON{Key: todayDate, Requests: 13, Total: tokTotal - 999},
-		oldRow:   dimensionRowJSON{Key: oldDate, Requests: 1, Total: 999},
+		todayRow: dimensionRowJSON{Key: model.ClientClaudeCode, Requests: reqTotal, Total: tokTotal},
 		topTotal: 1400, // s12:1200+200
 	}
 	return NewServer(querier.New(usageDB), "test-version", opts...), fx
+}
+
+// testConfig 返回注入 server 的最小配置:subqueries 定义 mpc 视图
+// (model,provider 组合)与一条 provider 别名,供 custom views 与别名合并测试。
+func testConfig() *config.Config {
+	return &config.Config{
+		ProviderAliases: map[string]string{"vendor-a": "merged-vendor"},
+		RawQuery: map[string]any{
+			"subqueries": map[string]any{"mpc": "model,provider"},
+		},
+	}
 }
 
 // doGet 执行一次 GET 并返回记录器。
@@ -154,7 +163,8 @@ func keySet(m map[string]any) map[string]bool {
 }
 
 // TestServeMeta:/api/meta 透出版本串与全库数据边界(最小/最大日期、数据截至),
-// 无采集记录时 last_collection 为 null。
+// 无采集记录时 last_collection 为 null。版本串按调用方传入值原样返回,
+// 不做归一化(devdashboard 传 buildinfo.Info.Version 语义)。
 func TestServeMeta(t *testing.T) {
 	h, fx := newTestServer(t)
 	rec := doGet(h, "/api/meta")
@@ -181,7 +191,8 @@ func TestServeMeta(t *testing.T) {
 }
 
 // TestServeDashboard_ShapeAndOrder:/api/dashboard 默认范围含今天;顶层与
-// 各嵌套对象的字段名精确匹配;day 维度键升序;sessions 按总量降序且截前 10;
+// 各嵌套对象的字段名精确匹配(载荷 v3:无 compare/forecast,新增 custom_views,
+// dimensions 固定四维度);client 维度按总量降序;sessions 按总量降序且截前 10;
 // totals 数值精确。map 反序列化与结构体反序列化双检。
 func TestServeDashboard_ShapeAndOrder(t *testing.T) {
 	h, fx := newTestServer(t)
@@ -192,27 +203,24 @@ func TestServeDashboard_ShapeAndOrder(t *testing.T) {
 
 	// 第一检:map 键集合精确匹配(多字段/少字段/拼错均失败)。
 	m := decodeJSON(t, rec)
-	assertKeys(t, "dashboard 顶层", m, "range", "totals", "compare", "forecast", "columns", "dimensions", "heatmap", "sessions")
+	assertKeys(t, "dashboard 顶层", m, "range", "totals", "columns", "dimensions", "heatmap", "custom_views", "sessions")
 	assertKeys(t, "range", m["range"].(map[string]any), "from", "to")
 	assertKeys(t, "totals", m["totals"].(map[string]any),
 		"requests", "fresh_input", "output", "cache_read", "cache_create", "reasoning", "total", "active_days")
-	assertKeys(t, "compare", m["compare"].(map[string]any), "base_start", "base_end", "totals", "rows", "daily")
-	assertKeys(t, "compare.rows[0]", m["compare"].(map[string]any)["rows"].([]any)[0].(map[string]any),
-		"label", "current", "base", "change", "change_class", "change_pct")
-	assertKeys(t, "forecast", m["forecast"].(map[string]any), "today_so_far", "rows")
-	assertKeys(t, "forecast.rows[0]", m["forecast"].(map[string]any)["rows"].([]any)[0].(map[string]any),
-		"label", "total", "avg_day", "active", "estimate")
 	assertKeys(t, "sessions[0]", m["sessions"].([]any)[0].(map[string]any),
 		"client", "project", "title", "first_ts", "last_ts", "duration_ms", "requests", "total")
 	dims := m["dimensions"].(map[string]any)
 	if !reflect.DeepEqual(keySet(dims), keySet(map[string]any{
-		"day": nil, "hour": nil, "weekday": nil, "month": nil,
 		"client": nil, "model": nil, "provider": nil, "project": nil,
 	})) {
-		t.Errorf("dimensions 应恰 8 个固定键,实际 %v", dims)
+		t.Errorf("dimensions 应恰 4 个固定键,实际 %v", dims)
 	}
-	assertKeys(t, "dimensions.day[0]", dims["day"].([]any)[0].(map[string]any),
+	assertKeys(t, "dimensions.client[0]", dims["client"].([]any)[0].(map[string]any),
 		"key", "requests", "fresh_input", "output", "cache_read", "cache_create", "reasoning", "total")
+	// 无配置注入时 custom_views 为空数组(不是 null)。
+	if cv, ok := m["custom_views"].([]any); !ok || len(cv) != 0 {
+		t.Errorf("无配置时 custom_views 应为空数组,实际 %v", m["custom_views"])
+	}
 
 	// 第二检:结构体反序列化校验数值与排序。
 	var resp dashboardResponse
@@ -233,87 +241,18 @@ func TestServeDashboard_ShapeAndOrder(t *testing.T) {
 	if resp.Totals != fx.totals {
 		t.Errorf("totals 应精确匹配:\n期望 %+v\n实际 %+v", fx.totals, resp.Totals)
 	}
-	// day 维度:纯单维时间视图对默认 30 天区间做缺口填充,行数恰 30、
-	// 键整体严格升序;其中有数据的恰两行(5 天前与今天)且数值精确。
-	dayRows := resp.Dimensions["day"]
-	if len(dayRows) != 30 {
-		t.Fatalf("day 维度应按默认区间补零至 30 行,实际 %d", len(dayRows))
+	// client 维度:单行(claude-code),数值为全区间汇总。
+	clientRows := resp.Dimensions["client"]
+	if len(clientRows) != 1 {
+		t.Fatalf("client 维度应 1 行,实际 %d", len(clientRows))
 	}
-	for i := 1; i < len(dayRows); i++ {
-		if dayRows[i-1].Key >= dayRows[i].Key {
-			t.Fatalf("day 维度键应严格升序,位置 %d 出现 %s >= %s", i, dayRows[i-1].Key, dayRows[i].Key)
-		}
-	}
-	var nonZero []dimensionRowJSON
-	for _, row := range dayRows {
-		if row.Total > 0 {
-			nonZero = append(nonZero, row)
-		}
-	}
-	if len(nonZero) != 2 || nonZero[0].Key != fx.minDate || nonZero[1].Key != fx.maxDate {
-		t.Fatalf("有数据的 day 行应恰为 %s、%s 两行,实际 %+v", fx.minDate, fx.maxDate, nonZero)
-	}
-	if nonZero[0].Total != fx.oldRow.Total || nonZero[0].Requests != fx.oldRow.Requests {
-		t.Errorf("旧行应 %+v,实际 %+v", fx.oldRow, nonZero[0])
-	}
-	if nonZero[1].Total != fx.todayRow.Total || nonZero[1].Requests != fx.todayRow.Requests {
-		t.Errorf("今日行应 %+v,实际 %+v", fx.todayRow, nonZero[1])
+	if clientRows[0] != fx.todayRow {
+		t.Errorf("client 行应 %+v,实际 %+v", fx.todayRow, clientRows[0])
 	}
 	// columns 恒为 querier 布局的指标 ID 序列:夹具走 New 的默认布局,
 	// 与 ui.DefaultOutputColumns 同序同值(七列,不含 cache_create)。
 	if want := []string{"requests", "input", "output", "cache_read", "reasoning", "total", "cache_hit"}; !reflect.DeepEqual(resp.Columns, want) {
 		t.Errorf("columns 应为默认七列 %v,实际 %v", want, resp.Columns)
-	}
-
-	// hour/weekday 为固定刻度缺口填充:行数恰 24/7。
-	if len(resp.Dimensions["hour"]) != 24 {
-		t.Errorf("hour 维度应固定 24 行,实际 %d", len(resp.Dimensions["hour"]))
-	}
-	if len(resp.Dimensions["weekday"]) != 7 {
-		t.Errorf("weekday 维度应固定 7 行,实际 %d", len(resp.Dimensions["weekday"]))
-	}
-	// compare.daily 为基线窗口的逐日行(缺口填充):默认区间 to-29..to 的
-	// 基线为 to-59..to-30,行数恰 30、键严格升序;夹具数据只在今天与
-	// to-5,均落在当前区间内,基线窗口逐日全为 0。
-	if len(resp.Compare.Daily) != 30 {
-		t.Fatalf("compare.daily 应按基线窗口补零至 30 行,实际 %d", len(resp.Compare.Daily))
-	}
-	var dailySum int64
-	for i, row := range resp.Compare.Daily {
-		if row.Total != 0 {
-			t.Errorf("compare.daily[%d] 应为 0,实际 %d", i, row.Total)
-		}
-		dailySum += row.Total
-		if i > 0 && resp.Compare.Daily[i-1].Key >= row.Key {
-			t.Errorf("compare.daily 键应严格升序,位置 %d 出现 %s >= %s", i, resp.Compare.Daily[i-1].Key, row.Key)
-		}
-	}
-	if dailySum != resp.Compare.Totals.Total {
-		t.Errorf("compare.daily 总和应等于基线窗口总量 %d,实际 %d", resp.Compare.Totals.Total, dailySum)
-	}
-	// forecast 恒 2 行且标签顺序固定;夹具在两个回看窗口内恰有 5 天前的
-	// 999(1 活跃天):日均 999、预估 999×天数,与 forecast 命令整数除法
-	// 同口径;today so far 与今天窗口总量(8000)同源同格式。
-	fc := resp.Forecast
-	if len(fc.Rows) != 2 {
-		t.Fatalf("forecast.rows 应恒 2 行,实际 %d", len(fc.Rows))
-	}
-	for i, want := range []string{"Last 7 days / 最近 7 天", "Last 30 days / 最近 30 天"} {
-		if fc.Rows[i].Label != want {
-			t.Errorf("forecast.rows[%d].label 应为 %q,实际 %q", i, want, fc.Rows[i].Label)
-		}
-	}
-	if want := querier.FormatTokens(fx.todayRow.Total); fc.TodaySoFar != want {
-		t.Errorf("forecast.today_so_far 应为 %q,实际 %q", want, fc.TodaySoFar)
-	}
-	for i, days := range []int64{7, 30} {
-		row := fc.Rows[i]
-		wantEstimate := querier.FormatTokens(999 * days)
-		if row.Total != "999" || row.AvgDay != "999" || row.Active != fmt.Sprintf("1/%d", days) ||
-			row.Estimate != wantEstimate {
-			t.Errorf("forecast.rows[%d] 应为 total=999,avg_day=999,active=1/%d,estimate=%s,实际 %+v",
-				i, days, wantEstimate, row)
-		}
 	}
 	// sessions:总量降序、截前 10、首行即最重会话、时长为毫秒差。
 	sessions := resp.Sessions
@@ -335,97 +274,89 @@ func TestServeDashboard_ShapeAndOrder(t *testing.T) {
 	if sessions[0].Requests != 2 {
 		t.Errorf("首行会话请求数应 2,实际 %d", sessions[0].Requests)
 	}
+	// 会话标题为数据源原文,不得清洗或重写。
+	if sessions[0].Title != "session-s12" {
+		t.Errorf("会话标题应保留原文,实际 %q", sessions[0].Title)
+	}
 }
 
-// compareLabels 是环比对比 8 行的期望标签与顺序:与 cli compare 命令的
-// renderCompare 及静态报告页完全一致(ui.Bi 双语组合串)。
-var compareLabels = []string{
-	"Active days / 活跃天",
-	"Requests / 请求数",
-	"Input / 输入",
-	"Output / 输出",
-	"Cache Read / 缓存读取",
-	"Cache Create / 缓存创建",
-	"Reasoning / 推理",
-	"Total / 总计",
-}
-
-// TestServeDashboard_Compare_DefaultWindow:缺省 30 天区间的环比区块。
-// 基线窗口为等长前移(from-30..from-1,无数据),与 compare 命令区间模式
-// 一致;rows 恒 8 行且顺序与 renderCompare 一致;基线全 0 时各行变化% 为
-// "--"、计数行变化为 "+N"、零变化行为 "0" 且无着色。
-func TestServeDashboard_Compare_DefaultWindow(t *testing.T) {
-	h, _ := newTestServer(t)
+// TestServeDashboard_HeatmapDayHour:/api/dashboard 的热力数据为「范围内每一天
+// 一行」的日期×小时矩阵:days 行数恰为范围天数(含零值日,升序),hours 恒 24 格;
+// 数值与 totals 同一读事务快照:今天 12 条消息(10:01..10:12)落在 10 点桶共
+// 7800,s12 的第二条(11:12)落在 11 点桶 200,5 天前消息(10:00)落在 10 点桶
+// 999;全部行总和恰等于 totals.Total。
+func TestServeDashboard_HeatmapDayHour(t *testing.T) {
+	h, fx := newTestServer(t)
 	rec := doGet(h, "/api/dashboard")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("应 200,实际 %d:\n%s", rec.Code, rec.Body.String())
 	}
+
+	// 第一检:map 键集合精确匹配。
+	hm := decodeJSON(t, rec)["heatmap"].(map[string]any)
+	assertKeys(t, "heatmap", hm, "from", "to", "days")
+	assertKeys(t, "heatmap.days[0]", hm["days"].([]any)[0].(map[string]any), "date", "total", "hours")
+
+	// 第二检:结构体反序列化校验形状与数值。
 	var resp dashboardResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("结构体反序列化失败: %v", err)
 	}
-	c := resp.Compare
-	// 基线窗口推导:from = to-29(共 30 天),基线为等长前移窗口
-	// from-30..from-1。
-	toT, err := time.Parse("2006-01-02", resp.Range.To)
-	if err != nil {
-		t.Fatalf("range.to 应为 YYYY-MM-DD: %v", err)
+	hj := resp.Heatmap
+	// 默认范围 30 天:days 恰 30 行、日期升序、from/to 与 range 一致。
+	if len(hj.Days) != 30 {
+		t.Fatalf("热力 days 应按默认区间补零至 30 行,实际 %d", len(hj.Days))
 	}
-	fromT := toT.AddDate(0, 0, -29)
-	wantBaseStart := fromT.AddDate(0, 0, -30).Format("2006-01-02")
-	wantBaseEnd := fromT.AddDate(0, 0, -1).Format("2006-01-02")
-	if c.BaseStart != wantBaseStart || c.BaseEnd != wantBaseEnd {
-		t.Errorf("基线窗口应为 %s..%s,实际 %s..%s", wantBaseStart, wantBaseEnd, c.BaseStart, c.BaseEnd)
+	if hj.From != resp.Range.From || hj.To != resp.Range.To {
+		t.Errorf("heatmap.from/to 应与 range 一致(%s..%s),实际 %s..%s",
+			resp.Range.From, resp.Range.To, hj.From, hj.To)
 	}
-	// rows 恒 8 行,标签与顺序精确。
-	if len(c.Rows) != len(compareLabels) {
-		t.Fatalf("rows 应恒 %d 行,实际 %d", len(compareLabels), len(c.Rows))
-	}
-	for i, want := range compareLabels {
-		if c.Rows[i].Label != want {
-			t.Errorf("rows[%d].label 应为 %q,实际 %q", i, want, c.Rows[i].Label)
+	for i := 1; i < len(hj.Days); i++ {
+		if hj.Days[i-1].Date >= hj.Days[i].Date {
+			t.Fatalf("热力 days 日期应严格升序,位置 %d 出现 %s >= %s", i, hj.Days[i-1].Date, hj.Days[i].Date)
 		}
 	}
-	// 夹具基线窗口(today-59..today-30)无数据:基线总量全 0,变化% 恒 "--"。
-	if c.Totals != (totalsJSON{}) {
-		t.Errorf("基线 totals 应全 0,实际 %+v", c.Totals)
+	if hj.Days[0].Date != resp.Range.From || hj.Days[29].Date != resp.Range.To {
+		t.Errorf("热力 days 首末行应为范围端点,实际 %s..%s", hj.Days[0].Date, hj.Days[29].Date)
 	}
-	for i, row := range c.Rows {
-		if row.Base != "0" {
-			t.Errorf("rows[%d].base 应为 \"0\",实际 %q", i, row.Base)
-		}
-		if row.ChangePct != "--" {
-			t.Errorf("rows[%d].change_pct 基线为 0 应为 \"--\",实际 %q", i, row.ChangePct)
+	for i, day := range hj.Days {
+		if len(day.Hours) != 24 {
+			t.Fatalf("热力第 %d 行应 24 个小时格,实际 %d", i, len(day.Hours))
 		}
 	}
-	// 正差值行:Requests 14 vs 0 → 千分位显示 +"+14"、pos 着色。
-	reqRow := c.Rows[1]
-	if reqRow.Current != "14" || reqRow.Base != "0" || reqRow.Change != "+14" ||
-		reqRow.ChangeClass != "num pos" {
-		t.Errorf("Requests 行应为 current=14,base=0,change=+14,class=num pos,实际 %+v", reqRow)
+	// 桶值:今天 10 点桶 7800、11 点桶 200,5 天前 10 点桶 999。
+	todayRow := hj.Days[29]
+	if todayRow.Date != fx.maxDate || todayRow.Total != fx.totals.Total-999 {
+		t.Errorf("今日行应为 date=%s total=%d,实际 %+v", fx.maxDate, fx.totals.Total-999, todayRow)
 	}
-	// token 行走 K/M 缩写:Total 8999 vs 0 → "+9.00 K"。
-	totalRow := c.Rows[7]
-	if totalRow.Current != "9.00 K" || totalRow.Change != "+9.00 K" || totalRow.ChangeClass != "num pos" {
-		t.Errorf("Total 行应为 current=+9.00 K 口径,实际 %+v", totalRow)
+	if todayRow.Hours[10] != 7800 || todayRow.Hours[11] != 200 {
+		t.Errorf("今日小时桶应为 10 点 7800、11 点 200,实际 %v", todayRow.Hours)
 	}
-	// 零变化行:Reasoning 0 vs 0 → change "0"、class "num"(无着色)。
-	reasoningRow := c.Rows[6]
-	if reasoningRow.Change != "0" || reasoningRow.ChangeClass != "num" {
-		t.Errorf("Reasoning 行应为 change=0,class=num,实际 %+v", reasoningRow)
+	oldRow := hj.Days[24] // 5 天前
+	if oldRow.Date != fx.minDate || oldRow.Total != 999 || oldRow.Hours[10] != 999 {
+		t.Errorf("5 天前行应为 date=%s total=999(10 点桶),实际 %+v", fx.minDate, oldRow)
+	}
+	// 其余行全零。
+	var sum int64
+	for _, day := range hj.Days {
+		for _, v := range day.Hours {
+			sum += v
+		}
+		if day.Date != fx.maxDate && day.Date != fx.minDate && day.Total != 0 {
+			t.Errorf("无数据日 %s 的 total 应为 0,实际 %d", day.Date, day.Total)
+		}
+	}
+	// 同源一致性:全矩阵总和恰等于区间 totals.Total(同一读事务快照)。
+	if sum != fx.totals.Total {
+		t.Errorf("热力矩阵总和应等于 totals.Total %d,实际 %d", fx.totals.Total, sum)
 	}
 }
 
-// TestServeDashboard_Compare_ExplicitRange:显式 3 天区间(today-2..today),
-// 基线为前移 3 天(today-5..today-3),恰好覆盖夹具 5 天前的 999(1 请求)
-// ——基线非零时变化% 正常计算且与 compare 命令同口径。
-func TestServeDashboard_Compare_ExplicitRange(t *testing.T) {
-	h, _ := newTestServer(t)
-	now := time.Now()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 10, 0, 0, 0, time.Local)
-	from := today.AddDate(0, 0, -2).Format("2006-01-02")
-	to := today.Format("2006-01-02")
-	rec := doGet(h, "/api/dashboard?from="+from+"&to="+to)
+// TestServeDashboard_HeatmapSingleDay:单日范围(from==to)的 days 恰 1 行,
+// 覆盖当天全部小时桶。
+func TestServeDashboard_HeatmapSingleDay(t *testing.T) {
+	h, fx := newTestServer(t)
+	rec := doGet(h, "/api/dashboard?from="+fx.maxDate+"&to="+fx.maxDate)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("应 200,实际 %d:\n%s", rec.Code, rec.Body.String())
 	}
@@ -433,79 +364,30 @@ func TestServeDashboard_Compare_ExplicitRange(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("结构体反序列化失败: %v", err)
 	}
-	c := resp.Compare
-	// 基线窗口:today-5..today-3(等长前移,覆盖 old 那天)。
-	if c.BaseStart != today.AddDate(0, 0, -5).Format("2006-01-02") ||
-		c.BaseEnd != today.AddDate(0, 0, -3).Format("2006-01-02") {
-		t.Errorf("基线窗口应为 %s..%s,实际 %s..%s",
-			today.AddDate(0, 0, -5).Format("2006-01-02"), today.AddDate(0, 0, -3).Format("2006-01-02"),
-			c.BaseStart, c.BaseEnd)
+	if len(resp.Heatmap.Days) != 1 {
+		t.Fatalf("单日范围应恰 1 行,实际 %d", len(resp.Heatmap.Days))
 	}
-	// 当前窗口:today 13 请求 / 8000 token / 1 活跃天;
-	// 基线窗口:1 请求 / 999 token / 1 活跃天。基线 totals 字段精确值同款断言。
-	if want := (totalsJSON{Requests: 1, Total: 999, ActiveDays: 1}); c.Totals != want {
-		t.Errorf("基线 totals 应 %+v,实际 %+v", want, c.Totals)
+	day := resp.Heatmap.Days[0]
+	if day.Date != fx.maxDate {
+		t.Errorf("单日行日期应为 %s,实际 %s", fx.maxDate, day.Date)
 	}
-	// compare.daily:基线窗口逐日行缺口填充至 3 行,键升序且恰为基线三天;
-	// 999 落在首行(today-5),其余两天为 0,总和等于基线总量。
-	if len(c.Daily) != 3 {
-		t.Fatalf("compare.daily 应按基线窗口补零至 3 行,实际 %d", len(c.Daily))
+	var sum int64
+	for _, v := range day.Hours {
+		sum += v
 	}
-	wantKeys := []string{
-		today.AddDate(0, 0, -5).Format("2006-01-02"),
-		today.AddDate(0, 0, -4).Format("2006-01-02"),
-		today.AddDate(0, 0, -3).Format("2006-01-02"),
-	}
-	var dailySum int64
-	for i, row := range c.Daily {
-		if row.Key != wantKeys[i] {
-			t.Errorf("compare.daily[%d].key 应为 %s,实际 %s", i, wantKeys[i], row.Key)
-		}
-		wantTotal := int64(0)
-		if i == 0 {
-			wantTotal = 999
-		}
-		if row.Total != wantTotal {
-			t.Errorf("compare.daily[%d].total 应为 %d,实际 %d", i, wantTotal, row.Total)
-		}
-		dailySum += row.Total
-	}
-	if dailySum != c.Totals.Total {
-		t.Errorf("compare.daily 总和应等于基线总量 %d,实际 %d", c.Totals.Total, dailySum)
-	}
-	// Requests 13 vs 1 → "+12"、pos、"+1200.0%"。
-	reqRow := c.Rows[1]
-	if reqRow.Current != "13" || reqRow.Base != "1" || reqRow.Change != "+12" ||
-		reqRow.ChangeClass != "num pos" || reqRow.ChangePct != "+1200.0%" {
-		t.Errorf("Requests 行应为 13/1/+12/num pos/+1200.0%%,实际 %+v", reqRow)
-	}
-	// Total 8000 vs 999 → "+7.00 K"、pos、"+700.8%"。
-	totalRow := c.Rows[7]
-	if totalRow.Current != "8.00 K" || totalRow.Base != "999" || totalRow.Change != "+7.00 K" ||
-		totalRow.ChangeClass != "num pos" || totalRow.ChangePct != "+700.8%" {
-		t.Errorf("Total 行应为 8.00 K/999/+7.00 K/num pos/+700.8%%,实际 %+v", totalRow)
-	}
-	// Active days 1 vs 1 → 持平:"0"、num、0.0%。
-	daysRow := c.Rows[0]
-	if daysRow.Change != "0" || daysRow.ChangeClass != "num" || daysRow.ChangePct != "0.0%" {
-		t.Errorf("Active days 行应为 0/num/0.0%%,实际 %+v", daysRow)
-	}
-	// Input 0 vs 0 → 基线为 0,变化% 无定义 "--"(变化值仍显示 "0")。
-	inputRow := c.Rows[2]
-	if inputRow.Change != "0" || inputRow.ChangeClass != "num" || inputRow.ChangePct != "--" {
-		t.Errorf("Input 行应为 0/num/--,实际 %+v", inputRow)
+	// 当日小时总和恰为当日总量(8999 中 999 属于 5 天前,不在单日范围内)。
+	if want := fx.totals.Total - 999; sum != want {
+		t.Errorf("单日小时总和应等于当日总量 %d,实际 %d", want, sum)
 	}
 }
 
-// TestServeDashboard_Compare_NegativeChange:独立小夹具(昨天 500、今天 100,
-// 单日区间 from=to)覆盖负差值三态:Total 下降为 neg 着色与负百分比,持平
-// 指标(基线非 0)为无色 0.0%。
-func TestServeDashboard_Compare_NegativeChange(t *testing.T) {
+// TestServeDashboard_CustomViews:配置提供者注入 subqueries 后,/api/dashboard
+// 返回按配置维度顺序聚合的自定义视图行;行数值与区间汇总逐项守恒(七项合计
+// 等于 totals);provider 维度消费别名合并。
+func TestServeDashboard_CustomViews(t *testing.T) {
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 10, 0, 0, 0, time.Local)
 	todayDate := today.Format("2006-01-02")
-	yesterday := today.AddDate(0, 0, -1)
-	yesterdayDate := yesterday.Format("2006-01-02")
 
 	usageDB, err := db.Open(":memory:")
 	if err != nil {
@@ -513,148 +395,128 @@ func TestServeDashboard_Compare_NegativeChange(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = usageDB.Close() })
 	msgs := []model.Message{
-		{ID: "neg-y", SessionID: "s", Client: model.ClientClaudeCode, Date: yesterdayDate, TS: yesterday.UnixMilli(), TotalTokens: 500},
-		{ID: "neg-t", SessionID: "s", Client: model.ClientClaudeCode, Date: todayDate, TS: today.UnixMilli(), TotalTokens: 100},
+		{ID: "cv-a", SessionID: "s1", Client: model.ClientClaudeCode, Date: todayDate,
+			TS: today.UnixMilli(), Model: "model-x", Provider: "vendor-a", TotalTokens: 100},
+		{ID: "cv-b", SessionID: "s2", Client: model.ClientClaudeCode, Date: todayDate,
+			TS: today.UnixMilli(), Model: "model-y", Provider: "vendor-a", TotalTokens: 200},
+		{ID: "cv-c", SessionID: "s3", Client: model.ClientClaudeCode, Date: todayDate,
+			TS: today.UnixMilli(), Model: "model-x", Provider: "vendor-b", TotalTokens: 400},
 	}
 	ctx := context.Background()
 	if _, err := db.UpsertMessages(ctx, usageDB, msgs); err != nil {
 		t.Fatal(err)
 	}
-	h := NewServer(querier.New(usageDB), "test-version")
+	cfg := &config.Config{
+		ProviderAliases: map[string]string{"vendor-a": "merged-vendor", "vendor-b": "merged-vendor"},
+		RawQuery: map[string]any{
+			"subqueries": map[string]any{"mpc": "model,provider"},
+		},
+	}
+	h := NewServer(querier.New(usageDB), "test-version", WithConfigProvider(func() *config.Config { return cfg }))
 
 	rec := doGet(h, "/api/dashboard?from="+todayDate+"&to="+todayDate)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("应 200,实际 %d:\n%s", rec.Code, rec.Body.String())
 	}
+	// 第一检:custom_views 行键集合精确。
+	cv := decodeJSON(t, rec)["custom_views"].([]any)
+	if len(cv) != 1 {
+		t.Fatalf("应恰 1 个自定义视图,实际 %d", len(cv))
+	}
+	view := cv[0].(map[string]any)
+	assertKeys(t, "custom_views[0]", view, "name", "dimensions", "rows")
+	assertKeys(t, "custom_views[0].rows[0]", view["rows"].([]any)[0].(map[string]any),
+		"keys", "requests", "fresh_input", "output", "cache_read", "cache_create", "reasoning", "total")
+
+	// 第二检:结构体反序列化校验语义。
 	var resp dashboardResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("结构体反序列化失败: %v", err)
 	}
-	c := resp.Compare
-	// 单日区间基线退化为前一天。
-	if c.BaseStart != yesterdayDate || c.BaseEnd != yesterdayDate {
-		t.Errorf("单日区间基线应为前一天 %s..%s,实际 %s..%s", yesterdayDate, yesterdayDate, c.BaseStart, c.BaseEnd)
+	if len(resp.CustomViews) != 1 {
+		t.Fatalf("应恰 1 个自定义视图,实际 %d", len(resp.CustomViews))
 	}
-	// 基线 totals:1 请求 / 500 token / 1 活跃天。
-	if want := (totalsJSON{Requests: 1, Total: 500, ActiveDays: 1}); c.Totals != want {
-		t.Errorf("基线 totals 应 %+v,实际 %+v", want, c.Totals)
+	v := resp.CustomViews[0]
+	if v.Name != "mpc" {
+		t.Errorf("视图名应为 mpc,实际 %q", v.Name)
 	}
-	// Total 100 vs 500 → "-400"、neg、"-80.0%"。
-	totalRow := c.Rows[7]
-	if totalRow.Current != "100" || totalRow.Base != "500" || totalRow.Change != "-400" ||
-		totalRow.ChangeClass != "num neg" || totalRow.ChangePct != "-80.0%" {
-		t.Errorf("Total 行应为 100/500/-400/num neg/-80.0%%,实际 %+v", totalRow)
+	if want := []string{"model", "provider"}; !reflect.DeepEqual(v.Dimensions, want) {
+		t.Errorf("视图维度应按配置顺序 %v,实际 %v", want, v.Dimensions)
 	}
-	// Requests 1 vs 1 → 持平(基线非 0):"0"、num、0.0%。
-	reqRow := c.Rows[1]
-	if reqRow.Change != "0" || reqRow.ChangeClass != "num" || reqRow.ChangePct != "0.0%" {
-		t.Errorf("Requests 行应为 0/num/0.0%%,实际 %+v", reqRow)
+	// vendor-a/vendor-b 合并后恰 2 组合:model-x+merged-vendor(500)、
+	// model-y+merged-vendor(200)。
+	if len(v.Rows) != 2 {
+		t.Fatalf("合并别名后应 2 行,实际 %d:\n%+v", len(v.Rows), v.Rows)
+	}
+	byModel := map[string]customViewRowJSON{}
+	for _, row := range v.Rows {
+		if len(row.Keys) != 2 {
+			t.Fatalf("组合行 keys 应 2 元,实际 %v", row.Keys)
+		}
+		byModel[row.Keys[0]] = row
+		if row.Keys[1] != "merged-vendor" {
+			t.Errorf("provider 显示键应合并别名,实际 %q", row.Keys[1])
+		}
+	}
+	if r := byModel["model-x"]; r.Total != 500 || r.Requests != 2 {
+		t.Errorf("model-x 行应为 total=500/requests=2,实际 %+v", r)
+	}
+	if r := byModel["model-y"]; r.Total != 200 || r.Requests != 1 {
+		t.Errorf("model-y 行应为 total=200/requests=1,实际 %+v", r)
+	}
+	// 守恒:七项逐项合计等于区间 totals(同一读事务、同一选区聚合)。
+	var sums dimensionRowJSON
+	for _, row := range v.Rows {
+		sums.Requests += row.Requests
+		sums.FreshInput += row.FreshInput
+		sums.Output += row.Output
+		sums.CacheRead += row.CacheRead
+		sums.CacheCreate += row.CacheCreate
+		sums.Reasoning += row.Reasoning
+		sums.Total += row.Total
+	}
+	if sums.Requests != resp.Totals.Requests || sums.Total != resp.Totals.Total {
+		t.Errorf("自定义视图行合计应守恒:requests %d vs %d,total %d vs %d",
+			sums.Requests, resp.Totals.Requests, sums.Total, resp.Totals.Total)
 	}
 }
 
-// TestServeDashboard_Forecast:预估区块与 forecast 命令逐点同口径。独立
-// 夹具在 yesterday-6..yesterday(恰为 7 天回看窗口)造 5 个活跃日共 9990
-// token:日均 9990/5=1998,预估 1998×7=13986、1998×30=59940;精确串按
-// querier.FormatTokens 阈值(>=1000 → %.2f K)推导。今天的数据只进
-// today so far,不得泄漏进不含今天的回看窗口。
-func TestServeDashboard_Forecast(t *testing.T) {
-	now := time.Now()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 10, 0, 0, 0, time.Local)
-	todayDate := today.Format("2006-01-02")
-
-	usageDB, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = usageDB.Close() })
-	amounts := []struct {
-		offset int
-		tokens int64
-	}{
-		{-6, 1000}, {-5, 2000}, {-4, 3000}, {-3, 1990}, {-2, 2000},
-	}
-	var msgs []model.Message
-	for i, a := range amounts {
-		day := today.AddDate(0, 0, a.offset)
-		msgs = append(msgs, model.Message{
-			ID: fmt.Sprintf("fc-%d", i), SessionID: "s", Client: model.ClientClaudeCode,
-			Date: day.Format("2006-01-02"), TS: day.UnixMilli(), Model: "model-x",
-			TotalTokens: a.tokens,
-		})
-	}
-	msgs = append(msgs, model.Message{
-		ID: "fc-today", SessionID: "s", Client: model.ClientClaudeCode,
-		Date: todayDate, TS: today.UnixMilli(), Model: "model-x", TotalTokens: 1234,
-	})
-	ctx := context.Background()
-	if _, err := db.UpsertMessages(ctx, usageDB, msgs); err != nil {
-		t.Fatal(err)
-	}
-	h := NewServer(querier.New(usageDB), "test-version")
-
-	rec := doGet(h, "/api/dashboard")
+// TestServeDashboard_FutureRange:前端不限制日期,未来范围由后端返回结构
+// 完整的零值(200):totals 全 0、热力 days 恰为范围天数且全零、会话为空数组、
+// 四维度行与自定义视图行为空。
+func TestServeDashboard_FutureRange(t *testing.T) {
+	h, _ := newTestServer(t)
+	rec := doGet(h, "/api/dashboard?from=2027-01-01&to=2027-01-31")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("应 200,实际 %d:\n%s", rec.Code, rec.Body.String())
+		t.Fatalf("未来范围应 200(不伪装成错误),实际 %d:\n%s", rec.Code, rec.Body.String())
+	}
+	m := decodeJSON(t, rec)
+	assertKeys(t, "dashboard 顶层", m, "range", "totals", "columns", "dimensions", "heatmap", "custom_views", "sessions")
+	if got := m["range"].(map[string]any); got["from"] != "2027-01-01" || got["to"] != "2027-01-31" {
+		t.Errorf("range 应原样返回未来范围,实际 %v", got)
 	}
 	var resp dashboardResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("结构体反序列化失败: %v", err)
 	}
-	f := resp.Forecast
-	// 今日至今:1234 → "1.23 K";今天不计入回看窗口。
-	if f.TodaySoFar != "1.23 K" {
-		t.Errorf("today_so_far 应为 %q(FormatTokens(1234)),实际 %q", "1.23 K", f.TodaySoFar)
+	if resp.Totals != (totalsJSON{}) {
+		t.Errorf("未来范围 totals 应全 0,实际 %+v", resp.Totals)
 	}
-	wantRows := []forecastRowJSON{
-		{Label: "Last 7 days / 最近 7 天", Total: "9.99 K", AvgDay: "2.00 K", Active: "5/7", Estimate: "13.99 K"},
-		{Label: "Last 30 days / 最近 30 天", Total: "9.99 K", AvgDay: "2.00 K", Active: "5/30", Estimate: "59.94 K"},
+	if len(resp.Heatmap.Days) != 31 {
+		t.Fatalf("未来范围热力 days 应补零至 31 行,实际 %d", len(resp.Heatmap.Days))
 	}
-	if !reflect.DeepEqual(f.Rows, wantRows) {
-		t.Errorf("forecast.rows 应精确匹配:\n期望 %+v\n实际 %+v", wantRows, f.Rows)
+	for _, day := range resp.Heatmap.Days {
+		if day.Total != 0 {
+			t.Errorf("未来日 %s 应为 0,实际 %d", day.Date, day.Total)
+		}
 	}
-}
-
-// TestServeDashboard_Forecast_NoData:回看窗口内无数据(仅今天有记录)时,
-// 两行的数值格均为 "—"——CLI writeProjectionLine 省略预测行的同一语义在
-// 表格形态下的表达;today so far 照常显示今日量。
-func TestServeDashboard_Forecast_NoData(t *testing.T) {
-	now := time.Now()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 10, 0, 0, 0, time.Local)
-	todayDate := today.Format("2006-01-02")
-
-	usageDB, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
+	if len(resp.Sessions) != 0 {
+		t.Errorf("未来范围会话应为空数组,实际 %+v", resp.Sessions)
 	}
-	t.Cleanup(func() { _ = usageDB.Close() })
-	msgs := []model.Message{
-		{ID: "fc-empty-t", SessionID: "s", Client: model.ClientClaudeCode,
-			Date: todayDate, TS: today.UnixMilli(), Model: "model-x", TotalTokens: 500},
-	}
-	ctx := context.Background()
-	if _, err := db.UpsertMessages(ctx, usageDB, msgs); err != nil {
-		t.Fatal(err)
-	}
-	h := NewServer(querier.New(usageDB), "test-version")
-
-	rec := doGet(h, "/api/dashboard")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("应 200,实际 %d:\n%s", rec.Code, rec.Body.String())
-	}
-	var resp dashboardResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("结构体反序列化失败: %v", err)
-	}
-	f := resp.Forecast
-	if f.TodaySoFar != "500" {
-		t.Errorf("today_so_far 应为 \"500\",实际 %q", f.TodaySoFar)
-	}
-	wantRows := []forecastRowJSON{
-		{Label: "Last 7 days / 最近 7 天", Total: "—", AvgDay: "—", Active: "—", Estimate: "—"},
-		{Label: "Last 30 days / 最近 30 天", Total: "—", AvgDay: "—", Active: "—", Estimate: "—"},
-	}
-	if !reflect.DeepEqual(f.Rows, wantRows) {
-		t.Errorf("无数据窗口应整行 \"—\":\n期望 %+v\n实际 %+v", wantRows, f.Rows)
+	for dim, rows := range resp.Dimensions {
+		if len(rows) != 0 {
+			t.Errorf("未来范围 %s 维度应为空,实际 %+v", dim, rows)
+		}
 	}
 }
 
@@ -689,180 +551,39 @@ func TestServeDashboard_BadParams(t *testing.T) {
 	}
 }
 
-// TestServeDashboard_Heatmap:/api/dashboard 的活动热力矩阵。矩阵恒 7×24,
-// 行=星期(ISO 周序周一在首)、列=小时("00:00".."23:00");数值与 totals
-// 同一读事务快照:今天 12 条消息(10:01..10:12)落在 10 点桶共 7800,
-// s12 的第二条(11:12)落在 11 点桶 200,5 天前消息(10:00)落在 10 点桶
-// 999,其余交点全为 0;全矩阵总和恰等于 totals.Total。
-func TestServeDashboard_Heatmap(t *testing.T) {
-	h, fx := newTestServer(t)
+// TestServeDashboard_ColumnsFollowConfig:columns 每请求从当前配置解析,
+// 不依赖服务启动时的布局——配置提供者返回新列后,下一次请求即生效;
+// query 段顶层问题态回退默认七列。
+func TestServeDashboard_ColumnsFollowConfig(t *testing.T) {
+	h, _ := newTestServer(t)
+	// 无配置源:默认七列。
 	rec := doGet(h, "/api/dashboard")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("应 200,实际 %d:\n%s", rec.Code, rec.Body.String())
 	}
-
-	// 第一检:map 键集合精确匹配(多字段/少字段/拼错均失败)。
-	hm := decodeJSON(t, rec)["heatmap"].(map[string]any)
-	assertKeys(t, "heatmap", hm, "weekdays", "hours", "values")
-
-	// 第二检:结构体反序列化校验形状与数值。
-	var resp dashboardResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("结构体反序列化失败: %v", err)
-	}
-	hj := resp.Heatmap
-	if len(hj.Values) != 7 {
-		t.Fatalf("热力矩阵应 7 行(按星期),实际 %d", len(hj.Values))
-	}
-	if len(hj.Weekdays) != 7 {
-		t.Fatalf("星期行标签应 7 项,实际 %d", len(hj.Weekdays))
-	}
-	if len(hj.Hours) != 24 || hj.Hours[0] != "00:00" || hj.Hours[23] != "23:00" {
-		t.Fatalf("小时列标签应为 00:00..23:00 共 24 项,实际 %v", hj.Hours)
-	}
-	for wi, row := range hj.Values {
-		if len(row) != 24 {
-			t.Fatalf("热力矩阵第 %d 行应 24 列,实际 %d", wi, len(row))
-		}
-	}
-	// 与夹具同源推导两天的星期行(ISO 周序:周一=0)。
-	today, err := time.ParseInLocation("2006-01-02", fx.maxDate, time.Local)
-	if err != nil {
-		t.Fatalf("maxDate 应为 YYYY-MM-DD: %v", err)
-	}
-	old, err := time.ParseInLocation("2006-01-02", fx.minDate, time.Local)
-	if err != nil {
-		t.Fatalf("minDate 应为 YYYY-MM-DD: %v", err)
-	}
-	todayRow, oldRow := int(today.Weekday()+6)%7, int(old.Weekday()+6)%7
-	wantCells := []struct {
-		wi, hi   int
-		want     int64
-		describe string
-	}{
-		{todayRow, 10, 7800, "今天 10 点桶(12 条消息)"},
-		{todayRow, 11, 200, "今天 11 点桶(s12 第二条)"},
-		{oldRow, 10, 999, "5 天前 10 点桶"},
-	}
-	for _, wc := range wantCells {
-		if got := hj.Values[wc.wi][wc.hi]; got != wc.want {
-			t.Errorf("%s 应为 %d,实际 %d", wc.describe, wc.want, got)
-		}
-	}
-	// 其余交点全为 0:置零两个非零桶所在星期行后整体求和应为 0。
-	var sum int64
-	for wi, row := range hj.Values {
-		for hi, v := range row {
-			if wi == todayRow && (hi == 10 || hi == 11) {
-				continue
-			}
-			if wi == oldRow && hi == 10 {
-				continue
-			}
-			sum += v
-		}
-	}
-	if sum != 0 {
-		t.Errorf("其余交点应全为 0,实际和 %d", sum)
-	}
-	// 同源一致性:全矩阵总和恰等于区间 totals.Total(同一读事务快照)。
-	for _, row := range hj.Values {
-		for _, v := range row {
-			sum += v
-		}
-	}
-	if sum != fx.totals.Total {
-		t.Errorf("矩阵总和应等于 totals.Total %d,实际 %d", fx.totals.Total, sum)
-	}
-}
-
-// TestServeChartSVG:柱状/饼图/热力矩阵类别返回完整 SVG 与正确 Content-Type;
-// 非法 kind 与缺失 .svg 后缀返回 404。
-func TestServeChartSVG(t *testing.T) {
-	h, _ := newTestServer(t)
-
-	rec := doGet(h, "/api/chart/day.svg")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("day.svg 应 200,实际 %d:\n%s", rec.Code, rec.Body.String())
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "image/svg+xml; charset=utf-8" {
-		t.Errorf("Content-Type 应为 image/svg+xml; charset=utf-8,实际 %q", ct)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "<svg") || !strings.Contains(body, "</svg>") {
-		t.Errorf("day.svg 应为完整 SVG 文档:\n%s", body)
-	}
-	// 标题规则与 chart 命令同源:day 维度标题仅区间。
-	if !strings.Contains(body, "<title>token-usage") {
-		t.Errorf("day.svg 应含 token-usage 前缀标题:\n%s", body)
+	m := decodeJSON(t, rec)
+	if got := m["columns"].([]any); len(got) != 7 {
+		t.Errorf("无配置时应为默认七列,实际 %v", got)
 	}
 
-	for _, kind := range []string{"hour", "weekday", "month", "client", "model", "provider", "project", "heatmap"} {
-		rec := doGet(h, "/api/chart/"+kind+".svg")
-		if rec.Code != http.StatusOK {
-			t.Errorf("%s.svg 应 200,实际 %d:\n%s", kind, rec.Code, rec.Body.String())
-			continue
-		}
-		if !strings.Contains(rec.Body.String(), "<svg") {
-			t.Errorf("%s.svg 应含 SVG 文档:\n%s", kind, rec.Body.String())
-		}
+	// 配置源:只保留 total 一列。
+	cfg := &config.Config{RawQuery: map[string]any{
+		"output": map[string]any{"columns": []any{"total"}},
+	}}
+	h2, _ := newTestServer(t, WithConfigProvider(func() *config.Config { return cfg }))
+	m2 := decodeJSON(t, doGet(h2, "/api/dashboard"))
+	if got := m2["columns"].([]any); len(got) != 1 || got[0] != "total" {
+		t.Errorf("配置单列后 columns 应为 [total],实际 %v", got)
 	}
 
-	// 饼图占比:两模型 1500/500 → 75.0%/25.0%(与 chart 命令同构)。
-	rec = doGet(h, "/api/chart/model.svg?from=2026-01-01&to=2026-12-31")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("model.svg(区间)应 200,实际 %d", rec.Code)
-	}
-	// 400 边界在 dashboard 用例覆盖;此处区间超限同样 400。
-	rec = doGet(h, "/api/chart/day.svg?from=2024-01-01&to=2026-01-02")
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("图表端点超 366 天应 400,实际 %d", rec.Code)
-	}
-
-	// 非法类别与形态:404。
-	for _, target := range []string{
-		"/api/chart/bogus.svg",
-		"/api/chart/day",     // 缺 .svg 后缀
-		"/api/chart/a/b.svg", // 含路径分隔符
-		"/api/chart/.svg",
-	} {
-		rec := doGet(h, target)
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("%s 应 404,实际 %d", target, rec.Code)
-		}
-	}
-}
-
-// TestServeChart_ProviderAliases:WithProviderAliases 注入后 provider 维度
-// 只出现合并显示键(与 cli 侧 dimensionAliases 同构)。
-func TestServeChart_ProviderAliases(t *testing.T) {
-	now := time.Now()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 10, 0, 0, 0, time.Local)
-	todayDate := today.Format("2006-01-02")
-
-	usageDB, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = usageDB.Close() })
-	msgs := []model.Message{
-		{ID: "pa-a", SessionID: "s", Client: model.ClientClaudeCode, Date: todayDate, TS: today.UnixMilli(), Provider: "vendor-a", TotalTokens: 100},
-		{ID: "pa-b", SessionID: "s", Client: model.ClientClaudeCode, Date: todayDate, TS: today.UnixMilli(), Provider: "vendor-b", TotalTokens: 200},
-	}
-	ctx := context.Background()
-	if _, err := db.UpsertMessages(ctx, usageDB, msgs); err != nil {
-		t.Fatal(err)
-	}
-
-	h := NewServer(querier.New(usageDB), "test-version",
-		WithProviderAliases(map[string]string{"vendor-a": "merged-vendor", "vendor-b": "merged-vendor"}))
-	rec := doGet(h, "/api/chart/provider.svg?from="+todayDate+"&to="+todayDate)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("provider.svg 应 200,实际 %d:\n%s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "merged-vendor") || strings.Contains(body, "vendor-a") || strings.Contains(body, "vendor-b") {
-		t.Errorf("provider.svg 应合并供应商别名:\n%s", body)
+	// 顶层问题态(RawQuery 为 nil 且存在顶层问题):回退默认七列。
+	badCfg := &config.Config{RawQueryTopLevelIssues: map[string]config.RawQueryTopLevelIssue{
+		"query": {Name: "query", Kind: "root_not_table"},
+	}}
+	h3, _ := newTestServer(t, WithConfigProvider(func() *config.Config { return badCfg }))
+	m3 := decodeJSON(t, doGet(h3, "/api/dashboard"))
+	if got := m3["columns"].([]any); len(got) != 7 {
+		t.Errorf("顶层问题态应回退默认七列,实际 %v", got)
 	}
 }
 

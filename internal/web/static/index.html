@@ -1,202 +1,352 @@
-<!doctype html>
-<html lang="zh-CN">
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark" data-palette="cobalt">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark">
-<title>token-usage · dashboard</title>
-<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0nIzEzMWEyMicvPjxyZWN0IHg9JzYnIHk9JzE1JyB3aWR0aD0nNScgaGVpZ2h0PScxMScgcng9JzEuNScgZmlsbD0nIzVjYzhmZicvPjxyZWN0IHg9JzEzLjUnIHk9JzknIHdpZHRoPSc1JyBoZWlnaHQ9JzE3JyByeD0nMS41JyBmaWxsPScjZmZiNDU0Jy8+PHJlY3QgeD0nMjEnIHk9JzUnIHdpZHRoPSc1JyBoZWlnaHQ9JzIxJyByeD0nMS41JyBmaWxsPScjNTdkOWEzJy8+PC9zdmc+">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%233157c8'/><rect x='6' y='17' width='5' height='9' rx='2.5' fill='white'/><rect x='13.5' y='12' width='5' height='14' rx='2.5' fill='white'/><rect x='21' y='6' width='5' height='20' rx='2.5' fill='white'/></svg>">
+<title>Token Usage</title>
+<script>
+/* 防闪烁引导:在 CSS 解析前同步落定主题/配色/语言偏好(tu-* 命名空间,
+   浏览器本地偏好,不属于配置保存流程);无保存值时主题跟随系统、语言按
+   navigator.languages 的 zh-* 前缀判定。 */
+(function(){var d=document.documentElement,p=null,t=null,l=null;
+try{p=localStorage.getItem('tu-palette');t=localStorage.getItem('tu-theme');l=localStorage.getItem('tu-locale')}catch(e){}
+if(p&&/^(cobalt|azure|lake|navy|glacier)$/.test(p))d.setAttribute('data-palette',p);
+if(t==='light'||t==='dark')d.setAttribute('data-theme',t);
+else d.setAttribute('data-theme',window.matchMedia&&matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');
+if(l!=='zh-CN'&&l!=='en'){
+  var langs=(navigator.languages&&navigator.languages.length?navigator.languages:[navigator.language||'en']);
+  l=langs.some(function(x){return /^zh(?:-|$)/i.test(x||'');})?'zh-CN':'en';
+}
+d.lang=l;d.setAttribute('data-locale',l);})();
+</script>
 <link rel="stylesheet" href="/assets/app.css">
-<script src="/assets/app.js" defer></script>
 </head>
 <body>
 
-<header class="topbar">
-  <div class="wrap bar-inner">
+<svg hidden aria-hidden="true" xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="i-grid" viewBox="0 0 20 20"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="11" y="3" width="6" height="6" rx="1.5"/><rect x="3" y="11" width="6" height="6" rx="1.5"/><rect x="11" y="11" width="6" height="6" rx="1.5"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 20 20"><path d="M3.5 6h13M3.5 14h13"/><circle cx="8.5" cy="6" r="2.2"/><circle cx="13" cy="14" r="2.2"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 20 20"><circle cx="10" cy="10" r="3.4"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M15.3 4.7l-1.4 1.4M6.1 13.9l-1.4 1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 20 20"><path d="M16.5 12.2A6.8 6.8 0 0 1 7.8 3.5a6.8 6.8 0 1 0 8.7 8.7z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 20 20"><path d="M10 5v10M5 10h10"/></symbol>
+  <symbol id="i-columns" viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M8.6 4v12M14.2 4v12"/></symbol>
+  <symbol id="i-chev-l" viewBox="0 0 20 20"><path d="M12 4.5 6.5 10l5.5 5.5"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 20 20"><path d="M8 4.5 13.5 10 8 15.5"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 20 20"><rect x="3" y="4.5" width="14" height="12" rx="2"/><path d="M3 8.5h14M7 3v3M13 3v3"/></symbol>
+  <symbol id="i-check" viewBox="0 0 20 20"><path d="M4.5 10.5 8.5 14.5 15.5 6.5"/></symbol>
+  <symbol id="i-info" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><path d="M10 9v5M10 6.2v.2"/></symbol>
+  <symbol id="i-github" viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.64 0 8.13c0 3.59 2.29 6.64 5.47 7.72.4.08.55-.18.55-.39 0-.19-.01-.84-.01-1.53-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.97-.82-1.16-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.83.72 1.23 1.87.88 2.33.67.07-.53.28-.88.51-1.08-1.78-.21-3.64-.91-3.64-4.02 0-.89.31-1.62.82-2.19-.08-.2-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.48 7.48 0 0 1 8 3.88c.68 0 1.36.09 2 .27 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.96.08 2.16.51.57.82 1.3.82 2.19 0 3.12-1.87 3.81-3.65 4.02.29.25.54.74.54 1.51 0 1.09-.01 1.97-.01 2.24 0 .22.15.47.55.39A8.13 8.13 0 0 0 16 8.13C16 3.64 12.42 0 8 0Z"/></symbol>
+</svg>
+
+<div class="app">
+  <aside class="sidebar">
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <a class="brand-name" href="https://github.com/YuLaiZ/token-usage" target="_blank" rel="noopener noreferrer">token-usage</a>
-      <span class="chip" id="ver-chip" title="service version / 服务版本">–</span>
+      <span class="mark" aria-hidden="true"><svg class="brand-mark" viewBox="0 0 24 24"><rect x="4" y="13" width="4" height="7" rx="2"/><rect x="10" y="9" width="4" height="11" rx="2"/><rect x="16" y="4" width="4" height="16" rx="2"/></svg></span>
+      <div class="brand-copy">
+        <h1>Token Usage</h1>
+        <div class="brand-meta"><span class="version-badge" id="version-badge" tabindex="0" hidden></span><a class="brand-link" href="https://github.com/YuLaiZ/token-usage" target="_blank" rel="noopener noreferrer" aria-label="在 GitHub 查看 Token Usage" title="GitHub"><svg class="ic" aria-hidden="true"><use href="#i-github"/></svg></a></div>
+      </div>
     </div>
-    <nav aria-label="sections / 章节">
-      <a href="#overview">Overview <span class="zh">概览</span></a><a href="#trends">Trends <span class="zh">趋势</span></a><a href="#share">Share <span class="zh">占比</span></a><a href="#heatmap">Heatmap <span class="zh">热力</span></a><a href="#sessions">Sessions <span class="zh">会话</span></a><a href="#data">Data <span class="zh">明细</span></a>
+    <nav class="nav" aria-label="页面导航">
+      <button class="nav-button" data-page="dash" aria-current="page" aria-label="仪表盘"><span class="slot"><svg class="ic"><use href="#i-grid"/></svg></span><span class="nav-txt">仪表盘</span></button>
+      <button class="nav-button" data-page="config" aria-label="配置"><span class="slot"><svg class="ic"><use href="#i-sliders"/></svg></span><span class="nav-txt">配置</span></button>
     </nav>
-    <div class="status" id="status-line"></div>
-  </div>
-  <div class="wrap controls-bar-outer">
-  <div class="controls-band">
-    <div class="controls" role="group" aria-label="time range / 时间范围">
-      <span class="ctl-label">Range 范围</span>
-      <div class="seg" id="presets">
-        <button type="button" data-preset="today">Today</button>
-        <button type="button" data-preset="d7">7d</button>
-        <button type="button" data-preset="d30" class="active">30d</button>
-        <button type="button" data-preset="d90">90d</button>
-        <button type="button" data-preset="month">Month</button>
-        <button type="button" data-preset="all" disabled>All</button>
-      </div>
-      <span class="date-pair">
-        <input type="date" id="date-from" aria-label="from / 开始日期">
-        <span class="date-arrow" aria-hidden="true">→</span>
-        <input type="date" id="date-to" aria-label="to / 结束日期">
-      </span>
-    </div>
-    <div class="controls" role="group" aria-label="refresh / 刷新">
-      <label class="ctl-label" for="auto-select">Auto</label>
-      <select id="auto-select" aria-label="auto refresh / 自动刷新">
-        <option value="0">off</option>
-        <option value="10000">10s</option>
-        <option value="30000" selected>30s</option>
-        <option value="60000">60s</option>
-      </select>
-      <button type="button" class="btn-accent" id="refresh-btn">Refresh 刷新</button>
-    </div>
-  </div>
-  </div>
-</header>
+  </aside>
+  <button class="side-toggle" id="side-toggle" aria-expanded="true" aria-label="收起侧边栏"><svg class="ic st-l"><use href="#i-chev-l"/></svg><svg class="ic st-r"><use href="#i-chev-r"/></svg></button>
 
-<main class="wrap">
-  <div class="banner" id="notice" role="status"></div>
-
-  <section id="overview" aria-labelledby="h-overview">
-    <h2 class="sec-title" id="h-overview">Overview <span class="zh">概览</span></h2>
-    <div class="hero-row">
-      <div class="card hero" id="kpi-total-card">
-        <div class="card-label">Total tokens <span class="zh">总 token</span></div>
-        <div class="hero-value" id="kpi-total">–</div>
-        <div class="hero-delta" id="kpi-total-delta"></div>
-        <div class="ribbon" id="kpi-ribbon" aria-label="token composition / token 构成"></div>
-        <div class="ribbon-legend" id="kpi-ribbon-legend"></div>
+  <main class="content">
+    <!-- 两页面共享的服务状态与浏览器偏好控件。 -->
+    <div class="global-tools">
+      <div class="asof"><span class="dot"></span><span class="asof-full" id="asof-t"></span><span class="asof-short"></span></div>
+      <div class="appearance-control" id="appearance-control" role="group" aria-label="语言与外观">
+      <div class="locale-switch" id="locale-switch" role="group" aria-label="界面语言">
+        <button type="button" data-locale="zh-CN" aria-pressed="true" lang="zh-CN">中</button>
+        <button type="button" data-locale="en" aria-pressed="false" lang="en">EN</button>
       </div>
-      <div class="mini-col">
-        <div class="card mini" id="kpi-requests-card"><div class="card-label">Requests <span class="zh">请求数</span></div><div class="mini-value" id="kpi-requests">–</div><div class="delta" id="kpi-requests-delta"></div></div>
-        <div class="card mini" id="kpi-days-card"><div class="card-label">Active days <span class="zh">活跃天数</span></div><div class="mini-value" id="kpi-days">–</div><div class="delta" id="kpi-days-delta"></div></div>
-        <div class="card mini" id="kpi-hit-card"><div class="card-label">Cache hit <span class="zh">缓存命中</span></div><div class="mini-value" id="kpi-hit">–</div><div class="delta" id="kpi-hit-delta"></div></div>
-      </div>
-    </div>
-    <div class="strip" id="metric-strip"></div>
-
-    <div class="duo" id="overview-duo">
-      <div class="card panel" id="compare-panel">
-        <div class="panel-head">
-          <h3>Compare <span class="zh">环比对比</span></h3>
-          <p class="meta" id="compare-meta"></p>
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="切换主题" title="切换主题"><svg class="ic" aria-hidden="true"><use id="theme-toggle-use" href="#i-sun"/></svg></button>
+      <button class="palette-toggle" id="palette-toggle" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="palette-pop" title="选择主题配色" aria-label="选择主题配色"><span class="palette-current-dot" aria-hidden="true"></span></button>
+      <div class="palette-pop" id="palette-pop" hidden>
+        <div class="palette-pop-head"><b>主题配色</b><span id="pal-name"></span></div>
+        <div class="palette-dots" role="group" aria-label="配色方案候选" id="palette-dots">
+          <button class="palette-choice" data-pal="cobalt" aria-pressed="true" title="钴蓝" aria-label="切换配色：钴蓝"><span class="pdot" style="--sw:#5c7ff0"></span><span class="palette-choice-copy"><b>钴蓝</b><small>高对比、清晰</small></span></button>
+          <button class="palette-choice" data-pal="azure" aria-pressed="false" title="湛蓝" aria-label="切换配色：湛蓝"><span class="pdot" style="--sw:#3d9df7"></span><span class="palette-choice-copy"><b>湛蓝</b><small>明亮、通透</small></span></button>
+          <button class="palette-choice" data-pal="lake" aria-pressed="false" title="湖蓝" aria-label="切换配色：湖蓝"><span class="pdot" style="--sw:#4db4dd"></span><span class="palette-choice-copy"><b>湖蓝</b><small>青蓝、柔和</small></span></button>
+          <button class="palette-choice" data-pal="navy" aria-pressed="false" title="藏青" aria-label="切换配色：藏青"><span class="pdot" style="--sw:#5b7cc0"></span><span class="palette-choice-copy"><b>藏青</b><small>沉稳、低饱和</small></span></button>
+          <button class="palette-choice" data-pal="glacier" aria-pressed="false" title="冰青" aria-label="切换配色：冰青"><span class="pdot" style="--sw:#3fb3c4"></span><span class="palette-choice-copy"><b>冰青</b><small>冷调、轻盈</small></span></button>
         </div>
-        <div class="cmp-grid">
-          <div class="cmp-chart">
-            <div class="cmp-chart-head">
-              <span class="card-label">Daily totals <span class="zh">逐日对比</span></span>
-              <span class="kind-legend" id="legend-compare">
-                <span class="lg"><i style="background:#5cc8ff"></i>Current 当前</span>
-                <span class="lg"><i class="lg-dash"></i>Base 基线</span>
-              </span>
+      </div>
+      </div>
+    </div>
+    <!-- 仪表盘 -->
+    <section class="page" id="page-dash" data-active="true" aria-hidden="false">
+      <div class="page-head">
+        <div>
+          <p class="crumb">用量概览</p>
+          <h2>仪表盘</h2>
+          <div class="page-note-row">
+            <p class="page-note">按客户端、供应商、模型和项目查看用量</p>
+            <div class="unit-help">
+              <button type="button" class="unit-trigger" id="unit-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="unit-pop" aria-label="查看数值单位说明"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>数值单位</span></button>
+              <div class="unit-pop" id="unit-pop" role="dialog" aria-labelledby="unit-pop-title" hidden>
+                <div class="unit-pop-head"><b id="unit-pop-title">数值单位</b><span>十进制</span></div>
+                <div class="unit-list">
+                  <div class="unit-row"><span class="unit-symbol">K</span><span class="unit-copy"><span class="unit-equation">1 K = 1,000</span><span class="unit-name">一千</span></span></div>
+                  <div class="unit-row"><span class="unit-symbol">M</span><span class="unit-copy"><span class="unit-equation">1 M = 1,000 K = 1,000,000</span><span class="unit-name">一百万</span></span></div>
+                  <div class="unit-row"><span class="unit-symbol">B</span><span class="unit-copy"><span class="unit-equation">1 B = 1,000 M = 1,000,000,000</span><span class="unit-name">十亿</span></span></div>
+                </div>
+              </div>
             </div>
-            <div class="chart-body" id="chart-compare"></div>
-          </div>
-          <div class="tbl-wrap">
-          <table>
-            <thead><tr><th>Metric 指标</th><th class="num">Current 当前</th><th class="num">Base 基线</th><th class="num">Δ</th><th class="num">Δ%</th></tr></thead>
-            <tbody id="compare-body"></tbody>
-          </table>
           </div>
         </div>
       </div>
-      <div class="card panel" id="forecast-panel">
-        <div class="panel-head">
-          <h3>Forecast <span class="zh">预估</span></h3>
-          <p class="meta">Today so far 今日至今 <b id="forecast-today">–</b><span class="muted"> · fixed lookback, independent of range / 固定回看，不随选区变化</span></p>
+
+      <div class="toolbar">
+        <div class="tb-left">
+          <div class="seg" role="group" aria-label="统计区间" id="range-seg">
+            <button aria-pressed="true" data-v="0">今日</button>
+            <button aria-pressed="false" data-v="1">本周</button>
+            <button aria-pressed="false" data-v="2">本月</button>
+            <button aria-pressed="false" data-v="3">本年</button>
+            <button aria-pressed="false" data-v="4">近 7 天</button>
+            <button aria-pressed="false" data-v="5">近 30 天</button>
+            <button aria-pressed="false" data-v="6">近 1 年</button>
+          </div>
+          <div class="calwrap">
+            <button class="button range-custom" id="range-custom" aria-haspopup="true" aria-expanded="false" aria-pressed="false" title="" aria-label=""><svg class="ic" aria-hidden="true"><use href="#i-calendar"/></svg><span class="rt-full" id="range-custom-txt"></span><span class="rt-short" id="range-custom-short" aria-hidden="true"></span></button>
+            <div class="calpop" id="calpop" role="dialog" aria-label="自定义统计区间" hidden>
+              <div class="cal-head">
+                <button class="icon-button" id="cal-prev" aria-label="上一月"><svg class="ic"><use href="#i-chev-l"/></svg></button>
+                <button class="icon-button" id="cal-next" aria-label="下一月"><svg class="ic"><use href="#i-chev-r"/></svg></button>
+              </div>
+              <div class="cal-grids" id="cal-grids"></div>
+              <div class="cal-foot">
+                <span class="cal-range-txt" id="cal-range-txt">请选择开始与结束日期</span>
+                <div class="cal-foot-btns">
+                  <button class="button primary" id="cal-apply">查询</button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div class="tbl-wrap">
+      </div>
+
+      <div class="kpis" id="kpis"></div>
+
+      <div class="section-head">
+        <h3>按维度查看</h3>
+        <div class="sh-right">
+          <div class="seg seg-sm dim-seg" role="group" aria-label="维度切换" id="dim-seg">
+            <button aria-pressed="true" data-v="client">客户端</button>
+            <button aria-pressed="false" data-v="provider">供应商</button>
+            <button aria-pressed="false" data-v="model">模型</button>
+            <button aria-pressed="false" data-v="project">项目</button>
+          </div>
+          <div class="seg seg-sm" role="group" aria-label="分组视图" id="view-seg">
+            <button aria-pressed="true" data-v="list">列表</button>
+            <button aria-pressed="false" data-v="compose">构成</button>
+          </div>
+        </div>
+      </div>
+      <div class="gwrap"><div class="groups" id="groups"></div></div>
+
+        <section class="chart-card" aria-label="时间序列图表">
+        <div class="chart-head">
+          <div class="chart-title">
+            <h3 id="chart-title-h">用量与缓存命中率趋势</h3>
+            <p class="chart-sub" id="chart-sub"></p>
+          </div>
+          <div class="seg seg-sm" role="group" aria-label="图表类型" id="mode-seg">
+            <button aria-pressed="true" data-v="trend">趋势</button>
+            <button aria-pressed="false" data-v="heat" id="mode-heat-btn">热力</button>
+          </div>
+        </div>
+        <div class="chart-frame" id="chart-frame">
+          <svg id="chart" role="img" aria-label="时间序列图表" preserveAspectRatio="none"></svg>
+          <div class="tip" id="tip" hidden></div>
+        </div>
+      </section>
+
+      <div id="cviews"></div>
+
+      <section class="sessions-card top-sessions" aria-label="用量最高的会话">
+        <div class="sessions-head">
+          <div>
+            <h3>用量最高的会话</h3>
+            <p id="sessions-sub">跟随当前时间范围</p>
+          </div>
+        </div>
+        <div class="table-wrap">
           <table>
-            <thead><tr><th>Window 窗口</th><th class="num">Total 总量</th><th class="num">Avg/day 日均</th><th class="num">Active 活跃</th><th class="num">Estimate 预估</th></tr></thead>
-            <tbody id="forecast-body"></tbody>
+            <thead><tr><th scope="col">会话</th><th scope="col">客户端</th><th scope="col">项目</th><th scope="col">时长</th><th scope="col">请求数</th><th scope="col">总量</th></tr></thead>
+            <tbody id="sessions-body"></tbody>
           </table>
         </div>
+      </section>
+
+    </section>
+
+    <!-- 配置 -->
+    <section class="page" id="page-config" aria-hidden="true" hidden>
+      <div class="page-head">
+        <div>
+          <p class="crumb">本地设置</p>
+          <h2>配置</h2>
+          <p class="page-note">管理本机采集、查询与显示设置</p>
+        </div>
       </div>
-    </div>
-  </section>
 
-  <section id="trends" aria-labelledby="h-trends">
-    <h2 class="sec-title" id="h-trends">Trends <span class="zh">时间趋势</span></h2>
-    <div class="grid">
-      <figure class="card chart-card" id="card-day">
-        <figcaption><span>Usage by day <span class="zh">按天用量</span></span><span class="muted" id="note-day"></span></figcaption>
-        <div class="chart-body" id="chart-day"></div>
-        <div class="kind-legend" id="legend-day"></div>
-      </figure>
-      <figure class="card chart-card" id="card-hour">
-        <figcaption><span>Usage by hour <span class="zh">按小时用量</span></span></figcaption>
-        <div class="chart-body" id="chart-hour"></div>
-      </figure>
-      <figure class="card chart-card" id="card-weekday">
-        <figcaption><span>Usage by weekday <span class="zh">按星期用量</span></span></figcaption>
-        <div class="chart-body" id="chart-weekday"></div>
-      </figure>
-      <figure class="card chart-card" id="card-month">
-        <figcaption><span>Usage by month <span class="zh">按月用量</span></span><span class="muted" id="note-month"></span></figcaption>
-        <div class="chart-body" id="chart-month"></div>
-      </figure>
-    </div>
-  </section>
+      <div class="config-grid" id="config-root">
+        <section class="config-section" aria-labelledby="config-collection-title">
+        <div class="sec-title"><h3 id="config-collection-title">采集与日志</h3><p>管理数据来源、采集调度和运行日志</p><div class="rule"></div></div>
 
-  <section id="share" aria-labelledby="h-share">
-    <h2 class="sec-title" id="h-share">Share <span class="zh">构成占比</span></h2>
-    <div class="grid share-grid">
-      <figure class="card chart-card" id="card-client">
-        <figcaption><span>By client <span class="zh">按客户端</span></span></figcaption>
-        <div class="chart-body" id="chart-client"></div>
-      </figure>
-      <figure class="card chart-card" id="card-model">
-        <figcaption><span>By model <span class="zh">按模型</span></span></figcaption>
-        <div class="chart-body" id="chart-model"></div>
-      </figure>
-      <figure class="card chart-card" id="card-provider">
-        <figcaption><span>By provider <span class="zh">按供应商</span></span></figcaption>
-        <div class="chart-body" id="chart-provider"></div>
-      </figure>
-      <figure class="card chart-card" id="card-project">
-        <figcaption><span>By project <span class="zh">按项目</span></span></figcaption>
-        <div class="chart-body" id="chart-project"></div>
-      </figure>
-    </div>
-  </section>
+        <section class="config-card span2">
+          <div class="card-head"><div><h3>客户端设置</h3><p>设置各客户端的数据来源与路由归因</p></div><span class="toml-tag">[clients.*] [routers.*]</span></div>
+          <div class="table-wrap">
+            <table class="ctable" id="client-table"></table>
+          </div>
+        </section>
 
-  <section id="heatmap" aria-labelledby="h-heatmap">
-    <h2 class="sec-title" id="h-heatmap">Activity heatmap <span class="zh">活动热力</span></h2>
-    <figure class="card chart-card wide" id="card-heatmap">
-      <figcaption><span>Weekday × hour <span class="zh">星期 × 小时</span></span><span class="hm-legend" id="hm-legend"></span></figcaption>
-      <div class="chart-body hm-scroll" id="chart-heatmap"></div>
-    </figure>
-  </section>
+        <section class="config-card soft">
+          <div class="card-head"><div><h3>守护进程</h3><p>设置自动采集的运行方式</p></div><span class="toml-tag">[daemon]</span></div>
+          <div class="crow">
+            <div class="od-field crow-label"><b>轮询间隔 poll_interval</b><small>SQLite 轮询间隔（秒），默认 30</small></div>
+            <input class="ti" type="text" inputmode="numeric" id="cfg-poll-interval" value="" aria-label="轮询间隔（秒）">
+          </div>
+          <div class="crow">
+            <div class="od-field crow-label"><b>开机自启 autostart</b><small>登录后自动拉起守护进程</small></div>
+            <button class="toggle" role="switch" aria-checked="false" id="cfg-autostart" aria-label="开机自启"></button>
+          </div>
+        </section>
 
-  <section id="sessions" aria-labelledby="h-sessions">
-    <h2 class="sec-title" id="h-sessions">Top sessions <span class="zh">最重会话</span></h2>
-    <div class="card panel">
-      <div class="panel-head">
-        <h3>Ranking <span class="zh">排行</span></h3>
-        <p class="meta"><button type="button" class="export-btn" id="export-sessions">Export CSV</button><span class="muted" id="count-sessions"></span></p>
+        <section class="config-card">
+          <div class="card-head"><div><h3>日志</h3><p>设置日志级别、保留周期与目录</p></div><span class="toml-tag">[log]</span></div>
+          <div class="crow">
+            <div class="od-field crow-label"><b>级别 level</b><small>default 跟随运行时默认值</small></div>
+            <div class="chiprow" data-single id="cfg-log-level">
+              <button class="chip" aria-pressed="false">default</button>
+              <button class="chip" aria-pressed="false">info</button>
+              <button class="chip" aria-pressed="false">debug</button>
+              <button class="chip" aria-pressed="false">warn</button>
+              <button class="chip" aria-pressed="false">error</button>
+            </div>
+          </div>
+          <div class="crow">
+            <div class="od-field crow-label"><b>保留天数 max_days</b><small>超期日志自动清理，默认 7</small></div>
+            <input class="ti" type="text" inputmode="numeric" id="cfg-max-days" value="" aria-label="日志保留天数">
+          </div>
+          <div class="crow">
+            <div class="od-field crow-label"><b>目录 dir</b></div>
+            <input class="ti" type="text" id="cfg-log-dir" value="" aria-label="日志输出目录">
+          </div>
+        </section>
+        </section>
+
+        <section class="config-section" aria-labelledby="config-query-title">
+        <div class="sec-title"><h3 id="config-query-title">查询与展示</h3><p>设置默认视图、输出列、自定义视图和组合查询</p><div class="rule"></div></div>
+
+        <section class="config-card span2 default-view-card">
+          <div class="card-head"><div><h3>默认视图</h3><p>选择打开仪表盘时首先展示的视图</p></div><span class="toml-tag">query.default</span></div>
+          <div class="crow">
+            <div class="od-field crow-label"><b>默认打开</b><small>可选择内置视图、自定义视图或组合查询</small></div>
+            <div class="selwrap">
+              <button type="button" class="ti dv-trigger" id="q-default" aria-haspopup="listbox" aria-expanded="false" aria-label="默认打开"><span class="dv-cur" id="dv-cur">client</span><span class="sel-ico" aria-hidden="true"><svg class="ic" style="transform:rotate(-90deg)"><use href="#i-chev-l"/></svg></span></button>
+              <div class="dv-pop" id="dv-pop" role="listbox" aria-label="默认打开" tabindex="-1" hidden></div>
+            </div>
+          </div>
+          <div class="crow">
+            <div class="od-field crow-label"><b>恢复为 client</b><small>将启动视图恢复为内置 client</small></div>
+            <button class="button" id="q-default-reset">恢复为 client</button>
+          </div>
+        </section>
+
+        <section class="config-card span2">
+          <div class="card-head"><div><h3>输出列</h3><p>统一控制内置表格与自定义视图的指标列及顺序，不影响顶部概览</p></div><span class="toml-tag">query.output</span></div>
+          <div id="cols-editor"></div>
+          <div class="cols-foot"><button class="button" id="cols-default">恢复默认七列</button></div>
+        </section>
+
+        <section class="config-card">
+          <div class="card-head"><div><h3>组合查询</h3><p>按顺序组合内置视图和自定义视图，一次输出多张表</p></div><span class="toml-tag">query.groups</span></div>
+          <div class="qdef-list" id="q-groups"></div>
+          <div class="qdef-addbar">
+            <input class="ti" type="text" name="new-group-name" placeholder="新组合查询名" aria-label="新组合查询名">
+            <button class="button" data-add="q-groups">新增组合查询</button>
+          </div>
+        </section>
+
+        <section class="config-card">
+          <div class="card-head"><div><h3>自定义视图</h3><p>选择至少两个内置维度，维度顺序就是结果表的列顺序</p></div><span class="toml-tag">query.subqueries</span></div>
+          <div class="qdef-list" id="q-subs"></div>
+          <div class="qdef-addbar">
+            <input class="ti" type="text" name="new-sub-name" placeholder="新自定义视图名" aria-label="新自定义视图名">
+            <button class="button" data-add="q-subs">新增自定义视图</button>
+          </div>
+        </section>
+
+        <section class="config-card span2">
+          <div class="card-head"><div><h3>供应商别名</h3><p>将原始供应商标识替换为易读名称；修改时请删除后重新添加</p></div><span class="toml-tag">[provider_aliases]</span></div>
+          <div class="alias-addbar">
+            <label class="alias-field"><span>原始标签</span><input class="ti" id="alias-add-key" type="text" placeholder="例如 account:provider-plan" aria-label="新别名 key"></label>
+            <label class="alias-field"><span>显示名称</span><input class="ti" id="alias-add-val" type="text" placeholder="例如 Provider Pro" aria-label="新别名 value"></label>
+            <button class="button" id="alias-add-btn">添加</button>
+          </div>
+          <div id="alias-list"></div>
+        </section>
+        </section>
+
       </div>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr>
-            <th class="sortable">#</th><th class="sortable">Title</th><th class="sortable">Client</th><th class="sortable">Project</th>
-            <th class="sortable num">Duration</th><th class="sortable num">Requests</th><th class="sortable num">Total</th><th class="th-bar"></th>
-          </tr></thead>
-          <tbody id="sessions-body"></tbody>
-        </table>
+
+      <div class="cfg-actions" id="cfg-actions" data-dirty="false">
+        <span class="dirty-pill" id="dirty-pill">有未保存的修改</span>
+        <button class="button" id="cfg-reset">恢复全部默认值</button>
+        <button class="button" id="cfg-save" disabled>已保存</button>
       </div>
+    </section>
+  </main>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+
+<!-- 路由中间件选择弹窗 -->
+<div class="modal" id="rt-modal" hidden>
+  <div class="modal-scrim"></div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="rt-modal-title">
+    <h3 id="rt-modal-title">修改路由中间件</h3>
+    <div class="rt-opts" id="rt-opts" role="radiogroup" aria-label="路由中间件选项"></div>
+    <div class="modal-foot">
+      <button type="button" class="button" id="rt-cancel">取消</button>
+      <button type="button" class="button primary" id="rt-save">应用</button>
     </div>
-  </section>
+  </div>
+</div>
 
-  <section id="data" aria-labelledby="h-data">
-    <h2 class="sec-title" id="h-data">Data tables <span class="zh">数据明细</span></h2>
-    <div id="data-blocks"></div>
-  </section>
-</main>
+<!-- 全局恢复默认确认弹窗 -->
+<div class="modal" id="reset-modal" hidden>
+  <div class="modal-scrim"></div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-modal-title" aria-describedby="reset-modal-desc">
+    <h3 id="reset-modal-title">恢复全部默认值？</h3>
+    <p id="reset-modal-desc" class="page-note">客户端、路由、守护进程、日志、查询与展示设置和供应商别名都将载入为全部默认值（尚未保存）；确认后请再点击“保存”才会写入配置。</p>
+    <div class="modal-foot">
+      <button type="button" class="button" id="reset-cancel">取消</button>
+      <button type="button" class="button danger" id="reset-confirm">恢复全部默认值</button>
+    </div>
+  </div>
+</div>
 
-<footer>token-usage serve · 本地只读 local only · 数据口径与 CLI 一致 same aggregation core as the CLI</footer>
+<!-- 会话完整标题弹窗：表格保持稳定列宽，按需查看原始标题全文 -->
+<div class="modal" id="session-title-modal" hidden>
+  <div class="modal-scrim"></div>
+  <div class="modal-card session-modal-card" role="dialog" aria-modal="true" aria-labelledby="session-title-modal-heading" aria-describedby="session-title-modal-text">
+    <h3 id="session-title-modal-heading">完整会话标题</h3>
+    <p id="session-title-modal-text" class="session-full-title"></p>
+    <div class="modal-foot">
+      <button type="button" class="button primary" id="session-title-modal-close">关闭</button>
+    </div>
+  </div>
+</div>
 
-<div class="tooltip" id="tooltip" role="presentation" hidden></div>
-
+<script src="/assets/app.js" defer></script>
 </body>
 </html>

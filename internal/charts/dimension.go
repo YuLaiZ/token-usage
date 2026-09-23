@@ -60,7 +60,7 @@ func DimensionSlices(rows []querier.DimensionRow) []Slice {
 // pie=false 生成柱状图,pie=true 生成饼图;标题按 TitleFor 规则,副标题与
 // report/chart 命令共用区间汇总口径。rows 的显示键须已完成别名合并
 // (AggregateDimensionView 的返回值即满足)。report 包与 web 的
-// /api/chart 接口共用本函数,保证两个载体的图表逐字节同构。
+// 保证同一命令族下两个载体的图表逐字节同构。
 func BuildDimensionSVG(by, rangeLabel string, pie bool, rows []querier.DimensionRow, totals querier.GroupAggregate) string {
 	title := TitleFor(rangeLabel, by)
 	subtitle := fmt.Sprintf("Total %s tokens / %d requests",

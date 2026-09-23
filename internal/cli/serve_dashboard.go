@@ -22,6 +22,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/daemon"
 	"github.com/YuLaiZ/token-usage/internal/db"
+	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
 	"github.com/YuLaiZ/token-usage/internal/serve"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 	"github.com/YuLaiZ/token-usage/internal/web"
@@ -29,6 +30,44 @@ import (
 
 // serveShutdownTimeout 是收到 SIGINT/SIGTERM 后等待在途请求完成的宽限期。
 const serveShutdownTimeout = 3 * time.Second
+
+// serveDashboardOption 是 serveDashboard 的可选能力参数。
+type serveDashboardOption func(*serveDashboardOptions)
+
+// serveDashboardOptions 收集可选项;零值即旧行为(只读数据 API,无配置能力)。
+type serveDashboardOptions struct {
+	configHome string
+}
+
+// WithConfigWriteHome 启用配置读写能力:configHome 指向用户主目录,
+// /api/config 经 configapp 的锁内原子写回读写该目录下的 config.toml,
+// provider 别名与自定义视图按配置即时生效。缺省时不注册 /api/config
+// (返回 501),与既有只读行为一致。
+func WithConfigWriteHome(home string) serveDashboardOption {
+	return func(o *serveDashboardOptions) { o.configHome = home }
+}
+
+// buildWebServerOptions 把可选项转换为 web.ServerOption 列表:配置源每请求
+// 重读磁盘快照(保存与外部编辑都即时生效;读取失败回退无配置),store 走
+// configapp 生产装配。装配失败返回错误并放弃启动。
+func buildWebServerOptions(o serveDashboardOptions) ([]web.ServerOption, error) {
+	if o.configHome == "" {
+		return nil, nil
+	}
+	configPath := runtimecfg.ConfigPath(o.configHome)
+	configFn := func() *config.Config {
+		snap, err := runtimecfg.LoadUserConfigSnapshot(configPath)
+		if err != nil || snap.Config == nil {
+			return nil
+		}
+		return snap.Config
+	}
+	store, err := web.NewProductionConfigStore(o.configHome)
+	if err != nil {
+		return nil, err
+	}
+	return []web.ServerOption{web.WithConfigProvider(configFn), web.WithConfigStore(store)}, nil
+}
 
 // serveDashboard 完成一次后台仪表板服务生命周期：单实例守卫（serve.json
 // + 探活幂等拒绝第二实例；serve.lock 生命周期锁交由本函数持有至退出）→ 接收
@@ -42,7 +81,7 @@ const serveShutdownTimeout = 3 * time.Second
 // 全部写/删都在 serve-state 状态迁移锁内、以持有的 serve.lock 为先（锁序
 // serve.lock → state.lock）。单实例守卫与状态/锁原语由 internal/serve 提供，
 // 与 serve start/status/stop 命令及 update 的运行态探测共享同一实现。
-func serveDashboard(cfg *config.Config, usageDB *db.DB, version, addr string, out, errOut io.Writer) error {
+func serveDashboard(cfg *config.Config, usageDB *db.DB, version, addr string, out, errOut io.Writer, opts ...serveDashboardOption) error {
 	// 单实例守卫先于监听：第二个实例无论请求哪个端口、以哪种形态启动都会在
 	// 这里被拒绝或报错，serve.json 永远只描述唯一实例。守卫放行时交出的
 	// 生命周期锁持有至本函数退出（defer 顺序：先删状态文件，再释放锁；
@@ -123,7 +162,17 @@ func serveDashboard(cfg *config.Config, usageDB *db.DB, version, addr string, ou
 		return err
 	}
 
-	handler := web.NewServer(q, version, web.WithProviderAliases(cfg.ProviderAliases))
+	// 可选能力装配:传入 WithConfigWriteHome 时启用 /api/config 与配置
+	// 即时生效;装配失败(控制管理器创建失败等)放弃启动,不降级为半功能。
+	var dashOpts serveDashboardOptions
+	for _, opt := range opts {
+		opt(&dashOpts)
+	}
+	webOpts, err := buildWebServerOptions(dashOpts)
+	if err != nil {
+		return err
+	}
+	handler := web.NewServer(q, version, webOpts...)
 	srv := &http.Server{Handler: handler}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()

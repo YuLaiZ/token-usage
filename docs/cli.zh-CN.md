@@ -36,7 +36,7 @@ token-usage
 │   ├── status                            # 查看守护进程运行状态与配置摘要
 │   ├── stop                              # 停止守护进程
 │   └── restart                           # 在单把进程控制锁内停旧起新
-├── serve                                 # 管理本地只读仪表板 HTTP 服务（裸执行只显示帮助）
+├── serve                                 # 管理本地仪表板 HTTP 服务（裸执行只显示帮助）
 │   ├── start                             # 后台运行仪表板（nginx 风格；日志写入 serve.log）
 │   ├── status                            # 查看后台仪表板运行状态
 │   ├── stop                              # 停止后台仪表板
@@ -636,25 +636,26 @@ token-usage watch --once               # 只渲染一帧后退出（对管道友
 
 ## serve
 
-管理提供内嵌仪表板的只读本地 HTTP 服务：`/` 的内嵌 HTML 页面、JSON 接口（`/api/meta`、`/api/dashboard`）与 SVG 图表（`/api/chart/{kind}.svg`），图表与内嵌页面共用同一构建核（标题、副标题与悬停文案完全一致）。仪表板**始终以后台方式运行**：`serve start` 拉起 detached 服务进程后返回，`serve status` / `serve stop` 查看与停止，`serve restart` 以全新后台实例接管运行中的实例。裸执行 `token-usage serve` 只打印命令组帮助——不监听端口、不启动进程、不创建状态文件。采集守护进程是另一个独立程序实例，由 [daemon](#daemon) 命令组单独管理；两者不共享 PID、锁、状态文件、日志与端口。
+管理提供内嵌仪表板的本地 HTTP 服务：`/` 的内嵌 HTML 页面包含两个页面——**仪表盘**（预设与自定义日期区间、七项核心指标、四个内置维度、跟随区间的热力图、来自 `query.subqueries` 的自定义视图、用量最高的会话）与**配置**（客户端/路由、守护进程、日志、输出列、默认视图、自定义视图、组合查询与供应商别名，保存复用与 `config set`、TUI 相同的锁内 revision 校验原子写入链路）——由 JSON 接口（`/api/meta`、`/api/dashboard`、`/api/config`）供数。仪表板**始终以后台方式运行**：`serve start` 拉起 detached 服务进程后返回，`serve status` / `serve stop` 查看与停止，`serve restart` 以全新后台实例接管运行中的实例。裸执行 `token-usage serve` 只打印命令组帮助——不监听端口、不启动进程、不创建状态文件。采集守护进程是另一个独立程序实例，由 [daemon](#daemon) 命令组单独管理；两者不共享 PID、锁、状态文件、日志与端口。
 
-HTTP 数据面严格只读——不设 CORS 头、不写数据库与配置；`serve.json` 是共用的生命周期状态，`serve.log` 用于后台日志，`serve.lock`、`serve-state.lock` 与 `serve-start.lock` 负责生命周期协调。
+HTTP 面按回环与同源使用（不设 CORS 头）、无鉴权：数据接口（`/api/meta`、`/api/dashboard`）与页面本身严格只读；`PUT /api/config` 经 `configapp` 的进程控制锁、期望 revision 校验、原子整替与自启同步写回用户配置——与 CLI 配置命令同一安全链路；任何配置变更都不触碰数据库。`serve.json` 是共用的生命周期状态，`serve.log` 用于后台日志，`serve.lock`、`serve-state.lock` 与 `serve-start.lock` 负责生命周期协调。
 
-- `--addr` 修改监听地址（默认 `127.0.0.1:8619`），作用于 `serve start` / `serve restart` 新启动的实例。绑定 `0.0.0.0` 等公网地址**会把用量数据暴露给局域网**——服务只读但无鉴权——请保持回环绑定。
+- `--addr` 修改监听地址（默认 `127.0.0.1:8619`），作用于 `serve start` / `serve restart` 新启动的实例。绑定 `0.0.0.0` 等公网地址**会把用量数据与本地配置编辑暴露给局域网**——服务无鉴权——请保持回环绑定。
 - `--open` 在 `serve start` / `serve restart` 确认后台服务就绪后用默认浏览器打开仪表板；打开浏览器失败只是警告，服务继续运行。
 - 启动时写 `serve.json` 状态文件失败（如数据目录只读）服务即报错退出，不做无状态运行。
-- 同一请求的全部数据查询共享一个读快照，并发采集写入下 totals、维度行与会话行相互一致。
-- 内嵌页面全部由前端按这些数值行自绘：KPI 卡（相对基线窗口的增减 chips）、对齐所配置 query 输出列的指标条（除已升格 KPI 卡的 requests/total/cache-hit 外的 token 类别列——默认布局即输入/输出/缓存读/推理，布局含缓存写时才会出现该列）、堆叠/单系列柱状图（点击按天/按月柱条即聚焦对应区间；超过 92 天按天柱自动按 ISO 周聚合并停用钻取）、占比环形图一行四张、带行列合计的星期×小时热力矩阵（对齐 `query heatmap` 的尾行/尾列合计）、带 token 占比条与 CSV 导出的会话排行、逐维度数据表（可排序、一键导出 CSV——按当前行序、精确整数）、整行环比对比（左侧逐日对比曲线、右侧指标表）与整行预估、范围预设与自定义起止日期（新开页面默认 Today、同一标签页跨刷新记忆）以及自动刷新。按天桶不足 2 个时隐藏按天维度图、按月桶不足 2 个时隐藏按月维度图，单日选区只保留按小时图（星期视图对单日无意义）并隐藏环比对比表——单桶形态不携带信息——KPI 增减 chips 仍指向基线窗口（单日即前一日）。
+- 同一请求的全部数据查询共享一个读快照，并发采集写入下 totals、维度行、自定义视图行与会话行相互一致。
+- 内嵌页面为中英双语（按浏览器记忆）并带五套主题配色与深浅主题（按浏览器记忆，深浅默认跟随系统；均不进入配置脏状态）。仪表盘页全部由前端按数值行自绘：独立于输出列布局的七项核心指标；四个内置维度的两列卡片表（每卡底部固定合计、唯一尾部「其他（N 项）」行，另有构成环形图模式）；跟随选区范围的热力图——单日为 24 个小时格、2~7 天为日期×小时、8~31 天为日期×4 小时时段、32 天及以上为 GitHub 风格逐日日历，数据截至日之后的格显示为空白（「尚未发生」）而非零值；用量趋势图；由 `query.subqueries` 生成的自定义视图表（附守恒保证的「其他组合」行）；保留原始标题的会话排行（信息按钮查看完整标题）。范围预设加无边界自定义日历（未来日期可提交并显示真实空结果；选区同一标签页跨刷新记忆）。配置页编辑完整用户配置：对最近已保存快照实时差异计算脏状态、revision 冲突（409）与校验失败（400）报告且绝不覆盖本地草稿、恢复为已保存配置需确认。
 
 | 接口 | 参数 | 返回 |
 |------|------|------|
-| `GET /api/meta` | — | 版本、`min_date`/`max_date`（全库）、`data_through`、`last_collection`；后三项缺数据时为 `null` |
-| `GET /api/dashboard` | `from`、`to`（`YYYY-MM-DD`；缺省为截至今天的 30 天；跨度至多 366 天） | 统计区间、totals（整数，含 `active_days`）、compare（基线窗口按所选区间推导——结束于区间开始日前一天的等长窗口，单日区间退化为前一天；含基线 totals、8 行预计算行（显示串、带符号变化、pos/neg 着色 class，基线为 0 时变化% 显示 `--`），以及 `daily`——基线窗口逐日行（按窗口缺口填充、键即日期、纯整数，供前端绘制当前 vs 基线逐日对比曲线））、forecast（固定回看窗口：`today_so_far` 与恒 2 行的最近 7/30 天——窗口不含今天，日均按活跃天整数除法，预估为日均×未来天数；显示串预计算，窗口无数据时各格显示 `—`；不随 `from`/`to` 选区变化）、8 个固定维度行数组（`day`/`hour`/`weekday`/`month`/`client`/`model`/`provider`/`project`）、前 10 条会话，以及 `heatmap`——7×24 的 token 矩阵（`weekdays` 为 ISO 周序周一在首、`hours` 为 `00:00`..`23:00`、`values` 为 7×24 数组，空交点为 `0`），与总量同一读快照读取，单次刷新不可能混用快照；内嵌页面全部图表由前端按这些数值行自绘，`GET /api/chart/{kind}.svg` 仍可独立取图 |
-| `GET /api/chart/{kind}.svg` | 日期参数与 `/api/dashboard` 一致；`kind` ∈ `day`/`hour`/`weekday`/`month`（柱状）、`client`/`model`/`provider`/`project`（饼图）、`heatmap` | 一份 SVG 文档（`image/svg+xml`） |
+| `GET /api/meta` | — | 版本（由二进制按原样提供）、`min_date`/`max_date`（全库）、`data_through`、`last_collection`；后三项缺数据时为 `null` |
+| `GET /api/dashboard` | `from`、`to`（`YYYY-MM-DD`；缺省为截至今天的 30 天；跨度至多 366 天；未来范围返回结构完整的全零载荷） | 统计区间、totals（整数，含 `active_days`）、`columns`（所配置输出列的指标 ID 序列——只影响明细表，不影响顶部七项）、四个固定维度行数组（`client`/`model`/`provider`/`project`，按 `total` 降序）、`heatmap`——范围内每天一行（`date`、当日 `total`、本机时区的 24 个 `hours` 值，无数据日为零行），与总量同一读快照读取，单次刷新不可能混用快照、`custom_views`（每个已配置子查询一项，按名称序：声明顺序的维度名与全量聚合行——行 keys 按维度声明顺序、七项合计恰等于区间总量）、前 10 条会话（原始标题） |
+| `GET /api/config` | — | 可编辑配置模型（daemon、log、含数据来源路径的 clients、routers、provider aliases，以及解析后的 query 段——有效值，磁盘 query 段无法解析时附 `diagnostics`），与磁盘文件的 `revision`（文件尚不存在时为固定 sentinel）；`data_dir` 刻意不在模型中——数据目录迁移仍是仅 CLI 的确认操作 |
+| `PUT /api/config` | 请求体 `{revision, config}`——`GET /api/config` 提供的草稿；`query` 段可省略以保持磁盘 query 段原样（页面仅在用户编辑过该段或明确恢复全部默认值时才回传，使无关区块的保存绝不改写解析失败的 query 段） | 成功返回规范化落盘草稿、新 `revision`、`changed`、`warnings`（文件已保存但自启同步等副作用失败时非空）与 `suggested_steps`；文件已被他处修改时返回 `409` 与当前 `revision`（保留本地草稿、不覆盖任何内容），校验失败（未知客户端/路径键、非法 query 定义、越界值）返回 `400`，写入失败返回 `500` |
 | `GET /`、`GET /assets/…` | — | 内嵌 HTML 页面与静态资产（`Cache-Control: no-store`） |
 
-- 错误统一为 JSON `{"error":{"message":"…"}}`：参数非法 `400`、图表类别或资产不存在 `404`、查询失败 `500`。
-- 数据面严格只读：不设 CORS 头（按同源使用）、不与守护进程交互、不写数据库与配置。持久状态为 `serve.json`，后台输出写入 `serve.log`，`serve.lock`、`serve-state.lock` 与 `serve-start.lock` 负责生命周期迁移协调。维度行为原始整数，K/M/B 格式化交给前端；`provider` 行与查询视图一样应用 `[provider_aliases]`。
+- 错误统一为 JSON `{"error":{"message":"…"}}`：参数或草稿非法 `400`、资产不存在 `404`、revision 冲突 `409`、查询或写入失败 `500`。
+- 数据面不设 CORS 头（按同源使用）、不与守护进程交互、绝不写数据库；唯一写路径是经共享 `configapp` 链路的 `PUT /api/config`。持久状态为 `serve.json`，后台输出写入 `serve.log`，`serve.lock`、`serve-state.lock` 与 `serve-start.lock` 负责生命周期迁移协调。维度行为原始整数，K/M/B 格式化交给前端；`provider` 行与查询视图一样应用 `[provider_aliases]`，配置变更（含别名与自定义视图）在下一次请求即生效。
 
 ### serve start / serve status / serve stop / serve restart（后台，nginx 风格）
 
@@ -674,7 +675,7 @@ token-usage serve restart
 - `serve start` 在已记录状态于 `/api/meta` 上仍有响应时报告已在运行并以退出码 0 幂等返回（要重启请用 `token-usage serve restart`，或先 `token-usage serve stop` 停止）；不再响应的陈旧状态与损坏的状态文件会被删除并照常启动。子进程 5s 内未就绪则启动失败，并指向日志末尾。并发的 `serve start` 由数据目录下的 `serve-start.lock` 文件锁串行化（仅用于启动协调——运行中的实例由 `serve.json` 描述、以 `serve.lock` 生命周期锁持有）：另一个 start 尚在执行时，第二个以非零退出码报错并提示稍后重试。
 - `serve status` 的所有状态结论均以退出码 0 返回（只有意外的 I/O 失败才非零）：`/api/meta` 有响应时报告 URL、PID 与启动时间；无响应（或状态文件损坏无法辨识）时删除陈旧/损坏文件并报告未运行。状态迁移由 `serve-state.lock` 串行化；锁被并发的 `serve status`/`serve stop` 持有超过带界重试窗口时，命令以非零退出并提示稍后重试。
 - `serve status --format json` 把同一判定输出为机器可读文档（两空格缩进 + 尾随换行，与 `doctor --format json`、`daemon status --format json` 同一约定）：`state` 取封闭值域——`running`、`not_running`、`not_running_stale_removed`、`not_running_corrupt_removed`；`running` 是 state 对应的布尔值；`pid`/`addr`/`url`/`started_at`（RFC3339，serve.json 原值）仅在运行中出现；`data_dir` 为配置的数据目录。非法 `--format` 值报错并列出允许值，与 `daemon status` 同型。
-- `serve stop` 在 Unix 上发送 SIGTERM 并给 3s 优雅窗口，超时以 SIGKILL 兜底；在 Windows 上使用 `taskkill /F`——Windows 控制台进程没有跨进程的优雅停止通道，对严格只读的服务可接受。是否停止成功仅以 `/api/meta` 不再响应为准（记录的 PID 可能已被无关进程复用，探活的结论优先于信号发送结果——信号投递失败也不会短路探活等待）。只有探活确认下线（或信号发送前就无响应——陈旧/损坏状态被清理）才会删除状态文件。若强杀兜底后服务仍在响应（无论强杀本身是否报错），命令以非零退出码报错并列出记录的 URL 与 PID，保留 `serve.json` 供人工检查进程/端口。若停止进行期间有新实例接管（旧实例下线后状态文件被改写），命令会如实说明并转而停止新实例，而不是报告旧实例已停止。对已停止的服务重复执行是幂等空操作，退出码仍为 0。
+- `serve stop` 在 Unix 上发送 SIGTERM 并给 3s 优雅窗口，超时以 SIGKILL 兜底；在 Windows 上使用 `taskkill /F`——Windows 控制台进程没有跨进程的优雅停止通道，对这种本地、无鉴权、唯一写路径是锁内 revision 校验配置保存的服务可接受。是否停止成功仅以 `/api/meta` 不再响应为准（记录的 PID 可能已被无关进程复用，探活的结论优先于信号发送结果——信号投递失败也不会短路探活等待）。只有探活确认下线（或信号发送前就无响应——陈旧/损坏状态被清理）才会删除状态文件。若强杀兜底后服务仍在响应（无论强杀本身是否报错），命令以非零退出码报错并列出记录的 URL 与 PID，保留 `serve.json` 供人工检查进程/端口。若停止进行期间有新实例接管（旧实例下线后状态文件被改写），命令会如实说明并转而停止新实例，而不是报告旧实例已停止。对已停止的服务重复执行是幂等空操作，退出码仍为 0。
 - `serve restart` 以与 `serve stop` 完全相同的编排停止运行中的实例（以探活为判据），随后以与 `serve start` 完全相同的编排拉起全新后台实例（`--addr`/`--open` 作用于新实例）。当前没有实例在运行时等价于直接启动。若运行中的实例在 SIGKILL 兜底后仍在响应，重启以非零错误中止——旧实例继续服务，此类场景请用 `serve stop` 排查。
 - 单实例契约：任意时刻至多一个仪表板实例在运行。第二个 `serve start`——无论请求哪个地址——都会在监听之前被单实例守卫拒绝：打印运行中实例的 URL 与 PID 并以退出码 0 幂等返回（要重启请用 `token-usage serve restart`，或先 `token-usage serve stop` 停止）；若撞上另一实例正在启动的窗口，守卫报错并提示稍后重试。服务主体在其整个生命周期持有数据目录下的 `serve.lock` 生命周期锁。由于守卫先于监听执行，与运行中实例的同端口冲突不会再表现为监听失败——监听失败只剩「请求的端口被一个没有留下 `serve.json` 记录的无关进程占用」这一种场景。因此 `serve status` / `serve stop` 始终管理唯一实例。
 - `--open` 由 `serve start` 与 `serve restart` 支持：仅在确认后台服务就绪后打开浏览器（打开失败只是警告）。
@@ -755,6 +756,6 @@ Windows 上替换运行中的 `.exe` 受限，自更新把替换交给后台 hel
 
 ## 配置文件
 
-路径固定 `~/.token-usage/config.toml`（TOML，可手工添加注释）。所有客户端默认关闭：用 `clients.<name>.enabled = true` 开启需要的客户端，数据源路径由程序按各工具默认位置自动填充。用 dotted key 同段写法覆盖默认。`config set`/TUI 保存会完整重写配置，故不保留原有注释和 map 键书写顺序；完整字段与默认值见 `token-usage config init` 生成的模板。
+路径固定 `~/.token-usage/config.toml`（TOML，可手工添加注释）。所有客户端默认关闭：用 `clients.<name>.enabled = true` 开启需要的客户端，数据源路径由程序按各工具默认位置自动填充。用 dotted key 同段写法覆盖默认。`config set`、TUI 与网页仪表板的配置页（`serve start` 后打开仪表板）都经同一锁内 revision 校验原子写入链路保存并完整重写配置，故不保留原有注释和 map 键书写顺序；完整字段与默认值见 `token-usage config init` 生成的模板。
 
 `data_dir` 决定数据文件位置（`usage.db`、日志、PID、runtime-state、锁）；配置文件路径不随 `data_dir` 变化。`daemon.autostart` 控制开机自启（macOS launchd / Windows 注册表）。
