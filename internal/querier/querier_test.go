@@ -94,10 +94,10 @@ func TestByModel_DoesNotCollapse(t *testing.T) {
 		t.Fatalf("ByModel failed: %v", err)
 	}
 
-	if !strings.Contains(result, "claude-sonnet-4") {
+	if !strings.Contains(result, "CLAUDE-SONNET-4") {
 		t.Errorf("result should contain model claude-sonnet-4\ngot:\n%s", result)
 	}
-	if !strings.Contains(result, "gpt-5.5") {
+	if !strings.Contains(result, "GPT-5.5") {
 		t.Errorf("result should contain model gpt-5.5\ngot:\n%s", result)
 	}
 }
@@ -557,7 +557,7 @@ func TestRunDimensionView_MultidimensionalAndZeroRecords(t *testing.T) {
 	if !strings.Contains(out, "Custom view mpc / 自定义视图 mpc") {
 		t.Errorf("输出应含双语标题:\n%s", out)
 	}
-	if !strings.Contains(out, "claude-sonnet-4") || !strings.Contains(out, "Anthropic") {
+	if !strings.Contains(out, "CLAUDE-SONNET-4") || !strings.Contains(out, "Anthropic") {
 		t.Errorf("三维表应含模型与供应商维度值:\n%s", out)
 	}
 	if n := strings.Count(out, "Total / 总计"); n != 1 {
@@ -1177,9 +1177,9 @@ func TestRunDimensionView_DayModelOrdersByDateThenTotal(t *testing.T) {
 		rows = append(rows, dayRow{day: day, model: strings.TrimSpace(cells[1])})
 	}
 	want := []dayRow{
-		{"2026-07-01", "model-a"},
-		{"2026-07-01", "model-b"},
-		{"2026-07-03", "model-c"},
+		{"2026-07-01", "MODEL-A"},
+		{"2026-07-01", "MODEL-B"},
+		{"2026-07-03", "MODEL-C"},
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("数据行数 = %d, want %d(多维不补缺口):\n%s", len(rows), len(want), out)
@@ -1359,9 +1359,9 @@ func TestRunDimensionView_MonthModelOrdersByMonthThenTotal(t *testing.T) {
 		rows = append(rows, monthRow{month: month, model: strings.TrimSpace(cells[1])})
 	}
 	want := []monthRow{
-		{"2026-08", "model-a"},
-		{"2026-08", "model-b"},
-		{"2026-10", "model-c"},
+		{"2026-08", "MODEL-A"},
+		{"2026-08", "MODEL-B"},
+		{"2026-10", "MODEL-C"},
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("数据行数 = %d, want %d(多维不补缺口):\n%s", len(rows), len(want), out)
@@ -1562,9 +1562,9 @@ func TestRunDimensionView_HourModelOrdersByHourThenTotal(t *testing.T) {
 		rows = append(rows, hourRow{hour: hour, modelName: strings.TrimSpace(cells[1])})
 	}
 	want := []hourRow{
-		{"09:00", "model-a"},
-		{"09:00", "model-b"},
-		{"22:00", "model-c"},
+		{"09:00", "MODEL-A"},
+		{"09:00", "MODEL-B"},
+		{"22:00", "MODEL-C"},
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("数据行数 = %d, want %d(多维不补缺口):\n%s", len(rows), len(want), out)
@@ -1696,9 +1696,9 @@ func TestRunDimensionView_WeekdayModelOrdersByISOWeekdayThenTotal(t *testing.T) 
 		rows = append(rows, weekdayRow{weekday: day, modelName: strings.TrimSpace(cells[1])})
 	}
 	want := []weekdayRow{
-		{"Monday / 周一", "model-a"},
-		{"Monday / 周一", "model-b"},
-		{"Friday / 周五", "model-c"},
+		{"Monday / 周一", "MODEL-A"},
+		{"Monday / 周一", "MODEL-B"},
+		{"Friday / 周五", "MODEL-C"},
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("数据行数 = %d, want %d(多维不补缺口):\n%s", len(rows), len(want), out)
@@ -2196,8 +2196,10 @@ func TestAggregateDimensionView_CaseVariantsMergeIntoOneRow(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("大小写变体应合并为一行,实际 %d 行: %+v", len(rows), rows)
 	}
-	if rows[0].Keys[0] != "GLM-5.3-Flash" {
-		t.Errorf("代表拼写应为请求数多的大写 GLM-5.3-Flash,实际 %q", rows[0].Keys[0])
+	// 代表拼写按请求数最多的原始拼写(大小写折叠合并语义不变);model 维度
+	// 显示层统一大写,合并行显示为该代表拼写的大写形态。
+	if rows[0].Keys[0] != "GLM-5.3-FLASH" {
+		t.Errorf("合并行显示应为代表拼写 GLM-5.3-Flash 的大写形态,实际 %q", rows[0].Keys[0])
 	}
 	if rows[0].Agg.Requests != 3 || rows[0].Agg.TotalTokens != 390 {
 		t.Errorf("合并行聚合应为变体之和: got requests=%d total=%d, want 3/390", rows[0].Agg.Requests, rows[0].Agg.TotalTokens)
@@ -2285,8 +2287,8 @@ func TestAggregateDimensionView_MultiDimensionIndependentRepresentatives(t *test
 	if rows[0].Keys[0] != model.ClientClaudeCode || rows[0].Keys[1] != "GLM-5.3" {
 		t.Errorf("Claude Code 组代表应为大写 GLM-5.3: %+v", rows[0].Keys)
 	}
-	if rows[1].Keys[0] != model.ClientCodexApp || rows[1].Keys[1] != "glm-5.3" {
-		t.Errorf("Codex App 组代表应为小写 glm-5.3: %+v", rows[1].Keys)
+	if rows[1].Keys[0] != model.ClientCodexApp || rows[1].Keys[1] != "GLM-5.3" {
+		t.Errorf("Codex App 组代表显示应为 GLM-5.3 大写形态: %+v", rows[1].Keys)
 	}
 	if rows[0].Agg.Requests != 3 || rows[0].Agg.TotalTokens != 210 {
 		t.Errorf("Claude Code 组聚合应为变体之和: %+v", rows[0].Agg)
@@ -2450,8 +2452,8 @@ func TestAggregateDimensionView_UnicodeFoldConsistency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].Keys[0] != "Test" || rows[0].Agg.Requests != 3 {
-		t.Errorf("[正向分组] S/ſ 折叠等价须合并为一行且代表为请求数多者: %+v", rows)
+	if len(rows) != 1 || rows[0].Keys[0] != "TEST" || rows[0].Agg.Requests != 3 {
+		t.Errorf("[正向分组] S/ſ 折叠等价须合并为一行(model 显示为大写形态): %+v", rows)
 	}
 
 	// 正向:alias 兜底——配置键 "Test" 经 EqualFold 命中源 "Teſt"。

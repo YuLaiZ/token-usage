@@ -245,18 +245,18 @@ func TestLayout_CacheCreateValuesAndHitRate(t *testing.T) {
 		byModel[row[0]] = row
 	}
 	// 列: model | requests input output cache_read cache_create reasoning total cache_hit
-	cc := byModel["claude-sonnet-4"][5]
+	cc := byModel["CLAUDE-SONNET-4"][5]
 	if cc != "200" {
 		t.Errorf("claude-sonnet-4 的 Cache Create = %q, want 200:\n%s", cc, out)
 	}
-	hit := byModel["claude-sonnet-4"][8]
+	hit := byModel["CLAUDE-SONNET-4"][8]
 	if hit != "25.00%" {
 		t.Errorf("claude-sonnet-4 的 Cache Hit = %q, want 25.00%%:\n%s", hit, out)
 	}
-	if got := byModel["gpt-5.5"][5]; got != "100" {
+	if got := byModel["GPT-5.5"][5]; got != "100" {
 		t.Errorf("gpt-5.5 的 Cache Create = %q, want 100:\n%s", got, out)
 	}
-	if got := byModel["gpt-5.5"][8]; got != "27.27%" {
+	if got := byModel["GPT-5.5"][8]; got != "27.27%" {
 		t.Errorf("gpt-5.5 的 Cache Hit = %q, want 27.27%%:\n%s", got, out)
 	}
 	total := totalRow(t, out)
@@ -341,7 +341,7 @@ func TestLayout_HidingTotalKeepsSortAndIndependentTotal(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("两个分组行:\n%s", out)
 	}
-	if rows[0][0] != "claude-sonnet-4" {
+	if rows[0][0] != "CLAUDE-SONNET-4" {
 		t.Errorf("隐藏 total 后排序仍按真实 total_tokens,首行应为 claude-sonnet-4:\n%s", out)
 	}
 	// 总计行 = 独立聚合:requests=3, fresh=1500 → 1.50 K。

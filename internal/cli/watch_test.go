@@ -116,7 +116,7 @@ func TestWatchCmd_ByConfiguredSubquery(t *testing.T) {
 	if !strings.Contains(out, "Custom view mpc / 自定义视图 mpc") {
 		t.Errorf("--by mpc 应渲染自定义多维视图:\n%s", out)
 	}
-	for _, want := range []string{model.ClientClaudeCode, model.ClientCodexCLI, "model-a", "model-b"} {
+	for _, want := range []string{model.ClientClaudeCode, model.ClientCodexCLI, "MODEL-A", "MODEL-B"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("多维视图应含键 %q:\n%s", want, out)
 		}

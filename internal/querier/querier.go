@@ -463,10 +463,14 @@ func aliasLookup(aliases map[string]string, raw string) string {
 // project 应用未分类,hour 补 ":00" 后缀表示小时起点,weekday 映射为双语星期
 // 名,client 应用 legacy 名防御兜底（mimocode 正式落库名已是 MiMo Code，
 // migrateV4 与兼容 trigger 保证库内无 legacy 名；此处仅防御异常残留的未迁移
-// 旧数据,见 model.ClientDisplayName）,model 保持源字段空值。
+// 旧数据,见 model.ClientDisplayName）,model 统一大写显示(库内原始值与
+// rawKeys 不变,大小写折叠合并仍按原始键工作)。
 func (d dimension) displayKey(raw string, aliases map[string]string) string {
 	if d.name == "client" {
 		return model.ClientDisplayName(raw)
+	}
+	if d.name == "model" {
+		return strings.ToUpper(raw)
 	}
 	if d.name == "hour" {
 		// strftime '%H' 恒为两位数字,后缀仅作显示;防御非两位形态原样返回。

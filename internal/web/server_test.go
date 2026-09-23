@@ -458,10 +458,10 @@ func TestServeDashboard_CustomViews(t *testing.T) {
 			t.Errorf("provider 显示键应合并别名,实际 %q", row.Keys[1])
 		}
 	}
-	if r := byModel["model-x"]; r.Total != 500 || r.Requests != 2 {
+	if r := byModel["MODEL-X"]; r.Total != 500 || r.Requests != 2 {
 		t.Errorf("model-x 行应为 total=500/requests=2,实际 %+v", r)
 	}
-	if r := byModel["model-y"]; r.Total != 200 || r.Requests != 1 {
+	if r := byModel["MODEL-Y"]; r.Total != 200 || r.Requests != 1 {
 		t.Errorf("model-y 行应为 total=200/requests=1,实际 %+v", r)
 	}
 	// 守恒:七项逐项合计等于区间 totals(同一读事务、同一选区聚合)。
