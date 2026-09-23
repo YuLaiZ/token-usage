@@ -741,19 +741,14 @@ function aggRows(rows){
   return t;
 }
 /* 尾部小项收拢：≥4 独立项、候选份额<5%、并入后不超过前一项；并入 ≥2 项才聚合成唯一的“其他”行 */
+/* 维度卡行数上限:独立项按 total 降序最多展示 9 行,超出部分并入唯一的
+   「其他（N 项）」(固定最后);≤9 行时全部独立展示,不做小份额收拢——
+   合计行恒为全部行之和,逐项守恒。 */
+var DIM_TOP_N = 9;
 function compactDimensionTail(rows){
   var ordered=rows.slice().sort(function(a,b){ return b.total-a.total || String(a.name).localeCompare(String(b.name)); });
-  var total=aggRows(ordered).total, picked=[], mergedTotal=0;
-  while(ordered.length>4){
-    var candidate=ordered[ordered.length-1], previous=ordered[ordered.length-2];
-    if(!total || candidate.total/total>=0.05 || mergedTotal+candidate.total>=previous.total) break;
-    picked.unshift(ordered.pop());
-    mergedTotal+=candidate.total;
-  }
-  if(picked.length<2){
-    while(picked.length) ordered.push(picked.shift());
-    return ordered.sort(function(a,b){ return b.total-a.total || String(a.name).localeCompare(String(b.name)); });
-  }
+  if(ordered.length<=DIM_TOP_N) return ordered;
+  var picked=ordered.splice(DIM_TOP_N);
   var other={name:ui('其他（'+picked.length+' 项）','Other ('+picked.length+')'),isOther:true,hiddenCount:picked.length,
     requests:0,fresh_input:0,output:0,cache_read:0,cache_create:0,reasoning:0,total:0,hit:null};
   picked.forEach(function(r){
@@ -761,7 +756,7 @@ function compactDimensionTail(rows){
     other.cache_read+=r.cache_read; other.cache_create+=r.cache_create||0; other.reasoning+=r.reasoning; other.total+=r.total;
   });
   other.hit = hitOf(other.fresh_input, other.cache_read, other.cache_create);
-  ordered.push(other); /* “其他”是尾部小项的合计，固定最后，不参与降序插队 */
+  ordered.push(other); /* “其他”固定最后，不参与降序插队 */
   return ordered;
 }
 function cellFor(k, r, extra){
@@ -775,7 +770,7 @@ function cellAgg(k, T){
   if(k==='requests') return fmtInt(T.requests);
   return fmtTok(rowVal(T,k));
 }
-function tableView(rows){
+function tableView(rows, dim){
   var ids=colIds();
   var maxT = rows.length && rows[0].total>0 ? rows[0].total : 1, T = aggRows(rows);
   var colgroup = '<colgroup><col style="width:21%">'+ids.map(function(){ return '<col>'; }).join('')+'</colgroup>';
@@ -786,7 +781,17 @@ function tableView(rows){
   var h = '<div class="group-table"><div class="table-wrap group-rows"><table>'+colgroup+'<thead><tr><th scope="col">'+ui('名称','Name')+'</th>' + head +
     '</tr></thead><tbody>';
   rows.forEach(function(r){
-    h += '<tr class="group-row" tabindex="0" aria-expanded="false"><th scope="row" class="tname">'+esc(r.name)+'</th>' +
+    /* 「截断后可查看全文」交互仅项目维度使用(长仓库名/路径高频截断);
+       客户端/供应商/模型保持纯文本省略,不加按钮。 */
+    var th;
+    if(dim==='project'){
+      var nameFull=esc(r.name);
+      th = '<th scope="row" class="tname"><div class="session-title-wrap"><span class="trunc-name" title="'+nameFull+'">'+nameFull+'</span>'+
+        '<button type="button" class="session-title-detail" data-full="'+nameFull+'" data-heading="'+ui('完整名称','Full name')+'" hidden aria-label="'+ui('查看完整名称','View full name')+'" title="'+ui('查看完整名称','View full name')+'"><svg class="ic"><use href="#i-info"/></svg></button></div></th>';
+    }else{
+      th = '<th scope="row" class="tname" title="'+esc(r.name)+'">'+esc(r.name)+'</th>';
+    }
+    h += '<tr class="group-row" tabindex="0" aria-expanded="false">' + th +
       ids.map(function(k){
         return '<td class="num'+(k==='total'?' tot':'')+'" data-k="'+k+'" data-label="'+colLabel(colById(k))+'">'+cellFor(k, r, (r.total/maxT*100).toFixed(1))+'</td>';
       }).join('') + '</tr>';
@@ -857,7 +862,7 @@ function renderGroups(){
     html += '<article class="group" data-gid="'+id+'" style="--gh:var('+HUES[id]+')">' +
       '<header class="group-head"><div class="group-title"><i class="g-dot"></i>' +
       '<div><h4>'+dimLabel(id)+'</h4></div></div></header>' +
-      (state.view==='list' ? tableView(rows) : composeView(id, rows)) +
+      (state.view==='list' ? tableView(rows, id) : composeView(id, rows)) +
       '</article>';
   });
   host.innerHTML = html;
@@ -868,6 +873,7 @@ function renderGroups(){
       if(art) art._donut = donutMetas(DIMROWS[id]);
     });
   }
+  syncTruncationButtons();
 }
 /* 构成图联动高亮 */
 var groupsEl = el('groups');
@@ -944,11 +950,13 @@ groupsEl.addEventListener('click', function(e){
   if(!tr.parentElement || tr.parentElement.tagName!=='TBODY') return;
   tr.classList.toggle('expanded');
   tr.setAttribute('aria-expanded',tr.classList.contains('expanded')?'true':'false');
+  syncTruncationButtons();
 });
 groupsEl.addEventListener('keydown',function(e){
   if(!narrowMQ || !narrowMQ.matches || (e.key!=='Enter'&&e.key!==' ')) return;
   var tr=e.target.closest('.group-row'); if(!tr) return;
   e.preventDefault(); tr.classList.toggle('expanded'); tr.setAttribute('aria-expanded',tr.classList.contains('expanded')?'true':'false');
+  syncTruncationButtons();
 });
 
 /* ---------- 构成图非鼠标交互：图例可聚焦、回车/空格高亮、触屏点按 ---------- */
@@ -1282,6 +1290,7 @@ window.addEventListener('resize', function(){
   clearTimeout(rzT);
   rzT = setTimeout(function(){
     if(el('page-dash').getAttribute('data-active')==='true' && state.data) drawChart();
+    syncTruncationButtons();
   }, 120);
 });
 
@@ -1397,18 +1406,29 @@ function renderSessions(){
   }else{
     body.innerHTML = rows.map(function(r){
       var full=esc(r.title||'');
-      return '<tr class="session-row"><th scope="row" class="tname"><div class="session-title-wrap"><span class="session-title-text" title="'+full+'">'+full+'</span>'+
-        '<button type="button" class="session-title-detail" data-full="'+full+'" aria-label="'+ui('查看完整会话标题','View full session title')+'" title="'+ui('查看完整会话标题','View full session title')+'"><svg class="ic"><use href="#i-info"/></svg></button></div></th>' +
+      return '<tr class="session-row"><th scope="row" class="tname"><div class="session-title-wrap"><span class="session-title-text trunc-name" title="'+full+'">'+full+'</span>'+
+        '<button type="button" class="session-title-detail" data-full="'+full+'" data-heading="'+ui('完整会话标题','Full session title')+'" hidden aria-label="'+ui('查看完整会话标题','View full session title')+'" title="'+ui('查看完整会话标题','View full session title')+'"><svg class="ic"><use href="#i-info"/></svg></button></div></th>' +
         '<td class="num tl" data-label="'+dimLabel('client')+'">'+esc(r.client||'')+'</td><td class="num tl" data-label="'+dimLabel('project')+'">'+esc(r.project||'')+'</td>' +
         '<td class="num" data-label="'+ui('时长','Duration')+'">'+fmtDur(r.duration_ms)+'</td><td class="num" data-label="'+colLabel(colById('requests'))+'">'+fmtInt(r.requests)+'</td>' +
         '<td class="num tot" data-label="'+colLabel(colById('total'))+'"><span class="nv">'+fmtTok(r.total)+'</span></td></tr>';
     }).join('');
   }
   el('sessions-sub').textContent = rangeName(state.range)+' · '+rangeDateText();
+  syncTruncationButtons();
+}
+/* 截断探测:文本实际溢出(被 CSS 省略)的才显示「查看全文」按钮;
+   resize 防抖后重算。未截断的行不显示交互后缀。 */
+function syncTruncationButtons(){
+  document.querySelectorAll('.trunc-name').forEach(function(sp){
+    var btn = sp.parentElement.querySelector('.session-title-detail');
+    if(btn) btn.hidden = sp.scrollWidth <= sp.clientWidth + 1;
+  });
 }
 var sessionTitleModal=el('session-title-modal'), sessionTitleOpener=null;
 function openSessionTitle(button){
   sessionTitleOpener=button;
+  var head=button.getAttribute('data-heading');
+  if(head) el('session-title-modal-heading').textContent=head;
   el('session-title-modal-text').textContent=button.getAttribute('data-full')||'';
   sessionTitleModal.hidden=false;
   el('session-title-modal-close').focus();
@@ -1418,7 +1438,7 @@ function closeSessionTitle(){
   if(sessionTitleOpener && document.contains(sessionTitleOpener)) sessionTitleOpener.focus();
   sessionTitleOpener=null;
 }
-el('sessions-body').addEventListener('click',function(e){
+document.addEventListener('click',function(e){
   var button=e.target.closest('.session-title-detail');
   if(button) openSessionTitle(button);
 });
@@ -1444,7 +1464,7 @@ function cellAggCv(k, T){
   if(k==='requests') return fmtInt(T.requests);
   return fmtTok(rowVal(T,k));
 }
-var CV_TOP_N = 8;
+var CV_TOP_N = 19;
 function renderCustomViews(){
   var host = el('cviews');
   if(!host) return;
@@ -1468,19 +1488,10 @@ function renderCustomViews(){
       o.hit = hitOf(o.fresh_input, o.cache_read, o.cache_create);
       return o;
     }).sort(function(a,b){ return b.total-a.total; });
-    /* 尾部收拢:从最小项向内并入,直到并入会使「其他组合」总量不再严格
-       小于紧邻的独立项为止(交接合同:其他必须小于每个独立项,不满足时
-       多展示或全部展示,不生成会排到中间的假其他行);CV_TOP_N 为展示上限。 */
-    var shownCount = Math.min(rows.length, CV_TOP_N), hidden = [];
-    while(shownCount < rows.length){
-      var cand = rows[shownCount];
-      var prevShownTotal = rows[shownCount-1] ? rows[shownCount-1].total : Infinity;
-      var futureSum = cand.total;
-      for(var hi2=shownCount+1; hi2<rows.length; hi2++) futureSum += rows[hi2].total;
-      if(futureSum < prevShownTotal) break; /* 已满足:剩余全部并入 */
-      shownCount++; /* 并入会越位:该行独立展示 */
-    }
-    var shown = rows.slice(0, shownCount), hidden = rows.slice(shownCount);
+    /* 行数上限(用户裁决):按 total 降序取前 CV_TOP_N 行独立展示,其余
+       并入唯一「其他组合」行(固定最后,不参与降序插队);合计行为全部行
+       之和,逐项守恒。 */
+    var shown = rows.slice(0, CV_TOP_N), hidden = rows.slice(CV_TOP_N);
     if(hidden.length){
       /* 其他组合行 = 全部行求和 − 已展示行求和（逐项守恒，防负） */
       var sumShown = aggRows(shown), sumAll = aggRows(rows);
@@ -1499,7 +1510,12 @@ function renderCustomViews(){
       shown.push(other);
     }
     var T = aggRows(shown), maxTotal = shown.length && shown[0].total>0 ? shown[0].total : 1;
-    var dimHeads = dims.map(function(d){ return '<th scope="col">'+dimLabel(d)+'</th>'; }).join('');
+    /* 维度列头与正文 .tname 同为左对齐;列宽由 colgroup 声明(维度列占比
+       随维度数收缩、指标列平分剩余),表头与正文共用同一 colgroup,起点对齐。 */
+    var dimColW = Math.min(21, 63/dims.length);
+    var colgroup = '<colgroup>' + dims.map(function(){ return '<col style="width:'+dimColW+'%">'; }).join('') +
+      ids.map(function(){ return '<col>'; }).join('') + '</colgroup>';
+    var dimHeads = dims.map(function(d){ return '<th scope="col" style="text-align:left;padding-left:10px">'+dimLabel(d)+'</th>'; }).join('');
     var colHeads = ids.map(function(k){
       var c = colById(k);
       return '<th scope="col" title="'+colLabel(c)+'">'+colShort(c)+'</th>';
@@ -1507,7 +1523,7 @@ function renderCustomViews(){
     var viewTitle = dims.map(dimLabel).join(' × ');
     var h = '<section class="sessions-card" aria-label="'+esc(viewTitle)+'">' +
       '<div class="sessions-head"><div><h3>'+esc(viewTitle)+'</h3></div><span class="toml-tag">'+esc(v.name||'')+'</span></div>' +
-      '<div class="table-wrap"><table class="cvx"><thead><tr>' + dimHeads + colHeads +
+      '<div class="table-wrap"><table class="cvx">'+colgroup+'<thead><tr>' + dimHeads + colHeads +
       '</tr></thead><tbody>';
     shown.forEach(function(r){
       h += '<tr class="cv-row" tabindex="0" aria-expanded="false">' + dims.map(function(d,i){
@@ -1525,11 +1541,13 @@ function renderCustomViews(){
       '</tr></tbody></table></div></section>';
     return h;
   }).join('');
+  syncTruncationButtons();
 }
 function toggleCustomRow(row){
   var on = !row.classList.contains('expanded');
   row.classList.toggle('expanded', on);
   row.setAttribute('aria-expanded', on?'true':'false');
+  syncTruncationButtons();
 }
 el('cviews').addEventListener('click', function(e){
   var row = e.target.closest('.cv-row');

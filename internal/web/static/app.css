@@ -454,7 +454,8 @@ td.num.tot .nv{font-weight:750}
 .top-sessions thead th:nth-child(6){width:12%}
 .top-sessions .session-row>th.tname{padding-left:14px}
 .session-title-wrap{display:flex;align-items:center;gap:7px;min-width:0}
-.session-title-text{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session-title-text,.trunc-name{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session-title-detail[hidden]{display:none}
 .session-title-detail{display:grid;place-items:center;flex:0 0 24px;width:24px;height:24px;padding:0;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--quiet);opacity:.72;transition:opacity .15s var(--ease),color .15s var(--ease),border-color .15s var(--ease),background-color .15s var(--ease)}
 .session-title-detail .ic{width:14px;height:14px}
 .session-title-detail:focus-visible{opacity:1;color:var(--accent);border-color:var(--accent);background:var(--accent-soft);outline:0}
@@ -463,9 +464,6 @@ td.num.tot .nv{font-weight:750}
 .session-full-title{margin:0;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r2);background:color-mix(in srgb,var(--muted-surface) 36%,transparent);color:var(--ink);font-size:13px;line-height:1.7;overflow-wrap:anywhere;user-select:text}
 /* 自定义视图表：身份列保留可读宽度，指标列等分；窄容器横向滚动而不是压扁名称 */
 table.cvx{min-width:1120px;table-layout:fixed}
-table.cvx thead th:nth-child(1){width:160px}
-table.cvx thead th:nth-child(2){width:260px}
-table.cvx thead th:nth-child(3){width:120px}
 .chart-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line-soft)}
 .chart-title h3{margin:0;font:750 14px/1.2 var(--font)}
 .chart-sub{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0 0;color:var(--muted);font-size:11px}
