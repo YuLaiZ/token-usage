@@ -68,7 +68,7 @@
 
 ## Data Flow
 
-`messages` is the sole source of truth for tokens. `sessions` stores only metadata (`directory`/`project`/`title`/`parent_id`/`first_ts`/`last_ts`) and has no token columns. Queries aggregate from `messages` in real time and do not depend on a materialized summary table.
+`messages` is the sole source of truth for tokens. `sessions` stores only metadata (`directory`/`project`/`title`/`title_source`/`title_index_ts`/`parent_id`/`first_ts`/`last_ts`) and has no token columns. `title_source` records where a Codex session title came from (`index` from the Codex title index, `native` from the state DB/rollout parse, `fallback` for the stable child-thread placeholder) and drives the source-priority merge that keeps re-collection from reverting an App-renamed title back to the prompt title. `title_index_ts` stores the `updated_at` of the applied index record: an index row only overwrites when its record time is strictly newer, so a truncated or rebuilt index that temporarily contains only an older snapshot cannot roll an already-synced title back. Queries aggregate from `messages` in real time and do not depend on a materialized summary table.
 
 ```mermaid
 graph TB
@@ -102,7 +102,7 @@ The schema is in `migrateV1` in `internal/db/schema.go` (`user_version=1`).
 | Table | Purpose |
 |----|------|
 | `messages` | Primary token ledger, storing per-request tokens under the `(client, id)` key. |
-| `sessions` | Session metadata (client/directory/project/title/parent/time), with no token columns. |
+| `sessions` | Session metadata (client/directory/project/title/title_source/title_index_ts/parent/time), with no token columns. |
 | `sync_state` | Incremental-sync cursor, storing `cursor_value` and `cursor_id` by `(client, source)`. |
 | `raw_router_logs` | Router-middleware staging table containing raw RouterLog records for attribution backfill. |
 | `collection_log` | Collection-completion records, marking collected dates and message counts by `(date, source)`. |
@@ -112,7 +112,7 @@ The schema is in `migrateV1` in `internal/db/schema.go` (`user_version=1`).
 
 ### Schema Migrations
 
-`user_version` gates forward-only migrations, each committed in a single transaction: v2 rebuilt `file_scan_log` as the startup scan-gate state table; v3 added `raw_router_logs.data_source` (separating proxy-direct rows from `codex_session` sync rows); v4 renamed the stored mimocode client from the legacy `Xiaomi MiMo / MiMo Code` to `MiMo Code` in both `messages` and `sessions`; v5 adds the MiMo Desktop split: it recreates the legacy trigger with an extra side effect (a legacy-name write also re-arms the split-reconciliation pending marker), creates split triggers that rewrite `MiMo Code` writes into `MiMo Desktop` for sessions already known to be Desktop, and writes the initial reconciliation pending marker — all before bumping `user_version` to 5. v4 and v5 ship together in v0.1.11. Because `client` is part of both tables' primary keys, v4 does not run a bare UPDATE: it folds legacy rows into `MiMo Code` rows via the same `ON CONFLICT` semantics as the DAO upserts (deterministic merge when the same id exists under both names — no primary-key conflict, no duplicated tokens), deletes the legacy rows, then creates two persistent `BEFORE INSERT` triggers that rewrite any legacy-name write coming from an older rolled-back binary into a `MiMo Code` upsert, and finally bumps `user_version` to 4.
+`user_version` gates forward-only migrations, each committed in a single transaction: v2 rebuilt `file_scan_log` as the startup scan-gate state table; v3 added `raw_router_logs.data_source` (separating proxy-direct rows from `codex_session` sync rows); v4 renamed the stored mimocode client from the legacy `Xiaomi MiMo / MiMo Code` to `MiMo Code` in both `messages` and `sessions`; v5 adds the MiMo Desktop split: it recreates the legacy trigger with an extra side effect (a legacy-name write also re-arms the split-reconciliation pending marker), creates split triggers that rewrite `MiMo Code` writes into `MiMo Desktop` for sessions already known to be Desktop, and writes the initial reconciliation pending marker — all before bumping `user_version` to 5; v6 adds `sessions.title_source` (NOT NULL, default `''` for historical rows of unknown origin) and `title_index_ts` (NOT NULL, default 0) to carry the Codex title source-priority merge and the index-record anti-regression timestamp — no data backfill, the runtime title sync fills indexed rows and backfills stable child-thread fallback titles for still-empty legacy sessions. v4 and v5 ship together in v0.1.11. Because `client` is part of both tables' primary keys, v4 does not run a bare UPDATE: it folds legacy rows into `MiMo Code` rows via the same `ON CONFLICT` semantics as the DAO upserts (deterministic merge when the same id exists under both names — no primary-key conflict, no duplicated tokens), deletes the legacy rows, then creates two persistent `BEFORE INSERT` triggers that rewrite any legacy-name write coming from an older rolled-back binary into a `MiMo Code` upsert, and finally bumps `user_version` to 4.
 
 ### Client Identity
 
@@ -182,6 +182,7 @@ daemon start spawns _run → parent-child lease grants authority → child obtai
                                       ├── fsnotify watches Claude JSONL (ChangedFile source)
                                       ├── fsnotify watches Codex rollout JSONL (ChangedFile source)
                                       │   + periodically polls the Codex state DB (Incremental source)
+                                      │   + periodically polls the Codex title index (SyncTitles source)
                                       ├── fsnotify watches WorkBuddy JSONL (ChangedFile source)
                                       ├── periodically polls the OpenCode DB (Incremental source)
                                       ├── periodically polls the ZCode DB (Incremental source)
@@ -195,6 +196,7 @@ Use cases: real-time usage inspection and continuous background monitoring.
 - **ChangedFile**: triggered by JSONLWatcher (fsnotify watches `.jsonl` changes and debounce merges frequent write events); scans only the changed single file. Covers claude / codex sessions / workbuddy projects / autoclaw agents.
 - **Incremental**: triggered by SQLitePoller (periodically polls mtime; in WAL mode it uses max(db, -wal)); reads incrementally using `sync_state` cursors. Covers opencode / zcode / mimocode / Codex state DB.
 - **router source** (`Source=router`): triggered by the router DB poller; backfills router fields only and does not call a client collector. It is assembled from enabled clients that declare a Router configuration (currently only the `cc_switch` case).
+- **SyncTitles**: submitted unconditionally on every poll of the Codex title-index poller (a bounded periodic poll, not change-triggered); it syncs `session_index.jsonl` hits into `sessions` (UPDATE-only, guarded by the title-source priority and the applied-record timestamp — a rebuilt older snapshot cannot regress a synced title) and backfills the stable child-thread fallback for legacy sessions that are still untitled (the incremental cursor never revisits old threads and the scan gate may skip unchanged rollouts), without calling a collector. The periodic form also guarantees retry after a failed sync without depending on the file changing again. Additionally, every RunCollect round that attempts codex runs the same title sync after collection, covering CLI manual collects and daemon catch-up.
 
 For a client with a router configured that supports attribution, every round (ChangedFile / Incremental / CLI date mode) also recomputes attribution against the already-staged `raw_router_logs` rows once its messages are persisted — the Claude family by `message_id`, Codex by session ID plus a 300s time window over both sides in full for the touched sessions — so an attribution is still backfilled when the router log arrived before the message (the router round's UPDATE missed it and the cursor already moved past) or across midnight boundaries. Rounds of other clients — without a router, or with a legacy router configuration on a non-router-capable client — neither query nor backfill; legacy configurations keep writing raw logs only.
 

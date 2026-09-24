@@ -72,6 +72,23 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 		return runRouterOnlyCollect(ctx, deps, usageDB, log, out, client, req, recordFailure)
 	}
 
+	// SyncTitles 纯标题同步请求（daemon 的 Codex 索引轮询器产出）：不跑任何
+	// collector，只把标题索引命中同步进 sessions。仅对已启用的 codex 生效；
+	// 其他 client 收到属装配错误，静默返回零值结果（无生产装配路径，防御）。
+	if req.SyncTitles {
+		if client != "codex" || !hasCollector(deps, "codex") || !collectorEnabled(deps, "codex") {
+			return result
+		}
+		result.Matched = true
+		result.Attempted++
+		if err := runCodexTitleSync(ctx, deps, usageDB, log); err != nil {
+			fail("codex", failureDates(req, nil), ui.Bi("sync titles", "同步标题失败"), err)
+			return result
+		}
+		result.Succeeded++
+		return result
+	}
+
 	// mimocode Desktop 拆分 reconciliation：仅在显式 mimocode 采集或全
 	// 客户端入口（client==""）检查 pending——其他客户端的采集与 watcher
 	// 事件绝不被 mimocode 的 reconciliation 故障拖累；router-only 路径已在
@@ -103,6 +120,10 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 		}
 	}
 
+	// codexAttempted 记录本轮是否实际尝试了 codex 采集（匹配且已启用）：
+	// 循环后据此追加一次标题索引同步（顺序约束：先正常采集，再做索引标题
+	// 更新；独立于采集成败——索引同步不依赖 state/rollout 读取结果）。
+	codexAttempted := false
 	for _, c := range deps.collectors {
 		if client != "" && c.Name() != client {
 			continue
@@ -113,6 +134,9 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 			continue
 		}
 		result.Attempted++
+		if c.Name() == "codex" {
+			codexAttempted = true
+		}
 
 		// 按本 collector 装配独立请求（不共享可变 Cursors map），完成去重/游标加载。
 		creq, allCollected, err := requestForCollector(ctx, usageDB, c, req, skipCollected)
@@ -230,6 +254,16 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 			fmt.Fprintf(out, "✓ %s: %s\n", c.Name(),
 				ui.Bi(fmt.Sprintf("collected %d messages/API requests", msgCount),
 					fmt.Sprintf("采集 %d 条消息/API 请求", msgCount)))
+		}
+	}
+
+	// codex 轮末标题同步：覆盖 CLI 手动采集、daemon catch-up 与全部运行期触发；
+	// 与采集共用同一串行化入口，不存在索引更新后并发写入把标题改回 prompt 的
+	// 竞态窗口。同步失败与采集失败同等计入 result.Err（recordError 语义下同时
+	// 落 collection_errors，供 retry 恢复）。
+	if codexAttempted {
+		if err := runCodexTitleSync(ctx, deps, usageDB, log); err != nil {
+			fail("codex", failureDates(req, nil), ui.Bi("sync titles", "同步标题失败"), err)
 		}
 	}
 	return result

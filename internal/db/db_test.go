@@ -132,6 +132,8 @@ func TestEnsureSchema_MessageLedgerSchemaV2(t *testing.T) {
 	wantSessionColumns := map[string]bool{
 		"id": true, "client": true, "directory": true, "project": true,
 		"title": true, "parent_id": true, "first_ts": true, "last_ts": true,
+		"title_source":   true,
+		"title_index_ts": true,
 	}
 	rows, err := db.db.Query(`PRAGMA table_info(sessions)`)
 	if err != nil {

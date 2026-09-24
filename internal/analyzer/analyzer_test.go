@@ -111,7 +111,7 @@ poll_interval = 1
 `,
 			preCreate:    []string{"codex/state/state_v1.sqlite"}, // 预创建 state 文件，使 setupFromConfig 的 Glob 命中
 			wantWatchers: 1,                                       // codex watcher（sessions_dir）
-			wantPollers:  1,                                       // Glob 命中 state_v1.sqlite → 建 1 个 codex state poller
+			wantPollers:  2,                                       // Glob 命中 state_v1.sqlite → codex state poller + 标题索引 poller
 		},
 		{
 			name: "all disabled",
@@ -153,7 +153,7 @@ poll_interval = 1
 `,
 			preCreate:    []string{"codex/state/state_v1.sqlite"}, // codex state poller 需要 Glob 命中
 			wantWatchers: 1,                                       // codex sessions_dir watcher
-			wantPollers:  2,                                       // codex state poller + cc_switch router poller
+			wantPollers:  3,                                       // codex state poller + 标题索引 poller + cc_switch router poller
 		},
 		{
 			name: "zcode enabled with db",
@@ -306,20 +306,38 @@ poll_interval = 1
 		t.Fatalf("jsonlWatchers = %d, want %d", got, want)
 	}
 
-	// SQLite pollers：opencode(1) + zcode(1) + codex state(1) + cc_switch router(1) = 4
-	if got, want := len(a.sqlitePollers), 4; got != want {
+	// SQLite pollers：opencode(1) + zcode(1) + codex state(1) + codex 标题索引(1) +
+	// cc_switch router(1) = 5
+	if got, want := len(a.sqlitePollers), 5; got != want {
 		t.Fatalf("sqlitePollers = %d, want %d", got, want)
 	}
 
+	codexStatePollers, codexTitlePollers := 0, 0
 	for _, p := range a.sqlitePollers {
 		switch p.clientName {
-		case "opencode", "zcode", "codex":
+		case "opencode", "zcode":
 			// client 源 SQLite poller：Incremental=true, Source=""
 			if !p.request.Incremental {
 				t.Errorf("client poller[%s] request.Incremental = false, want true", p.clientName)
 			}
 			if p.request.Source != "" {
 				t.Errorf("client poller[%s] request.Source = %q, want empty", p.clientName, p.request.Source)
+			}
+		case "codex":
+			// codex 有两个 poller：state 源（Incremental）与标题索引（SyncTitles 纯同步）。
+			if p.request.SyncTitles {
+				codexTitlePollers++
+				if p.request.Incremental || p.request.ChangedFile != "" {
+					t.Errorf("标题索引 poller[%s] 应为纯同步请求: %+v", p.clientName, p.request)
+				}
+			} else {
+				codexStatePollers++
+				if !p.request.Incremental {
+					t.Errorf("state poller[%s] request.Incremental = false, want true", p.clientName)
+				}
+				if p.request.Source != "" {
+					t.Errorf("state poller[%s] request.Source = %q, want empty", p.clientName, p.request.Source)
+				}
 			}
 		case "claude":
 			// CC Switch router poller：Source=router, Incremental=true
@@ -332,6 +350,9 @@ poll_interval = 1
 		default:
 			t.Errorf("unexpected poller clientName %q", p.clientName)
 		}
+	}
+	if codexStatePollers != 1 || codexTitlePollers != 1 {
+		t.Fatalf("codex pollers: state=%d title=%d, want 1/1", codexStatePollers, codexTitlePollers)
 	}
 }
 

@@ -362,22 +362,145 @@ ON CONFLICT(id,client) DO UPDATE SET
  first_ts=CASE WHEN sessions.first_ts=0 OR (excluded.first_ts>0 AND excluded.first_ts<sessions.first_ts) THEN excluded.first_ts ELSE sessions.first_ts END,
  last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END`
 
+// upsertCodexSessionMetaSQL 是 Codex App / Codex CLI 行的会话 upsert：在通用语义
+// 之上叠加 title/title_source/title_index_ts 的来源优先级合并（index > native >
+// fallback，空标题保留库值、空来源（历史来源未知）等价 native 的可覆盖地位）。
+// CASE 分支顺序即优先级判定：excluded 空标题 → 保留；excluded index → 仅当其
+// title_index_ts 严格大于存量已应用时间才覆盖（索引是最新的用户改名意图；
+// ts 不大于时保持存量——索引截断/重建回旧快照不得把已同步的新标题倒退回旧
+// 标题；存量非 index 行的 title_index_ts 恒 0，任何正 ts 都能首写覆盖）；
+// 存量 index → 保留（防止后续 state/rollout 重采把 App 标题打回 prompt 标题）；
+// excluded fallback → 不覆盖任何非空非兜底存量标题。title_index_ts 与 title 同
+// 取值侧（非 index 写入的 excluded ts 恒 0，且存量 index 行从不会被非 index 值
+// 覆盖，归 0 无实际变化）。
+const upsertCodexSessionMetaSQL = `INSERT INTO sessions (id,client,directory,project,title,parent_id,first_ts,last_ts,title_source,title_index_ts)
+VALUES (?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(id,client) DO UPDATE SET
+ directory=excluded.directory,
+ project=excluded.project,
+ title=CASE
+  WHEN excluded.title='' THEN sessions.title
+  WHEN excluded.title_source='index' AND excluded.title_index_ts>COALESCE(sessions.title_index_ts,0) THEN excluded.title
+  WHEN sessions.title_source='index' THEN sessions.title
+  WHEN excluded.title_source='fallback' AND sessions.title<>'' AND sessions.title_source<>'fallback' THEN sessions.title
+  ELSE excluded.title END,
+ title_source=CASE
+  WHEN excluded.title='' THEN sessions.title_source
+  WHEN excluded.title_source='index' AND excluded.title_index_ts>COALESCE(sessions.title_index_ts,0) THEN 'index'
+  WHEN sessions.title_source='index' THEN sessions.title_source
+  WHEN excluded.title_source='fallback' AND sessions.title<>'' AND sessions.title_source<>'fallback' THEN sessions.title_source
+  ELSE excluded.title_source END,
+ title_index_ts=CASE
+  WHEN excluded.title='' THEN sessions.title_index_ts
+  WHEN excluded.title_source='index' AND excluded.title_index_ts>COALESCE(sessions.title_index_ts,0) THEN excluded.title_index_ts
+  WHEN sessions.title_source='index' THEN sessions.title_index_ts
+  WHEN excluded.title_source='fallback' AND sessions.title<>'' AND sessions.title_source<>'fallback' THEN sessions.title_index_ts
+  ELSE 0 END,
+ parent_id=excluded.parent_id,
+ first_ts=CASE WHEN sessions.first_ts=0 OR (excluded.first_ts>0 AND excluded.first_ts<sessions.first_ts) THEN excluded.first_ts ELSE sessions.first_ts END,
+ last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END`
+
+// isCodexDisplayClient 按 sessions.client 显示名判定 Codex 行（Codex 采集的
+// 落库 client 是这两个显示名，不是配置 key "codex"，也不是字面值 "Codex"）。
+func isCodexDisplayClient(client string) bool {
+	return client == model.ClientCodexApp || client == model.ClientCodexCLI
+}
+
 // UpsertSessionMeta 写入会话最终元数据（directory/project/title/parent_id/first_ts/last_ts），
 // 不写 token 列（token 统计由 messages 账本聚合）。
 // title 为空时保留库中已有值：部分采集路径（如 Codex ChangedFile/rollout 全扫）在
 // 解析侧拿不到标题，空值覆盖会把其他路径补齐的标题冲掉。
+// Codex App / Codex CLI 行额外写 title_source 并按来源优先级合并（见
+// upsertCodexSessionMetaSQL）；其余 client 走通用语句、不触碰 title_source 列
+// （mimocode 兼容 trigger 的 INSERT 列清单冻结不含该列，语义不受影响）。
 func UpsertSessionMeta(ctx context.Context, q dbtx, sessions []model.Session) (int, error) {
 	count := 0
 	for _, s := range sessions {
-		_, err := q.ExecContext(ctx, upsertSessionMetaSQL,
-			s.ID, s.Client, s.Directory, s.Project, s.Title, s.ParentID, s.FirstTS, s.LastTS,
+		var (
+			stmt string
+			args []interface{}
 		)
-		if err != nil {
+		if isCodexDisplayClient(s.Client) {
+			stmt = upsertCodexSessionMetaSQL
+			args = []interface{}{s.ID, s.Client, s.Directory, s.Project, s.Title, s.ParentID, s.FirstTS, s.LastTS, s.TitleSource, s.TitleIndexTS}
+		} else {
+			stmt = upsertSessionMetaSQL
+			args = []interface{}{s.ID, s.Client, s.Directory, s.Project, s.Title, s.ParentID, s.FirstTS, s.LastTS}
+		}
+		if _, err := q.ExecContext(ctx, stmt, args...); err != nil {
 			return count, fmt.Errorf("upsert session meta %q/%q 失败: %w", s.Client, s.ID, err)
 		}
 		count++
 	}
 	return count, nil
+}
+
+// ApplyCodexIndexTitles 把标题索引命中的记录以参数化 SQL 同步进 sessions 的
+// 既有 Codex 行（title/title_source='index'/title_index_ts=记录的 updated_at）。
+//
+// 写入门是单一的时间门：记录时间严格晚于该行已应用的索引时间即写入——包括
+// 标题与来源都没变、只有时间更新的记录（A@100 → A@300 必须推进 title_index_ts，
+// 否则随后的旧快照 B@200 能凭 200>100 通过时间门把标题从 A 倒退为 B）。时间
+// <= 已应用时间的记录（含截断/重建回旧快照、同时间戳重放）一律不写，天然幂等。
+//
+// 同时间戳跨轮的显式决策：解析器在单轮读取内「同时间戳后行胜出」，但前行已
+// 落库后、跨轮到达的同时间戳不同标题记录**不覆盖**（严格 >）——仅凭时间戳无法
+// 区分「文件内后追加」与「重建快照里的旧行」，而后者覆盖会破坏防倒退；updated_at
+// 为纳秒精度，真实同时间戳二次改名几乎不存在，且该缝隙中下一次任何时间更新的
+// 改名仍会正常覆盖。持久层不支持跨轮的后行胜出，由测试锁定该行为。
+//
+// UPDATE-only：不插入新 session、不重放 messages、不改变 token 与时间列；索引
+// 未命中（无对应行）与非 Codex 行不受影响。返回更新行数（含纯时间推进行）。
+// 调用方负责事务边界（dbtx 可为 *DB 或 *sql.Tx）。
+func ApplyCodexIndexTitles(ctx context.Context, q dbtx, titles map[string]model.CodexTitleIndexRecord) (int64, error) {
+	const stmt = `UPDATE sessions SET title=?, title_source='index', title_index_ts=?
+WHERE id=? AND client IN (?,?)
+  AND COALESCE(title_index_ts,0)<?`
+	var updated int64
+	for id, rec := range titles {
+		if id == "" || rec.Name == "" {
+			continue
+		}
+		res, err := q.ExecContext(ctx, stmt,
+			rec.Name, rec.UpdatedAtUnixNano, id, model.ClientCodexApp, model.ClientCodexCLI, rec.UpdatedAtUnixNano)
+		if err != nil {
+			return updated, fmt.Errorf("同步 Codex 标题索引 %q 失败: %w", id, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return updated, fmt.Errorf("读取 Codex 标题同步结果 %q 失败: %w", id, err)
+		}
+		updated += n
+	}
+	return updated, nil
+}
+
+// ApplyCodexFallbackTitles 把子线程兜底标题写进 sessions 中仍是空标题的既有
+// Codex 行（title_source 置 'fallback'）。WHERE 条件保证只在空标题行写入：
+// 不覆盖任何非空标题（含非兜底与兜底）、不插入新 session、不动 messages/token/
+// 时间。该步骤服务存量空标题子线程（增量游标不会重触达旧线程、rollout 全扫可
+// 能被跳过门略过，兜底必须由独立同步闭合）；后续更好的来源（索引命中、
+// state/rollout 标题）经 upsert 优先级自然替换。返回更新行数。
+func ApplyCodexFallbackTitles(ctx context.Context, q dbtx, fallbacks map[string]string) (int64, error) {
+	const stmt = `UPDATE sessions SET title=?, title_source='fallback'
+WHERE id=? AND client IN (?,?) AND COALESCE(title,'')=''`
+	var updated int64
+	for id, title := range fallbacks {
+		if id == "" || title == "" {
+			continue
+		}
+		res, err := q.ExecContext(ctx, stmt,
+			title, id, model.ClientCodexApp, model.ClientCodexCLI)
+		if err != nil {
+			return updated, fmt.Errorf("回填 Codex 子线程兜底 %q 失败: %w", id, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return updated, fmt.Errorf("读取 Codex 兜底回填结果 %q 失败: %w", id, err)
+		}
+		updated += n
+	}
+	return updated, nil
 }
 
 // SetSyncCursors 批量写入同步游标。调用方负责事务原子性（传入 dbtx 可为 *DB 或 *sql.Tx）。

@@ -55,12 +55,13 @@ func userVersion(t *testing.T, d *DB) int {
 	return v
 }
 
-// TestSchemaCurrentVersionIsFive：当前 schema 版本常量守护（v3 起 data_source
+// TestSchemaCurrentVersionIsSix：当前 schema 版本常量守护（v3 起 data_source
 // 列合同由 schema_v3_test.go、v4/v5 起 mimocode 改名/拆分与兼容 trigger 合同
-// 由 schema_v4_test.go、schema_v5_test.go 断言；升级 schema 时同步本断言）。
-func TestSchemaCurrentVersionIsFive(t *testing.T) {
-	if currentSchemaVersion != 5 {
-		t.Fatalf("currentSchemaVersion = %d, want 5", currentSchemaVersion)
+// 由 schema_v4_test.go、schema_v5_test.go 断言、v6 起 sessions.title_source
+// 由 schema_v6_test.go 断言；升级 schema 时同步本断言）。
+func TestSchemaCurrentVersionIsSix(t *testing.T) {
+	if currentSchemaVersion != 6 {
+		t.Fatalf("currentSchemaVersion = %d, want 6", currentSchemaVersion)
 	}
 }
 

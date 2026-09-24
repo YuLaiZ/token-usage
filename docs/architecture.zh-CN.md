@@ -68,7 +68,7 @@
 
 ## 数据流
 
-`messages` 是 token 的唯一真相源，`sessions` 只保存元数据（directory/project/title/parent_id/first_ts/last_ts），不存储 token 列。查询从 `messages` 实时聚合，不依赖物化汇总表。
+`messages` 是 token 的唯一真相源，`sessions` 只保存元数据（directory/project/title/title_source/title_index_ts/parent_id/first_ts/last_ts），不存储 token 列。`title_source` 记录 Codex 会话标题的来源（`index`＝Codex 标题索引、`native`＝state DB/rollout 解析、`fallback`＝子线程稳定兜底），驱动来源优先级合并，防止重采把 App 改名标题打回 prompt 标题。`title_index_ts` 记录已应用索引记录的 `updated_at`：索引行仅在记录时间严格更新时覆盖，索引截断/重建后暂时只含旧快照也不会把已同步标题倒退。查询从 `messages` 实时聚合，不依赖物化汇总表。
 
 ```mermaid
 graph TB
@@ -102,7 +102,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 | 表 | 用途 |
 |----|------|
 | `messages` | token 账本主表，按 (client, id) 主键存逐请求 token |
-| `sessions` | 会话元数据（client/directory/project/title/parent/时间），不含 token 列 |
+| `sessions` | 会话元数据（client/directory/project/title/title_source/title_index_ts/parent/时间），不含 token 列 |
 | `sync_state` | 增量同步游标，按 (client, source) 存 cursor_value + cursor_id |
 | `raw_router_logs` | 路由中间件 staging 表，存原始 RouterLog 用于归因回填 |
 | `collection_log` | 采集完成记录，按 (date, source) 标记已采集日期与消息数 |
@@ -112,7 +112,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 
 ### Schema 迁移
 
-`user_version` 门控向前迁移，每个迁移单事务提交：v2 重建 `file_scan_log` 为 startup 跳过门状态表；v3 为 `raw_router_logs` 加 `data_source` 列（区分 proxy 直录与 `codex_session` 同步行）；v4 把 `messages` 与 `sessions` 中存量 mimocode client 从 legacy 长名 `Xiaomi MiMo / MiMo Code` 改名为 `MiMo Code`；v5 增加 MiMo Desktop 拆分能力：重建 legacy trigger 并附加副作用（旧名写入同时重置拆分 reconciliation pending 标记）、创建 split trigger（会话已知 Desktop 时把 `MiMo Code` 写入改写为 `MiMo Desktop`）、写入初始 reconciliation pending，最后才把 `user_version` 提升到 5。v4 与 v5 同属一个 v0.1.11。由于 `client` 是两表主键成分，v4 不是裸 UPDATE：先按与 DAO upsert 相同的 `ON CONFLICT` 语义把 legacy 行折叠进 `MiMo Code` 行（同 id 新旧名并存时确定性合并——不报主键冲突、token 不重复计数），删除 legacy 行，再创建两个持久化 `BEFORE INSERT` trigger 把旧版回滚二进制写入的 legacy 名改写为 `MiMo Code` upsert，最后才把 `user_version` 提升到 4。
+`user_version` 门控向前迁移，每个迁移单事务提交：v2 重建 `file_scan_log` 为 startup 跳过门状态表；v3 为 `raw_router_logs` 加 `data_source` 列（区分 proxy 直录与 `codex_session` 同步行）；v4 把 `messages` 与 `sessions` 中存量 mimocode client 从 legacy 长名 `Xiaomi MiMo / MiMo Code` 改名为 `MiMo Code`；v5 增加 MiMo Desktop 拆分能力：重建 legacy trigger 并附加副作用（旧名写入同时重置拆分 reconciliation pending 标记）、创建 split trigger（会话已知 Desktop 时把 `MiMo Code` 写入改写为 `MiMo Desktop`）、写入初始 reconciliation pending，最后才把 `user_version` 提升到 5；v6 为 `sessions` 加 `title_source`（NOT NULL，存量行默认 `''` 表示来源未知）与 `title_index_ts`（NOT NULL，默认 0）两列，承载 Codex 标题来源优先级合并与索引记录防倒退时间戳——不做数据回填，运行期标题同步负责填充索引命中行并回填存量空标题子线程的稳定兜底。v4 与 v5 同属一个 v0.1.11。由于 `client` 是两表主键成分，v4 不是裸 UPDATE：先按与 DAO upsert 相同的 `ON CONFLICT` 语义把 legacy 行折叠进 `MiMo Code` 行（同 id 新旧名并存时确定性合并——不报主键冲突、token 不重复计数），删除 legacy 行，再创建两个持久化 `BEFORE INSERT` trigger 把旧版回滚二进制写入的 legacy 名改写为 `MiMo Code` upsert，最后才把 `user_version` 提升到 4。
 
 ### Client 身份
 
@@ -182,6 +182,7 @@ mimocode 数据源产生两个正式 client：`MiMo Code`（CLI）与 `MiMo Desk
                             ├── fsnotify 监控 Claude JSONL（ChangedFile source）
                             ├── fsnotify 监控 Codex rollout JSONL（ChangedFile source）
                             │   + 定时轮询 Codex state DB（Incremental source）
+                            │   + 定时轮询 Codex 标题索引（SyncTitles source）
                             ├── fsnotify 监控 WorkBuddy JSONL（ChangedFile source）
                             ├── 定时轮询 OpenCode DB（Incremental source）
                             ├── 定时轮询 ZCode DB（Incremental source）
@@ -195,6 +196,7 @@ mimocode 数据源产生两个正式 client：`MiMo Code`（CLI）与 `MiMo Desk
 - **ChangedFile**：JSONLWatcher 触发（fsnotify 监听 `.jsonl` 变化，debounce 合并高频写事件），只扫描变更的单个文件。覆盖 claude / codex sessions / workbuddy projects / autoclaw agents。
 - **Incremental**：SQLitePoller 触发（定时轮询 mtime，WAL 模式取 max(db, -wal)），按 `sync_state` 游标增量读取。覆盖 opencode / zcode / mimocode / codex state DB。
 - **router source**（`Source=router`）：router DB poller 触发，只补 router 字段，不调用 client collector。按启用且声明 Router 的 client 配置装配（当前只有 `cc_switch` case）。
+- **SyncTitles**：Codex 标题索引 poller 的每 tick 无条件提交（有界周期轮询，非变化触发），把 `session_index.jsonl` 命中同步进 `sessions`（仅 UPDATE，受标题来源优先级与已应用记录时间戳保护——重建回旧快照不倒退），并为存量仍空标题的子线程会话回填稳定兜底（增量游标不会重触达旧线程、跳过门可能略过未变 rollout），不调用 collector。周期形态同时保证同步失败后的重试不依赖文件再次变化。此外每个尝试过 codex 的 RunCollect 轮在采集后追加同一同步，覆盖 CLI 手动采集与 daemon catch-up。
 
 对已配置 router 且支持归因的 client，每个采集轮（ChangedFile / Incremental / CLI 日期模式）在 messages 入库后同样基于已入库的 `raw_router_logs` 行重算归因——Claude 系按 `message_id`，Codex 按 session ID 加 300s 时间窗对触达的 session 查两侧全量——router 日志先于 message 到达（router 轮的 UPDATE 落空且 cursor 已推过）或跨午夜交错时，归因仍能补上。未配置 router、或在不支持 router 的 client 上持存量 router 配置的轮既不查表也不回填；存量配置仍只写原始日志。
 

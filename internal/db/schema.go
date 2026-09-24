@@ -11,8 +11,10 @@ import (
 // mimocode 落库名 "Xiaomi MiMo / MiMo Code" 统一改名并折叠为 "MiMo Code"，
 // 并创建持久化 trigger 兼容旧版二进制回滚后继续写旧名（见 migrateV4）；v5
 // 赋予 MiMo Desktop 拆分能力（split trigger + 自动 reconciliation pending，
-// 见 migrateV5）。v4 与 v5 同属一个 v0.1.11。
-const currentSchemaVersion = 5
+// 见 migrateV5）；v6 为 sessions 加 title_source 与 title_index_ts 两列
+// （Codex 标题来源优先级合并与索引重建防倒退，见 migrateV6）。v4 与 v5 同属
+// 一个 v0.1.11。
+const currentSchemaVersion = 6
 
 // ParserVersion 是 JSONL 解析/映射逻辑的版本号（file_scan_log.parser_version）。
 // 任何影响 JSONL 采集产出语义的解析/映射修复都必须递增此值：跳过门按版本整表
@@ -49,6 +51,12 @@ func ensureSchema(db *sql.DB) error {
 	if version < 5 {
 		if err := migrateV5(db); err != nil {
 			return fmt.Errorf("迁移到 v5 失败: %w", err)
+		}
+	}
+	version = getUserVersion(db)
+	if version < 6 {
+		if err := migrateV6(db); err != nil {
+			return fmt.Errorf("迁移到 v6 失败: %w", err)
 		}
 	}
 
@@ -607,6 +615,49 @@ func migrateV5(db *sql.DB) error {
 		if _, err := tx.Exec(stmt); err != nil {
 			return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, stmt)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交迁移事务失败: %w", err)
+	}
+	return nil
+}
+
+// migrateV6PostAlterHook 仅供测试注入：在两条 ALTER 全部成功后、PRAGMA
+// user_version 之前执行，返回错误时整个迁移事务回滚（验证中段失败原子性——
+// ALTER 若不在事务内，注入失败后列已存在，重试会报 duplicate column）。
+// 生产恒为 nil。
+var migrateV6PostAlterHook func() error
+
+// migrateV6 为 sessions 加两列：title_source（非空约束，默认空字符串，值域见
+// model.TitleSource* 常量）与 title_index_ts（INTEGER NOT NULL DEFAULT 0，已应用
+// 索引记录的 updated_at UnixNano）。存量行保持零值（来源未知/无已应用索引记录）：
+// 首次 Codex 标题同步以有效索引覆盖命中行、未命中保留原值；title_index_ts 使
+// 索引截断/重建回旧快照时已同步的新标题不被旧记录倒退（严格大于才覆盖）。
+// 不做数据回填（回填是运行期同步步骤的职责，迁移只扩 schema）。
+// 单事务：任一步失败保持 v5，下一次打开重试；重试幂等（user_version 门控）。
+func migrateV6(db *sql.DB) error {
+	stmts := []string{
+		`ALTER TABLE sessions ADD COLUMN title_source TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN title_index_ts INTEGER NOT NULL DEFAULT 0`,
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("开启迁移事务失败: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, stmt)
+		}
+	}
+	if migrateV6PostAlterHook != nil {
+		if err := migrateV6PostAlterHook(); err != nil {
+			return fmt.Errorf("迁移中段注入失败: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`PRAGMA user_version = 6`); err != nil {
+		return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, `PRAGMA user_version = 6`)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("提交迁移事务失败: %w", err)

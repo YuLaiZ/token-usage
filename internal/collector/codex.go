@@ -122,6 +122,9 @@ func (c *CodexCollector) Collect(ctx context.Context, req CollectRequest, logger
 		hasNext    bool
 		dbSuccess  int
 		partialErr error
+		// childThreads 记录本轮触达 thread 中的子线程（state thread_source 判定），
+		// 供返回前的标题兜底解析使用。
+		childThreads = map[string]bool{}
 	)
 	for _, dbPath := range stateDBs {
 		if err := ctx.Err(); err != nil {
@@ -142,6 +145,9 @@ func (c *CodexCollector) Collect(ctx context.Context, req CollectRequest, logger
 		}
 		dbSuccess++
 		for _, th := range threads {
+			if codexThreadSourceIsChild(th.ThreadSource) {
+				childThreads[th.ID] = true
+			}
 			if th.RolloutPath == "" {
 				if req.Incremental {
 					nextCur, hasNext = advanceCodexCursor(nextCur, hasNext, th)
@@ -193,6 +199,9 @@ func (c *CodexCollector) Collect(ctx context.Context, req CollectRequest, logger
 		)
 	}
 
+	// 统一标题优先级（索引 > state/rollout > 子线程兜底）在返回前应用。
+	c.resolveSessionTitles(ctx, &result, childThreads, logger)
+
 	result.PartialErr = partialErr
 	if req.Incremental && partialErr == nil {
 		// 无新 thread 时 hasNext=false，nextCur 保持输入 cursor，避免回退。
@@ -211,7 +220,8 @@ func advanceCodexCursor(current model.SyncCursor, hasCurrent bool, th codexThrea
 
 // collectChangedFile 只解析单个 rollout 文件，fallback metadata 为空，
 // 由 rollout 内的 session_meta 提供 ID/client/cwd/ParentID/source/originator；
-// title 由 backfillThreadTitles 从 state DB 补齐。
+// title 由 backfillThreadMeta 从 state DB 补齐（含子线程判定），再经
+// resolveSessionTitles 应用索引与兜底优先级。
 func (c *CodexCollector) collectChangedFile(ctx context.Context, path string, logger *slog.Logger) (CollectResult, error) {
 	// fallback 为空 codexThread：所有字段零值，session_meta 将回填。
 	part, status, err := parseRolloutWithStatus(ctx, path, codexThread{}, map[string]struct{}{}, logger)
@@ -220,19 +230,43 @@ func (c *CodexCollector) collectChangedFile(ctx context.Context, path string, lo
 		part.FileStatuses = []FileScanStatus{status}
 		return part, err
 	}
-	c.backfillThreadTitles(ctx, &part, logger)
+	childThreads := c.backfillThreadMeta(ctx, &part, logger)
+	c.resolveSessionTitles(ctx, &part, childThreads, logger)
 	part.FileStatuses = []FileScanStatus{status}
 	return part, nil
 }
 
-// loadThreadTitleMap 汇总各 state DB threads 表的非空标题，键为 thread id。
-// 单个 DB 读取失败不中断（返回已收集到的部分与合并错误），由调用方决定降级方式。
-func loadThreadTitleMap(ctx context.Context, dbPaths []string) (map[string]string, error) {
-	titles := make(map[string]string)
+// codexThreadSourceIsChild 按 state DB threads.thread_source 判定子线程。
+// subagent（CLI 子代理）与 agent_created_thread（App 新建空线程）是本机实测
+// 会无标题的两类；realtime_voice 与空值不判（未知形态保守不猜）。rollout
+// session_meta 侧无对应信息（subagent 的 source 是对象形态、agent_created_thread
+// 的 source 是普通字符串），子线程判定以 state DB 权威列为准。
+func codexThreadSourceIsChild(threadSource string) bool {
+	return threadSource == "subagent" || threadSource == "agent_created_thread"
+}
+
+// CodexChildThreadFallbackTitle 构造子线程所有来源都无标题时的稳定兜底
+// （engine 的独立同步步骤与 collector 采集路径共用同一构造，保证存量回填与
+// 采集兜底产出完全一致的文案）。「前 8 位」取 thread ID 字符串前 8 个字符，
+// 不足 8 位用整个 ID。落库固定该原文；英文界面的翻译需求由显示层处理，
+// 不改写来源值。
+func CodexChildThreadFallbackTitle(id string) string {
+	short := id
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return "Codex 子线程 · " + short
+}
+
+// loadThreadTitleMeta 汇总各 state DB threads 表的单行可用元数据（非空标题 +
+// 子线程判定），键为 thread id。单个 DB 读取失败不中断（返回已收集到的部分
+// 与合并错误），由调用方决定降级方式。
+func loadThreadTitleMeta(ctx context.Context, dbPaths []string) (map[string]codexStateThreadMeta, error) {
+	metas := make(map[string]codexStateThreadMeta)
 	var joinedErr error
 	for _, dbPath := range dbPaths {
 		if err := ctx.Err(); err != nil {
-			return titles, errors.Join(joinedErr, err)
+			return metas, errors.Join(joinedErr, err)
 		}
 		db, err := openSQLiteReadOnly(dbPath)
 		if err != nil {
@@ -240,7 +274,7 @@ func loadThreadTitleMap(ctx context.Context, dbPaths []string) (map[string]strin
 			continue
 		}
 		rows, err := db.QueryContext(ctx,
-			`SELECT COALESCE(id,''),COALESCE(title,'') FROM threads WHERE COALESCE(title,'')<>''`)
+			`SELECT COALESCE(id,''),COALESCE(title,''),COALESCE(thread_source,'') FROM threads`)
 		if err != nil {
 			db.Close()
 			joinedErr = errors.Join(joinedErr, fmt.Errorf("%s: %w", dbPath, err))
@@ -248,14 +282,22 @@ func loadThreadTitleMap(ctx context.Context, dbPaths []string) (map[string]strin
 		}
 		var rowErr error
 		for rows.Next() {
-			var id, title string
-			if err := rows.Scan(&id, &title); err != nil {
+			var id, title, threadSource string
+			if err := rows.Scan(&id, &title, &threadSource); err != nil {
 				rowErr = err
 				break
 			}
-			if id != "" {
-				titles[id] = title
+			if id == "" {
+				continue
 			}
+			meta := metas[id]
+			if title != "" {
+				meta.Title = title
+			}
+			if codexThreadSourceIsChild(threadSource) {
+				meta.ChildThread = true
+			}
+			metas[id] = meta
 		}
 		if rowErr == nil {
 			rowErr = rows.Err()
@@ -266,14 +308,52 @@ func loadThreadTitleMap(ctx context.Context, dbPaths []string) (map[string]strin
 			joinedErr = errors.Join(joinedErr, fmt.Errorf("%s: %w", dbPath, rowErr))
 		}
 	}
-	return titles, joinedErr
+	return metas, joinedErr
 }
 
-// backfillThreadTitles 用 state DB threads.title 补齐 result.Sessions 中缺失的标题。
-// ChangedFile 与 rollout 全扫路径的 fallback 为空 codexThread，rollout session_meta
-// 又不含 title（标题只在 state DB），解析侧无法获得，故在此补齐。标题属增强信息：
-// state DB 不可达时降级为无标题（Warn），不影响采集主流程。
-func (c *CodexCollector) backfillThreadTitles(ctx context.Context, result *CollectResult, logger *slog.Logger) {
+// codexStateThreadMeta 是 state DB 单 thread 的标题增强信息。
+type codexStateThreadMeta struct {
+	Title       string
+	ChildThread bool
+}
+
+// CodexStateThreadMeta 是 state DB 单 thread 标题增强信息的导出形态
+// （engine 的标题同步步骤用于存量空标题子线程的兜底回填判定）。
+type CodexStateThreadMeta struct {
+	Title       string
+	ChildThread bool
+}
+
+// ReadCodexStateThreadMeta 读取 stateDir 下各 state DB threads 表的单行可用
+// 元数据（非空标题 + 子线程判定），键为 thread id。state 目录不可达或全部
+// DB 读取失败时返回错误（调用方决定降级）；部分失败时返回已收集部分与
+// 合并错误。全量读取、不依赖增量游标。
+func ReadCodexStateThreadMeta(ctx context.Context, stateDir string, logger *slog.Logger) (map[string]CodexStateThreadMeta, error) {
+	stateDBs, err := findStateDBs(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(stateDBs) == 0 {
+		return nil, nil
+	}
+	metas, loadErr := loadThreadTitleMeta(ctx, stateDBs)
+	if loadErr != nil && logger != nil {
+		logger.Warn("Codex state thread meta lookup incomplete", "error", loadErr)
+	}
+	out := make(map[string]CodexStateThreadMeta, len(metas))
+	for id, m := range metas {
+		out[id] = CodexStateThreadMeta{Title: m.Title, ChildThread: m.ChildThread}
+	}
+	return out, loadErr
+}
+
+// backfillThreadMeta 用 state DB threads 补齐 result.Sessions 中缺失的标题，
+// 并返回本轮涉及的子线程判定（键为 session ID）。ChangedFile 与 rollout 全扫
+// 路径的 fallback 为空 codexThread，rollout session_meta 又不含 title（标题只在
+// state DB），解析侧无法获得，故在此补齐。标题属增强信息：state DB 不可达时
+// 降级为无标题（Warn），不影响采集主流程。仅在存在空标题 Session 时查询
+// （非空标题无需回填，子线程判定只服务空标题兜底）。
+func (c *CodexCollector) backfillThreadMeta(ctx context.Context, result *CollectResult, logger *slog.Logger) map[string]bool {
 	need := false
 	for i := range result.Sessions {
 		if result.Sessions[i].Title == "" {
@@ -282,23 +362,61 @@ func (c *CodexCollector) backfillThreadTitles(ctx context.Context, result *Colle
 		}
 	}
 	if !need {
-		return
+		return nil
 	}
 	stateDBs, err := findStateDBs(c.stateDir)
 	if err != nil {
 		logger.Warn("Codex thread title lookup failed, skipped", "state_dir", c.stateDir, "error", err)
-		return
+		return nil
 	}
 	if len(stateDBs) == 0 {
-		return
+		return nil
 	}
-	titles, loadErr := loadThreadTitleMap(ctx, stateDBs)
+	metas, loadErr := loadThreadTitleMeta(ctx, stateDBs)
 	if loadErr != nil {
 		logger.Warn("Codex thread title lookup incomplete", "error", loadErr)
 	}
+	childThreads := make(map[string]bool)
 	for i := range result.Sessions {
+		meta, ok := metas[result.Sessions[i].ID]
+		if !ok {
+			continue
+		}
 		if result.Sessions[i].Title == "" {
-			result.Sessions[i].Title = titles[result.Sessions[i].ID]
+			result.Sessions[i].Title = meta.Title
+		}
+		if meta.ChildThread {
+			childThreads[result.Sessions[i].ID] = true
+		}
+	}
+	return childThreads
+}
+
+// resolveSessionTitles 对本轮 Codex Sessions 统一应用标题优先级：
+// 索引命中（index）> state/rollout 已解析标题（native）> 子线程兜底（fallback）。
+// 索引读取失败或缺文件时降级保留现有解析值（Warn 仅真错误）。无标题且非子线程
+// 保持空标题与空来源。必须在构造 CollectResult 后、返回前调用，使四类采集入口
+// 落库前拿到一致的 title/title_source。
+func (c *CodexCollector) resolveSessionTitles(ctx context.Context, result *CollectResult, childThreads map[string]bool, logger *slog.Logger) {
+	if len(result.Sessions) == 0 {
+		return
+	}
+	titles, err := ReadCodexTitleIndex(ctx, c.stateDir, logger)
+	if err != nil {
+		logger.Warn("Codex title index lookup failed, keeping parsed titles", "error", err)
+	}
+	for i := range result.Sessions {
+		s := &result.Sessions[i]
+		if rec, ok := titles[s.ID]; ok && rec.Name != "" {
+			s.Title, s.TitleSource, s.TitleIndexTS = rec.Name, model.TitleSourceIndex, rec.UpdatedAtUnixNano
+			continue
+		}
+		if s.Title != "" {
+			s.TitleSource = model.TitleSourceNative
+			continue
+		}
+		if childThreads[s.ID] {
+			s.Title, s.TitleSource = CodexChildThreadFallbackTitle(s.ID), model.TitleSourceFallback
 		}
 	}
 }
@@ -336,7 +454,8 @@ func (c *CodexCollector) collectExistingJSONL(ctx context.Context, gate FileSkip
 		result.Messages = append(result.Messages, part.Messages...)
 		result.Sessions = append(result.Sessions, part.Sessions...)
 	}
-	c.backfillThreadTitles(ctx, &result, logger)
+	childThreads := c.backfillThreadMeta(ctx, &result, logger)
+	c.resolveSessionTitles(ctx, &result, childThreads, logger)
 	return result, nil
 }
 

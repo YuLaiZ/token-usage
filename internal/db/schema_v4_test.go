@@ -58,8 +58,8 @@ func v4TriggerExists(t *testing.T, q interface {
 func TestFreshDBReachesV4(t *testing.T) {
 	d := openFreshDB(t)
 	defer d.Close()
-	if got := userVersion(t, d); got != 5 {
-		t.Fatalf("fresh DB user_version = %d, want 5（v4 合同由本测试其余断言在 v5 库上验证）", got)
+	if got := userVersion(t, d); got < 4 {
+		t.Fatalf("fresh DB user_version = %d, want >= 4（v4 合同由本测试其余断言在最新库上验证）", got)
 	}
 	if !v4TriggerExists(t, d, v4TriggerMessages) {
 		t.Fatal("fresh DB 应含 messages 兼容 trigger")
@@ -82,8 +82,8 @@ func TestV3UpgradeRenamesLegacyMimoRows(t *testing.T) {
 		t.Fatalf("open v3 db: %v", err)
 	}
 	defer upgraded.Close()
-	if got := userVersion(t, upgraded); got != 5 {
-		t.Fatalf("upgraded user_version = %d, want 5（v3→v4→v5 一气呵成）", got)
+	if got := userVersion(t, upgraded); got < 4 {
+		t.Fatalf("upgraded user_version = %d, want >= 4（v3 dump 经 Open 走完迁移链）", got)
 	}
 
 	// messages：两条 legacy 行改名且字段逐项保留。
@@ -359,8 +359,8 @@ func TestLegacyWriteAfterMigrationRewrittenByTrigger(t *testing.T) {
 		t.Fatalf("open v3 db: %v", err)
 	}
 	defer d.Close()
-	if got := userVersion(t, d); got != 5 {
-		t.Fatalf("user_version = %d, want 5", got)
+	if got := userVersion(t, d); got < 4 {
+		t.Fatalf("user_version = %d, want >= 4", got)
 	}
 
 	// 场景 A：旧版写入全新消息（legacy client 值）→ trigger 改写为新名入库。

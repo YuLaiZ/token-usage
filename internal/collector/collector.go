@@ -81,6 +81,13 @@ type CollectRequest struct {
 	// （不 Open 内容、不解析、不产出消息）。nil = 无门（所有非 catch-up 入口的
 	// 现状行为，恒全读）。判定为纯函数：输入门记录预取快照与读前文件证据快照。
 	SkipGate FileSkipGate
+	// SyncTitles 是 Codex 标题的纯同步请求（daemon 索引周期轮询器产出）：不调用
+	// collector，把 session_index.jsonl 命中的标题同步进 sessions，并为存量空标题
+	// 子线程回填稳定兜底（读 state DB 的 thread_source 判定，不读增量游标与
+	// rollout）。App 改名可能只写索引（state DB 与 rollout 均不变），该请求独立
+	// 覆盖此场景。仅 client="codex" 时生效；engine 侧其他采集轮对 codex 的标题
+	// 同步挂在常规采集之后，不依赖本标志。
+	SyncTitles bool
 }
 
 // FileSkipGate 判定文件是否可跳过（startup 跳过门命中回调）。

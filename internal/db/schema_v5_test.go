@@ -99,8 +99,8 @@ func v5TriggerExists(t *testing.T, q interface {
 func TestFreshDBReachesV5(t *testing.T) {
 	d := openFreshDB(t)
 	defer d.Close()
-	if got := userVersion(t, d); got != 5 {
-		t.Fatalf("fresh DB user_version = %d, want 5", got)
+	if got := userVersion(t, d); got < 5 {
+		t.Fatalf("fresh DB user_version = %d, want >= 5", got)
 	}
 	for _, name := range []string{v5TrigLegacyMessages, v5TrigLegacySessions, v5TrigSplitMessages, v5TrigSplitSessions} {
 		if !v5TriggerExists(t, d, name) {
@@ -128,8 +128,8 @@ func TestV3UpgradeChainReachesV5WithPending(t *testing.T) {
 		t.Fatalf("open v3 db: %v", err)
 	}
 	defer upgraded.Close()
-	if got := userVersion(t, upgraded); got != 5 {
-		t.Fatalf("user_version = %d, want 5", got)
+	if got := userVersion(t, upgraded); got < 5 {
+		t.Fatalf("user_version = %d, want >= 5", got)
 	}
 	if n := v4RowsByClient(t, upgraded, "messages", model.ClientMiMoCode); n != 3 {
 		t.Fatalf("v4 折叠合同应保持: MiMo Code 行 = %d, want 3", n)
@@ -218,8 +218,8 @@ func v5LegacyWriteFixture(t *testing.T) *DB {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { d.Close() })
-	if got := userVersion(t, d); got != 5 {
-		t.Fatalf("user_version = %d, want 5", got)
+	if got := userVersion(t, d); got < 5 {
+		t.Fatalf("user_version = %d, want >= 5", got)
 	}
 	// 用生产 DAO 写入 Desktop 会话的既有身份（模拟 reconciliation 已完成）。
 	if _, err := UpsertSessionMeta(context.Background(), d, []model.Session{{

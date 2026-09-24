@@ -358,6 +358,20 @@ func (a *Analyzer) setupFromConfig(cfg *config.Config, debounceDuration time.Dur
 		}
 	}
 
+	// Codex 标题索引轮询：App 改名可能只写 session_index.jsonl（state DB 与
+	// rollout 均不变），索引文件必须独立监控；请求为 SyncTitles 纯同步
+	//（RunCollect 前置分派，不跑 collector）。采用有界周期轮询（alwaysSubmit：
+	// 每 tick 无条件提交，不依赖文件变化）——MonitorSubmitFunc 无错误回传，
+	// 变化触发模式下「同步失败 + 索引不再变化」会永久失去重试；周期提交使
+	// 失败在下一周期自然重试，同步侧幂等（条件 UPDATE 无变化零写入），固定
+	// 周期的开销可忽略。
+	if clientPathConfigured(cfg, "codex", "state_dir") {
+		clientCfg, _ := cfg.ClientConfig("codex")
+		titleReq := collector.CollectRequest{Source: collector.CollectSourceClient, SyncTitles: true}
+		a.addCodexTitleIndexPoller("codex",
+			collector.CodexTitleIndexPath(clientCfg.Paths["state_dir"]), titleReq, interval)
+	}
+
 	// 注意：WorkBuddy 不建 SQLite poller。
 	// workbuddy.db 是 title 只读查询库（workbuddy.go:60-67 queryWorkBuddyTitles），
 	// 不由 token-usage 写入，其 mtime 变化不对应「有新 token 数据」；
@@ -399,6 +413,17 @@ func (a *Analyzer) addSQLitePoller(clientName, dbPath string, request collector.
 
 func (a *Analyzer) addSQLiteDirGlobPoller(clientName, dir, pattern string, request collector.CollectRequest, interval time.Duration) {
 	poller := newSQLiteDirGlobPoller(dir, pattern, clientName, request, interval, a.monitorSubmit, a.logger)
+	poller.signalReady = a.newMonitorSignaler()
+	a.readyWg.Add(1)
+	a.sqlitePollers = append(a.sqlitePollers, poller)
+}
+
+// addCodexTitleIndexPoller 注册 Codex 标题索引的周期提交 poller（alwaysSubmit：
+// 每 tick 无条件提交 SyncTitles 纯同步请求，不依赖索引文件变化——失败在下一
+// 周期自然重试）。
+func (a *Analyzer) addCodexTitleIndexPoller(clientName, indexPath string, request collector.CollectRequest, interval time.Duration) {
+	poller := NewSQLitePoller(indexPath, clientName, request, interval, a.monitorSubmit, a.logger)
+	poller.alwaysSubmit = true
 	poller.signalReady = a.newMonitorSignaler()
 	a.readyWg.Add(1)
 	a.sqlitePollers = append(a.sqlitePollers, poller)

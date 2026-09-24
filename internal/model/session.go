@@ -129,6 +129,17 @@ type Message struct {
 	TotalTokens       int64
 }
 
+// sessions.title_source 的值域（Codex 会话标题来源优先级）。
+// 空字符串（零值/历史行）：来源未知，等价于可被 index 覆盖的存量标题；
+// native：state DB / rollout 解析得到的原始标题；
+// index：Codex 标题索引（session_index.jsonl）命中的 App 标题，最高优先；
+// fallback：子线程无任何来源标题时的稳定兜底，最低优先，不得覆盖非兜底标题。
+const (
+	TitleSourceNative   = "native"
+	TitleSourceIndex    = "index"
+	TitleSourceFallback = "fallback"
+)
+
 // Session 消息账本 V1 最终会话元数据（不含 token 列，token 由 messages 聚合）。
 type Session struct {
 	ID        string
@@ -139,4 +150,18 @@ type Session struct {
 	ParentID  string
 	FirstTS   int64
 	LastTS    int64
+	// TitleSource 见上方常量；仅 Codex 采集路径填写，其他 client 保持零值
+	// （对应列默认 ''，落库语句不写该列）。
+	TitleSource string
+	// TitleIndexTS 是索引标题的 updated_at UnixNano（TitleSource=index 时有效，
+	// 其余为零值）；采集路径与独立同步步骤都携带，驱动落库层的防倒退比较
+	//（索引截断/重建回旧快照时严格大于才覆盖）。
+	TitleIndexTS int64
+}
+
+// CodexTitleIndexRecord 是 Codex 标题索引（session_index.jsonl）单条有效记录
+// 的最新值：标题原文与 updated_at 的 UnixNano。
+type CodexTitleIndexRecord struct {
+	Name              string
+	UpdatedAtUnixNano int64
 }

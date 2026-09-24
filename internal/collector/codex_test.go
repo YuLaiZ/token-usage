@@ -1575,10 +1575,10 @@ func createStateDBWithThreads(t *testing.T, stateDir string, threads []codexThre
 	for _, th := range threads {
 		if _, err := conn.Exec(`INSERT OR REPLACE INTO threads
 			(id, rollout_path, created_at, updated_at, source, cwd, title,
-			 model, created_at_ms, updated_at_ms)
-			VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			 model, thread_source, created_at_ms, updated_at_ms)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 			th.ID, th.RolloutPath, th.CreatedAt, th.UpdatedAt, th.Source, th.Cwd, th.Title,
-			th.Model, th.CreatedAtMS, th.UpdatedAtMS); err != nil {
+			th.Model, th.ThreadSource, th.CreatedAtMS, th.UpdatedAtMS); err != nil {
 			t.Fatalf("insert thread: %v", err)
 		}
 	}

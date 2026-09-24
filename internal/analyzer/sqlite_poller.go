@@ -29,10 +29,15 @@ type SQLitePoller struct {
 	expandGlob      bool
 	globDir         string
 	globPattern     string
-	signalReady     func() // Analyzer 预置的就绪回调（记录初始 mtime 后调用恰好一次）
-	readyOnce       sync.Once
-	stopOnce        sync.Once
-	stopCh          chan struct{}
+	// alwaysSubmit 是周期提交模式：每个 tick 无条件上报 request，不依赖文件
+	// 指纹变化。用于 Codex 标题索引的同步——MonitorSubmitFunc 无错误回传，
+	// 变化触发模式下「提交失败 + 文件不再变化」会永久失去重试；周期提交使
+	// 上一次失败在下一周期自然重试（同步侧幂等收敛，固定周期开销可忽略）。
+	alwaysSubmit bool
+	signalReady  func() // Analyzer 预置的就绪回调（记录初始 mtime 后调用恰好一次）
+	readyOnce    sync.Once
+	stopOnce     sync.Once
+	stopCh       chan struct{}
 }
 
 // NewSQLitePoller 创建 SQLite 轮询器。
@@ -90,6 +95,7 @@ func (p *SQLitePoller) Run(ctx context.Context) {
 
 	// 初始记录完整文件集合指纹。dbPath 可以是精确路径，也可以是 Codex 的
 	// state_*.sqlite glob；后者每次 tick 都重新展开，覆盖运行后新增的 state DB。
+	// alwaysSubmit 模式不消费指纹（每 tick 无条件提交），仍记录以保持行为一致。
 	p.lastFingerprint, _ = p.fingerprint()
 	p.logger.Info("starting poller", "db", p.dbPath, "interval", p.interval)
 
@@ -110,6 +116,13 @@ func (p *SQLitePoller) Run(ctx context.Context) {
 			p.logger.Info("poller stopped")
 			return
 		case <-ticker.C:
+			if p.alwaysSubmit {
+				// 周期提交：有界周期轮询（方案语义），失败在下一周期重试，
+				// 属预期心跳，降 Debug。
+				p.logger.Debug("periodic submit", "request", p.request)
+				p.submit(p.clientName, p.request)
+				continue
+			}
 			fingerprint, present := p.fingerprint()
 			if fingerprint != p.lastFingerprint {
 				p.lastFingerprint = fingerprint
