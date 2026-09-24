@@ -70,11 +70,11 @@ func TestMainMenu_HelpOpenSwallowsNavigation(t *testing.T) {
 
 // ---- data_dir 说明页 ----
 
-// TestMainMenu_DataDirEntersReadOnlyPage 主菜单 cursor=5(数据目录) enter 进入 dataDirPage。
+// TestMainMenu_DataDirEntersReadOnlyPage 主菜单 cursor=6(数据目录) enter 进入 dataDirPage。
 func TestMainMenu_DataDirEntersReadOnlyPage(t *testing.T) {
 	a := newAppForTest(&config.Config{DataDir: "/x"}, &config.Config{DataDir: "/x"}, nil)
 	m := newMainMenu(a)
-	m.cursor = 5 // 数据目录(只读)
+	m.cursor = 6 // 数据目录(只读)
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if len(a.stack) != 2 {
 		t.Fatalf("enter 数据目录应 push 说明页, 栈长=%d", len(a.stack))

@@ -21,6 +21,14 @@ type DaemonDraft struct {
 	AutoStart    bool `json:"autostart"`
 }
 
+// RefreshDraft 是 [refresh] 段的编辑模型:两个查询刷新间隔(秒)。GET 下发
+// 用户层原值(未配置为 0),前端按默认 30 秒展示;PUT 全量回传草稿值。
+// 与 daemon.poll_interval(SQLite 采集轮询)互相独立,改刷新值不触发 daemon 重启。
+type RefreshDraft struct {
+	DashboardInterval int `json:"dashboard_interval"`
+	WatchInterval     int `json:"watch_interval"`
+}
+
 // LogDraft 是 [log] 段的编辑模型;Level 为空串表示「默认级别」。
 type LogDraft struct {
 	Level   string `json:"level"`
@@ -71,6 +79,7 @@ type QueryDraft struct {
 type ConfigDraft struct {
 	Daemon          DaemonDraft   `json:"daemon"`
 	Log             LogDraft      `json:"log"`
+	Refresh         RefreshDraft  `json:"refresh"`
 	Clients         []ClientDraft `json:"clients"`
 	Routers         []RouterDraft `json:"routers"`
 	ProviderAliases []AliasDraft  `json:"provider_aliases"`

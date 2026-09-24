@@ -59,7 +59,7 @@ var UI_TEXT = {
   '原始标签':'Raw identifier','显示名称':'Display name','例如 account:provider-plan':'e.g. account:provider-plan','例如 Provider Pro':'e.g. Provider Pro',
   '新别名 key':'New alias key','新别名 value':'New alias value','添加':'Add','删除':'Delete',
   'key 和 value 不能为空':'key and value are required','key 已存在':'key already exists',
-  '恢复全部默认值':'Restore all defaults','恢复全部默认值？':'Restore all defaults?','客户端、路由、守护进程、日志、查询与展示设置和供应商别名都将载入为全部默认值（尚未保存）；确认后请再点击“保存”才会写入配置。':'Clients, routing, daemon, log, query & display settings, and provider aliases will be loaded as all-default values (not saved yet); confirm, then click Save to write the config.',
+  '恢复全部默认值':'Restore all defaults','恢复全部默认值？':'Restore all defaults?','客户端、路由、守护进程、日志、查询与展示设置、刷新间隔和供应商别名都将载入为全部默认值（尚未保存）；确认后请再点击“保存”才会写入配置。':'Clients, routing, daemon, logging, query & display settings, refresh intervals, and provider aliases will be loaded as all-default values (not saved yet); confirm, then click Save to write the config.',
   '客户端、路由、查询、输出列和供应商别名都将恢复为服务端当前已保存的配置，当前未保存修改会丢失。':'Clients, routing, queries, output columns, and provider aliases will be restored to the configuration currently saved on the server. Unsaved changes will be lost.',
   '已恢复为已保存配置':'Restored saved config',
   '有未保存的修改':'Unsaved changes','已保存':'Saved','已修改（未保存）':'Modified (unsaved)','该区间暂无用量':'No usage in this range','已载入全部默认值（未保存）':'Defaults loaded (unsaved)','读取默认配置失败':'Failed to load defaults','离线 · 无法连接本地服务':'Offline · cannot reach the local service','离线':'Offline',
@@ -75,7 +75,17 @@ var UI_TEXT = {
   '上移 ':'Move up ','下移 ':'Move down ','移除 ':'Remove ','点击加入':'Add','已上移 ':'Moved up ','已下移 ':'Moved down ','已加入 ':'Added ','已移除 ':'Removed ','顺序已更新':'Order updated',
   '切换到中文':'Switch to Chinese','切换到英文':'Switch to English',
   '当前浅色模式 · 点击切换到深色模式':'Light mode · Switch to dark mode','当前深色模式 · 点击切换到浅色模式':'Dark mode · Switch to light mode',
-  '钴蓝':'Cobalt','湛蓝':'Azure','湖蓝':'Lake','藏青':'Navy','冰青':'Glacier','高对比、清晰':'High contrast and crisp','明亮、通透':'Bright and airy','青蓝、柔和':'Soft cyan blue','沉稳、低饱和':'Calm and muted','冷调、轻盈':'Cool and light'
+  '钴蓝':'Cobalt','湛蓝':'Azure','湖蓝':'Lake','藏青':'Navy','冰青':'Glacier','高对比、清晰':'High contrast and crisp','明亮、通透':'Bright and airy','青蓝、柔和':'Soft cyan blue','沉稳、低饱和':'Calm and muted','冷调、轻盈':'Cool and light',
+  '刷新':'Refresh','刷新当前区间':'Refresh current range','自动刷新已开启':'Auto refresh is on','最近查询 · —':'Last query · —',
+  '正在自动刷新':'Auto refreshing','正在手动刷新':'Refreshing','正在查询':'Querying','目标 ':'Target ',' · 下方暂为上次结果':' · Previous result shown below',
+  '已更新':'Updated','最近查询 ':'Last query ','自动刷新 · 每 ':'Auto refresh · every ',' 秒':' sec',
+  '查询刷新':'Query refresh','仪表盘与终端 watch 分别设置；守护进程的采集轮询在上方单独配置':'Set dashboard and terminal watch separately; daemon collection polling is configured above',
+  '仪表盘自动刷新':'Dashboard auto refresh','保存后按所选间隔自动查询；手动刷新和切换区间共用同一等待状态':'Auto query at the saved interval; manual refresh and range changes share the same loading state',
+  'CLI watch 刷新':'CLI watch refresh','终端执行 watch 时的默认间隔；命令行 --interval 可覆盖本次运行':'Default interval for terminal watch; --interval overrides it for one run',
+  '仪表盘自动刷新间隔':'Dashboard auto refresh interval','仪表盘自定义刷新秒数':'Custom dashboard interval in seconds',
+  'CLI watch 刷新间隔':'CLI watch refresh interval','CLI watch 自定义刷新秒数':'Custom CLI watch interval in seconds',
+  '请输入 1 到 3600 的整数秒数':'Enter a whole number from 1 to 3600 seconds',
+  '设置默认视图、输出列、自定义视图、组合查询和刷新间隔':'Configure the default view, output columns, custom views, groups, and refresh intervals',
 };
 var UI_REVERSE = {};
 Object.keys(UI_TEXT).forEach(function(k){ UI_REVERSE[UI_TEXT[k]]=k; });
@@ -187,8 +197,13 @@ function fmtDur(ms){
 var state = { range:0, view:'list', mode:'trend', meta:{}, data:null, heat:[] };
 var CUSTOM = null;            /* 自定义区间 {s,e} 日期串；预设区间时恒为 null */
 var DIMROWS = {};             /* 各维度当前展示行（构成图联动用） */
-var fetchSeq = 0;             /* 区间请求序号：丢弃过期响应 */
 var RANGE_KEY = 'tu-range';
+/* 统一刷新状态机:自动/手动/区间变更共用一个请求入口与一套
+   加载/成功/失败状态。seq 保证新请求胜出,过期响应不写回;自动计时
+   从最近一次请求完成后起算,请求期间不并发自动查询。 */
+var REFRESH = { seq:0, source:null, state:'idle', lastAt:null, loadedRange:null, targetText:'',
+  intervalSec:30, autoTimer:null, doneTimer:null };
+function refreshIntervalOf(v){ v=+v||0; return v>0?v:30; }
 function rangeBoundsFor(i){
   var t = startToday();
   if(i===7 && CUSTOM){
@@ -333,7 +348,7 @@ document.querySelectorAll('.nav-button[data-page]').forEach(function(b){
     targetPage.setAttribute('aria-hidden','false');
     targetPage.setAttribute('data-active','true');
     window.scrollTo(0, 0);
-    if(b.dataset.page==='dash' && state.data) drawChart();
+    if(b.dataset.page==='dash'){ if(state.data) drawChart(); catchUpRefresh(); }
     if(b.dataset.page==='config' && !CFG.loaded && !CFG.loading) loadConfig();
   });
 });
@@ -383,7 +398,7 @@ bindSeg('range-seg', function(v){
   setCalSel(ymd(b.s), ymd(b.e));
   renderCal();
   syncCustomTxt();
-  loadDashboard();
+  requestRefresh('range');
 });
 bindSeg('view-seg', function(v){ state.view=v; if(state.data) renderGroups(); });
 bindSeg('mode-seg', function(v){ state.mode=v; drawChart(); });
@@ -485,7 +500,7 @@ el('cal-apply').addEventListener('click', function(){
   saveCustomRange();
   closeCal();
   syncRangeSeg();
-  loadDashboard();
+  requestRefresh('range');
   toast(ui('已应用自定义区间 ','Custom range applied: ')+rangeDateText());
 });
 document.addEventListener('click', function(e){
@@ -714,12 +729,15 @@ document.addEventListener('keydown',function(e){
 var HUES = { client:'--d1', provider:'--d2', model:'--d3', project:'--d4' };
 var DIMS = ['client','provider','model','project'];
 function normRows(raw){
+  /* 行即后端最终行(total 降序、"其他"尾行固定最后):前端按机器字段
+     is_other/other_count 本地化尾行名,不再解析文案、不再截断或合并。 */
   return (raw||[]).map(function(r){
+    var isOther=!!r.is_other, otherCount=isOther?(+r.other_count||0):0;
     var o = {
-      name: r.key||'',
+      name: isOther ? ui('其他（'+otherCount+' 项）','Other ('+otherCount+')') : (r.key||''),
       requests: +r.requests||0, fresh_input: +r.fresh_input||0, output: +r.output||0,
       cache_read: +r.cache_read||0, cache_create: +r.cache_create||0, reasoning: +r.reasoning||0,
-      total: +r.total||0, hit: null, isOther:false, hiddenCount:0
+      total: +r.total||0, hit: null, isOther:isOther, hiddenCount:otherCount
     };
     o.hit = hitOf(o.fresh_input, o.cache_read, o.cache_create);
     return o;
@@ -740,25 +758,6 @@ function aggRows(rows){
   t.hit = hitOf(t.fresh_input, t.cache_read, t.cache_create);
   return t;
 }
-/* 尾部小项收拢：≥4 独立项、候选份额<5%、并入后不超过前一项；并入 ≥2 项才聚合成唯一的“其他”行 */
-/* 维度卡行数上限:独立项按 total 降序最多展示 9 行,超出部分并入唯一的
-   「其他（N 项）」(固定最后);≤9 行时全部独立展示,不做小份额收拢——
-   合计行恒为全部行之和,逐项守恒。 */
-var DIM_TOP_N = 9;
-function compactDimensionTail(rows){
-  var ordered=rows.slice().sort(function(a,b){ return b.total-a.total || String(a.name).localeCompare(String(b.name)); });
-  if(ordered.length<=DIM_TOP_N) return ordered;
-  var picked=ordered.splice(DIM_TOP_N);
-  var other={name:ui('其他（'+picked.length+' 项）','Other ('+picked.length+')'),isOther:true,hiddenCount:picked.length,
-    requests:0,fresh_input:0,output:0,cache_read:0,cache_create:0,reasoning:0,total:0,hit:null};
-  picked.forEach(function(r){
-    other.requests+=r.requests; other.fresh_input+=r.fresh_input; other.output+=r.output;
-    other.cache_read+=r.cache_read; other.cache_create+=r.cache_create||0; other.reasoning+=r.reasoning; other.total+=r.total;
-  });
-  other.hit = hitOf(other.fresh_input, other.cache_read, other.cache_create);
-  ordered.push(other); /* “其他”固定最后，不参与降序插队 */
-  return ordered;
-}
 function cellFor(k, r, extra){
   if(k==='cache_hit') return '<span class="nv">'+pctText(r.hit,1)+'</span>';
   if(k==='total') return '<span class="nv">'+fmtTok(rowVal(r,k))+'</span><i class="mb mb-a" style="width:'+extra+'%"></i>';
@@ -773,7 +772,7 @@ function cellAgg(k, T){
 function tableView(rows, dim){
   var ids=colIds();
   var maxT = rows.length && rows[0].total>0 ? rows[0].total : 1, T = aggRows(rows);
-  var colgroup = '<colgroup><col style="width:21%">'+ids.map(function(){ return '<col>'; }).join('')+'</colgroup>';
+  var colgroup = '<colgroup><col style="width:27%">'+ids.map(function(){ return '<col>'; }).join('')+'</colgroup>';
   var head = ids.map(function(k){
     var c = colById(k);
     return '<th scope="col" title="'+colLabel(c)+'">'+colShort(c)+'</th>';
@@ -801,7 +800,7 @@ function tableView(rows, dim){
     '</tr>';
   return h + '</tbody></table></div></div>';
 }
-var RAMP = [100,83,67,52,39,27];
+var RAMP = [100,91,82,73,64,55,46,37,28,19];
 function arcPath(r1, r2, a0, a1){
   var rad = function(a){ return (a-90)*Math.PI/180; };
   var pt = function(r, a){ return (100 + r*Math.cos(rad(a))).toFixed(2)+' '+(100 + r*Math.sin(rad(a))).toFixed(2); };
@@ -809,21 +808,10 @@ function arcPath(r1, r2, a0, a1){
   return 'M '+pt(r2,a0)+' A '+r2+' '+r2+' 0 '+large+' 1 '+pt(r2,a1)+
          ' L '+pt(r1,a1)+' A '+r1+' '+r1+' 0 '+large+' 0 '+pt(r1,a0)+' Z';
 }
-/* 构成图小份额合并：isOther 行或排名≥3 且份额<5% 的扇区并入图例“其他”（标注成员数） */
+/* 构成图与列表消费完全相同的后端行(total 降序、"其他"尾行固定最后):
+   图例与扇区一一对应列表行,不再按份额或排名二次合并;百分比仅供显示。 */
 function donutMetas(rows){
-  var T = aggRows(rows), metas = [], otherN = 0, otherTotal = 0;
-  rows.forEach(function(r,i){
-    if(r.isOther){
-      /* hiddenCount 由聚合方显式给出;数字正则只作旧数据兜底 */
-      otherN += r.hiddenCount!=null ? r.hiddenCount : (String(r.name||'').match(/\d+/) ? +String(r.name).match(/\d+/)[0] : 1);
-      otherTotal += r.total;
-      return;
-    }
-    if(i>=3 && T.total && r.total/T.total<0.05){ otherN++; otherTotal += r.total; return; }
-    metas.push({ name:r.name, total:r.total });
-  });
-  if(otherN) metas.push({ name:ui('其他（'+otherN+' 项）','Other ('+otherN+')'), total:otherTotal });
-  return { metas:metas, T:T };
+  return { metas: rows.map(function(r){ return { name:r.name, total:r.total }; }), T: aggRows(rows) };
 }
 function composeView(dimId, rows){
   var meta = donutMetas(rows), T = meta.T, metas = meta.metas;
@@ -857,7 +845,7 @@ function renderGroups(){
   var dims = (state.data.dimensions)||{};
   var html = '';
   DIMS.forEach(function(id){
-    var rows = compactDimensionTail(normRows(dims[id]));
+    var rows = normRows(dims[id]);
     DIMROWS[id] = rows;
     html += '<article class="group" data-gid="'+id+'" style="--gh:var('+HUES[id]+')">' +
       '<header class="group-head"><div class="group-title"><i class="g-dot"></i>' +
@@ -990,47 +978,33 @@ var CUR = { t:[], labels:[], hourly:false, granularity:'day' };
 var HEATVALS = [], HEATLAB = [], HEATSCOPE = '', HEATTIPS = [];
 var WD_ZH = ['一','二','三','四','五','六','日'];
 var WD_EN = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-/* “尚未发生”分界=今天(本机时钟):日期晚于今天的格子是尚未发生的未来,
-   显示空白;今天及之前的零用量日期显示最低档色(data_through 只表达数据
-   新鲜度,不作为空白分界——最后一条消息之后的已过去日期是真实零值)。 */
-function isFutureDate(ds){
-  var today = ymd(new Date());
-  return ds > today;
-}
+/* 热力桶语义由后端下发:future=true 的日期是尚未发生的未来,显示空白;
+   已发生但无用量的零值日是真实零格,显示最低档色。前端不再按本机时钟
+   重新推导分界,也不做跨日/跨时段业务聚合。 */
 function heatMap(){
   var m = {};
   (state.heat||[]).forEach(function(d){ m[d.date]=d; });
   return m;
 }
-function heatDay(ds){
-  var days = state.heat||[];
-  for(var i=0;i<days.length;i++){ if(days[i].date===ds) return days[i]; }
-  return null;
-}
-/* 趋势序列：单日=24 小时柱；≤62 天=每日柱；更长=按周聚合柱。数据来自 heatmap.days */
+/* 趋势序列直接读取后端桶(粒度/边界/整数值/峰值/空态),不重聚合。 */
 function seriesFor(){
-  var days = state.heat||[];
-  if(!days.length) return { t:[], labels:[], hourly:false, granularity:'day' };
-  var b = rangeBounds(), s = ymd(b.s), e = ymd(b.e);
-  if(s===e){
-    var day = heatDay(s);
-    var hours = (day && day.hours) ? day.hours.map(function(v){ return +v||0; }) : [];
-    return { t:hours, labels:hours.map(function(_,i){ return i+ui('时',':00'); }), hourly:true, granularity:'hour' };
+  var t = state.data && state.data.trend;
+  if(!t || !t.buckets || !t.buckets.length){
+    return { t:[], labels:[], hourly:false, granularity:'day', empty:true, peakIndex:-1, peakTotal:0 };
   }
-  var t = days.map(function(d){ return +d.total||0; });
-  var labels = days.map(function(d){ return String(d.date).slice(5); });
-  /* 年度或较长自定义区间按周聚合，避免数百根窄柱失去可读性 */
-  if(t.length>62){
-    var wt=[], wl=[];
-    for(var j=0;j<t.length;j+=7){
-      var sum=0;
-      for(var k=j;k<Math.min(j+7,t.length);k++) sum+=t[k];
-      wt.push(sum);
-      wl.push(labels[Math.min(j+6, labels.length-1)]);
-    }
-    return { t:wt, labels:wl, hourly:false, granularity:'week' };
-  }
-  return { t:t, labels:labels, hourly:false, granularity:'day' };
+  var labels = t.buckets.map(function(b){
+    if(t.granularity==='hour') return b.key+ui('时',':00');
+    return String(b.key||'').slice(5);
+  });
+  return {
+    t: t.buckets.map(function(b){ return +b.total||0; }),
+    labels: labels,
+    hourly: t.granularity==='hour',
+    granularity: t.granularity,
+    empty: !!t.empty,
+    peakIndex: (typeof t.peak_index==='number' && t.peak_index>=0 && t.peak_index<t.buckets.length) ? t.peak_index : -1,
+    peakTotal: +t.peak_total||0
+  };
 }
 function drawChart(){
   syncModeSeg();
@@ -1050,10 +1024,9 @@ function drawTrend(){
   var W = Math.max(320, frame.clientWidth-24), H = frame.clientHeight || 260;
   var s = seriesFor();
   CUR = { t:s.t, labels:s.labels, hourly:s.hourly, granularity:s.granularity };
-  /* 空区间(全零序列,零请求即零用量):显示明确空状态,不渲染「峰值 0」
-     的假图表;未来范围与无数据范围同语义。 */
-  var empty = true;
-  for(var zi=0; zi<s.t.length; zi++){ if(s.t[zi]>0){ empty=false; break; } }
+  /* 空区间由后端显式标识(empty=true,无桶或全零):显示明确空状态,不渲染
+     「峰值 0」的假图表;未来范围与无数据范围同语义。 */
+  var empty = s.empty;
   if(!s.t.length || empty){
     svg.setAttribute('viewBox','0 0 '+W+' '+H);
     svg.innerHTML = '<text class="ax ta-c" x="'+(W/2).toFixed(1)+'" y="'+(H/2).toFixed(1)+'">'+ui('该区间暂无用量','No usage in this range')+'</text>';
@@ -1072,8 +1045,7 @@ function drawTrend(){
     out += '<text class="ax ta-e" x="'+(padL-6)+'" y="'+(y+3).toFixed(1)+'">'+axisFmt(gv)+'</text>';
   }
   var n = s.t.length, slot = pw/n, bw = Math.min(slot*0.6, 34);
-  var peakI = 0;
-  s.t.forEach(function(v,i){ if(v>s.t[peakI]) peakI = i; });
+  var peakI = s.peakIndex>=0 ? s.peakIndex : 0; /* 峰值由后端给出(首个最大值) */
   s.t.forEach(function(v,i){
     var x = X(i)-bw/2, y = Y(v);
     out += '<rect class="bar-t" x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+Math.max(padT+ph-y,0).toFixed(1)+'" rx="2.5"/>';
@@ -1103,30 +1075,32 @@ function drawTrend(){
   el('chart-sub').innerHTML = ui('峰值 ','Peak ')+s.labels[peakI]+' '+fmtTok(s.t[peakI])+' · '+rangeName(state.range)+' · '+rangeDateText()+' · '+grain+' · <i class="key-dot"></i>'+ui('用量','Tokens');
 }
 function drawHeat(){
-  var b = rangeBounds(), days = Math.round((b.e-b.s)/86400000)+1;
-  frame.classList.toggle('calendar-layout',days>31);
+  var b = rangeBounds();
+  var hm = (state.data && state.data.heatmap) || {};
+  var mode = hm.mode || 'day_hour';
+  var days = hm.days || [];
+  frame.classList.toggle('calendar-layout', mode==='calendar');
   var W = Math.max(320, frame.clientWidth-24), H = frame.clientHeight || 260;
   var map = heatMap();
   HEATVALS=[]; HEATLAB=[]; HEATTIPS=[]; HEATSCOPE=rangeDateText();
   var out='', sub2='', maxCell=1, hasBlank=false;
 
-  if(days<=7){
-    /* 1–7 天：每个日期一行、每小时一格，值为该小时真实用量 */
+  if(mode==='day_hour'){
+    /* 1–7 天(day_hour):每个日期一行、每小时一格;小时值为后端展示桶,
+       future 日整行空白(尚未发生),已发生零值日显示最低档色。 */
     var rows=[];
-    for(var di=0;di<days;di++){
-      var d=new Date(b.s); d.setDate(d.getDate()+di);
-      var ds=ymd(d), wi=(d.getDay()+6)%7;
-      var future=isFutureDate(ds), rec=map[ds];
+    days.forEach(function(rec){
+      var d=dateOf(rec.date), wi=(d.getDay()+6)%7;
       var vals=[];
-      if(future || !rec){
+      if(rec.future || !rec.hours){
         for(var z=0;z<24;z++) vals.push(null);
-        if(future) hasBlank=true;
+        if(rec.future) hasBlank=true;
       }else{
-        vals=(rec.hours||[]).map(function(v){ return +v||0; });
+        vals=rec.hours.map(function(v){ return +v||0; });
         while(vals.length<24) vals.push(0);
       }
-      rows.push({label:LOCALE==='en'?WD_EN[wi]+' '+fmtMD(d):fmtMD(d)+' 周'+WD_ZH[wi],date:ds,vals:vals});
-    }
+      rows.push({label:LOCALE==='en'?WD_EN[wi]+' '+fmtMD(d):fmtMD(d)+' 周'+WD_ZH[wi],date:rec.date,vals:vals});
+    });
     rows.forEach(function(r){r.vals.forEach(function(v){if(v!=null&&v>maxCell)maxCell=v;});});
     var padT=8,padB=18,padL=76,padR=8,gap=2;
     var cw=Math.min((W-padL-padR-23*gap)/24,42), ch=(H-padT-padB-(rows.length-1)*gap)/rows.length;
@@ -1143,35 +1117,36 @@ function drawHeat(){
       });
     });
     [0,6,12,18].forEach(function(c){out+='<text class="ax ta-c" x="'+(x0+c*(cw+gap)+cw/2).toFixed(1)+'" y="'+(H-4)+'">'+c+ui('时',':00')+'</text>';});
-    sub2=days===1?ui('当天 · 小时分布','Single day · hourly'):ui('日期 × 小时','Date × hour');
-  }else if(days<=31){
-    /* 8–31 天：横轴保留每一天，纵轴压缩成 4 小时时段；本月预设保留完整自然月 */
+    sub2=days.length===1?ui('当天 · 小时分布','Single day · hourly'):ui('日期 × 小时','Date × hour');
+  }else if(mode==='day_block'){
+    /* 8–31 天(day_block):横轴保留每一天,纵轴 6 个 4 小时时段;时段值由
+       后端按小时格求和下发,前端不再合并。本月预设保留完整自然月:
+       范围终点之后到月底的格子是尚未发生的未来,补空白格。 */
     var blocks=['00–04','04–08','08–12','12–16','16–20','20–24'];
     var vals=blocks.map(function(){return [];});
     var tips=blocks.map(function(){return [];});
-    var dates=[], monthFuture=false, ds0=ymd(b.s), ds1=ymd(b.e), displayDs1=ds1;
+    var dates=[], ds1=ymd(b.e), displayDs1=ds1;
     if(state.range===2){
       var monthEnd=new Date(b.e.getFullYear(),b.e.getMonth()+1,0);
-      displayDs1=ymd(monthEnd); monthFuture=displayDs1>ds1;
+      displayDs1=ymd(monthEnd);
     }
-    var cur=new Date(dateOf(ds0));
-    while(ymd(cur)<=displayDs1){
-      var dstr=ymd(cur);
-      dates.push(dstr);
-      var rec2=map[dstr], active=!!rec2 && !isFutureDate(dstr) && dstr>=ds0 && dstr<=ds1;
-      if(rec2 && isFutureDate(dstr)) hasBlank=true;
-      if(monthFuture && dstr>ds1) hasBlank=true;
+    days.forEach(function(rec){ dates.push(rec.date); });
+    var cur=dateOf(ds1);
+    while(ymd(cur)<displayDs1){
+      cur.setDate(cur.getDate()+1);
+      dates.push(ymd(cur));
+    }
+    dates.forEach(function(ds,c){
+      var rec=map[ds];
+      if(rec && rec.future) hasBlank=true;
+      if(ds>ds1) hasBlank=true; /* 本月补齐的自然月尾部格 */
       for(var bi=0;bi<6;bi++){
         var v=null;
-        if(active){
-          v=0;
-          for(var h=bi*4;h<bi*4+4;h++) v += +((rec2.hours||[])[h])||0;
-        }
-        vals[bi].push(v); tips[bi].push(active?dstr+' · '+blocks[bi]:'');
+        if(rec && !rec.future && rec.blocks){ v=+(rec.blocks[bi])||0; }
+        vals[bi].push(v); tips[bi].push(v===null?'':ds+' · '+blocks[bi]);
         if(v!==null&&v>maxCell)maxCell=v;
       }
-      cur.setDate(cur.getDate()+1);
-    }
+    });
     var pT=8,pB=20,pL=52,pR=8,g=2;
     var cW=Math.min((W-pL-pR-(dates.length-1)*g)/dates.length,64),cH=(H-pT-pB-5*g)/6;
     var gw=dates.length*cW+(dates.length-1)*g,xStart=pL+Math.max((W-pL-pR-gw)/2,0);
@@ -1192,9 +1167,11 @@ function drawHeat(){
     dates.forEach(function(dsx,c){if(c%step===0||c===dates.length-1)out+='<text class="ax ta-c" x="'+(xStart+c*(cW+g)+cW/2).toFixed(1)+'" y="'+(H-4)+'">'+dsx.slice(5)+'</text>';});
     sub2=ui('日期 × 4 小时时段','Date × 4-hour block');
   }else{
-    /* 32 天以上：GitHub 式日历热力图；本年保留完整自然年的周列 */
-    var start=new Date(b.s), displayEnd=state.range===3?new Date(b.e.getFullYear(),11,31):new Date(b.e);
-    var displayDays=Math.round((displayEnd-start)/86400000)+1, yearFuture=displayDays>days;
+    /* 32 天以上(calendar):GitHub 式日历热力图,每格 1 天,值为后端逐日
+       合计;future 日空白。本年预设保留完整自然年的周列(年尾未发生部分
+       为展示补齐的空白格)。 */
+    var start=dateOf(ymd(b.s)), displayEnd=state.range===3?new Date(b.e.getFullYear(),11,31):new Date(b.e);
+    var inRangeDays=days.length, displayDays=Math.round((displayEnd-start)/86400000)+1, yearFuture=displayDays>inRangeDays;
     var offset=(start.getDay()+6)%7, weeks=Math.ceil((offset+displayDays)/7);
     var pt=24,pb=8,pl=34,pr=8,gp=2;
     var cellW=Math.min((W-pl-pr-(weeks-1)*gp)/weeks,34),cellH=Math.min((H-pt-pb-6*gp)/7,24);
@@ -1208,11 +1185,11 @@ function drawHeat(){
     for(var n2=0;n2<displayDays;n2++){
       var cd=new Date(start); cd.setDate(cd.getDate()+n2);
       var cds=ymd(cd),pos=offset+n2,row=pos%7,col=Math.floor(pos/7);
-      var rec3=map[cds], active2=!!rec3 && !isFutureDate(cds);
-      var val=active2?(+rec3.total||0):null;
-      if(rec3 && isFutureDate(cds)) hasBlank=true;
-      if(yearFuture && n2>=days) hasBlank=true;
-      HEATVALS[row][col]=val; HEATTIPS[row][col]=active2?cds:'';
+      var rec3=map[cds];
+      var val=(rec3 && !rec3.future)?(+rec3.total||0):null;
+      if(rec3 && rec3.future) hasBlank=true;
+      if(yearFuture && n2>=inRangeDays) hasBlank=true;
+      HEATVALS[row][col]=val; HEATTIPS[row][col]=val!==null?cds:'';
       if(val!==null&&val>dailyMax)dailyMax=val;
       cells.push({row:row,col:col,val:val,date:cd});
       var mk=cd.getFullYear()+'-'+cd.getMonth(); if(months[mk]===undefined)months[mk]=col;
@@ -1377,24 +1354,106 @@ function showDashError(msg){
   svg.innerHTML = '<text class="ax ta-c" x="300" y="100">'+esc(msg)+'</text>';
   toast(msg);
 }
-function loadDashboard(){
+/* 刷新状态 pill:idle=自动刷新排程中,loading=请求中(目标区间+旧结果标识),
+   done=刚完成(短暂展示后回 idle)。文案随刷新来源区分。 */
+function refreshClock(d){
+  return d.toLocaleTimeString(LOCALE==='en'?'en-US':'zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+}
+function renderRefreshState(){
+  var box=el('refresh-state'), label=el('refresh-label'), detail=el('refresh-detail');
+  if(!box || !label || !detail) return;
+  box.setAttribute('data-state', REFRESH.state);
+  if(REFRESH.state==='loading'){
+    label.textContent = REFRESH.source==='auto' ? ui('正在自动刷新','Auto refreshing') :
+      REFRESH.source==='manual' ? ui('正在手动刷新','Refreshing') :
+      ui('正在查询','Querying')+' · '+rangeName(state.range);
+    detail.textContent = ui('目标 ','Target ')+REFRESH.targetText+ui(' · 下方暂为上次结果',' · Previous result shown below');
+  }else if(REFRESH.state==='done'){
+    label.textContent = ui('已更新','Updated')+' · '+rangeName(state.range);
+    detail.textContent = ui('最近查询 ','Last query ')+refreshClock(REFRESH.lastAt);
+  }else{
+    label.textContent = ui('自动刷新已开启','Auto refresh is on');
+    detail.textContent = ui('自动刷新 · 每 ','Auto refresh · every ')+REFRESH.intervalSec+ui(' 秒',' sec')+
+      (REFRESH.lastAt ? ' · '+ui('最近查询 ','Last query ')+refreshClock(REFRESH.lastAt) : ' · '+ui('最近查询 · —','Last query · —'));
+  }
+  detail.setAttribute('title', detail.textContent);
+}
+function endRefreshing(){
+  el('page-dash').removeAttribute('data-refreshing');
+  el('dash-results').setAttribute('aria-busy','false');
+}
+/* 自动刷新排程:从最近一次请求完成后计时;页面隐藏或配置页激活时跳过
+   并顺延,回到仪表盘且已逾期时由 catchUpRefresh 补一次。 */
+function scheduleAutoRefresh(){
+  clearTimeout(REFRESH.autoTimer);
+  REFRESH.autoTimer = setTimeout(function(){
+    if(document.hidden || el('page-dash').getAttribute('data-active')!=='true'){ scheduleAutoRefresh(); return; }
+    requestRefresh('auto');
+  }, REFRESH.intervalSec*1000);
+}
+function catchUpRefresh(){
+  if(document.hidden || el('page-dash').getAttribute('data-active')!=='true') return;
+  if(REFRESH.state==='loading') return;
+  var due = !REFRESH.lastAt || (Date.now()-REFRESH.lastAt.getTime()) >= REFRESH.intervalSec*1000;
+  if(due) requestRefresh('auto');
+}
+/* 统一请求入口:source ∈ auto|manual|range。请求开始即显示动画、目标区间
+   与旧结果标识;新请求胜出(seq 递增使旧响应过期);失败清旧数据并整页报错,
+   成功一次性更新后短暂展示 done 再回 idle。手动与区间查询都会重置自动计时
+   (成功/失败后统一重新排程)。 */
+function requestRefresh(source){
+  if(source==='auto' && REFRESH.state==='loading'){
+    /* 请求期间不并发自动查询:顺延一个周期,保持自动链不断。 */
+    scheduleAutoRefresh();
+    return;
+  }
+  clearTimeout(REFRESH.autoTimer);
+  clearTimeout(REFRESH.doneTimer);
+  var seq = ++REFRESH.seq;
   var b = rangeBounds(), from = ymd(b.s), to = ymd(b.e);
-  var seq = ++fetchSeq;
+  REFRESH.source = source;
+  REFRESH.state = 'loading';
+  REFRESH.targetText = from+' ~ '+to;
+  el('page-dash').setAttribute('data-refreshing','true');
+  el('dash-results').setAttribute('aria-busy','true');
+  syncRangeSeg();
+  syncCustomTxt();
+  renderRefreshState();
   setDashLoading();
   api('/api/dashboard?from='+from+'&to='+to).then(function(r){
-    if(seq!==fetchSeq) return;
+    if(seq!==REFRESH.seq) return; /* 过期响应不得覆盖新范围 */
+    endRefreshing();
     if(!r.ok){
+      REFRESH.state='idle';
+      renderRefreshState();
       showDashError((r.body && r.body.error && r.body.error.message) || ui('数据加载失败','Failed to load data'));
+      scheduleAutoRefresh();
       return;
     }
     state.data = r.body||{};
     state.heat = (state.data.heatmap && state.data.heatmap.days) || [];
+    REFRESH.lastAt = new Date();
+    REFRESH.loadedRange = state.range;
+    REFRESH.state = 'done';
     renderAll();
+    renderRefreshState();
+    REFRESH.doneTimer = setTimeout(function(){
+      if(seq!==REFRESH.seq) return;
+      REFRESH.state='idle';
+      renderRefreshState();
+    }, 1600);
+    scheduleAutoRefresh();
   }, function(){
-    if(seq!==fetchSeq) return;
+    if(seq!==REFRESH.seq) return;
+    endRefreshing();
+    REFRESH.state='idle';
+    renderRefreshState();
     showDashError(ui('数据加载失败','Failed to load data'));
+    scheduleAutoRefresh();
   });
 }
+el('dash-refresh').addEventListener('click', function(){ requestRefresh('manual'); });
+document.addEventListener('visibilitychange', function(){ if(!document.hidden) catchUpRefresh(); });
 
 /* ---------- 用量最高的会话：真实区间会话，直接渲染 ---------- */
 function renderSessions(){
@@ -1464,7 +1523,6 @@ function cellAggCv(k, T){
   if(k==='requests') return fmtInt(T.requests);
   return fmtTok(rowVal(T,k));
 }
-var CV_TOP_N = 19;
 function renderCustomViews(){
   var host = el('cviews');
   if(!host) return;
@@ -1478,37 +1536,20 @@ function renderCustomViews(){
   var ids = colIds();
   host.innerHTML = views.map(function(v){
     var dims = v.dimensions||[];
-    var rows = (v.rows||[]).map(function(r){
+    /* 行即后端最终行(前 19 独立组合 + 至多一行「其他组合」固定最后):
+       前端不再截断、缩放或重算;尾行按机器字段 is_other/other_count 渲染。 */
+    var shown = (v.rows||[]).map(function(r){
+      var isOther=!!r.is_other, otherCount=isOther?(+r.other_count||0):0;
       var o = {
         keys:(r.keys||[]).slice(),
         requests:+r.requests||0, fresh_input:+r.fresh_input||0, output:+r.output||0,
         cache_read:+r.cache_read||0, cache_create:+r.cache_create||0, reasoning:+r.reasoning||0,
-        total:+r.total||0, hit:null, isOther:false
+        total:+r.total||0, hit:null, isOther:isOther, hiddenCount:otherCount,
+        otherName: isOther ? ui('其他组合（'+otherCount+' 项）','Other combos ('+otherCount+' items)') : ''
       };
       o.hit = hitOf(o.fresh_input, o.cache_read, o.cache_create);
       return o;
-    }).sort(function(a,b){ return b.total-a.total; });
-    /* 行数上限(用户裁决):按 total 降序取前 CV_TOP_N 行独立展示,其余
-       并入唯一「其他组合」行(固定最后,不参与降序插队);合计行为全部行
-       之和,逐项守恒。 */
-    var shown = rows.slice(0, CV_TOP_N), hidden = rows.slice(CV_TOP_N);
-    if(hidden.length){
-      /* 其他组合行 = 全部行求和 − 已展示行求和（逐项守恒，防负） */
-      var sumShown = aggRows(shown), sumAll = aggRows(rows);
-      var other = {
-        keys: dims.map(function(d,i){ return i===0 ? ui('其他组合（'+hidden.length+' 项）','Other combos ('+hidden.length+' items)') : '—'; }),
-        requests:Math.max(0,sumAll.requests-sumShown.requests),
-        fresh_input:Math.max(0,sumAll.fresh_input-sumShown.fresh_input),
-        output:Math.max(0,sumAll.output-sumShown.output),
-        cache_read:Math.max(0,sumAll.cache_read-sumShown.cache_read),
-        cache_create:Math.max(0,sumAll.cache_create-sumShown.cache_create),
-        reasoning:Math.max(0,sumAll.reasoning-sumShown.reasoning),
-        total:Math.max(0,sumAll.total-sumShown.total),
-        hit:null, isOther:true, hiddenCount:hidden.length
-      };
-      other.hit = hitOf(other.fresh_input, other.cache_read, other.cache_create);
-      shown.push(other);
-    }
+    });
     var T = aggRows(shown), maxTotal = shown.length && shown[0].total>0 ? shown[0].total : 1;
     /* 维度列头与正文 .tname 同为左对齐;列宽由 colgroup 声明(维度列占比
        随维度数收缩、指标列平分剩余),表头与正文共用同一 colgroup,起点对齐。 */
@@ -1527,7 +1568,9 @@ function renderCustomViews(){
       '</tr></thead><tbody>';
     shown.forEach(function(r){
       h += '<tr class="cv-row" tabindex="0" aria-expanded="false">' + dims.map(function(d,i){
-        var val = String((r.keys||[])[i]!=null ? r.keys[i] : '');
+        var val;
+        if(r.isOther){ val = i===0 ? r.otherName : '—'; }
+        else{ val = String((r.keys||[])[i]!=null ? r.keys[i] : ''); }
         var safe=esc(val);
         var disp = val.length>26 ? val.slice(0,12)+'…'+val.slice(-8) : val;
         return '<th scope="row" class="tname" title="'+safe+'" data-label="'+dimLabel(d)+'">'+esc(disp)+'</th>';
@@ -1602,6 +1645,13 @@ function normalizeDraft(d){
   return {
     daemon:{ poll_interval:num(d.daemon&&d.daemon.poll_interval,0), autostart:!!(d.daemon&&d.daemon.autostart) },
     log:{ level:str(d.log&&d.log.level), dir:str(d.log&&d.log.dir), max_days:num(d.log&&d.log.max_days,0) },
+    /* 刷新间隔草稿保留用户层原值(0=未配置):与路径/级别同口径,未触碰时
+       保存不把隐式默认固化成显式 [refresh] 段;展示层由 renderRefreshCfg
+       按有效值(0→30)落位。 */
+    refresh:{
+      dashboard_interval:num(d.refresh&&d.refresh.dashboard_interval,0),
+      watch_interval:num(d.refresh&&d.refresh.watch_interval,0)
+    },
     clients:(d.clients||[]).map(function(c){ return { name:str(c.name), enabled:!!c.enabled, router:str(c.router), paths:clone(c.paths)||{} }; }),
     routers:(d.routers||[]).map(function(r){ return { name:str(r.name), db_path:str(r.db_path) }; }),
     provider_aliases:(d.provider_aliases||[]).map(function(a){ return { key:str(a.key), value:str(a.value) }; }),
@@ -1624,6 +1674,8 @@ function flattenDraft(d){
   m['log.level']=String(d.log.level||'');
   m['log.dir']=String(d.log.dir||'');
   m['log.max_days']=String(+d.log.max_days||0);
+  m['refresh.dashboard_interval']=String(+d.refresh.dashboard_interval||0);
+  m['refresh.watch_interval']=String(+d.refresh.watch_interval||0);
   var cs=(d.clients||[]).slice().sort(function(a,b){ return a.name<b.name?-1:a.name>b.name?1:0; });
   cs.forEach(function(c){
     var pk=Object.keys(c.paths||{}).sort().map(function(k){ return k+'='+c.paths[k]; }).join('\u0001');
@@ -1684,6 +1736,10 @@ function fetchConfigState(){
     CFG.querySnapshot = JSON.stringify(serializeQueryDraft());
     CFG.forceQueryRewrite = false;
     CFG.loaded = true;
+    /* 自动刷新间隔来自配置(首次加载即生效):预载成功后更新有效值,由
+       init 请求完成后的统一排程按该间隔计时;此处不提前排程——首帧请求
+       尚在飞行,提前排程会在 loading 期空转并打断自动链。 */
+    REFRESH.intervalSec = refreshIntervalOf(CFG.draft.refresh && CFG.draft.refresh.dashboard_interval);
     /* 预载即渲染配置页控件:nav 切换的 !CFG.loaded 短路不会再触发 loadConfig,
        不在这里渲染的话,预载成功(生产常态)时进入配置页会是空表单 */
     renderAllConfig();
@@ -1714,6 +1770,7 @@ function renderAllConfig(){
   if(!CFG.draft) return;
   renderDaemonCfg();
   renderLogCfg();
+  renderRefreshCfg();
   renderClients();
   renderDefaultView();
   buildColsEditor();
@@ -1752,6 +1809,80 @@ function renderLogCfg(){
   });
   el('cfg-max-days').value = String(CFG.draft.log.max_days);
   el('cfg-log-dir').value = CFG.draft.log.dir;
+}
+
+/* 查询刷新卡片:两个独立下拉(10/20/30/60/其他),自定义值 1~3600 整数秒。
+   选择只改草稿;草稿值命中预设时选中对应选项,否则落「其他…」并回填输入框。 */
+function refreshSelectFor(v){
+  return ['10','20','30','60'].indexOf(String(v))>=0 ? String(v) : 'custom';
+}
+function renderRefreshCfg(){
+  /* 草稿是用户层原值(0=未配置):下拉按有效值落位(0→「30 秒(默认)」),
+     未触碰时序列化仍是 0,保存不写 [refresh] 段;用户显式选择才写显式数字。 */
+  ['dashboard','watch'].forEach(function(kind){
+    var raw = kind==='dashboard' ? CFG.draft.refresh.dashboard_interval : CFG.draft.refresh.watch_interval;
+    var v = refreshIntervalOf(raw);
+    var sel = el('cfg-'+kind+'-refresh'), custom = el('cfg-'+kind+'-refresh-custom');
+    if(!sel || !custom) return;
+    var isCustom = refreshSelectFor(v)==='custom';
+    sel.value = isCustom ? 'custom' : String(v);
+    custom.value = String(v);
+    syncRefreshSetting(kind);
+  });
+}
+function syncRefreshSetting(kind){
+  var custom=el('cfg-'+kind+'-refresh').value==='custom';
+  el('cfg-'+kind+'-refresh-custom').hidden=!custom;
+  el('cfg-'+kind+'-refresh-unit').hidden=!custom;
+}
+['dashboard','watch'].forEach(function(kind){
+  var sel=el('cfg-'+kind+'-refresh');
+  if(!sel) return;
+  sel.addEventListener('change',function(){
+    if(!CFG.draft) return;
+    var v=this.value==='custom' ? 0 : +this.value;
+    if(this.value==='custom'){
+      v = +el('cfg-'+kind+'-refresh-custom').value||0;
+    }
+    if(kind==='dashboard'){ CFG.draft.refresh.dashboard_interval=v; }
+    else{ CFG.draft.refresh.watch_interval=v; }
+    syncRefreshSetting(kind);
+    recomputeDirty();
+    if(this.value==='custom') el('cfg-'+kind+'-refresh-custom').focus();
+  });
+});
+/* 自定义输入实时进草稿(仅在「其他…」生效);合法域 1~3600 在保存时强校验。 */
+function refreshCustomInput(kind){
+  var input=el('cfg-'+kind+'-refresh-custom');
+  if(!input) return;
+  input.addEventListener('input',function(){
+    if(!CFG.draft) return;
+    if(el('cfg-'+kind+'-refresh').value!=='custom') return;
+    var v=parseInt(this.value,10);
+    if(isNaN(v)) return;
+    if(kind==='dashboard'){ CFG.draft.refresh.dashboard_interval=v; }
+    else{ CFG.draft.refresh.watch_interval=v; }
+    recomputeDirty();
+  });
+}
+refreshCustomInput('dashboard');
+refreshCustomInput('watch');
+/* 保存前校验:两项都必须是 1~3600 的整数秒(草稿 0 只能来自「其他…」空输入)。 */
+function refreshSeconds(kind){
+  var sel=el('cfg-'+kind+'-refresh');
+  var value=sel.value==='custom' ? el('cfg-'+kind+'-refresh-custom').value : sel.value;
+  var seconds=Number(value);
+  if(!Number.isInteger(seconds) || seconds<1 || seconds>3600){
+    if(sel.value==='custom'){
+      var field=el('cfg-'+kind+'-refresh-custom');
+      field.setCustomValidity(ui('请输入 1 到 3600 的整数秒数','Enter a whole number from 1 to 3600 seconds'));
+      field.reportValidity();
+      field.focus();
+    }
+    return null;
+  }
+  el('cfg-'+kind+'-refresh-custom').setCustomValidity('');
+  return seconds;
 }
 
 /* 客户端表：四列（客户端/启用/数据来源/路由中间件） */
@@ -2144,6 +2275,10 @@ function buildPutBody(){
   var config = {
     daemon:{ poll_interval:+CFG.draft.daemon.poll_interval||0, autostart:!!CFG.draft.daemon.autostart },
     log:{ level:CFG.draft.log.level||'', dir:CFG.draft.log.dir||'', max_days:+CFG.draft.log.max_days||0 },
+    refresh:{
+      dashboard_interval:+CFG.draft.refresh.dashboard_interval||0,
+      watch_interval:+CFG.draft.refresh.watch_interval||0
+    },
     clients: CFG.draft.clients.map(function(c){ return { name:c.name, enabled:!!c.enabled, router:c.router||'', paths:clone(c.paths)||{} }; }),
     routers: CFG.draft.routers.map(function(r){ return { name:r.name, db_path:r.db_path||'' }; }),
     provider_aliases: CFG.draft.provider_aliases.map(function(a){ return { key:a.key, value:a.value }; })
@@ -2176,6 +2311,7 @@ function serializeQueryDraft(){
 }
 function saveConfig(){
   if(!CFG.saved || CFG.saving) return;
+  if(refreshSeconds('dashboard')===null || refreshSeconds('watch')===null) return;
   CFG.saving = true;
   recomputeDirty();
   api('/api/config', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(buildPutBody()) }).then(function(r){
@@ -2198,8 +2334,10 @@ function saveConfig(){
       }else{
         toast(ui('配置未变化','No changes'));
       }
-      /* 保存会即时改变 provider 别名与自定义视图定义：重新拉取仪表板 */
-      if(state.data) loadDashboard();
+      /* 保存会即时改变 provider 别名、自定义视图定义与刷新间隔：重拉仪表板并按新间隔重排自动计时 */
+      REFRESH.intervalSec = refreshIntervalOf(r.body.config && r.body.config.refresh && r.body.config.refresh.dashboard_interval);
+      requestRefresh('manual');
+      scheduleAutoRefresh();
       return;
     }
     if(r.status===409){
@@ -2284,6 +2422,7 @@ function syncLocaleUI(){
   syncPalette();
   syncSide();
   renderMeta();
+  renderRefreshState();
   renderCal();
   buildColsEditor();
   if(CFG.draft){
@@ -2324,5 +2463,5 @@ fetchMeta().then(function(){
   return fetchConfigState();
 }, function(){
   return fetchConfigState();
-}).then(loadDashboard, loadDashboard);
+}).then(function(){ requestRefresh('auto'); }, function(){ requestRefresh('auto'); });
 })();

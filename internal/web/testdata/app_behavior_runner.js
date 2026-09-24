@@ -118,6 +118,7 @@ function makeSandbox(opts) {
   const storeSession = new Map();
   const storeLocal = new Map();
   const fetchCalls = [];
+  const pendingFetches = []; /* gate 响应:被 resolve 步骤放行的挂起 fetch */
   let activeEl = null;
 
   function queryAll(scope, selector) {
@@ -189,7 +190,8 @@ function makeSandbox(opts) {
         event.type = type;
         if (!event.stopPropagation) event.stopPropagation = () => {};
         if (!event.preventDefault) event.preventDefault = () => {};
-        (listeners[type] || []).slice().forEach((fn) => fn(event));
+        /* DOM 语义:监听器内 this 指向绑定元素(app.js 的 select 监听读 this.value) */
+        (listeners[type] || []).slice().forEach((fn) => fn.call(elm, event));
       },
       setAttribute(name, value) {
         name = String(name);
@@ -256,6 +258,10 @@ function makeSandbox(opts) {
         elm.dispatch("click");
       },
       scrollIntoView() {},
+      setCustomValidity() {},
+      reportValidity() {
+        return true;
+      },
       querySelectorAll(selector) {
         return queryAll(elm, selector);
       },
@@ -531,13 +537,21 @@ function makeSandbox(opts) {
       return Promise.reject(new Error("stubbed network failure: " + method + " " + urlStr));
     }
     const payload = spec.body === undefined ? {} : spec.body;
-    return Promise.resolve({
+    const settle = () => ({
       ok: spec.status >= 200 && spec.status < 300,
       status: spec.status,
       json() {
         return Promise.resolve(payload);
       }
     });
+    if (spec.pending) {
+      /* gate 模式:响应挂起,由场景步骤 resolve 手动放行(先发后答,构造
+         请求重叠,验证旧响应不得回写) */
+      return new Promise((resolve) => {
+        pendingFetches.push(() => resolve(settle()));
+      });
+    }
+    return Promise.resolve(settle());
   }
 
   function matchMedia(query) {
@@ -573,6 +587,42 @@ function makeSandbox(opts) {
     console: console,
     NodeFilter: { SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2, FILTER_SKIP: 3 }
   };
+  /* 手动定时器模式(opts.timers==='manual'):setTimeout 记账不执行,由
+     __tick(ms) 推进虚拟时钟并按到期顺序回调——自动刷新排程/完成态回退
+     都可被场景精确驱动,真实定时器仍然空转。 */
+  if (opts.timers === "manual") {
+    const timersMap = new Map();
+    let nextTimerId = 1;
+    let clockMs = 0;
+    const runDue = () => {
+      for (;;) {
+        let dueId = null;
+        let dueAt = Infinity;
+        timersMap.forEach((t, id) => {
+          if (t.at <= clockMs && t.at < dueAt) {
+            dueAt = t.at;
+            dueId = id;
+          }
+        });
+        if (dueId === null) break;
+        const t = timersMap.get(dueId);
+        timersMap.delete(dueId);
+        t.fn();
+      }
+    };
+    sandbox.setTimeout = (fn, ms) => {
+      const id = nextTimerId++;
+      timersMap.set(id, { fn: fn, at: clockMs + (ms || 0) });
+      return id;
+    };
+    sandbox.clearTimeout = (id) => {
+      timersMap.delete(id);
+    };
+    sandbox.__tick = (ms) => {
+      clockMs += ms;
+      runDue();
+    };
+  }
   sandbox.window = sandbox; /* window.matchMedia / window.scrollTo / resize 监听都落在沙箱全局 */
 
   /* navType 与 navEntries 都不注入 = performance 整体缺失;navEntries 存在时
@@ -590,6 +640,11 @@ function makeSandbox(opts) {
   vm.createContext(sandbox);
   return {
     sandbox: sandbox,
+    pendingCount: () => pendingFetches.length,
+    resolvePending: () => {
+      const fns = pendingFetches.splice(0, pendingFetches.length);
+      fns.forEach((fn) => fn());
+    },
     doc: doc,
     byId: memoById,
     fetchCalls: fetchCalls,
@@ -656,6 +711,29 @@ function applyStep(step, ctx) {
       ctx.doc.dispatch("keydown", { key: step.value });
       return;
     }
+    case "seg": {
+      /* 分段控件:在 host 上以子按钮为 target 派发 click(bindSeg 的 closest('button')) */
+      const host = ctx.byId(step.id);
+      const btn = (host.children || []).find((b) => b.dataset && b.dataset.v === step.value);
+      if (!btn) throw new Error("no seg button " + step.id + "=" + step.value);
+      host.dispatch("click", { target: btn });
+      return;
+    }
+    case "setSelect": {
+      const sel = ctx.byId(step.id);
+      sel.value = String(step.value);
+      sel.dispatch("change");
+      return;
+    }
+    case "tick": {
+      if (typeof ctx.sandbox.__tick !== "function") throw new Error("tick requires opts.timers==='manual'");
+      ctx.sandbox.__tick(Number(step.value) || 0);
+      return;
+    }
+    case "resolve": {
+      ctx.resolvePending();
+      return;
+    }
     default:
       throw new Error("unknown step op " + step.op);
   }
@@ -717,6 +795,22 @@ function buildReport(def, ctx, fatal, stepStates) {
       expanded: byId("side-toggle").getAttribute("aria-expanded")
     },
     chips: ctx.chips.map((c) => ({ text: c.textContent, pressed: c.getAttribute("aria-pressed") })),
+    refresh: {
+      state: byId("refresh-state").getAttribute("data-state"),
+      label: byId("refresh-label").textContent,
+      detail: byId("refresh-detail").textContent,
+      pageRefreshing: byId("page-dash").getAttribute("data-refreshing"),
+      dashBusy: byId("dash-results").getAttribute("aria-busy")
+    },
+    refreshCfg: {
+      dashSelect: byId("cfg-dashboard-refresh").value,
+      dashCustom: byId("cfg-dashboard-refresh-custom").value,
+      dashCustomHidden: !!byId("cfg-dashboard-refresh-custom").hidden,
+      watchSelect: byId("cfg-watch-refresh").value,
+      watchCustom: byId("cfg-watch-refresh-custom").value,
+      watchCustomHidden: !!byId("cfg-watch-refresh-custom").hidden
+    },
+    pendingFetches: ctx.pendingCount(),
     session: mapToObj(ctx.storeSession),
     local: mapToObj(ctx.storeLocal),
     stepStates: stepStates
@@ -750,7 +844,15 @@ async function runScenario(def) {
         saveDisabled: !!ctx.byId("cfg-save").disabled,
         saveText: ctx.byId("cfg-save").textContent,
         dirtyPill: ctx.byId("dirty-pill").textContent,
-        toast: ctx.byId("toast").textContent
+        toast: ctx.byId("toast").textContent,
+        dashSelect: ctx.byId("cfg-dashboard-refresh").value,
+        watchSelect: ctx.byId("cfg-watch-refresh").value,
+        watchCustom: ctx.byId("cfg-watch-refresh-custom").value,
+        refreshState: ctx.byId("refresh-state").getAttribute("data-state"),
+        refreshLabel: ctx.byId("refresh-label").textContent,
+        refreshDetail: ctx.byId("refresh-detail").textContent,
+        pageRefreshing: ctx.byId("page-dash").getAttribute("data-refreshing"),
+        dashBusy: ctx.byId("dash-results").getAttribute("aria-busy")
       });
     }
   }

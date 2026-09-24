@@ -77,6 +77,11 @@ db_path = "~/.cc-switch/cc-switch.db"
 poll_interval = 30  # SQLite 轮询间隔（秒），默认 30s
 autostart = false   # 开机自启（macOS launchd / Windows 注册表）
 
+# 查询刷新间隔（秒），与上面的采集轮询互相独立；0 表示使用默认值 30
+[refresh]
+dashboard_interval = 30  # 网页仪表盘自动刷新间隔（秒）
+watch_interval = 30      # watch 无 --interval 时的刷新间隔（秒）
+
 # 供应商别名（仅影响 query provider 展示，可自定义，按需添加）
 [provider_aliases]
 # "Zhipu AI Coding Plan" = "Zhipu GLM"

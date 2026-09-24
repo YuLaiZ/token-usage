@@ -61,6 +61,7 @@ func sampleConfigView() ConfigView {
 		Config: ConfigDraft{
 			Daemon:  DaemonDraft{PollInterval: 3, AutoStart: true},
 			Log:     LogDraft{Level: "debug", Dir: "/tmp/logs", MaxDays: 30},
+			Refresh: RefreshDraft{DashboardInterval: 20, WatchInterval: 45},
 			Clients: []ClientDraft{{Name: "claude", Enabled: true, Router: "cc_switch", Paths: map[string]string{"projects_dir": "/tmp/p"}}},
 			Routers: []RouterDraft{{Name: "cc_switch", DBPath: "/tmp/cc.db"}},
 			ProviderAliases: []AliasDraft{
@@ -104,9 +105,13 @@ func TestConfigGet(t *testing.T) {
 		t.Errorf("revision 应原样透出,实际 %v", m["revision"])
 	}
 	cfg := m["config"].(map[string]any)
-	assertKeys(t, "config.config", cfg, "daemon", "log", "clients", "routers", "provider_aliases", "query")
+	assertKeys(t, "config.config", cfg, "daemon", "log", "refresh", "clients", "routers", "provider_aliases", "query")
 	assertKeys(t, "config.daemon", cfg["daemon"].(map[string]any), "poll_interval", "autostart")
 	assertKeys(t, "config.log", cfg["log"].(map[string]any), "level", "dir", "max_days")
+	assertKeys(t, "config.refresh", cfg["refresh"].(map[string]any), "dashboard_interval", "watch_interval")
+	if cfg["refresh"].(map[string]any)["dashboard_interval"] != 20.0 || cfg["refresh"].(map[string]any)["watch_interval"] != 45.0 {
+		t.Errorf("refresh 应原样透出 20/45,实际 %v", cfg["refresh"])
+	}
 	client := cfg["clients"].([]any)[0].(map[string]any)
 	assertKeys(t, "config.clients[0]", client, "name", "enabled", "router", "paths")
 	router := cfg["routers"].([]any)[0].(map[string]any)
@@ -486,8 +491,16 @@ func TestConfigAppStore_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("缺失文件 Current 失败: %v", err)
 	}
-	if !reflect.DeepEqual(def, view.Config) {
-		t.Errorf("defaults 应与缺失文件时的编辑模型一致:\n默认 %+v\n实际 %+v", def, view.Config)
+	// 缺失文件 Current = 用户层零值草稿;defaults 与其唯一的合同差异是
+	// 刷新间隔显式落为 30 秒草稿(产品合同:恢复全部默认值把两项设为
+	// 30 秒,保存后才生效)。逐字段核对防止其他区块漂移。
+	want := view.Config
+	want.Refresh = RefreshDraft{DashboardInterval: 30, WatchInterval: 30}
+	if !reflect.DeepEqual(def, want) {
+		t.Errorf("defaults 应与缺失文件编辑模型一致(仅 refresh=30/30):\n默认 %+v\n实际 %+v", def, want)
+	}
+	if def.Refresh != (RefreshDraft{DashboardInterval: 30, WatchInterval: 30}) {
+		t.Errorf("defaults refresh 应为 30/30,实际 %+v", def.Refresh)
 	}
 }
 
@@ -745,5 +758,62 @@ func TestConfigAppStore_KeepsDataDir(t *testing.T) {
 	// 序列化形态不绑定引号风格(literal/basic string 均合法),只断言路径值在盘。
 	if !strings.Contains(string(raw), dataDir) {
 		t.Errorf("data_dir 应原样保留:\n%s", raw)
+	}
+}
+
+// TestConfigAppStore_UnrelatedSaveKeepsRefreshUnwritten:旧配置无 [refresh] 段
+// (用户层原值 0/0)时,只改无关字段(log.max_days)的完整草稿保存——落盘文件
+// 不得出现 [refresh] 段(隐式默认不固化成显式配置),被编辑字段正常写入;
+// 随后显式改刷新值才真正落盘。
+func TestConfigAppStore_UnrelatedSaveKeepsRefreshUnwritten(t *testing.T) {
+	initial := "data_dir = \"" + t.TempDir() + "\"\n\n[log]\nlevel = \"info\"\nmax_days = 7\n"
+	home := setupConfigHome(t, initial)
+	store := newRealConfigStore(t, home)
+	ctx := context.Background()
+
+	view, err := store.Current(ctx)
+	if err != nil {
+		t.Fatalf("读取失败: %v", err)
+	}
+	if view.Config.Refresh != (RefreshDraft{}) {
+		t.Fatalf("旧配置 GET 的刷新草稿应为用户层原值 0/0,实际 %+v", view.Config.Refresh)
+	}
+	draft := view.Config
+	draft.Log.MaxDays = 21 // 无关编辑:刷新段未触碰(保持 GET 原值 0/0)
+	if _, err := store.Apply(ctx, view.Revision, draft); err != nil {
+		t.Fatalf("保存失败: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".token-usage", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "[refresh]") || strings.Contains(string(raw), "dashboard_interval") {
+		t.Errorf("无关保存不得把隐式刷新默认写进磁盘:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "max_days = 21") {
+		t.Errorf("被编辑字段应落盘:\n%s", raw)
+	}
+	view2, err := store.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view2.Config.Refresh != (RefreshDraft{}) {
+		t.Errorf("无关保存后回读刷新草稿应仍为 0/0,实际 %+v", view2.Config.Refresh)
+	}
+
+	// 显式改刷新值:落盘 [refresh] 段。
+	draft2 := view2.Config
+	draft2.Refresh = RefreshDraft{DashboardInterval: 20, WatchInterval: 45}
+	if _, err := store.Apply(ctx, view2.Revision, draft2); err != nil {
+		t.Fatalf("显式保存失败: %v", err)
+	}
+	raw2, err := os.ReadFile(filepath.Join(home, ".token-usage", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"[refresh]", "dashboard_interval = 20", "watch_interval = 45"} {
+		if !strings.Contains(string(raw2), want) {
+			t.Errorf("显式保存后磁盘应含 %q:\n%s", want, raw2)
+		}
 	}
 }

@@ -43,8 +43,8 @@
 | `internal/engine/` | Collection orchestration: dependency assembly, main loop, transactional writes, retries, and result validation. |
 | `internal/analyzer/` | Daemon real-time monitoring: JSONL watcher, SQLite poller, debounce, and serialization lock. |
 | `internal/querier/` | Query engine that aggregates directly from `messages`. |
-| `internal/web/` | Read-only local dashboard HTTP server, including embedded static assets and JSON/SVG endpoints. |
-| `internal/charts/` | Shared SVG chart rendering for the `serve` dashboard. |
+| `internal/web/` | Read-only local dashboard HTTP server, including embedded static assets and JSON endpoints; charts are rendered client-side from numeric rows. |
+| `internal/charts/` | Legacy SVG chart package kept in the tree; no Go code imports it since the dashboard moved chart rendering client-side. |
 | `internal/fmtx/` | Shared display formatting for dashboard change values. |
 | `internal/ui/` | Bilingual message helpers (`Bi`), framed tables with display-width alignment, and the query output-column registry shared by `query`, `watch`, and the dashboard. |
 | `internal/tui/` | Interactive configuration-editing TUI (bubbletea; saves through `ApplyConfig`). |
@@ -153,8 +153,8 @@ Queries directly SUM `fresh_input_tokens` and `total_tokens`: values come from t
 | `engine/` | Collection orchestration: dependency assembly, main loop, transactional writing, retries, and result validation. | `NewDeps()`, `RunCollect()`, `RunRetryWithDeps()`, `RunRouterBackfill()`, `ValidateResult()` |
 | `analyzer/` | Daemon monitoring: ChangedFile/Incremental/router-source collection triggers, debounced merging, and a serialization lock. | `NewFromConfig()`, `JSONLWatcher`, `SQLitePoller` |
 | `querier/` | Real-time aggregation from messages and formatted output. | `ByClient()`, `ByModel()`, `ByProject()`, `ByHour()`, `ByWeekday()`, `Heatmap()`, `HeatmapMatrix()`, `RunDimensionView()`, `Sessions()`, `Summary()`, `StatsBetween()` |
-| `web/` | Local read-only dashboard server of the `serve` command group: the embedded HTML page (dark metering-console theme; charts are rendered client-side from numeric rows), JSON endpoints (`/api/meta`, `/api/dashboard`), and the per-dimension SVG endpoint. All queries of one request share a single read-transaction snapshot. | `NewServer()` |
-| `charts/` | The single SVG chart implementation shared by web: bars, lines, pies, and the weekday-by-hour heatmap (dark palette, full monospace font stack, hover `<title>`). | `BuildDimensionSVG()`, `Heatmap()`, `BarSVG()`, `LineSVG()`, `PieSVG()` |
+| `web/` | Local read-only dashboard server of the `serve` command group: the embedded HTML page (charts rendered client-side from numeric rows), JSON endpoints (`/api/meta`, `/api/dashboard`, `/api/config`). All queries of one request share a single read-transaction snapshot; `/api/dashboard` returns final rows — top-9-plus-"other" dimensions, top-19-plus-"other combos" custom views, top-20 sessions, and range-shaped trend/heatmap buckets — so the browser never re-truncates or re-aggregates. | `NewServer()` |
+| `charts/` | Legacy SVG chart package (bars, lines, pies, weekday-by-hour heatmap) with no remaining callers; retained until its removal is decided. | — |
 | `querydef/` | Query view vocabulary: builtin dimension constants, builtin view names, and the reserved-name list shared by the query/watch view-name parsing in `cli`. | `BuiltinDimensionNames()`, `IsReservedName()` |
 | `fmtx/` | Shared display-formatting helpers: thousands separators, signed K/M/B tokens, change coloring classes, and change percentages. | `Thousands()`, `SignedTokens()`, `CountChange()`, `ChangeClass()`, `ChangePercent()` |
 | `tui/` | Interactive configuration-editing TUI (dual edit/display models; manual saves use `ApplyConfig`; includes autostart toggle). | `Run()` |
@@ -290,6 +290,7 @@ This contract covers PID files, runtime-state, and `config.toml` (written by `Ap
 - client router changed (empty → R or R1 → R2), or a router `db_path` change → `collect router --client X` for affected enabled clients. A `provider_aliases` change is query-only and triggers neither collection nor router backfill.
 - daemon `poll_interval`, log fields, or any client/router/path change (excluding autostart alone) → `RuntimeChanged` (a running daemon needs restart).
 - only `daemon.autostart` changed → **not** a runtime change (it affects only the next-login definition).
+- only `[refresh]` query-refresh intervals changed → effective config **changed** (so saves are reported as saved) but **not** a runtime change: the intervals are consumed by the web dashboard and `watch`, never by the collection daemon.
 
 **Action suggestions** (merged by runtime state): if the daemon is running and collection is needed, use `daemon stop` → all collection commands → `daemon start`; if only `RuntimeChanged` applies while it is running, use `daemon restart`. Warnings (historical data at the old path is not deleted; old router associations are not removed when rebinding, and so on) are printed as explanations.
 
@@ -440,6 +441,10 @@ enabled = true
 [daemon]
 poll_interval = 30            # SQLitePoller interval in seconds
 autostart = false             # Autostart (macOS launchd / Windows Registry)
+
+[refresh]
+dashboard_interval = 30       # Web dashboard auto refresh interval (seconds; 0 = default 30)
+watch_interval = 30           # Default interval for `watch` without --interval (seconds; 0 = default 30)
 
 [log]
 level = "info"

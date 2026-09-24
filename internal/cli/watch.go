@@ -37,8 +37,8 @@ func newWatchCmdWithDeps(load func() (*config.Config, error), open func(string) 
 		Use:   "watch [DATE|DATE-DATE]",
 		Short: "Refresh the query output at a fixed interval / 以固定间隔刷新 query 输出",
 		Long: ui.Bi(
-			"Refresh the query output for a window at a fixed interval. View selection matches `token-usage query`: with no --by, the default view runs (query.default, built-in fallback client); --by accepts a built-in view (client, model, provider, project, day, month, hour, weekday, heatmap, session, summary) or a configured view name from query.subqueries/query.groups. The frame body is exactly the query output: statistics header, view tables with the configured output columns and provider aliases, plus collection error warnings. DATE is a day (YYYYMMDD), month (YYYYMM), or year (YYYY; single arg only); DATE-DATE is an inclusive range whose endpoints are days or months; with no date the frame tracks today, recomputed every refresh so it rolls over midnight automatically.",
-			"以固定间隔刷新某个窗口的 query 输出。视图选择与 `token-usage query` 一致：不带 --by 时执行默认视图（query.default，内置回退 client）；--by 接受内置视图（client、model、provider、project、day、month、hour、weekday、heatmap、session、summary）或 query.subqueries/query.groups 中已配置的视图名。帧体与 query 输出完全一致：统计信息区、应用输出列布局与 provider 别名的视图表，以及采集异常警告。DATE 为日 YYYYMMDD、月 YYYYMM 或年 YYYY（年仅单独使用）；DATE-DATE 为闭区间，端点为日或月；不带日期时帧跟随今天，每次刷新重算，跨午夜自动切换。"),
+			"Refresh the query output for a window at a fixed interval. View selection matches `token-usage query`: with no --by, the default view runs (query.default, built-in fallback client); --by accepts a built-in view (client, model, provider, project, day, month, hour, weekday, heatmap, session, summary) or a configured view name from query.subqueries/query.groups. The frame body is exactly the query output: statistics header, view tables with the configured output columns and provider aliases, plus collection error warnings. DATE is a day (YYYYMMDD), month (YYYYMM), or year (YYYY; single arg only); DATE-DATE is an inclusive range whose endpoints are days or months; with no date the frame tracks today, recomputed every refresh so it rolls over midnight automatically. The refresh interval defaults to the [refresh].watch_interval config value (30 seconds when unset); an explicit --interval overrides it for this run.",
+			"以固定间隔刷新某个窗口的 query 输出。视图选择与 `token-usage query` 一致：不带 --by 时执行默认视图（query.default，内置回退 client）；--by 接受内置视图（client、model、provider、project、day、month、hour、weekday、heatmap、session、summary）或 query.subqueries/query.groups 中已配置的视图名。帧体与 query 输出完全一致：统计信息区、应用输出列布局与 provider 别名的视图表，以及采集异常警告。DATE 为日 YYYYMMDD、月 YYYYMM 或年 YYYY（年仅单独使用）；DATE-DATE 为闭区间，端点为日或月；不带日期时帧跟随今天，每次刷新重算，跨午夜自动切换。刷新间隔缺省读取配置 [refresh].watch_interval（未配置时 30 秒）；显式 --interval 覆盖本次运行。"),
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// 缺省日期与刷新时间戳同源,都取注入时钟:watch 的 now 是完整
@@ -54,21 +54,15 @@ func newWatchCmdWithDeps(load func() (*config.Config, error), open func(string) 
 					return err
 				}
 			}
-			interval, err := cmd.Flags().GetDuration("interval")
-			if err != nil {
-				return err
-			}
-			if interval < time.Second {
-				return fmt.Errorf("%s", ui.Bi(
-					"--interval must be at least 1s",
-					"--interval 至少为 1 秒",
-				))
-			}
 			once, _ := cmd.Flags().GetBool("once")
 
 			cfg, err := load()
 			if err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
+			}
+			interval, err := resolveWatchInterval(cmd, cfg)
+			if err != nil {
+				return err
 			}
 
 			// 视图分派与 query 命令族同一解析合同:
@@ -178,10 +172,37 @@ func newWatchCmdWithDeps(load func() (*config.Config, error), open func(string) 
 		},
 	}
 
-	cmd.Flags().Duration("interval", 5*time.Second, ui.Bi("Refresh interval (minimum 1s)", "刷新间隔(至少 1 秒)"))
+	cmd.Flags().Duration("interval", 0, ui.Bi(
+		"Refresh interval, minimum 1s (default: the [refresh].watch_interval config value, 30s when unset)",
+		"刷新间隔(至少 1 秒;缺省读取配置 [refresh].watch_interval,未配置时 30 秒)"))
 	cmd.Flags().Bool("once", false, ui.Bi("Render a single frame and exit", "只渲染一帧后退出"))
 	cmd.Flags().String("by", "", ui.Bi("Frame view: built-in view (client/model/provider/project/day/month/hour/weekday/heatmap/session/summary) or a configured view name; defaults to query.default", "帧内视图：内置视图（client/model/provider/project/day/month/hour/weekday/heatmap/session/summary）或已配置视图名；缺省跟随 query.default"))
 	return cmd
+}
+
+// resolveWatchInterval 解析 watch 刷新间隔:显式 --interval 优先(沿用至少
+// 1 秒校验,只影响本次进程);未显式指定时读取配置 [refresh].watch_interval
+// (有效配置层已把缺省补为 30 秒,见 runtimecfg.applyCoreDefaults)。
+// 配置为 0 的兜底分支覆盖 TUI/config set 写入 0 的形态——语义同为默认 30 秒。
+func resolveWatchInterval(cmd *cobra.Command, cfg *config.Config) (time.Duration, error) {
+	flagInterval, err := cmd.Flags().GetDuration("interval")
+	if err != nil {
+		return 0, err
+	}
+	if cmd.Flags().Changed("interval") {
+		if flagInterval < time.Second {
+			return 0, fmt.Errorf("%s", ui.Bi(
+				"--interval must be at least 1s",
+				"--interval 至少为 1 秒",
+			))
+		}
+		return flagInterval, nil
+	}
+	seconds := cfg.Refresh.WatchInterval
+	if seconds <= 0 {
+		seconds = config.DefaultRefreshInterval
+	}
+	return time.Duration(seconds) * time.Second, nil
 }
 
 // queryBuiltinView 把内置视图名映射为 queryView;名单即 query 内置子命令集合,

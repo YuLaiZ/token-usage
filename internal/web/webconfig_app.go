@@ -75,8 +75,14 @@ func (s *configAppStore) Current(ctx context.Context) (ConfigView, error) {
 // CurrentDefaults 返回「全部默认值」的编辑模型:空用户配置经与 Current
 // 同一展开逻辑(注册表全量展开、query 回退默认)。前端「恢复全部默认值」
 // 以此形成待保存草稿——默认值定义只存在于后端,不在前端复制第二套。
+// 刷新间隔按产品合同显式落为 30 秒草稿(保存后才生效)。
 func (s *configAppStore) CurrentDefaults(ctx context.Context) (ConfigDraft, error) {
-	return draftFromConfig(runtimecfg.UserSnapshot{}), nil
+	draft := draftFromConfig(runtimecfg.UserSnapshot{})
+	draft.Refresh = RefreshDraft{
+		DashboardInterval: config.DefaultRefreshInterval,
+		WatchInterval:     config.DefaultRefreshInterval,
+	}
+	return draft, nil
 }
 
 // Apply 应用配置草稿:hex revision 解码→磁盘快照→草稿合并与提前校验→
@@ -158,6 +164,9 @@ func draftFromConfig(snap runtimecfg.UserSnapshot) ConfigDraft {
 	if cfg != nil {
 		d.Daemon = DaemonDraft{PollInterval: cfg.Daemon.PollInterval, AutoStart: cfg.Daemon.AutoStart}
 		d.Log = LogDraft{Level: cfg.Log.Level, Dir: cfg.Log.Dir, MaxDays: cfg.Log.MaxDays}
+		// 刷新间隔下发用户层原值(未配置为 0):前端按默认 30 秒展示,
+		// 未触碰时保存不把默认值固化成显式配置(与路径/级别同口径)。
+		d.Refresh = RefreshDraft{DashboardInterval: cfg.Refresh.DashboardInterval, WatchInterval: cfg.Refresh.WatchInterval}
 		for _, a := range sortedAliasKeys(cfg.ProviderAliases) {
 			d.ProviderAliases = append(d.ProviderAliases, AliasDraft{Key: a, Value: cfg.ProviderAliases[a]})
 		}
@@ -290,6 +299,7 @@ func draftToConfig(base *config.Config, d ConfigDraft) (*config.Config, error) {
 	cfg := *base
 	cfg.Daemon = config.DaemonConfig{PollInterval: d.Daemon.PollInterval, AutoStart: d.Daemon.AutoStart}
 	cfg.Log = config.LogConfig{Level: normalizeLogLevel(d.Log.Level), Dir: d.Log.Dir, MaxDays: d.Log.MaxDays}
+	cfg.Refresh = config.RefreshConfig{DashboardInterval: d.Refresh.DashboardInterval, WatchInterval: d.Refresh.WatchInterval}
 
 	clients := make(map[string]config.Client, len(d.Clients))
 	seen := map[string]bool{}

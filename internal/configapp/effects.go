@@ -184,6 +184,8 @@ func AnalyzeConfigEffects(previous, current *config.Config) ConfigEffects {
 
 // runtimeAffectingChange 判定运行中 daemon 是否需要重载/重启。
 // 「仅 autostart 变化」不算 runtime changed（只影响下次登录/开机的定义）。
+// refresh 两个查询刷新间隔同样不算:它们只被网页仪表盘与 CLI watch 消费,
+// 与采集 daemon 无关,改查询刷新不触发 daemon 重启。
 func runtimeAffectingChange(prev, curr normalizedCfg, hasFull, hasRouter bool, hasMigration bool) bool {
 	if prev.DataDir != curr.DataDir {
 		return true
@@ -264,6 +266,7 @@ type normalizedCfg struct {
 	Clients                map[string]config.Client
 	Routers                map[string]config.RouterConfig
 	ProviderAliases        map[string]string
+	Refresh                config.RefreshConfig
 	RawQuery               map[string]any
 	RawQueryTopLevelIssues map[string]config.RawQueryTopLevelIssue
 }
@@ -282,6 +285,10 @@ func normalize(c *config.Config) normalizedCfg {
 	n.Clients = copyClients(c.Clients)
 	n.Routers = copyRouters(c.Routers)
 	n.ProviderAliases = copyStringMap(c.ProviderAliases)
+	// refresh 两个查询刷新间隔参与「有效配置是否变化」的判定(否则只改
+	// 刷新值会被误报「有效配置未变化」),但 runtimeAffectingChange 不检查
+	// 它:刷新间隔是查询侧消费的展示配置,daemon 无需重启。
+	n.Refresh = c.Refresh
 	// raw query 参与归一化与 effective 等价比较(保存后不误报「有效配置未变化」),
 	// 但 runtimeAffectingChange 不检查它:query 是纯展示配置,只写盘、无运行时副作用。
 	n.RawQuery, n.RawQueryTopLevelIssues = config.CloneRawQueryState(c)

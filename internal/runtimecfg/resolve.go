@@ -173,6 +173,34 @@ func validateUserConfig(user *config.Config, forWrite bool) error {
 			fmt.Sprintf("daemon.poll_interval 不能为负数（0 表示使用默认值，当前 %d）", user.Daemon.PollInterval),
 		))
 	}
+	if user.Refresh.DashboardInterval < 0 {
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("refresh.dashboard_interval must not be negative (0 means use the default, got %d)", user.Refresh.DashboardInterval),
+			fmt.Sprintf("refresh.dashboard_interval 不能为负数（0 表示使用默认值，当前 %d）", user.Refresh.DashboardInterval),
+		))
+	}
+	if user.Refresh.WatchInterval < 0 {
+		return fmt.Errorf("%s", ui.Bi(
+			fmt.Sprintf("refresh.watch_interval must not be negative (0 means use the default, got %d)", user.Refresh.WatchInterval),
+			fmt.Sprintf("refresh.watch_interval 不能为负数（0 表示使用默认值，当前 %d）", user.Refresh.WatchInterval),
+		))
+	}
+	if forWrite {
+		// 写入口径与网页配置页/TUI 下拉范围一致:自定义值 1~3600 秒,
+		// 0 表示「使用默认值」。读取链不设上限,容忍手工编辑的超范围值。
+		if user.Refresh.DashboardInterval > config.MaxRefreshInterval {
+			return fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("refresh.dashboard_interval must be 0 or 1-%d seconds (got %d)", config.MaxRefreshInterval, user.Refresh.DashboardInterval),
+				fmt.Sprintf("refresh.dashboard_interval 应为 0 或 1~%d 秒（当前 %d）", config.MaxRefreshInterval, user.Refresh.DashboardInterval),
+			))
+		}
+		if user.Refresh.WatchInterval > config.MaxRefreshInterval {
+			return fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("refresh.watch_interval must be 0 or 1-%d seconds (got %d)", config.MaxRefreshInterval, user.Refresh.WatchInterval),
+				fmt.Sprintf("refresh.watch_interval 应为 0 或 1~%d 秒（当前 %d）", config.MaxRefreshInterval, user.Refresh.WatchInterval),
+			))
+		}
+	}
 	if user.Log.MaxDays < 0 {
 		return fmt.Errorf("%s", ui.Bi(
 			fmt.Sprintf("log.max_days must not be negative (0 means use the default, got %d)", user.Log.MaxDays),
@@ -266,7 +294,9 @@ func expandTilde(path, home string) string {
 //
 // 数值字段只处理「0 表示使用默认值」：
 //   - poll_interval == 0 → 30（analyzer 用 time.NewTicker(interval)，零值需补默认）；
-//   - max_days == 0 → 7。
+//   - max_days == 0 → 7；
+//   - refresh 两个查询刷新间隔 == 0 → 30（产品缺省，2026-09-24 起；
+//     daemon.poll_interval 只管采集轮询，查询刷新与它互不影响）。
 //
 // 负值不再在此静默 clamp：ResolveEffectiveConfig 入口的 ValidateUserConfig 会先拒绝，
 // 这里仅负责把合法的零值解析为默认值。
@@ -282,5 +312,11 @@ func applyCoreDefaults(cfg *config.Config) {
 	}
 	if cfg.Log.MaxDays == 0 {
 		cfg.Log.MaxDays = 7
+	}
+	if cfg.Refresh.DashboardInterval <= 0 {
+		cfg.Refresh.DashboardInterval = config.DefaultRefreshInterval
+	}
+	if cfg.Refresh.WatchInterval <= 0 {
+		cfg.Refresh.WatchInterval = config.DefaultRefreshInterval
 	}
 }

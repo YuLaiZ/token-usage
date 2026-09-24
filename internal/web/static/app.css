@@ -239,6 +239,19 @@ h2{margin:0;font:750 clamp(22px,2.4vw,28px)/1.1 var(--font);letter-spacing:-.02e
 
 .toolbar{position:sticky;top:10px;z-index:25;display:flex;width:max-content;max-width:calc(100% + 12px);flex-wrap:wrap;justify-content:flex-start;gap:10px;margin:18px -6px 0;padding:6px;border:1px solid var(--glass-rim);border-radius:14px;background:var(--glass-sheen-strong),var(--glass-strong);backdrop-filter:var(--glass-blur-strong);-webkit-backdrop-filter:var(--glass-blur-strong);box-shadow:0 8px 24px color-mix(in srgb,var(--ink) 12%,transparent),inset 0 1px 0 rgba(255,255,255,.14)}
 .tb-left,.tb-right{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.dash-refresh{justify-content:center;min-width:34px;padding-inline:9px}
+.dash-refresh svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.dash-refresh:focus-visible{outline:0;box-shadow:var(--focus)}
+.refresh-state{display:flex;align-items:center;gap:8px;min-height:30px;width:max-content;max-width:100%;margin:0;padding:5px 10px;border:1px solid var(--line-soft);border-radius:999px;background:color-mix(in srgb,var(--glass) 70%,transparent);color:var(--muted);font:600 11px/1.3 var(--font)}
+.refresh-state strong{color:var(--ink);font-weight:650;white-space:nowrap}
+.refresh-state small{min-width:0;color:var(--quiet);font:500 10.5px/1.3 var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.refresh-mark{display:block;flex:none;width:10px;height:10px;border-radius:50%;background:#35c889;box-shadow:0 0 0 3px color-mix(in srgb,#35c889 14%,transparent);animation:refresh-breathe 2.4s ease-in-out infinite}
+.refresh-state[data-state="loading"]{border-color:color-mix(in srgb,var(--accent) 36%,var(--line));background:color-mix(in srgb,var(--accent) 10%,var(--glass));color:var(--accent)}
+.refresh-state[data-state="loading"] .refresh-mark{width:13px;height:13px;border:2px solid color-mix(in srgb,var(--accent) 22%,transparent);border-top-color:var(--accent);background:transparent;box-shadow:none;animation:refresh-spin .72s linear infinite}
+.refresh-state[data-state="done"] .refresh-mark{animation:none}
+#page-dash[data-refreshing="true"] .dash-results{opacity:.38;filter:saturate(.7);pointer-events:none;user-select:none;transition:opacity .18s var(--ease),filter .18s var(--ease)}
+@keyframes refresh-spin{to{transform:rotate(360deg)}}
+@keyframes refresh-breathe{50%{box-shadow:0 0 0 5px color-mix(in srgb,#35c889 7%,transparent)}}
 .seg{display:inline-flex;gap:2px;padding:3px;border:1px solid var(--line);border-radius:var(--r2);background:var(--glass-lens);backdrop-filter:var(--glass-lens-blur);-webkit-backdrop-filter:var(--glass-lens-blur);box-shadow:inset 0 1px 0 rgba(255,255,255,.07)}
 .seg button{position:relative;min-height:28px;padding:4px 11px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:12px;font-weight:650;transition:background-color .15s var(--ease),color .15s var(--ease),box-shadow .15s var(--ease)}
 @media(hover:hover){.seg button:hover{color:var(--ink)}}
@@ -510,6 +523,11 @@ html[data-theme="light"] .config-card.soft{box-shadow:0 1px 2px rgba(27,34,51,.0
 .card-head h3{margin:0;font:750 14px/1.2 var(--font)}
 .card-head p{margin:4px 0 0;color:var(--muted);font-size:12px}
 .crow{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:10px 0;border-top:1px solid var(--line-soft)}
+.refresh-setting{display:flex;align-items:center;gap:8px;flex:none}
+.refresh-setting select.ti{width:150px;cursor:pointer}
+.refresh-setting input.ti{width:96px}
+.refresh-setting input.ti[hidden]{display:none}
+.refresh-setting .refresh-unit{color:var(--quiet);font-size:12px}
 .card-head + .crow{border-top:0}
 .crow-label{min-width:0}
 .crow-label b{display:block;font-size:13px;font-weight:650}
@@ -643,7 +661,7 @@ table.ctable tbody th:first-child{padding-left:14px}
 @media(max-width:900px){
   .app,.app.side-min{grid-template-columns:1fr}
   .side-toggle{display:none}
-  .sidebar{position:static;height:auto;flex-direction:row;align-items:center;gap:14px;padding:10px 14px;border-right:0;border-bottom:1px solid var(--line)}
+  .sidebar{position:static;height:auto;flex-direction:row;align-items:center;gap:14px;padding:10px 14px;border-right:0;border-bottom:1px solid var(--line);min-width:0}
   .app.side-min .brand{flex-direction:row;gap:10px}
   .app.side-min .brand>div{display:block}
   .nav{display:flex;gap:6px}
@@ -679,8 +697,12 @@ table.ctable tbody th:first-child{padding-left:14px}
   .metric-value{font-size:22px}
   .kpi-support{min-width:0;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 12px;padding:2px 0}
   .kpi-support .kpi-metric{min-height:50px;padding:0}
-  .toolbar{width:calc(100% + 4px);max-width:none;margin-inline:-2px;padding:5px}
+  .toolbar{display:grid;grid-template-columns:minmax(0,1fr) 44px;gap:6px;width:calc(100% + 4px);max-width:none;margin-inline:-2px;padding:5px}
   .tb-right{width:100%;justify-content:space-between}
+  .toolbar .tb-left{display:grid;grid-template-columns:minmax(0,1fr) minmax(76px,max-content);width:100%;min-width:0;overflow:hidden;flex-wrap:nowrap;gap:6px}
+  .dash-refresh{grid-column:2;min-width:44px;min-height:44px}
+  .dash-refresh span{display:none}
+  .refresh-state{grid-column:1/-1;width:100%;border-radius:10px}
   .toolbar .tb-left{display:grid;grid-template-columns:minmax(0,1fr) minmax(76px,max-content);width:100%;min-width:0;overflow:hidden;flex-wrap:nowrap;gap:6px}
   #range-seg{display:flex;width:100%;max-width:100%;min-width:0;overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-width:none}
   #range-seg::-webkit-scrollbar{display:none}
@@ -690,6 +712,9 @@ table.ctable tbody th:first-child{padding-left:14px}
   .crow{flex-wrap:wrap}
   .crow .ti{width:100%}
   .config-card.default-view-card .crow{grid-template-columns:1fr}
+  .refresh-setting{width:100%}
+  .refresh-setting select.ti{width:min(190px,60%)}
+  .refresh-setting input.ti{width:92px}
   .config-card.default-view-card .crow>.button{justify-self:start}
   .alias-grid{grid-template-columns:1fr}
   .alias-addbar{grid-template-columns:minmax(0,1fr) 18px minmax(0,1fr) auto;column-gap:6px}

@@ -243,6 +243,34 @@ func setByPath(cfg *Config, segs []string, value string) error {
 		}
 		cfg.ProviderAliases[segs[1]] = value
 		return nil
+	case "refresh":
+		if len(segs) != 2 {
+			return fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("unknown path: %v", segs),
+				fmt.Sprintf("未知路径: %v", segs),
+			))
+		}
+		switch segs[1] {
+		case "dashboard_interval", "watch_interval":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("%s", ui.Bi(
+					fmt.Sprintf("refresh.%s needs an int (seconds, 0 means the default), got %q", segs[1], value),
+					fmt.Sprintf("refresh.%s 需要整数秒(0 表示使用默认值),得到 %q", segs[1], value),
+				))
+			}
+			if segs[1] == "dashboard_interval" {
+				cfg.Refresh.DashboardInterval = n
+			} else {
+				cfg.Refresh.WatchInterval = n
+			}
+		default:
+			return fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("unknown refresh field: %q", segs[1]),
+				fmt.Sprintf("未知 refresh 字段: %q", segs[1]),
+			))
+		}
+		return nil
 	default:
 		return fmt.Errorf("%s", ui.Bi(
 			fmt.Sprintf("unknown top-level segment: %q", segs[0]),
@@ -369,6 +397,24 @@ func getByPath(cfg *Config, segs []string) (string, error) {
 			))
 		}
 		return v, nil
+	case "refresh":
+		if len(segs) != 2 {
+			return "", fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("unknown path: %v", segs),
+				fmt.Sprintf("未知路径: %v", segs),
+			))
+		}
+		switch segs[1] {
+		case "dashboard_interval":
+			return strconv.Itoa(cfg.Refresh.DashboardInterval), nil
+		case "watch_interval":
+			return strconv.Itoa(cfg.Refresh.WatchInterval), nil
+		default:
+			return "", fmt.Errorf("%s", ui.Bi(
+				fmt.Sprintf("unknown refresh field: %q", segs[1]),
+				fmt.Sprintf("未知 refresh 字段: %q", segs[1]),
+			))
+		}
 	default:
 		return "", fmt.Errorf("%s", ui.Bi(
 			fmt.Sprintf("unknown top-level segment: %q", segs[0]),

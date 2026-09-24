@@ -30,6 +30,7 @@ type Config struct {
 	Daemon          DaemonConfig            `mapstructure:"daemon" toml:"daemon,omitempty"`
 	Log             LogConfig               `mapstructure:"log" toml:"log,omitempty"`
 	ProviderAliases map[string]string       `mapstructure:"provider_aliases" toml:"provider_aliases,omitempty"`
+	Refresh         RefreshConfig           `mapstructure:"refresh" toml:"refresh,omitempty"`
 
 	// RawQuery 保存唯一精确小写 [query] 段的完整子树(内部原始键大小写与值类型原样保留)。
 	// RawQueryTopLevelIssues 保存顶层名称冲突或根值非表的全部问题项。两者互斥,
@@ -56,6 +57,34 @@ type RouterConfig struct {
 type DaemonConfig struct {
 	PollInterval int  `mapstructure:"poll_interval" toml:"poll_interval,omitempty"`
 	AutoStart    bool `mapstructure:"autostart" toml:"autostart"` // 不加 omitempty：bool 总是写出来，用户能看到明确的「关闭」状态而非字段消失
+}
+
+// RefreshConfig 是查询刷新间隔配置:与 [daemon] 的采集轮询完全独立。
+// DashboardInterval 驱动网页仪表盘的自动刷新,WatchInterval 是 CLI watch
+// 无 --interval 时的缺省间隔;单位均为秒,0 表示使用默认值(30 秒,由
+// 运行时层 applyCoreDefaults 补齐)。两字段全零时 TOML 序列化整体省略
+// [refresh] 段(struct omitempty),旧配置缺段不产生任何写盘差异。
+type RefreshConfig struct {
+	DashboardInterval int `mapstructure:"dashboard_interval" toml:"dashboard_interval,omitempty"`
+	WatchInterval     int `mapstructure:"watch_interval" toml:"watch_interval,omitempty"`
+}
+
+const (
+	// DefaultRefreshInterval 是刷新间隔的缺省有效值(用户层 0 时补齐):
+	// 产品决定从 2026-09-24 起仪表盘与 watch 的无配置缺省均为 30 秒。
+	DefaultRefreshInterval = 30
+	// MaxRefreshInterval 是刷新间隔的写入口径上限(网页下拉「其他…」与
+	// TUI/config set 同一口径):1~3600 秒。读取链不设上限。
+	MaxRefreshInterval = 3600
+)
+
+// EffectiveInterval 把用户层刷新间隔解析为有效值:0 与负值之外的合法域
+// 在写入链校验,本函数只负责零值→默认的映射(读取链对超范围值保持宽容)。
+func (r RefreshConfig) EffectiveInterval(v int) int {
+	if v <= 0 {
+		return DefaultRefreshInterval
+	}
+	return v
 }
 
 type LogConfig struct {

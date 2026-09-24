@@ -43,8 +43,8 @@
 | `internal/engine/` | 采集编排（依赖装配、主循环、事务化写入、重试、结果校验） |
 | `internal/analyzer/` | 守护进程实时监控（JSONL watcher、SQLite poller、debounce、串行化锁） |
 | `internal/querier/` | 查询引擎（从 messages 实时聚合） |
-| `internal/web/` | 只读本地仪表板 HTTP 服务，含内嵌静态资源与 JSON/SVG 接口 |
-| `internal/charts/` | `serve` 仪表板共用的 SVG 图表渲染 |
+| `internal/web/` | 只读本地仪表板 HTTP 服务，含内嵌静态资源与 JSON 接口；图表由前端按数值行自绘 |
+| `internal/charts/` | 遗留 SVG 图表包；仪表板图表改为前端自绘后已无 Go 代码引用 |
 | `internal/fmtx/` | dashboard 变化值共用的显示格式化 |
 | `internal/ui/` | 双语输出助手（`Bi`）、按显示宽度对齐的框线表格，以及 `query`/`watch`/仪表板共用的查询输出列注册表 |
 | `internal/tui/` | 配置交互编辑 TUI（bubbletea；保存经 `ApplyConfig`） |
@@ -153,8 +153,8 @@ mimocode 数据源产生两个正式 client：`MiMo Code`（CLI）与 `MiMo Desk
 | `engine/` | 采集编排：依赖装配、主循环、事务化写入、重试、结果校验 | `NewDeps()`, `RunCollect()`, `RunRetryWithDeps()`, `RunRouterBackfill()`, `ValidateResult()` |
 | `analyzer/` | 守护进程监控：ChangedFile/Incremental/router source 触发采集，debounce 合并，串行化锁 | `NewFromConfig()`, `JSONLWatcher`, `SQLitePoller` |
 | `querier/` | 从 messages 实时聚合查询，格式化输出 | `ByClient()`, `ByModel()`, `ByProject()`, `ByHour()`, `ByWeekday()`, `Heatmap()`, `HeatmapMatrix()`, `RunDimensionView()`, `Sessions()`, `Summary()`, `StatsBetween()` |
-| `web/` | serve 命令组的本地只读仪表板服务：go:embed 内嵌 HTML 页面（深色计量仪表台，图表由前端按数值行自绘）、JSON 接口（`/api/meta`、`/api/dashboard`）与单维度 SVG 接口；单请求全部查询在同一读事务快照完成 | `NewServer()` |
-| `charts/` | SVG 图表唯一实现，web 单入口共用：柱状、折线、饼图与星期×小时热力矩阵（深色取色、完整等宽字体栈、悬停 `<title>`） | `BuildDimensionSVG()`, `Heatmap()`, `BarSVG()`, `LineSVG()`, `PieSVG()` |
+| `web/` | serve 命令组的本地只读仪表板服务：go:embed 内嵌 HTML 页面（图表由前端按数值行自绘）、JSON 接口（`/api/meta`、`/api/dashboard`、`/api/config`）。单请求全部查询在同一读事务快照完成；`/api/dashboard` 在响应前完成整理——四维度前 9＋「其他」、自定义视图前 19＋「其他组合」、前 20 会话，以及按区间形态变化的趋势/热力展示桶，浏览器不再截断或重聚合 | `NewServer()` |
+| `charts/` | 遗留 SVG 图表包（柱状、折线、饼图、星期×小时热力矩阵），当前无调用方，保留待裁决 | — |
 | `querydef/` | query 视图词表：内置维度常量、内置视图名与保留名清单，由 cli 的 query/watch 视图名解析共用 | `BuiltinDimensionNames()`, `IsReservedName()` |
 | `fmtx/` | 跨命令共享的显示格式化助手：千分位、带符号 K/M/B、差值着色 class 与变化百分比 | `Thousands()`, `SignedTokens()`, `CountChange()`, `ChangeClass()`, `ChangePercent()` |
 | `tui/` | 配置交互编辑 TUI（双模型 edit/display + 手动保存经 `ApplyConfig` + 自启 toggle） | `Run()` |
@@ -289,6 +289,7 @@ daemon lock 是存活唯一真相源，PID/runtime-state 是**可降级**的定�
 - client disabled→enabled / 路径变化 → `collect all --client X`（新版 `collect all` 已含 router 阶段，同一 client 不重复进 router 列表）。
 - client router 变化（空→R 或 R1→R2）或 router db_path 变化 → 受影响已启用且配 router 的 client 执行 `collect router --client X`。`provider_aliases` 变化仅影响查询展示，不触发采集或 router 回填。
 - daemon poll_interval / log 字段 / 任一 client-router-path 变化（不含纯 autostart）→ `RuntimeChanged`（运行中需 daemon restart）。
+- 仅 `[refresh]` 查询刷新间隔变化 → 有效配置**已变化**（保存照常报「已保存」）但**不**属于运行时变化：刷新间隔只被网页仪表盘与 `watch` 消费，与采集 daemon 无关。
 - 仅 `daemon.autostart` 变化 → **不算** runtime changed（只影响下次登录定义）。
 
 **动作建议**（按运行态合并）：daemon 运行中且有 collect → `daemon stop` → 全部 collect → `daemon start`；运行中仅 RuntimeChanged → `daemon restart`。警告（旧路径历史不删、router 重绑旧关联不清理等）作为说明输出。
@@ -439,6 +440,10 @@ enabled = true
 [daemon]
 poll_interval = 30            # SQLitePoller 轮询间隔（秒）
 autostart = false             # 开机自启（macOS launchd / Windows 注册表）
+
+[refresh]
+dashboard_interval = 30       # 网页仪表盘自动刷新间隔（秒；0 = 默认 30）
+watch_interval = 30           # `watch` 无 --interval 时的缺省间隔（秒；0 = 默认 30）
 
 [log]
 level = "info"

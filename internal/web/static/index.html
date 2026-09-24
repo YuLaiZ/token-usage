@@ -130,7 +130,11 @@ d.lang=l;d.setAttribute('data-locale',l);})();
             </div>
           </div>
         </div>
+        <button type="button" class="button dash-refresh" id="dash-refresh" aria-label="刷新当前区间" title="刷新当前区间"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.2-5.5M20 4v5h-5"/></svg><span>刷新</span></button>
+        <div class="refresh-state" id="refresh-state" data-state="idle" role="status" aria-live="polite" aria-atomic="true"><i class="refresh-mark" aria-hidden="true"></i><strong id="refresh-label">自动刷新已开启</strong><small id="refresh-detail">最近查询 · —</small></div>
       </div>
+
+      <div class="dash-results" id="dash-results" aria-busy="false">
 
       <div class="kpis" id="kpis"></div>
 
@@ -184,6 +188,8 @@ d.lang=l;d.setAttribute('data-locale',l);})();
           </table>
         </div>
       </section>
+
+      </div><!-- /dash-results -->
 
     </section>
 
@@ -244,7 +250,7 @@ d.lang=l;d.setAttribute('data-locale',l);})();
         </section>
 
         <section class="config-section" aria-labelledby="config-query-title">
-        <div class="sec-title"><h3 id="config-query-title">查询与展示</h3><p>设置默认视图、输出列、自定义视图和组合查询</p><div class="rule"></div></div>
+        <div class="sec-title"><h3 id="config-query-title">查询与展示</h3><p>设置默认视图、输出列、自定义视图、组合查询和刷新间隔</p><div class="rule"></div></div>
 
         <section class="config-card span2 default-view-card">
           <div class="card-head"><div><h3>默认视图</h3><p>选择打开仪表盘时首先展示的视图</p></div><span class="toml-tag">query.default</span></div>
@@ -258,6 +264,18 @@ d.lang=l;d.setAttribute('data-locale',l);})();
           <div class="crow">
             <div class="od-field crow-label"><b>恢复为 client</b><small>将启动视图恢复为内置 client</small></div>
             <button class="button" id="q-default-reset">恢复为 client</button>
+          </div>
+        </section>
+
+        <section class="config-card span2 refresh-config-card">
+          <div class="card-head"><div><h3>查询刷新</h3><p>仪表盘与终端 watch 分别设置；守护进程的采集轮询在上方单独配置</p></div><span class="toml-tag">[refresh]</span></div>
+          <div class="crow">
+            <div class="od-field crow-label"><b>仪表盘自动刷新</b><small>保存后按所选间隔自动查询；手动刷新和切换区间共用同一等待状态</small></div>
+            <div class="refresh-setting"><select class="ti" id="cfg-dashboard-refresh" aria-label="仪表盘自动刷新间隔"><option value="10">10 秒</option><option value="20">20 秒</option><option value="30">30 秒（默认）</option><option value="60">60 秒</option><option value="custom">其他…</option></select><input class="ti" id="cfg-dashboard-refresh-custom" type="number" min="1" max="3600" step="1" value="30" aria-label="仪表盘自定义刷新秒数" hidden><span class="refresh-unit" id="cfg-dashboard-refresh-unit" hidden>秒</span></div>
+          </div>
+          <div class="crow">
+            <div class="od-field crow-label"><b>CLI watch 刷新</b><small>终端执行 watch 时的默认间隔；命令行 --interval 可覆盖本次运行</small></div>
+            <div class="refresh-setting"><select class="ti" id="cfg-watch-refresh" aria-label="CLI watch 刷新间隔"><option value="10">10 秒</option><option value="20">20 秒</option><option value="30">30 秒（默认）</option><option value="60">60 秒</option><option value="custom">其他…</option></select><input class="ti" id="cfg-watch-refresh-custom" type="number" min="1" max="3600" step="1" value="30" aria-label="CLI watch 自定义刷新秒数" hidden><span class="refresh-unit" id="cfg-watch-refresh-unit" hidden>秒</span></div>
           </div>
         </section>
 
@@ -327,7 +345,7 @@ d.lang=l;d.setAttribute('data-locale',l);})();
   <div class="modal-scrim"></div>
   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-modal-title" aria-describedby="reset-modal-desc">
     <h3 id="reset-modal-title">恢复全部默认值？</h3>
-    <p id="reset-modal-desc" class="page-note">客户端、路由、守护进程、日志、查询与展示设置和供应商别名都将载入为全部默认值（尚未保存）；确认后请再点击“保存”才会写入配置。</p>
+    <p id="reset-modal-desc" class="page-note">客户端、路由、守护进程、日志、查询与展示设置、刷新间隔和供应商别名都将载入为全部默认值（尚未保存）；确认后请再点击“保存”才会写入配置。</p>
     <div class="modal-foot">
       <button type="button" class="button" id="reset-cancel">取消</button>
       <button type="button" class="button danger" id="reset-confirm">恢复全部默认值</button>

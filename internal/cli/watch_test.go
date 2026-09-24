@@ -490,3 +490,100 @@ func TestWatchCmd_ByBuiltinSpecialViews(t *testing.T) {
 		t.Errorf("坏布局不应阻断 --by summary:\n%s", out)
 	}
 }
+
+// runWatchInterval 装配循环模式 watch 并捕获首次 sleep 的间隔值(第 2 帧前
+// 的 sleep 抛哨兵终止)。返回该间隔与命令错误。
+func runWatchInterval(t *testing.T, args []string, cfg *config.Config) (time.Duration, error) {
+	t.Helper()
+	var first time.Duration
+	n := 0
+	cmd := newWatchCmdWithDeps(
+		func() (*config.Config, error) { return cfg, nil },
+		func(string) (*db.DB, error) {
+			return seedWatchDB(t, time.Date(2026, 9, 7, 9, 30, 0, 0, time.Local)), nil
+		},
+		func() time.Time { return time.Date(2026, 9, 7, 9, 30, 0, 0, time.Local) },
+		func(d time.Duration) {
+			n++
+			if n == 1 {
+				first = d
+				panic(watchLoopSentinel)
+			}
+		},
+	)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs(args)
+	func() {
+		defer func() {
+			if r := recover(); r != watchLoopSentinel {
+				t.Fatalf("unexpected panic: %v", r)
+			}
+		}()
+		_ = cmd.Execute()
+	}()
+	return first, nil
+}
+
+// runWatchIntervalErr 装配一次预期失败的 watch(间隔校验/配置加载),
+// 不打开数据库即返回错误。
+func runWatchIntervalErr(t *testing.T, args []string, cfg *config.Config) error {
+	t.Helper()
+	cmd := newWatchCmdWithDeps(
+		func() (*config.Config, error) { return cfg, nil },
+		func(string) (*db.DB, error) {
+			t.Fatal("间隔非法应在打开数据库前拒绝")
+			return nil, fmt.Errorf("must not open")
+		},
+		func() time.Time { return time.Date(2026, 9, 7, 9, 30, 0, 0, time.Local) },
+		func(time.Duration) {},
+	)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs(args)
+	return cmd.Execute()
+}
+
+// 无显式 --interval 时读取配置 [refresh].watch_interval:未配置为 30 秒
+// (产品缺省,原为 5 秒)、显式配置为该值、配置 0 语义为默认 30 秒;
+// 显式 --interval 覆盖配置且仅影响本次进程。
+func TestWatchCmd_IntervalFromConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *config.Config
+		args []string
+		want time.Duration
+	}{
+		{"配置未配置默认30秒", &config.Config{DataDir: t.TempDir()}, nil, 30 * time.Second},
+		{"配置45秒", &config.Config{DataDir: t.TempDir(), Refresh: config.RefreshConfig{WatchInterval: 45}}, nil, 45 * time.Second},
+		{"配置0语义为默认", &config.Config{DataDir: t.TempDir(), Refresh: config.RefreshConfig{WatchInterval: 0}}, nil, 30 * time.Second},
+		{"显式flag覆盖配置", &config.Config{DataDir: t.TempDir(), Refresh: config.RefreshConfig{WatchInterval: 45}}, []string{"--interval", "2s"}, 2 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := runWatchInterval(t, tc.args, tc.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("刷新间隔应 %v,实际 %v", tc.want, got)
+			}
+		})
+	}
+}
+
+// 显式 --interval 仍沿用至少 1 秒校验(默认值 0 不触发该校验——只有用户
+// 显式给出过短的 --interval 才拒绝)。
+func TestWatchCmd_ExplicitIntervalMinimum(t *testing.T) {
+	err := runWatchIntervalErr(t, []string{"--interval", "500ms"}, &config.Config{DataDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "at least 1s") || !strings.Contains(err.Error(), "至少为 1 秒") {
+		t.Errorf("显式 500ms 应被拒绝并双语提示,实际: %v", err)
+	}
+	// 未显式给 --interval 时不校验 flag 默认 0:循环以配置间隔启动(由
+	// TestWatchCmd_IntervalFromConfig 覆盖),此处验证空 interval 路径不报错。
+	if _, err := runWatchInterval(t, nil, &config.Config{DataDir: t.TempDir(), Refresh: config.RefreshConfig{WatchInterval: 1}}); err != nil {
+		t.Fatalf("配置间隔 1s 应正常启动: %v", err)
+	}
+}

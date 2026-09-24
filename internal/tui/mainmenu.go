@@ -33,6 +33,7 @@ func newMainMenu(app *App) *mainMenu {
 			ui.Bi("Daemon", "守护进程"),
 			ui.Bi("Logs", "日志"),
 			ui.Bi("Query", "查询"),
+			ui.Bi("Refresh", "查询刷新"),
 			ui.Bi("Data dir (read-only)", "数据目录(只读)"),
 		},
 	}
@@ -90,6 +91,8 @@ func (m *mainMenu) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case 4:
 			m.app.push(newQueryParentPage(m.app))
 		case 5:
+			m.app.push(newRefreshPage(m.app))
+		case 6:
 			// 数据目录(只读):进入说明页(固定 config 路径 + 迁移风险 + config set 命令)。
 			m.app.push(newDataDirPage(m.app))
 		}
@@ -120,6 +123,17 @@ func (m *mainMenu) View() string {
 	if lv == "" {
 		lv = "info"
 	}
+	// 查询刷新摘要:两项独立展示;草稿为 0(未配置)时取有效层显示默认值并标注。
+	rd := m.app.draft.Refresh.DashboardInterval
+	rw := m.app.draft.Refresh.WatchInterval
+	rdDef := rd == 0
+	rwDef := rw == 0
+	if rdDef {
+		rd = m.app.display.Refresh.DashboardInterval
+	}
+	if rwDef {
+		rw = m.app.display.Refresh.WatchInterval
+	}
 	summaries := []string{
 		ui.Bi(
 			fmt.Sprintf("%d enabled / %d disabled", enabled, disabled),
@@ -137,6 +151,10 @@ func (m *mainMenu) View() string {
 			"level="+lv+defTagZh(m.app.draft.Log.Level == ""),
 		),
 		queryMenuSummary(m.app.draft),
+		ui.Bi(
+			"dash "+strconv.Itoa(rd)+"s"+defTagEn(rdDef)+" · watch "+strconv.Itoa(rw)+"s"+defTagEn(rwDef),
+			"仪表盘 "+strconv.Itoa(rd)+"s"+defTagZh(rdDef)+" · watch "+strconv.Itoa(rw)+"s"+defTagZh(rwDef),
+		),
 		m.app.display.DataDir + " [" + ui.Bi("read-only", "只读") + "]",
 	}
 	for i, item := range m.items {

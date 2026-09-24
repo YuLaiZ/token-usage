@@ -191,9 +191,10 @@ func TestServeMeta(t *testing.T) {
 }
 
 // TestServeDashboard_ShapeAndOrder:/api/dashboard 默认范围含今天;顶层与
-// 各嵌套对象的字段名精确匹配(载荷 v3:无 compare/forecast,新增 custom_views,
-// dimensions 固定四维度);client 维度按总量降序;sessions 按总量降序且截前 10;
-// totals 数值精确。map 反序列化与结构体反序列化双检。
+// 各嵌套对象的字段名精确匹配(载荷 v4:无 compare/forecast,新增 custom_views
+// 与 trend,dimensions 固定四维度,各维度返回最终行——夹具独立项不足上限,
+// 不生成尾行);client 维度按总量降序;sessions 按总量降序且上限 20(夹具
+// 13 个会话全部返回);totals 数值精确。map 反序列化与结构体反序列化双检。
 func TestServeDashboard_ShapeAndOrder(t *testing.T) {
 	h, fx := newTestServer(t)
 	rec := doGet(h, "/api/dashboard")
@@ -203,10 +204,11 @@ func TestServeDashboard_ShapeAndOrder(t *testing.T) {
 
 	// 第一检:map 键集合精确匹配(多字段/少字段/拼错均失败)。
 	m := decodeJSON(t, rec)
-	assertKeys(t, "dashboard 顶层", m, "range", "totals", "columns", "dimensions", "heatmap", "custom_views", "sessions")
+	assertKeys(t, "dashboard 顶层", m, "range", "totals", "columns", "dimensions", "trend", "heatmap", "custom_views", "sessions")
 	assertKeys(t, "range", m["range"].(map[string]any), "from", "to")
 	assertKeys(t, "totals", m["totals"].(map[string]any),
 		"requests", "fresh_input", "output", "cache_read", "cache_create", "reasoning", "total", "active_days")
+	assertKeys(t, "trend", m["trend"].(map[string]any), "granularity", "buckets", "peak_index", "peak_total", "empty")
 	assertKeys(t, "sessions[0]", m["sessions"].([]any)[0].(map[string]any),
 		"client", "project", "title", "first_ts", "last_ts", "duration_ms", "requests", "total")
 	dims := m["dimensions"].(map[string]any)
@@ -215,6 +217,7 @@ func TestServeDashboard_ShapeAndOrder(t *testing.T) {
 	})) {
 		t.Errorf("dimensions 应恰 4 个固定键,实际 %v", dims)
 	}
+	// 独立行不得携带 is_other/other_count(omitempty 键缺失,前端据机器字段识别尾行)。
 	assertKeys(t, "dimensions.client[0]", dims["client"].([]any)[0].(map[string]any),
 		"key", "requests", "fresh_input", "output", "cache_read", "cache_create", "reasoning", "total")
 	// 无配置注入时 custom_views 为空数组(不是 null)。
@@ -254,10 +257,10 @@ func TestServeDashboard_ShapeAndOrder(t *testing.T) {
 	if want := []string{"requests", "input", "output", "cache_read", "reasoning", "total", "cache_hit"}; !reflect.DeepEqual(resp.Columns, want) {
 		t.Errorf("columns 应为默认七列 %v,实际 %v", want, resp.Columns)
 	}
-	// sessions:总量降序、截前 10、首行即最重会话、时长为毫秒差。
+	// sessions:总量降序、上限 20(夹具 13 个会话全部返回)、首行即最重会话。
 	sessions := resp.Sessions
-	if len(sessions) != 10 {
-		t.Fatalf("sessions 应截前 10 行,实际 %d", len(sessions))
+	if len(sessions) != 13 {
+		t.Fatalf("sessions 应返回全部 13 个会话(上限 20),实际 %d", len(sessions))
 	}
 	if sessions[0].Total != fx.topTotal {
 		t.Errorf("排行首行 total 应 %d,实际 %d", fx.topTotal, sessions[0].Total)
@@ -278,13 +281,31 @@ func TestServeDashboard_ShapeAndOrder(t *testing.T) {
 	if sessions[0].Title != "session-s12" {
 		t.Errorf("会话标题应保留原文,实际 %q", sessions[0].Title)
 	}
+	// 趋势:默认 30 天为逐日桶;峰值=今日(7800+200=8000 那天),空态 false。
+	if resp.Trend.Granularity != "day" {
+		t.Errorf("默认区间趋势粒度应为 day,实际 %q", resp.Trend.Granularity)
+	}
+	if len(resp.Trend.Buckets) != 30 {
+		t.Fatalf("默认区间趋势应 30 个日桶,实际 %d", len(resp.Trend.Buckets))
+	}
+	if resp.Trend.Empty {
+		t.Errorf("有数据区间 trend.empty 应为 false")
+	}
+	if resp.Trend.PeakTotal != fx.totals.Total-999 {
+		t.Errorf("趋势峰值应为今日总量 %d,实际 %d", fx.totals.Total-999, resp.Trend.PeakTotal)
+	}
+	if resp.Trend.Buckets[resp.Trend.PeakIndex].Key != fx.maxDate {
+		t.Errorf("峰值桶应为今日 %s,实际 %+v", fx.maxDate, resp.Trend.Buckets[resp.Trend.PeakIndex])
+	}
 }
 
-// TestServeDashboard_HeatmapDayHour:/api/dashboard 的热力数据为「范围内每一天
-// 一行」的日期×小时矩阵:days 行数恰为范围天数(含零值日,升序),hours 恒 24 格;
-// 数值与 totals 同一读事务快照:今天 12 条消息(10:01..10:12)落在 10 点桶共
-// 7800,s12 的第二条(11:12)落在 11 点桶 200,5 天前消息(10:00)落在 10 点桶
-// 999;全部行总和恰等于 totals.Total。
+// TestServeDashboard_HeatmapDayHour:默认 30 天范围走 day_block 模式——
+// 后端按「日期 × 4 小时时段」返回 6 个展示格(由逐小时数据在后端求和,
+// 前端不再做跨时段合并);days 行数恰为范围天数(含零值日,升序);
+// 过去/今日的日期不带 future 键(omitempty,已发生的零值是真实零格);
+// 数值与 totals 同一读事务快照:今天 12 条消息(10:01..10:12)与 s12 第二条
+// (11:12)都落在 08–12 时段共 8000,5 天前消息(10:00)落在 08–12 时段 999;
+// 全部行总和恰等于 totals.Total。
 func TestServeDashboard_HeatmapDayHour(t *testing.T) {
 	h, fx := newTestServer(t)
 	rec := doGet(h, "/api/dashboard")
@@ -292,10 +313,13 @@ func TestServeDashboard_HeatmapDayHour(t *testing.T) {
 		t.Fatalf("应 200,实际 %d:\n%s", rec.Code, rec.Body.String())
 	}
 
-	// 第一检:map 键集合精确匹配。
+	// 第一检:map 键集合精确匹配。30 天范围内全部已发生,无 future 键。
 	hm := decodeJSON(t, rec)["heatmap"].(map[string]any)
-	assertKeys(t, "heatmap", hm, "from", "to", "days")
-	assertKeys(t, "heatmap.days[0]", hm["days"].([]any)[0].(map[string]any), "date", "total", "hours")
+	assertKeys(t, "heatmap", hm, "from", "to", "mode", "days")
+	if hm["mode"] != "day_block" {
+		t.Errorf("30 天范围热力模式应为 day_block,实际 %v", hm["mode"])
+	}
+	assertKeys(t, "heatmap.days[0]", hm["days"].([]any)[0].(map[string]any), "date", "total", "blocks")
 
 	// 第二检:结构体反序列化校验形状与数值。
 	var resp dashboardResponse
@@ -320,26 +344,32 @@ func TestServeDashboard_HeatmapDayHour(t *testing.T) {
 		t.Errorf("热力 days 首末行应为范围端点,实际 %s..%s", hj.Days[0].Date, hj.Days[29].Date)
 	}
 	for i, day := range hj.Days {
-		if len(day.Hours) != 24 {
-			t.Fatalf("热力第 %d 行应 24 个小时格,实际 %d", i, len(day.Hours))
+		if len(day.Blocks) != 6 {
+			t.Fatalf("热力第 %d 行应 6 个 4 小时时段格,实际 %d", i, len(day.Blocks))
+		}
+		if day.Future {
+			t.Errorf("已发生日期 %s 不得标记 future", day.Date)
+		}
+		if len(day.Hours) != 0 {
+			t.Errorf("day_block 模式不得携带 hours 键,日期 %s 实际 %d 格", day.Date, len(day.Hours))
 		}
 	}
-	// 桶值:今天 10 点桶 7800、11 点桶 200,5 天前 10 点桶 999。
+	// 桶值:今天 08–12 时段 = 7800+200,5 天前 08–12 时段 = 999。
 	todayRow := hj.Days[29]
 	if todayRow.Date != fx.maxDate || todayRow.Total != fx.totals.Total-999 {
 		t.Errorf("今日行应为 date=%s total=%d,实际 %+v", fx.maxDate, fx.totals.Total-999, todayRow)
 	}
-	if todayRow.Hours[10] != 7800 || todayRow.Hours[11] != 200 {
-		t.Errorf("今日小时桶应为 10 点 7800、11 点 200,实际 %v", todayRow.Hours)
+	if todayRow.Blocks[2] != 8000 {
+		t.Errorf("今日 08–12 时段应 8000,实际 %v", todayRow.Blocks)
 	}
 	oldRow := hj.Days[24] // 5 天前
-	if oldRow.Date != fx.minDate || oldRow.Total != 999 || oldRow.Hours[10] != 999 {
-		t.Errorf("5 天前行应为 date=%s total=999(10 点桶),实际 %+v", fx.minDate, oldRow)
+	if oldRow.Date != fx.minDate || oldRow.Total != 999 || oldRow.Blocks[2] != 999 {
+		t.Errorf("5 天前行应为 date=%s total=999(08–12 时段),实际 %+v", fx.minDate, oldRow)
 	}
 	// 其余行全零。
 	var sum int64
 	for _, day := range hj.Days {
-		for _, v := range day.Hours {
+		for _, v := range day.Blocks {
 			sum += v
 		}
 		if day.Date != fx.maxDate && day.Date != fx.minDate && day.Total != 0 {
@@ -350,10 +380,18 @@ func TestServeDashboard_HeatmapDayHour(t *testing.T) {
 	if sum != fx.totals.Total {
 		t.Errorf("热力矩阵总和应等于 totals.Total %d,实际 %d", fx.totals.Total, sum)
 	}
+	// 趋势与热力同源:趋势日桶合计同样等于 totals.Total。
+	var trendSum int64
+	for _, b := range resp.Trend.Buckets {
+		trendSum += b.Total
+	}
+	if trendSum != fx.totals.Total {
+		t.Errorf("趋势桶合计应等于 totals.Total %d,实际 %d", fx.totals.Total, trendSum)
+	}
 }
 
-// TestServeDashboard_HeatmapSingleDay:单日范围(from==to)的 days 恰 1 行,
-// 覆盖当天全部小时桶。
+// TestServeDashboard_HeatmapSingleDay:单日范围(from==to)走 day_hour 模式,
+// days 恰 1 行、24 个小时格;今天(本机今天)不带 future 键。
 func TestServeDashboard_HeatmapSingleDay(t *testing.T) {
 	h, fx := newTestServer(t)
 	rec := doGet(h, "/api/dashboard?from="+fx.maxDate+"&to="+fx.maxDate)
@@ -364,12 +402,21 @@ func TestServeDashboard_HeatmapSingleDay(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("结构体反序列化失败: %v", err)
 	}
+	if resp.Heatmap.Mode != "day_hour" {
+		t.Errorf("单日范围热力模式应为 day_hour,实际 %q", resp.Heatmap.Mode)
+	}
 	if len(resp.Heatmap.Days) != 1 {
 		t.Fatalf("单日范围应恰 1 行,实际 %d", len(resp.Heatmap.Days))
 	}
 	day := resp.Heatmap.Days[0]
 	if day.Date != fx.maxDate {
 		t.Errorf("单日行日期应为 %s,实际 %s", fx.maxDate, day.Date)
+	}
+	if len(day.Hours) != 24 {
+		t.Fatalf("单日行应 24 个小时格,实际 %d", len(day.Hours))
+	}
+	if day.Future {
+		t.Errorf("本机今天不得标记 future(已发生,零格语义)")
 	}
 	var sum int64
 	for _, v := range day.Hours {
@@ -378,6 +425,14 @@ func TestServeDashboard_HeatmapSingleDay(t *testing.T) {
 	// 当日小时总和恰为当日总量(8999 中 999 属于 5 天前,不在单日范围内)。
 	if want := fx.totals.Total - 999; sum != want {
 		t.Errorf("单日小时总和应等于当日总量 %d,实际 %d", want, sum)
+	}
+	// 趋势同区间为小时桶:24 桶、粒度 hour、峰值=10 点桶(7800)。
+	if resp.Trend.Granularity != "hour" || len(resp.Trend.Buckets) != 24 {
+		t.Fatalf("单日趋势应为 24 个小时桶,实际粒度 %q、%d 桶", resp.Trend.Granularity, len(resp.Trend.Buckets))
+	}
+	if resp.Trend.PeakTotal != 7800 || resp.Trend.Buckets[resp.Trend.PeakIndex].Key != "10" {
+		t.Errorf("单日趋势峰值应为 10 点桶 7800,实际 index=%d total=%d",
+			resp.Trend.PeakIndex, resp.Trend.PeakTotal)
 	}
 }
 
@@ -482,8 +537,9 @@ func TestServeDashboard_CustomViews(t *testing.T) {
 }
 
 // TestServeDashboard_FutureRange:前端不限制日期,未来范围由后端返回结构
-// 完整的零值(200):totals 全 0、热力 days 恰为范围天数且全零、会话为空数组、
-// 四维度行与自定义视图行为空。
+// 完整的零值(200):totals 全 0、趋势空态(peak=-1)、热力 days 恰为范围
+// 天数且全零、全部日期标记 future(尚未发生→空白格,与真实零格区分)、
+// 会话为空数组、四维度行与自定义视图行为空。
 func TestServeDashboard_FutureRange(t *testing.T) {
 	h, _ := newTestServer(t)
 	rec := doGet(h, "/api/dashboard?from=2027-01-01&to=2027-01-31")
@@ -491,7 +547,7 @@ func TestServeDashboard_FutureRange(t *testing.T) {
 		t.Fatalf("未来范围应 200(不伪装成错误),实际 %d:\n%s", rec.Code, rec.Body.String())
 	}
 	m := decodeJSON(t, rec)
-	assertKeys(t, "dashboard 顶层", m, "range", "totals", "columns", "dimensions", "heatmap", "custom_views", "sessions")
+	assertKeys(t, "dashboard 顶层", m, "range", "totals", "columns", "dimensions", "trend", "heatmap", "custom_views", "sessions")
 	if got := m["range"].(map[string]any); got["from"] != "2027-01-01" || got["to"] != "2027-01-31" {
 		t.Errorf("range 应原样返回未来范围,实际 %v", got)
 	}
@@ -502,12 +558,22 @@ func TestServeDashboard_FutureRange(t *testing.T) {
 	if resp.Totals != (totalsJSON{}) {
 		t.Errorf("未来范围 totals 应全 0,实际 %+v", resp.Totals)
 	}
+	// 趋势:31 天逐日桶非空但全零 → empty=true、peak=-1,不产生"峰值 0"。
+	if !resp.Trend.Empty || resp.Trend.PeakIndex != -1 || resp.Trend.PeakTotal != 0 {
+		t.Errorf("未来范围趋势应为空态(empty/peak=-1),实际 %+v", resp.Trend)
+	}
+	if len(resp.Trend.Buckets) != 31 {
+		t.Errorf("未来范围趋势仍应按日给出 31 个零值桶,实际 %d", len(resp.Trend.Buckets))
+	}
 	if len(resp.Heatmap.Days) != 31 {
 		t.Fatalf("未来范围热力 days 应补零至 31 行,实际 %d", len(resp.Heatmap.Days))
 	}
 	for _, day := range resp.Heatmap.Days {
 		if day.Total != 0 {
 			t.Errorf("未来日 %s 应为 0,实际 %d", day.Date, day.Total)
+		}
+		if !day.Future {
+			t.Errorf("未来日 %s 必须标记 future(尚未发生→空白格)", day.Date)
 		}
 	}
 	if len(resp.Sessions) != 0 {

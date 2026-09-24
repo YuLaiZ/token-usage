@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,9 +26,10 @@ routeSpec 是 fetch 桩的单条响应;同一方法+前缀的多次不同响应�
 	Reject=true 表示网络失败(fetch 直接 reject,走调用方 rejection 分支)
 */
 type routeSpec struct {
-	Status int  `json:"status"`
-	Body   any  `json:"body"`
-	Reject bool `json:"reject,omitempty"`
+	Status  int  `json:"status"`
+	Body    any  `json:"body"`
+	Reject  bool `json:"reject,omitempty"`
+	Pending bool `json:"pending,omitempty"`
 }
 
 /*
@@ -56,12 +58,20 @@ type fetchCall struct {
 
 /* stepState 是每步交互后的关键 UI 快照,让"中间态"可断言(如脏→改回→复位) */
 type stepState struct {
-	Op           string `json:"op"`
-	PollInput    string `json:"pollInput"`
-	SaveDisabled bool   `json:"saveDisabled"`
-	SaveText     string `json:"saveText"`
-	DirtyPill    string `json:"dirtyPill"`
-	Toast        string `json:"toast"`
+	Op            string `json:"op"`
+	PollInput     string `json:"pollInput"`
+	SaveDisabled  bool   `json:"saveDisabled"`
+	SaveText      string `json:"saveText"`
+	DirtyPill     string `json:"dirtyPill"`
+	Toast         string `json:"toast"`
+	DashSelect    string `json:"dashSelect"`
+	WatchSelect   string `json:"watchSelect"`
+	WatchCustom   string `json:"watchCustom"`
+	RefreshState  string `json:"refreshState"`
+	RefreshLabel  string `json:"refreshLabel"`
+	RefreshDetail string `json:"refreshDetail"`
+	Refreshing    string `json:"pageRefreshing"`
+	DashBusy      string `json:"dashBusy"`
 }
 
 type appJSReport struct {
@@ -129,9 +139,25 @@ type appJSReport struct {
 		Text    string `json:"text"`
 		Pressed string `json:"pressed"`
 	} `json:"chips"`
-	Session    map[string]string `json:"session"`
-	Local      map[string]string `json:"local"`
-	StepStates []stepState       `json:"stepStates"`
+	Refresh struct {
+		State          string `json:"state"`
+		Label          string `json:"label"`
+		Detail         string `json:"detail"`
+		PageRefreshing string `json:"pageRefreshing"`
+		DashBusy       string `json:"dashBusy"`
+	} `json:"refresh"`
+	RefreshCfg struct {
+		DashSelect        string `json:"dashSelect"`
+		DashCustom        string `json:"dashCustom"`
+		DashCustomHidden  bool   `json:"dashCustomHidden"`
+		WatchSelect       string `json:"watchSelect"`
+		WatchCustom       string `json:"watchCustom"`
+		WatchCustomHidden bool   `json:"watchCustomHidden"`
+	} `json:"refreshCfg"`
+	PendingFetches int               `json:"pendingFetches"`
+	Session        map[string]string `json:"session"`
+	Local          map[string]string `json:"local"`
+	StepStates     []stepState       `json:"stepStates"`
 }
 
 func metaBody(today string) map[string]any {
@@ -148,6 +174,84 @@ func dashboardBody() map[string]any {
 		"totals":       map[string]any{"requests": 12, "fresh_input": 1000, "output": 500, "cache_read": 2000, "cache_create": 100, "reasoning": 300, "total": 3900},
 		"dimensions":   map[string]any{},
 		"heatmap":      map[string]any{"days": []any{}},
+		"custom_views": []any{},
+		"sessions":     []any{},
+	}
+}
+
+/*
+dimRowsFor 构造 count 个独立维度行(total 递增 i*100),超出 9 的部分
+
+	按后端合同收拢为 is_other 尾行(固定最后)。
+*/
+func dimRowsFor(count int) []any {
+	raw := make([]any, 0, count)
+	for i := 1; i <= count; i++ {
+		raw = append(raw, map[string]any{
+			"key": fmt.Sprintf("client-%02d", i), "requests": i,
+			"fresh_input": i * 10, "output": i * 10, "cache_read": i * 10,
+			"cache_create": 0, "reasoning": 0, "total": i * 100,
+		})
+	}
+	if count <= 9 {
+		return raw
+	}
+	var tail map[string]any
+	sumReq, sumTotal := 0, 0
+	for i := 10; i <= count; i++ {
+		sumReq += i
+		sumTotal += i * 100
+	}
+	tail = map[string]any{
+		"key": "", "requests": sumReq, "fresh_input": 0, "output": 0,
+		"cache_read": 0, "cache_create": 0, "reasoning": 0,
+		"total": sumTotal, "is_other": true, "other_count": count - 9,
+	}
+	return append(raw[:9:9], tail)
+}
+
+/*
+richDashboardBody 是载荷 v4 形态的仪表板数据:12 行维度(9+尾行)、
+
+	逐日趋势桶、day_block 热力与前 20 会话。total 标记 marker 供 KPI 断言。
+*/
+func richDashboardBody(totalMarker int) map[string]any {
+	hours := make([]any, 24)
+	for i := range hours {
+		hours[i] = 0
+	}
+	hours[10] = 300
+	blocks := make([]any, 6)
+	for i := range blocks {
+		blocks[i] = 0
+	}
+	blocks[2] = 300
+	return map[string]any{
+		"totals":  map[string]any{"requests": 33, "fresh_input": 100, "output": 100, "cache_read": 100, "cache_create": 10, "reasoning": 0, "total": totalMarker},
+		"columns": []any{"requests", "input", "output", "cache_read", "reasoning", "total", "cache_hit"},
+		"dimensions": map[string]any{
+			"client":   dimRowsFor(12),
+			"provider": dimRowsFor(12),
+			"model":    dimRowsFor(12),
+			"project":  dimRowsFor(12),
+		},
+		"trend": map[string]any{
+			"granularity": "day",
+			"buckets": []any{
+				map[string]any{"key": "2026-09-01", "total": 700},
+				map[string]any{"key": "2026-09-02", "total": 0},
+				map[string]any{"key": "2026-09-03", "total": 300},
+			},
+			"peak_index": 0, "peak_total": 700, "empty": false,
+		},
+		"heatmap": map[string]any{
+			"from": "2026-09-01", "to": "2026-09-03", "mode": "day_block",
+			"days": []any{
+				map[string]any{"date": "2026-09-01", "total": 700, "blocks": blocks},
+				map[string]any{"date": "2026-09-02", "total": 0, "blocks": blocks},
+				map[string]any{"date": "2026-09-03", "total": 300, "blocks": blocks},
+			},
+		},
 		"custom_views": []any{},
 		"sessions":     []any{},
 	}
@@ -178,11 +282,17 @@ func emptyDashboardBody(today string) map[string]any {
 	一条别名、默认视图 client、规范七列输出
 */
 func configGetBody(pollInterval int) map[string]any {
+	return configGetBodyWithRefresh(pollInterval, 30, 30)
+}
+
+/* configGetBodyWithRefresh 允许场景指定 [refresh] 草稿值(默认 30/30)。 */
+func configGetBodyWithRefresh(pollInterval, dashInterval, watchInterval int) map[string]any {
 	return map[string]any{
 		"revision": "rev-1",
 		"config": map[string]any{
-			"daemon": map[string]any{"poll_interval": pollInterval, "autostart": false},
-			"log":    map[string]any{"level": "", "dir": "", "max_days": 7},
+			"daemon":  map[string]any{"poll_interval": pollInterval, "autostart": false},
+			"log":     map[string]any{"level": "", "dir": "", "max_days": 7},
+			"refresh": map[string]any{"dashboard_interval": dashInterval, "watch_interval": watchInterval},
 			"clients": []any{
 				map[string]any{"name": "claude", "enabled": true, "router": "", "paths": map[string]any{"/tmp/claude-projects": "~/.claude"}},
 			},
@@ -201,6 +311,14 @@ func configGetBody(pollInterval int) map[string]any {
 /* 保存 200 响应:服务端以响应 config+revision 为新真相 */
 func saveOKBody(revision string, pollInterval int, changed bool) map[string]any {
 	body := configGetBody(pollInterval)
+	body["revision"] = revision
+	body["changed"] = changed
+	return body
+}
+
+/* saveOKBodyWithRefresh 在保存响应中携带指定 refresh 草稿值。 */
+func saveOKBodyWithRefresh(revision string, pollInterval, dashInterval, watchInterval int, changed bool) map[string]any {
+	body := configGetBodyWithRefresh(pollInterval, dashInterval, watchInterval)
 	body["revision"] = revision
 	body["changed"] = changed
 	return body
@@ -264,6 +382,7 @@ func defaultsBody() map[string]any {
 		"config": map[string]any{
 			"daemon":           map[string]any{"poll_interval": 60, "autostart": false},
 			"log":              map[string]any{"level": "debug", "dir": "", "max_days": 14},
+			"refresh":          map[string]any{"dashboard_interval": 30, "watch_interval": 30},
 			"clients":          []any{},
 			"routers":          []any{},
 			"provider_aliases": []any{},
@@ -439,6 +558,38 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 	offlineRoutes["GET /api/meta"] = routeSpec{Reject: true}
 	onlineRoutes := baseRoutes()
 	onlineRoutes["GET /api/meta"] = routeSpec{Status: 200, Body: metaOnlineBody(today)}
+	/* 统一刷新状态机:两次 dashboard 响应都 gate(先发后答),允许场景在
+	   请求重叠点断言中间态(loading/旧结果标识/过期响应不回写)。 */
+	manualRefreshRoutes := baseRoutes()
+	manualRefreshRoutes["GET /api/dashboard"] = []routeSpec{
+		{Status: 200, Body: richDashboardBody(1111), Pending: true},
+		{Status: 200, Body: richDashboardBody(2222), Pending: true},
+	}
+	staleRoutes := baseRoutes()
+	staleRoutes["GET /api/dashboard"] = []routeSpec{
+		{Status: 200, Body: richDashboardBody(1111), Pending: true},
+		{Status: 200, Body: richDashboardBody(2222), Pending: true},
+	}
+	failureAfterSuccessRoutes := baseRoutes()
+	failureAfterSuccessRoutes["GET /api/dashboard"] = []routeSpec{
+		{Status: 200, Body: richDashboardBody(1111)},
+		{Status: 400, Body: map[string]any{"error": map[string]any{"message": "boom / 爆炸"}}},
+	}
+	autoRefreshRoutes := baseRoutes()
+	autoRefreshRoutes["GET /api/dashboard"] = []routeSpec{
+		{Status: 200, Body: richDashboardBody(1111)},
+		{Status: 200, Body: richDashboardBody(2222), Pending: true},
+	}
+	composeRoutes := baseRoutes()
+	composeRoutes["GET /api/dashboard"] = routeSpec{Status: 200, Body: richDashboardBody(1111)}
+	refreshCfgRoutes := baseRoutes()
+	refreshCfgRoutes["GET /api/config"] = routeSpec{Status: 200, Body: configGetBodyWithRefresh(30, 20, 90)}
+	refreshCfgRoutes["PUT /api/config"] = routeSpec{Status: 200, Body: saveOKBodyWithRefresh("newrev", 30, 20, 60, true)}
+	/* 旧配置无 [refresh] 段(GET 原值 0/0)+无关保存:PUT 必须保持 0/0,
+	   不得把隐式默认固化成显式 30/30;下拉按有效值显示 30 预设。 */
+	oldConfigNoRefreshRoutes := baseRoutes()
+	oldConfigNoRefreshRoutes["GET /api/config"] = routeSpec{Status: 200, Body: configGetBodyWithRefresh(30, 0, 0)}
+	oldConfigNoRefreshRoutes["PUT /api/config"] = routeSpec{Status: 200, Body: saveOKBodyWithRefresh("newrev", 30, 0, 0, true)}
 
 	scenarios := []scenarioDef{
 		{
@@ -581,6 +732,73 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				{Op: "click", ID: "reset-confirm"},
 				{Op: "click", ID: "cfg-save"},
 				{Op: "click", ID: "cfg-save"},
+			},
+		},
+		{
+			Name: "unified manual refresh shares loading state",
+			Opts: map[string]any{"routes": manualRefreshRoutes},
+			Steps: []stepSpec{
+				{Op: "resolve"},
+				{Op: "click", ID: "dash-refresh"},
+				{Op: "resolve"},
+			},
+		},
+		{
+			Name: "stale range response does not overwrite",
+			Opts: map[string]any{"routes": staleRoutes},
+			Steps: []stepSpec{
+				{Op: "resolve"},
+				{Op: "seg", ID: "range-seg", Value: "4"},
+				{Op: "resolve"},
+			},
+		},
+		{
+			Name: "failure after success clears stale data",
+			Opts: map[string]any{"routes": failureAfterSuccessRoutes},
+			Steps: []stepSpec{
+				{Op: "click", ID: "dash-refresh"},
+			},
+		},
+		{
+			Name: "auto refresh fires after interval",
+			Opts: map[string]any{"routes": autoRefreshRoutes, "timers": "manual"},
+			Steps: []stepSpec{
+				{Op: "tick", Value: "30000"},
+				{Op: "resolve"},
+			},
+		},
+		{
+			Name: "compose shares dimension rows with list",
+			Opts: map[string]any{"routes": composeRoutes},
+			Steps: []stepSpec{
+				{Op: "seg", ID: "view-seg", Value: "compose"},
+			},
+		},
+		{
+			Name: "refresh interval selects and save round trip",
+			Opts: map[string]any{"routes": refreshCfgRoutes},
+			Steps: []stepSpec{
+				{Op: "nav", Page: "config"},
+				{Op: "setSelect", ID: "cfg-watch-refresh", Value: "60"},
+				{Op: "click", ID: "cfg-save"},
+			},
+		},
+		{
+			Name: "unrelated save keeps implicit refresh unwritten",
+			Opts: map[string]any{"routes": oldConfigNoRefreshRoutes},
+			Steps: []stepSpec{
+				{Op: "nav", Page: "config"},
+				{Op: "input", ID: "cfg-max-days", Value: "21"},
+				{Op: "click", ID: "cfg-save"},
+			},
+		},
+		{
+			Name: "restore defaults sets refresh drafts to 30",
+			Opts: map[string]any{"routes": resetRoutes},
+			Steps: []stepSpec{
+				{Op: "nav", Page: "config"},
+				{Op: "click", ID: "cfg-reset"},
+				{Op: "click", ID: "reset-confirm"},
 			},
 		},
 	}
@@ -774,9 +992,9 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				if body1.Revision != "rev-1" {
 					t.Errorf("PUT#1 revision = %q, want GET revision rev-1", body1.Revision)
 				}
-				wantConfigKeys := map[string]bool{"daemon": true, "log": true, "clients": true, "routers": true, "provider_aliases": true}
+				wantConfigKeys := map[string]bool{"daemon": true, "log": true, "refresh": true, "clients": true, "routers": true, "provider_aliases": true}
 				if len(body1.Config) != len(wantConfigKeys) {
-					t.Errorf("PUT#1 config keys = %v, want exactly daemon/log/clients/routers/provider_aliases", keysOf(body1.Config))
+					t.Errorf("PUT#1 config keys = %v, want exactly daemon/log/refresh/clients/routers/provider_aliases", keysOf(body1.Config))
 				}
 				for k := range wantConfigKeys {
 					if _, ok := body1.Config[k]; !ok {
@@ -1132,9 +1350,9 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				if body.Revision != "rev-1" {
 					t.Errorf("PUT revision = %q, want GET revision rev-1", body.Revision)
 				}
-				wantConfigKeys := map[string]bool{"daemon": true, "log": true, "clients": true, "routers": true, "provider_aliases": true}
+				wantConfigKeys := map[string]bool{"daemon": true, "log": true, "refresh": true, "clients": true, "routers": true, "provider_aliases": true}
 				if len(body.Config) != len(wantConfigKeys) {
-					t.Errorf("PUT config keys = %v, want exactly daemon/log/clients/routers/provider_aliases (query omitted)", keysOf(body.Config))
+					t.Errorf("PUT config keys = %v, want exactly daemon/log/refresh/clients/routers/provider_aliases (query omitted)", keysOf(body.Config))
 				}
 				if _, ok := body.Config["query"]; ok {
 					t.Errorf("PUT config must omit query key (query segment untouched)")
@@ -1251,6 +1469,201 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				}
 				if st[4].Toast != "配置未变化" {
 					t.Errorf("after second save toast = %q, want 配置未变化", st[4].Toast)
+				}
+
+			case "unified manual refresh shares loading state":
+				/* 区分度:手动刷新与首开共用同一入口与状态——两次响应都被
+				   gate,点击刷新后必须出现 loading 态(手动来源、目标区间、
+				   旧结果标识),旧数据仍可见;放行后 done 态一次性替换。若手动
+				   刷新绕开统一入口自己 fetch,gate 与状态断言双双失败。 */
+				if len(r.StepStates) != 3 {
+					t.Fatalf("step states = %d, want 3", len(r.StepStates))
+				}
+				st := r.StepStates
+				if st[1].RefreshState != "loading" || !strings.Contains(st[1].RefreshLabel, "正在手动刷新") {
+					t.Errorf("after manual click = %+v, want loading with manual label", st[1])
+				}
+				if !strings.Contains(st[1].RefreshDetail, "下方暂为上次结果") {
+					t.Errorf("loading detail = %q, want previous-result marker", st[1].RefreshDetail)
+				}
+				if st[1].Refreshing != "true" || st[1].DashBusy != "true" {
+					t.Errorf("after manual click refreshing=%q busy=%q, want both true", st[1].Refreshing, st[1].DashBusy)
+				}
+				if st[2].RefreshState != "done" || st[2].Refreshing == "true" {
+					t.Errorf("after settle = %+v, want done state and dimming cleared", st[2])
+				}
+				if n := countFetch(r, "GET", "/api/dashboard"); n != 2 {
+					t.Errorf("dashboard fetches = %d, want 2 (init + manual)", n)
+				}
+				urls := []string{}
+				for _, c := range r.FetchCalls {
+					if c.Method == "GET" && strings.HasPrefix(c.URL, "/api/dashboard") {
+						urls = append(urls, c.URL)
+					}
+				}
+				if len(urls) != 2 || urls[0] != urls[1] {
+					t.Errorf("manual refresh should re-request the same range, urls=%v", urls)
+				}
+				/* KPI 数值按 fmtTok 渲染并拆分单位 span:断言数值段 ">1.11<"→">2.22<" */
+				if !strings.Contains(r.KpisHTML, ">2.22<") {
+					t.Errorf("final kpis = %q, want second response marker 2.22", r.KpisHTML)
+				}
+				if strings.Contains(r.KpisHTML, ">1.11<") {
+					t.Errorf("final kpis still show stale marker 1.11: %q", r.KpisHTML)
+				}
+
+			case "stale range response does not overwrite":
+				/* 区分度:两个响应都挂起、快速切区间后再统一放行——旧范围响应
+				   (先发出、seq 较小)必须被丢弃,页面只呈现新范围数据;若过期
+				   响应回写,KPI 会退回旧标记。 */
+				if n := countFetch(r, "GET", "/api/dashboard"); n != 2 {
+					t.Errorf("dashboard fetches = %d, want 2", n)
+				}
+				urls := []string{}
+				for _, c := range r.FetchCalls {
+					if c.Method == "GET" && strings.HasPrefix(c.URL, "/api/dashboard") {
+						urls = append(urls, c.URL)
+					}
+				}
+				if len(urls) != 2 || urls[0] == urls[1] {
+					t.Fatalf("range switch should change the query range, urls=%v", urls)
+				}
+				if strings.Contains(r.KpisHTML, ">1.11<") || strings.Contains(r.GroupsHTML, ">1.11<") {
+					t.Errorf("stale response must not overwrite: kpis=%q", r.KpisHTML)
+				}
+				if r.Refresh.PageRefreshing == "true" {
+					t.Errorf("data-refreshing must be cleared after settle, got %q", r.Refresh.PageRefreshing)
+				}
+
+			case "failure after success clears stale data":
+				/* 区分度:先成功(旧标记可见)再失败——失败必须整页清旧数据并
+				   显示错误,不能保留旧区间统计;刷新 pill 回 idle。 */
+				if !strings.Contains(r.KpisHTML, "boom / 爆炸") {
+					t.Errorf("kpis = %q, want full-page error (stale stats cleared)", r.KpisHTML)
+				}
+				if strings.Contains(r.KpisHTML, ">1.11<") {
+					t.Errorf("kpis still contain stale stats: %q", r.KpisHTML)
+				}
+				if r.Refresh.State != "idle" {
+					t.Errorf("refresh state = %q, want idle after failure", r.Refresh.State)
+				}
+				if !strings.Contains(r.Toast, "boom") {
+					t.Errorf("toast = %q, want error surfaced", r.Toast)
+				}
+
+			case "auto refresh fires after interval":
+				/* 区分度:手动虚拟时钟推进到间隔后必须自动发起同入口请求
+				   (loading 态、放行后落新数据);若自动刷新未接状态机或漏排程,
+				   fetch 计数与数据断言失败。 */
+				if n := countFetch(r, "GET", "/api/dashboard"); n != 2 {
+					t.Errorf("dashboard fetches = %d, want 2 (init + auto)", n)
+				}
+				if !strings.Contains(r.KpisHTML, ">2.22<") {
+					t.Errorf("kpis = %q, want second response marker 2.22", r.KpisHTML)
+				}
+
+			case "compose shares dimension rows with list":
+				/* 区分度:构成图必须与列表消费同一组后端行(12 行夹具=9 独立
+				   +1 尾行)——图例恰好 10 项、尾行只出现一次、不做 5% 二次合并。 */
+				legendCount := strings.Count(r.GroupsHTML, "lg-name")
+				if legendCount != 40 { /* 四张维度卡 × 10 行(9 独立 + 1 尾行) */
+					t.Errorf("legend entries = %d, want exactly 40 (4 cards x 10 rows)", legendCount)
+				}
+				if strings.Count(r.GroupsHTML, `class="lg-name">其他（3 项）`) != 4 {
+					t.Errorf("groups html = %q, want exactly one tail per card from is_other/other_count", r.GroupsHTML)
+				}
+				for i := 1; i <= 9; i++ {
+					if !strings.Contains(r.GroupsHTML, fmt.Sprintf("client-%02d", i)) {
+						t.Errorf("legend missing independent row client-%02d", i)
+					}
+				}
+				if strings.Contains(r.GroupsHTML, "client-10") {
+					t.Errorf("rows beyond top 9 must not render independently: %q", r.GroupsHTML)
+				}
+
+			case "refresh interval selects and save round trip":
+				/* 区分度:GET 草稿 20/90 渲染为「20 预设选中 + watch 其他…
+				   (90 可见)」;下拉只改草稿,保存把 refresh 两值写进 PUT。 */
+				if len(r.StepStates) != 3 {
+					t.Fatalf("step states = %d, want 3", len(r.StepStates))
+				}
+				st := r.StepStates
+				/* GET 草稿 20/90 的初始渲染:dashboard 命中 20 预设、watch 落「其他…」并回填 90 */
+				if st[0].DashSelect != "20" {
+					t.Errorf("dashboard select after load = %q, want preset 20", st[0].DashSelect)
+				}
+				if st[0].WatchSelect != "custom" || st[0].WatchCustom != "90" {
+					t.Errorf("watch select after load = %s/%s, want custom 90", st[0].WatchSelect, st[0].WatchCustom)
+				}
+				puts := putCalls(r)
+				if len(puts) != 1 || puts[0].Body == nil {
+					t.Fatalf("config PUTs = %d, want 1", len(puts))
+				}
+				var body struct {
+					Config struct {
+						Refresh struct {
+							DashboardInterval int `json:"dashboard_interval"`
+							WatchInterval     int `json:"watch_interval"`
+						} `json:"refresh"`
+					} `json:"config"`
+				}
+				if err := json.Unmarshal([]byte(*puts[0].Body), &body); err != nil {
+					t.Fatalf("decode PUT: %v", err)
+				}
+				if body.Config.Refresh.DashboardInterval != 20 || body.Config.Refresh.WatchInterval != 60 {
+					t.Errorf("PUT refresh = %+v, want dashboard 20 kept + watch changed to 60", body.Config.Refresh)
+				}
+				/* 保存成功后以响应草稿重渲染:watch 落 60 预设、自定义输入隐藏 */
+				if r.RefreshCfg.WatchSelect != "60" || !r.RefreshCfg.WatchCustomHidden {
+					t.Errorf("after save = %+v, want watch preset 60 with custom hidden", r.RefreshCfg)
+				}
+
+			case "unrelated save keeps implicit refresh unwritten":
+				/* 区分度:旧配置无 [refresh] 段(GET 原值 0/0),用户只改日志——
+				   下拉按有效值显示 30 预设但草稿保持 0,PUT 必须回传 0/0(键值
+				   为 0,服务端零值段整体省略不落盘);若 normalizeDraft 把 0
+				   映射成 30 再回传,旧配置的无关保存就会固化显式 30/30。 */
+				if len(r.StepStates) < 2 {
+					t.Fatalf("step states = %d, want >= 2", len(r.StepStates))
+				}
+				if st := r.StepStates[0]; st.DashSelect != "30" || st.WatchSelect != "30" {
+					t.Errorf("implicit default should render as the 30 preset, got %+v", st)
+				}
+				puts := putCalls(r)
+				if len(puts) != 1 || puts[0].Body == nil {
+					t.Fatalf("config PUTs = %d, want 1", len(puts))
+				}
+				var body struct {
+					Config struct {
+						Refresh struct {
+							DashboardInterval int `json:"dashboard_interval"`
+							WatchInterval     int `json:"watch_interval"`
+						} `json:"refresh"`
+					} `json:"config"`
+				}
+				if err := json.Unmarshal([]byte(*puts[0].Body), &body); err != nil {
+					t.Fatalf("decode PUT: %v", err)
+				}
+				if body.Config.Refresh.DashboardInterval != 0 || body.Config.Refresh.WatchInterval != 0 {
+					t.Errorf("PUT refresh = %+v, want 0/0 (user-layer raw values, no default solidification)", body.Config.Refresh)
+				}
+				/* 无关保存的脏计数只含被编辑项(0/0 与 saved 0/0 同值不计脏):
+				   编辑后为「1 项修改」,保存成功后回到「已保存」。 */
+				if st := r.StepStates[1]; !strings.Contains(st.DirtyPill, "1") {
+					t.Errorf("dirty pill after edit = %q, want exactly the edited max_days change", st.DirtyPill)
+				}
+				if r.DirtyPill.Text != "已保存" {
+					t.Errorf("dirty pill after save = %q, want 已保存", r.DirtyPill.Text)
+				}
+
+			case "restore defaults sets refresh drafts to 30":
+				/* 区分度:服务端全默认草稿的 refresh 恒为 30/30——重置确认后
+				   两个下拉都落在 30 预设;载入默认不落盘(PUT 计数为 0)。 */
+				if r.RefreshCfg.DashSelect != "30" || r.RefreshCfg.WatchSelect != "30" {
+					t.Errorf("refresh selects after defaults = %+v, want both 30", r.RefreshCfg)
+				}
+				if n := countFetch(r, "PUT", "/api/config"); n != 0 {
+					t.Errorf("config PUTs = %d, want 0 (defaults load must not save)", n)
 				}
 			}
 		})

@@ -11,24 +11,42 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
-// dashboard.go 输出 GET /api/dashboard 的载荷(v3):区间汇总、四个内置
-// 维度行、与范围匹配的日期×小时热力数据、按 query.subqueries 配置生成
-// 的自定义视图与 Top sessions。compare/forecast 区块已随仪表板重做移除
-// (定稿页面无此两区);图表全部由前端消费数值行自绘,服务端不产 SVG。
+// dashboard.go 输出 GET /api/dashboard 的载荷(v4):区间汇总、四个内置
+// 维度的最终行(前 9 独立项+至多一行"其他")、与范围形态匹配的趋势桶与
+// 热力展示桶、按 query.subqueries 配置生成的自定义视图最终行(前 19 组合
+// +至多一行"其他组合")与前 20 会话。compare/forecast 区块已随仪表板重做
+// 移除(定稿页面无此两区);图表全部由前端消费数值行自绘,服务端不产 SVG。
 // 全部查询在同一读事务内完成(同一 WAL 快照),totals、各维度行、自定义
-// 视图、sessions 与热力数据互相一致。
+// 视图、sessions、趋势与热力互相一致;截断、尾行汇总与桶整理都在响应
+// 前完成,前端只做呈现,不再消费完整明细或二次聚合。
 
 // rangeDaysLimit 是 from/to 区间的天数上限(含两端):与 cli 侧日期参数的
 // 366 天上限同口径(恰好容纳一个闰年)。
 const rangeDaysLimit = 366
 
-// dashboardSessionLimit 是仪表板 Top sessions 的截断行数。
-const dashboardSessionLimit = 10
+// dashboardSessionLimit 是仪表板 Top sessions 的返回行数(2026-09-24 起
+// 从 10 提到 20;会话榜不生成"其他"尾行)。
+const dashboardSessionLimit = 20
+
+// 维度/自定义视图的返回上限:四维度各至多 9 个独立项+至多一行"其他",
+// 自定义视图各至多 19 个独立组合+至多一行"其他组合"。余项为零时不生成
+// 尾行;尾行固定最后,即使其 total 大于最后一个独立项也不插队。
+const (
+	dimensionTopN  = 9
+	customViewTopN = 19
+)
+
+// 趋势与热力的桶形态边界(天):
+//   - 趋势:单日=24 个小时桶;2~62 天=逐日桶;更长=自区间起点每 7 天一周桶;
+//   - 热力:1~7 天=日期×小时;8~31 天=日期×4 小时时段(6 段);32 天以上=逐日日历。
+const (
+	trendDailyMaxDays   = 62
+	heatmapShortMaxDays = 7
+	heatmapBlockMaxDays = 31
+)
 
 // dashboardDimensions 是仪表板固定聚合的四个业务维度:JSON 键名与维度名
-// 一致(键序无关,前端按名取用)。时间形态(day/hour/weekday/month)不再
-// 作为独立维度键输出:趋势与热力图统一消费 heatmap 的日期×小时数据,
-// 由前端按范围形态确定性派生。
+// 一致(键序无关,前端按名取用)。
 var dashboardDimensions = []string{"client", "model", "provider", "project"}
 
 // metaResponse 是 GET /api/meta 的载荷;四个日期/时间字段在无数据时为 null。
@@ -59,6 +77,8 @@ type totalsJSON struct {
 }
 
 // dimensionRowJSON 是一个维度分组的聚合行;全部整数,格式化交给前端。
+// 尾行(其他)以 IsOther=true 标识并携带 OtherCount(被合并的独立项数):
+// 前端据机器字段本地化显示,不解析展示文案。独立行两字段不出现(omitempty)。
 type dimensionRowJSON struct {
 	Key         string `json:"key"`
 	Requests    int64  `json:"requests"`
@@ -68,29 +88,55 @@ type dimensionRowJSON struct {
 	CacheCreate int64  `json:"cache_create"`
 	Reasoning   int64  `json:"reasoning"`
 	Total       int64  `json:"total"`
+	IsOther     bool   `json:"is_other,omitempty"`
+	OtherCount  int    `json:"other_count,omitempty"`
 }
 
-// heatmapDayJSON 是热力数据的一行:某日全天 total 与 24 个小时格
-// (本机时区归属);无数据日照常返回(total 与全部小时格为 0),日期范围
-// 由调用方的 from/to 决定。
+// trendBucketJSON 是一个趋势桶:Key 为桶边界标识(小时桶 "00".."23"、日桶
+// 为日期、周桶为该桶最后一天的日期),前端按粒度本地化显示;Total 为整数。
+type trendBucketJSON struct {
+	Key   string `json:"key"`
+	Total int64  `json:"total"`
+}
+
+// trendJSON 是与区间形态匹配的趋势序列:Granularity 为 hour/day/week;
+// PeakIndex 是首个最大值桶的下标(平手取先出现者),Empty=true 表示区间
+// 无桶或全零——前端显示空状态,不渲染"峰值 0"。
+type trendJSON struct {
+	Granularity string            `json:"granularity"`
+	Buckets     []trendBucketJSON `json:"buckets"`
+	PeakIndex   int               `json:"peak_index"`
+	PeakTotal   int64             `json:"peak_total"`
+	Empty       bool              `json:"empty"`
+}
+
+// heatmapDayJSON 是热力数据的一行。Total 恒为该日全天合计;Future 标记
+// 该日尚未发生(晚于请求时刻的今天),前端渲染为空白格——已发生但无用量的
+// 零值日是真实零格,两者语义不同,不得互相伪装。Hours(24 格,模式
+// day_hour)与 Blocks(6 格 4 小时时段,模式 day_block)按模式出现其一,
+// calendar 模式两者都省略。
 type heatmapDayJSON struct {
-	Date  string  `json:"date"`
-	Total int64   `json:"total"`
-	Hours []int64 `json:"hours"`
+	Date   string  `json:"date"`
+	Total  int64   `json:"total"`
+	Future bool    `json:"future,omitempty"`
+	Hours  []int64 `json:"hours,omitempty"`
+	Blocks []int64 `json:"blocks,omitempty"`
 }
 
-// heatmapJSON 是与查询范围匹配的热力数据:days 覆盖范围内每一天(含零值
-// 日,升序),Hours 键固定 "00".."23"。单日范围即 1 行;2~7 天逐日逐小时;
-// 8~31 天的 4 小时时段与 32 天以上的逐日日历由前端按本数据确定性合并,
-// 后端不复制短期数据伪造长周期。
+// heatmapJSON 是与查询范围形态匹配的热力展示桶:Mode 决定前端渲染器
+// (day_hour=1~7 天逐小时、day_block=8~31 天 4 小时时段、calendar=32 天以上
+// 逐日日历);days 与范围逐日对齐(含零值日,升序),展示桶的合并已在后端
+// 完成,前端不再做跨日/跨时段业务聚合。
 type heatmapJSON struct {
 	From string           `json:"from"`
 	To   string           `json:"to"`
+	Mode string           `json:"mode"`
 	Days []heatmapDayJSON `json:"days"`
 }
 
 // customViewRowJSON 是自定义视图的一行:Keys 按视图维度声明顺序取显示键
-// (provider 维度已合并别名),七项指标与维度行同构。
+// (provider 维度已合并别名),七项指标与维度行同构。尾行(其他组合)以
+// IsOther=true 标识并携带 OtherCount;独立行两字段不出现(omitempty)。
 type customViewRowJSON struct {
 	Keys        []string `json:"keys"`
 	Requests    int64    `json:"requests"`
@@ -100,6 +146,8 @@ type customViewRowJSON struct {
 	CacheCreate int64    `json:"cache_create"`
 	Reasoning   int64    `json:"reasoning"`
 	Total       int64    `json:"total"`
+	IsOther     bool     `json:"is_other,omitempty"`
+	OtherCount  int      `json:"other_count,omitempty"`
 }
 
 // customViewJSON 是一个自定义视图(query.subqueries 中的一项)的聚合结果:
@@ -126,14 +174,17 @@ type sessionRowJSON struct {
 }
 
 // dashboardResponse 是 GET /api/dashboard 的载荷。dimensions 固定四键
-// (client/model/provider/project);heatmap.days 覆盖范围逐日(含零值日);
-// custom_views 随 query.subqueries 配置生成,无配置时为空数组;columns 是
-// query 输出列布局的指标 ID 序列,只影响明细表,顶部七项概览独立于此。
+// (client/model/provider/project),各键至多 9 个独立行+至多一行"其他";
+// trend 按区间形态给出小时/日/周桶与峰值、空态;heatmap 按区间形态给出
+// 对应展示桶;custom_views 随 query.subqueries 配置生成,无配置时为空数组;
+// columns 是 query 输出列布局的指标 ID 序列,只影响明细表,顶部七项概览
+// 独立于此。
 type dashboardResponse struct {
 	Range       rangeJSON                     `json:"range"`
 	Totals      totalsJSON                    `json:"totals"`
 	Columns     []string                      `json:"columns"`
 	Dimensions  map[string][]dimensionRowJSON `json:"dimensions"`
+	Trend       trendJSON                     `json:"trend"`
 	Heatmap     heatmapJSON                   `json:"heatmap"`
 	CustomViews []customViewJSON              `json:"custom_views"`
 	Sessions    []sessionRowJSON              `json:"sessions"`
@@ -202,6 +253,7 @@ func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	resp := dashboardResponse{
 		Range:       rangeJSON{From: from, To: to},
 		Dimensions:  make(map[string][]dimensionRowJSON, len(dashboardDimensions)),
+		Trend:       trendJSON{Granularity: "day", Buckets: []trendBucketJSON{}, PeakIndex: -1},
 		Heatmap:     heatmapJSON{From: from, To: to, Days: []heatmapDayJSON{}},
 		CustomViews: []customViewJSON{},
 		Sessions:    []sessionRowJSON{},
@@ -222,7 +274,8 @@ func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			ActiveDays:  stats.ActiveDays,
 		}
 		resp.Columns = columns
-		// 业务维度循环只产出 JSON 行,数值行交给前端自绘。
+		// 业务维度循环:同一选区全量聚合后,在响应前完成排序、前 9 截取与
+		// 尾行逐指标汇总;独立行加尾行与区间 totals 逐项守恒。
 		for _, dim := range dashboardDimensions {
 			rows, _, err := tq.AggregateDimensionView(ctx, dates, querier.DimensionView{
 				Dimensions: []string{dim},
@@ -232,10 +285,10 @@ func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return err
 			}
-			resp.Dimensions[dim] = toDimensionRows(rows)
+			resp.Dimensions[dim] = topDimensionRows(toDimensionRows(rows), dimensionTopN)
 		}
 		// 自定义视图:按配置维度顺序的多维组合聚合,与四维度同一选区、
-		// 同一事务,行间合计与 totals 逐项守恒。
+		// 同一事务;前 19 截取与尾行同样在响应前完成。
 		for _, view := range views {
 			rows, _, err := tq.AggregateDimensionView(ctx, dates, querier.DimensionView{
 				Dimensions: view.dimensions,
@@ -248,26 +301,23 @@ func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			resp.CustomViews = append(resp.CustomViews, customViewJSON{
 				Name:       view.name,
 				Dimensions: view.dimensionNames,
-				Rows:       toCustomViewRows(rows),
+				Rows:       topCustomViewRows(toCustomViewRows(rows), customViewTopN),
 			})
 		}
 		sessions, err := tq.SessionRows(ctx, dates)
 		if err != nil {
 			return err
 		}
-		// 会话排行按总量排序后截前 10 行。
+		// 会话排行按总量降序返回前 20 行,不生成"其他会话"。
 		resp.Sessions = toSessionRows(querier.TruncateTopRows(querier.SortTopRows(sessions), dashboardSessionLimit))
-		// 日期×小时热力数据在同一事务内取数,与 totals/dimensions/sessions
-		// 同快照;days 与请求范围逐日对齐(含零值日)。
+		// 日期×小时数据在同一事务内取数,与 totals/dimensions/sessions
+		// 同快照;趋势桶与热力展示桶由同一份数据确定性整理。
 		hm, err := tq.DayHourMatrix(ctx, dates)
 		if err != nil {
 			return err
 		}
-		days := make([]heatmapDayJSON, 0, len(hm.Days))
-		for i, date := range hm.Days {
-			days = append(days, heatmapDayJSON{Date: date, Total: hm.Totals[i], Hours: hm.Values[i]})
-		}
-		resp.Heatmap.Days = days
+		resp.Trend = buildTrend(hm)
+		resp.Heatmap.Days, resp.Heatmap.Mode = buildHeatmapDays(hm, now)
 		return nil
 	})
 	if err != nil {

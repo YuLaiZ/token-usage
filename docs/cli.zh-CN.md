@@ -440,7 +440,7 @@ token-usage config init                # 初始化配置文件与数据库
 
 ### config（TUI）
 
-无参数时打开交互式配置 TUI（`bubbletea`）。配置文件不存在时先写默认模板再打开；可编辑客户端、路由、守护进程、日志和查询配置（`v` 进入的 Query 页归拢视图定义、输出列布局与 provider aliases），`data_dir` 在 TUI 中只读。保存统一走 `ApplyConfig`（见下文「config set」）。非 router 支持客户端（当前除 Claude 外全部）不展示「绑定路由」字段；此类客户端上存量非空 router 仍会显示（便于清回「无」），保存校验拒绝非空值（见下文「config set」的 router 拦截）。
+无参数时打开交互式配置 TUI（`bubbletea`）。配置文件不存在时先写默认模板再打开；可编辑客户端、路由、守护进程、日志、查询配置（`v` 进入的 Query 页归拢视图定义、输出列布局与 provider aliases），以及两个查询刷新间隔（**查询刷新**页：仪表盘自动刷新与 CLI watch，单位秒，`0` 表示默认 30 秒——与 `daemon.poll_interval` 互相独立，修改不会重启守护进程），`data_dir` 在 TUI 中只读。保存统一走 `ApplyConfig`（见下文「config set」）。非 router 支持客户端（当前除 Claude 外全部）不展示「绑定路由」字段；此类客户端上存量非空 router 仍会显示（便于清回「无」），保存校验拒绝非空值（见下文「config set」的 router 拦截）。
 
 ### config show
 
@@ -495,6 +495,7 @@ token-usage config set <key> <value> --confirm-migrate   # 仅迁移 data_dir �
 |------|----------|
 | 数据目录 | `data_dir`（需 `--confirm-migrate`） |
 | 守护进程 | `daemon.poll_interval`、`daemon.autostart` |
+| 查询刷新 | `refresh.dashboard_interval`、`refresh.watch_interval`（秒；`0` 表示使用默认 30 秒） |
 | 日志 | `log.level`、`log.dir`、`log.max_days` |
 | 客户端 | `clients.<name>.enabled`、`clients.<name>.router`、`clients.<name>.paths.<path-key>` |
 | 路由 | `routers.cc_switch.db_path` |
@@ -622,7 +623,7 @@ catch-up 经 analyzer 的串行化锁 Submit（与实时触发同一路径，保
 渲染某个窗口的 `query` 输出并以固定间隔刷新，直到 Ctrl+C 中断。帧体与 query 输出完全一致——统计信息区、应用 `[query.output.columns]` 布局与 `provider_aliases` 的视图表，以及采集异常警告——视图选择与 `query` 同一规则：不带 `--by` 时执行默认视图（`query.default`，内置回退 `client`）；watch 只额外加上 `Live watch` 横幅、固定间隔刷新与帧间清屏。
 
 ```bash
-token-usage watch                      # 今天，默认视图，每 5 秒刷新
+token-usage watch                      # 今天，默认视图，默认刷新间隔 30 秒
 token-usage watch 20260901 --interval 10s
 token-usage watch --by group           # query.groups 中已配置的视图名
 token-usage watch --once               # 只渲染一帧后退出（对管道友好）
@@ -630,7 +631,7 @@ token-usage watch --once               # 只渲染一帧后退出（对管道友
 
 - `--by` 选择帧内视图：内置视图（`client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday`、`heatmap`、`session`、`summary`）或 `query.subqueries` / `query.groups` 中已配置的视图名。不带 `--by` 时执行默认视图——`query.default`（内置回退 `client`），已配置组合查询时每帧渲染全部成员表。显式内置名与 `query` 静态子命令一致，忽略无关的视图定义错误；不带标志与配置视图名路径走完整 query 校验，与裸 `query` 同样以本地化诊断失败。未知 `--by` 值在打开数据库之前按动态允许集合拒绝。
 - 日期参数与 `query` 同形态；不带日期时帧跟随今天，每次刷新重算，跨午夜自动切换；显式指定的日期或区间保持固定（监视历史区间是合法用法）。
-- `--interval` 接受 Go 时长，下限 1 秒；更小的值在打开数据库之前即被拒绝。
+- 未显式给出 `--interval` 时，刷新间隔读取配置 `[refresh].watch_interval`（未配置时 30 秒；2026-09 之前的 5 秒缺省不再适用）。显式 `--interval` 仅覆盖本次运行，接受 Go 时长，下限 1 秒；更小的值在打开数据库之前即被拒绝。`--once` 只渲染一帧，不启动刷新循环。
 - 交互式循环在每帧之间清屏（Windows 控制台会自动启用虚拟终端处理）；`--once` 只渲染一帧且不含转义序列，重定向输出保持纯文本。
 - 严格只读：与其他读取类命令相同的开库语义，不与守护进程交互，Ctrl+C 不残留任何状态。
 
@@ -644,12 +645,12 @@ HTTP 面按回环与同源使用（不设 CORS 头）、无鉴权：数据接口
 - `--open` 在 `serve start` / `serve restart` 确认后台服务就绪后用默认浏览器打开仪表板；打开浏览器失败只是警告，服务继续运行。
 - 启动时写 `serve.json` 状态文件失败（如数据目录只读）服务即报错退出，不做无状态运行。
 - 同一请求的全部数据查询共享一个读快照，并发采集写入下 totals、维度行、自定义视图行与会话行相互一致。
-- 内嵌页面为中英双语（按浏览器记忆）并带五套主题配色与深浅主题（按浏览器记忆，深浅默认跟随系统；均不进入配置脏状态）。仪表盘页全部由前端按数值行自绘：独立于输出列布局的七项核心指标；四个内置维度的两列卡片表（每卡底部固定合计、唯一尾部「其他（N 项）」行，另有构成环形图模式）；跟随选区范围的热力图——单日为 24 个小时格、2~7 天为日期×小时、8~31 天为日期×4 小时时段、32 天及以上为 GitHub 风格逐日日历，数据截至日之后的格显示为空白（「尚未发生」）而非零值；用量趋势图；由 `query.subqueries` 生成的自定义视图表（附守恒保证的「其他组合」行）；保留原始标题的会话排行（信息按钮查看完整标题）。范围预设加无边界自定义日历（未来日期可提交并显示真实空结果；选区同一标签页跨刷新记忆）。配置页编辑完整用户配置：对最近已保存快照实时差异计算脏状态、revision 冲突（409）与校验失败（400）报告且绝不覆盖本地草稿、恢复为已保存配置需确认。
+- 内嵌页面为中英双语（按浏览器记忆）并带五套主题配色与深浅主题（按浏览器记忆，深浅默认跟随系统；均不进入配置脏状态）。仪表盘页全部由前端按数值行自绘：独立于输出列布局的七项核心指标；四个内置维度的两列卡片表（每卡底部固定合计、唯一尾部「其他（N 项）」行，另有构成环形图模式）；跟随选区范围的热力图——单日为 24 个小时格、2~7 天为日期×小时、8~31 天为日期×4 小时时段、32 天及以上为 GitHub 风格逐日日历，今天之后的格显示为空白（「尚未发生」）而非零值；用量趋势图；由 `query.subqueries` 生成的自定义视图表（附守恒保证的「其他组合」行）；保留原始标题的会话排行（信息按钮查看完整标题）。自动刷新、手动刷新与切换区间共用一个请求入口和一套加载/成功/失败状态（过期响应不回写当前范围；失败整页清除旧统计并显示错误），间隔来自 `[refresh].dashboard_interval`。范围预设加无边界自定义日历（未来日期可提交并显示真实空结果；选区同一标签页跨刷新记忆）。配置页编辑完整用户配置：对最近已保存快照实时差异计算脏状态——含两个查询刷新间隔（`[refresh] dashboard_interval`/`watch_interval`，下拉 10/20/30/60 秒加 1~3600 自定义值；未触碰的字段保持用户层原值，无关保存不会固化隐式默认）——revision 冲突（409）与校验失败（400）报告且绝不覆盖本地草稿、恢复为已保存配置需确认。
 
 | 接口 | 参数 | 返回 |
 |------|------|------|
 | `GET /api/meta` | — | 版本（由二进制按原样提供）、`min_date`/`max_date`（全库）、`data_through`、`last_collection`；后三项缺数据时为 `null` |
-| `GET /api/dashboard` | `from`、`to`（`YYYY-MM-DD`；缺省为截至今天的 30 天；跨度至多 366 天；未来范围返回结构完整的全零载荷） | 统计区间、totals（整数，含 `active_days`）、`columns`（所配置输出列的指标 ID 序列——只影响明细表，不影响顶部七项）、四个固定维度行数组（`client`/`model`/`provider`/`project`，按 `total` 降序）、`heatmap`——范围内每天一行（`date`、当日 `total`、本机时区的 24 个 `hours` 值，无数据日为零行），与总量同一读快照读取，单次刷新不可能混用快照、`custom_views`（每个已配置子查询一项，按名称序：声明顺序的维度名与全量聚合行——行 keys 按维度声明顺序、七项合计恰等于区间总量）、前 10 条会话（原始标题） |
+| `GET /api/dashboard` | `from`、`to`（`YYYY-MM-DD`；缺省为截至今天的 30 天；跨度至多 366 天；未来范围返回结构完整的全零载荷） | 统计区间、totals（整数，含 `active_days`）、`columns`（所配置输出列的指标 ID 序列——只影响明细表，不影响顶部七项）、`trend`（单日为 `hour` 粒度、2~62 天为 `day`、更长为 `week`；整数 `buckets` 携带桶边界键、`peak_index`/`peak_total`，全零区间 `empty=true`——不产生「峰值 0」）、四个固定维度数组（`client`/`model`/`provider`/`project`；至多 9 个独立行按 `total` 降序——同值按名称——加至多一行携带机器字段 `is_other`/`other_count` 的「其他」尾行，独立项＋尾行七项与 `totals` 逐项守恒）、带 `mode` 的 `heatmap` 选择展示桶形态：`day_hour`（1~7 天，每天本机时区 24 个 `hours`）、`day_block`（8~31 天，每天六个 4 小时 `blocks` 由后端求和）、`calendar`（32 天及以上，仅逐日 `total`），晚于今天的日期带 `future: true`——前端渲染为空白（「尚未发生」），已发生的零值日保持真实零格、`custom_views`（每个已配置子查询一项，按名称序：声明顺序的维度名与最终行——至多 19 个独立组合按 `total` 降序加至多一行 `is_other`「其他组合」，七项守恒）、前 20 条会话（原始标题）。全部截断、尾行合并与桶整理都在服务端于同一读快照内完成，单次刷新不可能混用快照，浏览器不再截断或重聚合 |
 | `GET /api/config` | — | 可编辑配置模型（daemon、log、含数据来源路径的 clients、routers、provider aliases，以及解析后的 query 段——有效值，磁盘 query 段无法解析时附 `diagnostics`），与磁盘文件的 `revision`（文件尚不存在时为固定 sentinel）；`data_dir` 刻意不在模型中——数据目录迁移仍是仅 CLI 的确认操作 |
 | `PUT /api/config` | 请求体 `{revision, config}`——`GET /api/config` 提供的草稿；`query` 段可省略以保持磁盘 query 段原样（页面仅在用户编辑过该段或明确恢复全部默认值时才回传，使无关区块的保存绝不改写解析失败的 query 段） | 成功返回规范化落盘草稿、新 `revision`、`changed`、`warnings`（文件已保存但自启同步等副作用失败时非空）与 `suggested_steps`；文件已被他处修改时返回 `409` 与当前 `revision`（保留本地草稿、不覆盖任何内容），校验失败（未知客户端/路径键、非法 query 定义、越界值）返回 `400`，写入失败返回 `500` |
 | `GET /`、`GET /assets/…` | — | 内嵌 HTML 页面与静态资产（`Cache-Control: no-store`） |
