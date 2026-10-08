@@ -53,9 +53,13 @@ type Analyzer struct {
 	wg            sync.WaitGroup
 	jsonlWatchers []*JSONLWatcher
 	sqlitePollers []*SQLitePoller
-	stopOnce      sync.Once
+	// periodicSubmitters 是不依赖文件路径的纯定时提交器（WorkBuddy 周期全量
+	// 复核）；与 watcher/poller 同样计入 ready barrier 与生命周期。
+	periodicSubmitters []*periodicSubmitter
+	stopOnce           sync.Once
 
-	// ready barrier：所有 watcher/poller 装配后总数冻结为 len(jsonlWatchers)+len(sqlitePollers)，
+	// ready barrier：所有 watcher/poller/periodic 提交器装配后总数冻结为
+	// len(jsonlWatchers)+len(sqlitePollers)+len(periodicSubmitters)，
 	// 反映为 readyWg 的初始计数。每个 monitor 通过其专属 signalOnce 恰好 signal 一次，
 	// 全部 signal 后 readyWg 归零，Run 的 barrier goroutine 关闭 readyCh。
 	readyWg sync.WaitGroup // 倒计时与 monitor 总数相等的 ready signal
@@ -219,8 +223,13 @@ func (a *Analyzer) monitorSubmit(client string, req collector.CollectRequest) {
 		a.logger.Error("runCtx not initialized, dropping submit", "client", client)
 		return
 	}
+	// Submit 错误的根因（采集各阶段失败）已由 engine.RunCollect 的
+	// "collection stage failed" 以 ERROR 记录——monitor 侧的这条是
+	// ValidateResult 对同一失败的二次包装，降为 Debug 心跳：周期提交源
+	//（如 WorkBuddy 全量复核）在持续性部分失败期间每 tick 重试，ERROR 级
+	// 重打会按轮询间隔刷屏；monitor 不因单次失败退出，DEBUG 足够留排查轨迹。
 	if err := a.Submit(runCtx, client, req); err != nil && !errors.Is(err, ErrAnalyzerStopping) {
-		a.logger.Error("monitor collection submit failed", "client", client, "error", err)
+		a.logger.Debug("monitor collection submit failed", "client", client, "error", err)
 	}
 }
 
@@ -260,6 +269,15 @@ func clientPathConfigured(cfg *config.Config, name, pathKey string) bool {
 	return ok && path != ""
 }
 
+// workbuddyPeriodicConfigured 判定 WorkBuddy 周期全量复核提交器是否装配：
+// 只看配置存在且启用（不检查 db/projects_dir——路径为空属配置不完整，由
+// 采集端报告失败并等待恢复，不阻止定时器构造与就绪）。setupFromConfig 的
+// 装配与 HasMonitorTargets 的静态谓词共用本判定，防两处漂移。
+func workbuddyPeriodicConfigured(cfg *config.Config) bool {
+	clientCfg, ok := cfg.ClientConfig("workbuddy")
+	return ok && clientCfg.Enabled
+}
+
 // routerTargetConfigured 判定 client 是否启用、绑定了 router 且 router 配置
 // 有非空 db_path（SQLite 型 router poller 的装配条件）。
 func routerTargetConfigured(cfg *config.Config, clientCfg config.Client) bool {
@@ -272,9 +290,10 @@ func routerTargetConfigured(cfg *config.Config, clientCfg config.Client) bool {
 
 // HasMonitorTargets 报告配置上是否存在必然装配的监控目标（静态配置谓词，
 // 不含路径运行期可达性与 watcher 构造成败）：任一 JSONL 客户端启用且目录
-// 非空、任一 SQLite 客户端启用且路径键非空、或任一启用客户端绑定配置完整
-// 的 router。start 命令用它前置拦截「配置上无事可做」，避免等待必然失败的
-// 启动就绪超时；判定与 setupFromConfig 装配同源。
+// 非空、任一 SQLite 客户端启用且路径键非空、WorkBuddy 启用（周期全量复核
+// 提交器只看启用，路径为空也装配，由采集端报告配置不完整）、或任一启用
+// 客户端绑定配置完整的 router。start 命令用它前置拦截「配置上无事可做」，
+// 避免等待必然失败的启动就绪超时；判定与 setupFromConfig 装配同源。
 func HasMonitorTargets(cfg *config.Config) bool {
 	if cfg == nil {
 		return false
@@ -288,6 +307,9 @@ func HasMonitorTargets(cfg *config.Config) bool {
 		if clientPathConfigured(cfg, sc.name, sc.pathKey) {
 			return true
 		}
+	}
+	if workbuddyPeriodicConfigured(cfg) {
+		return true
 	}
 	for _, clientCfg := range cfg.Clients {
 		if routerTargetConfigured(cfg, clientCfg) {
@@ -336,6 +358,17 @@ func (a *Analyzer) setupFromConfig(cfg *config.Config, debounceDuration time.Dur
 	interval := time.Duration(cfg.Daemon.PollInterval) * time.Second
 	if interval <= 0 {
 		interval = 30 * time.Second
+	}
+
+	// WorkBuddy 周期全量复核提交器（纯定时，不依赖路径）：每个 tick 无条件
+	// 提交无日期、无 ChangedFile、非 Incremental 的 client-source 全量复核，
+	// 覆盖仅元数据变化（expert/title/is_playground）与源库故障恢复——两者都
+	// 不产生 JSONL 事件，JSONL watcher（上方按 projects_dir 装配）无法触达。
+	// 只要 workbuddy 启用就装配；路径为空由采集端报告失败，不阻止构造/就绪。
+	// 不置 startup 专用 ScanExistingJSONL，不复用 Codex SyncTitles 标志。
+	if workbuddyPeriodicConfigured(cfg) {
+		reviewReq := collector.CollectRequest{Source: collector.CollectSourceClient}
+		a.addPeriodicSubmitter("workbuddy", reviewReq, interval)
 	}
 
 	// client 源 SQLite poller 固定 Incremental 请求（OpenCode/ZCode/MiMoCode/Codex state DB）。
@@ -418,6 +451,15 @@ func (a *Analyzer) addSQLiteDirGlobPoller(clientName, dir, pattern string, reque
 	a.sqlitePollers = append(a.sqlitePollers, poller)
 }
 
+// addPeriodicSubmitter 注册一个纯定时提交器，预置 ready signal 并加入
+// readyWg 倒计时（与 watcher/poller 同一 barrier 语义）。
+func (a *Analyzer) addPeriodicSubmitter(clientName string, request collector.CollectRequest, interval time.Duration) {
+	p := newPeriodicSubmitter(clientName, request, interval, a.monitorSubmit, a.logger)
+	p.signalReady = a.newMonitorSignaler()
+	a.readyWg.Add(1)
+	a.periodicSubmitters = append(a.periodicSubmitters, p)
+}
+
 // addCodexTitleIndexPoller 注册 Codex 标题索引的周期提交 poller（alwaysSubmit：
 // 每 tick 无条件提交 SyncTitles 纯同步请求，不依赖索引文件变化——失败在下一
 // 周期自然重试）。
@@ -460,7 +502,7 @@ func (a *Analyzer) Run(ctx context.Context) error {
 	// 0 监控目标时返回 error：所有客户端禁用、路径缺失或监控初始化失败会导致守护进程
 	// 无事可做，立即返回 error 使 launchd 能感知配置错误（告警/重启），而非静默空转。
 	// 不发布 ready（Ready() channel 永不关闭）。
-	if len(a.jsonlWatchers) == 0 && len(a.sqlitePollers) == 0 {
+	if len(a.jsonlWatchers) == 0 && len(a.sqlitePollers) == 0 && len(a.periodicSubmitters) == 0 {
 		return errors.New(ui.Bi("no live monitors: all clients disabled, paths missing, or monitor initialization failed; check config.toml [clients.*].enabled and paths", "无存活监控：所有客户端禁用、路径缺失或监控初始化失败，请检查 config.toml [clients.*].enabled 与 paths"))
 	}
 
@@ -497,6 +539,15 @@ func (a *Analyzer) Run(ctx context.Context) error {
 			defer a.wg.Done()
 			p.Run(runCtx)
 		}(poller)
+	}
+
+	// 启动纯定时提交器（WorkBuddy 周期全量复核等）
+	for _, submitter := range a.periodicSubmitters {
+		a.wg.Add(1)
+		go func(p *periodicSubmitter) {
+			defer a.wg.Done()
+			p.Run(runCtx)
+		}(submitter)
 	}
 
 	// ready barrier：所有 monitor 已启动并各持有一个 ready signal 预置位，
@@ -584,6 +635,9 @@ func (a *Analyzer) Stop() {
 		}
 		for _, poller := range a.sqlitePollers {
 			poller.Stop()
+		}
+		for _, submitter := range a.periodicSubmitters {
+			submitter.Stop()
 		}
 	})
 }

@@ -56,7 +56,9 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 	recordFailure := func(res *Result, source string, failedDates []string, stage string, cause error) {
 		wrapped := fmt.Errorf("%s %s: %w", source, stage, cause)
 		res.Err = errors.Join(res.Err, wrapped)
-		log.Error("collection stage failed", "client", source, "stage", stage, "dates", failedDates, "error", cause)
+		// dates 只打摘要（数量+首尾）：周期全量复核的部分失败可能携带数十个
+		// 日期，整集打印会淹没日志；错误表仍登记完整集合。
+		log.Error("collection stage failed", "client", source, "stage", stage, "dates", summarizeDates(failedDates), "error", cause)
 		if recordError {
 			if err := db.RecordErrorsByDate(ctx, usageDB, failedDates, source, wrapped.Error(), ""); err != nil {
 				res.Err = errors.Join(res.Err, err)
@@ -211,6 +213,15 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 			return result
 		}
 
+		// WorkBuddy 完整复核：有历史行的无效元数据会话转为部分失败（剔除计
+		// 划 + PartialErr），其余有效会话继续正常落库——单会话元数据无效不得
+		// 升级为整轮写失败，阻断其他会话的收敛。
+		if c.Name() == "workbuddy" && isFullWorkBuddyReview(creq) {
+			if err := deferWorkBuddyExcludedHistory(ctx, usageDB, &collected); err != nil {
+				fail(c.Name(), failureDates(creq, collected.Messages), ui.Bi("write", "写入事务失败"), err)
+				continue
+			}
+		}
 		if err := persistClientBatch(ctx, usageDB, c.Name(), creq, collected,
 			routerFetched, routerResult, router, log); err != nil {
 			// persistClientBatch 失败后再检查 ctx：若事务因 ctx 取消而失败，
@@ -325,6 +336,10 @@ func persistClientBatch(
 	if err != nil {
 		return fmt.Errorf("%s: %w", ui.Bi("prepare mimocode client re-key", "准备 mimocode client 重归属"), err)
 	}
+	wbPlan, err := buildWorkBuddyPersistPlan(client, collected)
+	if err != nil {
+		return fmt.Errorf("%s%w", workBuddyRekeyErrPrefix, err)
+	}
 	tx, err := usageDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("%s: %w", ui.Bi("open write transaction", "开启写事务"), err)
@@ -332,6 +347,12 @@ func persistClientBatch(
 	defer func() { _ = tx.Rollback() }()
 	if err := mimoRekey.begin(ctx, tx); err != nil {
 		return fmt.Errorf("%s: %w", ui.Bi("merge mimocode client history", "合并 mimocode client 历史"), err)
+	}
+
+	// WorkBuddy 家族合并：先于本轮消息 upsert 收敛历史行（本轮消息随后覆盖
+	// token/model，即「本轮消息优先于迁移阶段的旧副本」），与后续写入同事务。
+	if err := wbPlan.apply(ctx, tx, log); err != nil {
+		return fmt.Errorf("%s%w", workBuddyRekeyErrPrefix, err)
 	}
 
 	if len(collected.Messages) > 0 {
@@ -398,6 +419,11 @@ func persistClientBatch(
 		}
 	}
 
+	// WorkBuddy 家族合并提交前校验：计划会话无家族残留副本、project 已收敛。
+	if err := wbPlan.verify(ctx, tx); err != nil {
+		return fmt.Errorf("%s%w", workBuddyRekeyErrPrefix, err)
+	}
+
 	if collected.PartialErr == nil {
 		counts := messageCounts(collected.Messages)
 		for _, date := range datesToMark(req, counts) {
@@ -405,6 +431,15 @@ func persistClientBatch(
 				return fmt.Errorf("%s: %w", ui.Bi("update collection_log", "更新 collection_log"), err)
 			}
 			if _, err := db.ResolveErrorsByDateSource(ctx, tx, date, client); err != nil {
+				return fmt.Errorf("%s: %w", ui.Bi("resolve historical errors", "恢复历史错误状态"), err)
+			}
+		}
+		// WorkBuddy 完整无日期复核成功（有历史行的无效元数据会话已在写入前
+		// 转为部分失败，PartialErr 批次不进入本段）：按固定片段解决历史元数
+		// 据/重归属错误，不受登记日期限制（源库整体失败登记为当天、恢复后只
+		// 有历史消息日期时，按日期解决会永久残留）。
+		if client == "workbuddy" && isFullWorkBuddyReview(req) {
+			if _, err := db.ResolveWorkBuddyErrorsByMessagePattern(ctx, tx); err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("resolve historical errors", "恢复历史错误状态"), err)
 			}
 		}
@@ -727,6 +762,19 @@ func datesToMark(req collector.CollectRequest, counts map[string]int) []string {
 
 // failureDates 决定失败记录用的 dates：
 // Dates 非空用 Dates；已有 Messages 用实际 Message.Date；两者都空用今天。
+// summarizeDates 把日期列表压缩为日志摘要形态：空为 "0"；单个原样；多个为
+// "N(首..尾)"。首尾取列表的首末元素（消息日期分支已排序即字典序首尾，
+// 显式 Dates 分支为请求首尾）。仅用于日志呈现，错误表登记不受影响。
+func summarizeDates(dates []string) string {
+	if len(dates) == 0 {
+		return "0"
+	}
+	if len(dates) == 1 {
+		return dates[0]
+	}
+	return fmt.Sprintf("%d(%s..%s)", len(dates), dates[0], dates[len(dates)-1])
+}
+
 func failureDates(req collector.CollectRequest, messages []model.Message) []string {
 	if len(req.Dates) > 0 {
 		return append([]string(nil), req.Dates...)

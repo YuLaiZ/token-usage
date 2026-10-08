@@ -459,6 +459,18 @@ func aliasLookup(aliases map[string]string, raw string) string {
 	return strings.TrimSpace(aliases[bestKey])
 }
 
+// dimensionFoldKey 返回维度分组的折叠键:client 维度的 WorkBuddy expert 存储
+// 身份键(WorkBuddy Expert:<hex>)按原样分组——expert_id 大小写敏感,仅大小写
+// 不同的 expert ID 独立计数,不对解码显示名折叠;普通 "WorkBuddy"(及库中可能
+// 的大小写变体)与其他客户端维度值沿用显示键的 foldKey 折叠,原归并语义不变。
+// 分组键与显示标签(ClientDisplayName 解码)分开:显示恒为可读名,分组恒用本键。
+func dimensionFoldKey(d dimension, raw, disp string) string {
+	if d.name == "client" && raw != model.ClientWorkBuddy && model.IsWorkBuddyFamilyClient(raw) {
+		return raw
+	}
+	return foldKey(disp)
+}
+
 // displayKey 把 SQL 返回的原始键值映射为显示键:provider 应用 alias 与未归因,
 // project 应用未分类,hour 补 ":00" 后缀表示小时起点,weekday 映射为双语星期
 // 名,client 应用 legacy 名防御兜底（mimocode 正式落库名已是 MiMo Code，
@@ -762,10 +774,10 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 					Reasoning: reasoning, TotalTokens: total,
 				}
 				for i, disp := range keys {
-					fk, ok := folds[absorbMemoKey{dim: i, raw: disp}]
+					fk, ok := folds[absorbMemoKey{dim: i, raw: rawKeys[i]}]
 					if !ok {
-						fk = foldKey(disp)
-						folds[absorbMemoKey{dim: i, raw: disp}] = fk
+						fk = dimensionFoldKey(dims[i], rawKeys[i], disp)
+						folds[absorbMemoKey{dim: i, raw: rawKeys[i]}] = fk
 					}
 					foldBuf[i] = fk
 				}
@@ -815,7 +827,7 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 					row.Keys = append(row.Keys, d.displayKey(rawKeys[len(row.Keys)], view.Aliases))
 				}
 				for i, disp := range row.Keys {
-					foldBuf[i] = foldKey(disp)
+					foldBuf[i] = dimensionFoldKey(dims[i], rawKeys[i], disp)
 				}
 				key := strings.Join(foldBuf, "\x00")
 				if idx, ok := rowIndex[key]; ok {
@@ -932,6 +944,13 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 			for k := range dims {
 				if rowOrder[i].Keys[k] != rowOrder[j].Keys[k] {
 					return rowOrder[i].Keys[k] < rowOrder[j].Keys[k]
+				}
+			}
+			// 可读标签相同时以存储原始键决序（如仅大小写不同的 expert 身份
+			// 显示名理论唯一，此处兜底保持任意同名标签下的确定序）。
+			for k := range dims {
+				if rowOrder[i].rawKeys[k] != rowOrder[j].rawKeys[k] {
+					return rowOrder[i].rawKeys[k] < rowOrder[j].rawKeys[k]
 				}
 			}
 			return false
@@ -1311,8 +1330,9 @@ func (q *Querier) Summary(ctx context.Context, dates []string) (string, error) {
 
 // distinctClientCount 返回日期范围内按 foldKey 大小写折叠去重后的客户端数,
 // 与 client 维度分组严格同键同语义(含 legacy 名防御兜底:异常残留的旧名先经
-// ClientDisplayName 归一,与 displayKey 分组合并口径一致);client 基数低,
-// DISTINCT 拉取后 Go 侧计数。
+// ClientDisplayName 归一,与 displayKey 分组合并口径一致)。WorkBuddy expert
+// 存储身份键不折叠(与 dimensionFoldKey 同口径:仅大小写不同的 expert ID
+// 独立计数);client 基数低,DISTINCT 拉取后 Go 侧计数。
 func (q *Querier) distinctClientCount(ctx context.Context, placeholders string, args []interface{}) (int64, error) {
 	rows, err := q.queryContext(ctx, fmt.Sprintf(
 		"SELECT DISTINCT client FROM messages WHERE date IN (%s)", placeholders), args...)
@@ -1326,7 +1346,12 @@ func (q *Querier) distinctClientCount(ctx context.Context, placeholders string, 
 		if err := rows.Scan(&client); err != nil {
 			return 0, fmt.Errorf("%s: %w", ui.Bi("scan client rows failed", "扫描客户端行失败"), err)
 		}
-		key := foldKey(model.ClientDisplayName(client))
+		var key string
+		if client != model.ClientWorkBuddy && model.IsWorkBuddyFamilyClient(client) {
+			key = client
+		} else {
+			key = foldKey(model.ClientDisplayName(client))
+		}
 		if !seen[key] {
 			seen[key] = true
 		}

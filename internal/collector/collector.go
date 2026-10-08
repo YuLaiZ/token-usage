@@ -28,6 +28,10 @@ func projectBase(directory string) string {
 	return filepath.Base(filepath.Clean(filepath.FromSlash(normalized)))
 }
 
+// ProjectBase 导出 projectBase 的跨平台 basename 语义：WorkBuddy 写事务在
+// 历史目录兜底确定有效 directory 后按同一规则重算 project（非 playground）。
+func ProjectBase(directory string) string { return projectBase(directory) }
+
 type Collector interface {
 	Name() string
 	SyncSources() []string
@@ -110,6 +114,55 @@ type CollectResult struct {
 	// FileStatuses 逐文件采集状态（JSONL 类 collector 填充），供 startup 跳过门
 	// 判定「该文件本次采集是否完整、文件证据是否稳定」。SQLite 型 collector 不填充。
 	FileStatuses []FileScanStatus
+	// WorkBuddyPlans 携带 WorkBuddy 会话的目标归属计划（仅 workbuddy collector
+	// 填充；无日期全量请求含全部有效元数据会话，含没有本轮消息的仅历史会话，
+	// 供 engine 在写事务内做家族重归属、project 校正与标题刷新）。暂缓会话
+	// （元数据未命中/无效、文件级读取失败）不产出计划；Messages/Sessions 已按
+	// 计划填好目标值。
+	WorkBuddyPlans []WorkBuddySessionPlan
+	// WorkBuddyExcluded 记录「源库元数据存在但无效、且未产出计划」的会话与
+	// 原因（仅 workbuddy collector 填充）。engine 在完整无日期复核时核对它们
+	// 是否已有用量库历史行：有则本轮复核不完整，不得报告成功或清除历史错误。
+	WorkBuddyExcluded []WorkBuddyExcludedSession
+}
+
+// WorkBuddySessionPlan 是单个 WorkBuddy 会话本轮的目标归属计划：由源库元数据
+// 单次快照判定（is_playground 决定 project、expert_id 决定 client、助理识别
+// 决定标题），engine 的 WorkBuddy 写事务按它对会话全部家族历史行收敛。
+type WorkBuddySessionPlan struct {
+	SessionID string
+	// Client 是目标存储 client：普通 "WorkBuddy" 或 "WorkBuddy Expert:<hex>"。
+	Client string
+	// Playground 报告会话的 is_playground 判定：true 时 project 恒为空串；
+	// false 时 project 由有效会话目录决定（Directory 为空时 engine 按历史
+	// session 行兜底目录后重算，不以空目录清空分类）。
+	Playground bool
+	// Project 是目标 project：is_playground=1 为空串，否则 projectBase(有效会话目录)。
+	// 与 Directory 同源自洽；engine 侧目录兜底后按同一规则重算。
+	Project string
+	// Directory 是目标 directory：源库非空 cwd 优先，为空时取 JSONL 按物理
+	// 顺序首条非空 cwd；仅历史刷新且源库 cwd 为空时保持空（engine 保留已有
+	// session.directory 兜底）。
+	Directory string
+	// Title 是目标标题：助理固定标题优先，否则 custom_title 优先 title；可为空
+	//（空标题按 sessions UPSERT 语义保留已有非空标题）。
+	Title string
+	// HasJSONL 报告本轮是否有 JSONL 文件触达该会话。历史 directory/project
+	// 兜底只用于无 JSONL 的仅历史刷新；有 JSONL 时目录来源只有源库 cwd 与
+	// 文件首条非空 cwd，两者皆空则 directory/project 允许为空（engine 不做
+	// 历史兜底，也不与 collector 产出的 session 行冲突）。
+	HasJSONL bool
+	// FirstTS/LastTS 是本轮 JSONL 触达的时间区间；仅历史会话（无 JSONL 数据）
+	// 均为 0，engine 合并时只消费家族历史行的时间区间。
+	FirstTS int64
+	LastTS  int64
+}
+
+// WorkBuddyExcludedSession 是被排除出计划的会话及其原因（元数据存在但无效，
+// 例如 is_playground 取值非法；源库未登记或已删除的会话不在其列）。
+type WorkBuddyExcludedSession struct {
+	SessionID string
+	Reason    error
 }
 
 // FileScanStatus 单文件采集状态：startup 跳过门推进判定的逐文件证据。

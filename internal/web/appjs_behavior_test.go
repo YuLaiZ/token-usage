@@ -215,6 +215,17 @@ richDashboardBody 是载荷 v4 形态的仪表板数据:12 行维度(9+尾行)�
 
 	逐日趋势桶、day_block 热力与前 20 会话。total 标记 marker 供 KPI 断言。
 */
+/* sessionsDashboardBody 带两条会话行：project 空串（WorkBuddy playground 等
+   未分类形态）与正常 project 各一条，供会话榜单占位渲染断言。 */
+func sessionsDashboardBody() map[string]any {
+	body := dashboardBody()
+	body["sessions"] = []any{
+		map[string]any{"title": "查询当前时间", "client": "WorkBuddy", "project": "", "duration_ms": 1200, "requests": 2, "total": 300},
+		map[string]any{"title": "正常会话", "client": "Claude Code", "project": "app", "duration_ms": 3400, "requests": 5, "total": 900},
+	}
+	return body
+}
+
 func richDashboardBody(totalMarker int) map[string]any {
 	hours := make([]any, 24)
 	for i := range hours {
@@ -519,6 +530,8 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 			"GET /api/config":    routeSpec{Status: 200, Body: configGetBody(30)},
 		}
 	}
+	sessionsRoutes := baseRoutes()
+	sessionsRoutes["GET /api/dashboard"] = routeSpec{Status: 200, Body: sessionsDashboardBody()}
 	dashErrorRoutes := baseRoutes()
 	dashErrorRoutes["GET /api/dashboard"] = routeSpec{Status: 400, Body: map[string]any{"error": map[string]any{"message": "Range / 区间"}}}
 	cfgRoutes := baseRoutes()
@@ -611,6 +624,10 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 		{
 			Name: "future custom range submitted as is",
 			Opts: map[string]any{"savedRange": map[string]string{"s": "2027-01-01", "e": "2027-01-31"}, "routes": baseRoutes()},
+		},
+		{
+			Name: "session empty project renders placeholder",
+			Opts: map[string]any{"routes": sessionsRoutes},
 		},
 		{
 			Name: "dashboard 400 error message surfaces",
@@ -910,6 +927,17 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				}
 				if r.RangeCustom.Pressed != "true" || !r.RangeCustom.On {
 					t.Errorf("range-custom pressed=%q on=%v, want pressed/on for custom range", r.RangeCustom.Pressed, r.RangeCustom.On)
+				}
+
+			case "session empty project renders placeholder":
+				/* 区分度:空 project 必须渲染占位而非空白单元格——后端
+				   SessionRows 保留空串,占位只在前端生成;若占位丢失,该单元格
+				   为空 td。 */
+				if !strings.Contains(r.SessionsBodyHTML, "(未分类)") && !strings.Contains(r.SessionsBodyHTML, "(uncategorized)") {
+					t.Errorf("sessions body 应含空 project 占位:\n%s", r.SessionsBodyHTML)
+				}
+				if !strings.Contains(r.SessionsBodyHTML, ">app<") {
+					t.Errorf("非空 project 应原样渲染 app:\n%s", r.SessionsBodyHTML)
 				}
 
 			case "dashboard 400 error message surfaces":

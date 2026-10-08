@@ -49,9 +49,15 @@ func MiMoSessionClient(version string) string {
 // ClientDisplayName 是防御性的历史兼容兜底：migrateV4 已把存量旧名改名、
 // trigger 已把旧版二进制回写的旧名改写，正常数据落库即 ClientMiMoCode；
 // 此映射仅防御异常残留（如迁移未完成的库被直接查询），不得作为主实现依赖。
+// WorkBuddy expert 身份键（WorkBuddy Expert:<hex>）在渲染侧解码为可读名
+// "WorkBuddy [<expert_id>]"；显示保留大小写，不得把显示文本重新解释为身份键
+// （分组/合并恒用存储键，见 IsWorkBuddyFamilyClient）。
 func ClientDisplayName(c string) string {
 	if c == LegacyClientXiaomiMiMoCode {
 		return ClientMiMoCode
+	}
+	if id, ok := ParseWorkBuddyExpertClientKey(c); ok {
+		return "WorkBuddy [" + id + "]"
 	}
 	return c
 }

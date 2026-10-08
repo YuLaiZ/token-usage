@@ -226,7 +226,7 @@ const workbuddyNormalFixture = `{"id":"msg-001","timestamp":1749312000000,"type"
 
 func TestWorkBuddyParseFileStatus_Normal(t *testing.T) {
 	path := writeFileStatusFixture(t, workbuddyNormalFixture)
-	_, status, err := parseWorkBuddyJSONLContext(context.Background(), path, discardingLogger())
+	_, _, status, err := parseWorkBuddyJSONLContext(context.Background(), path, discardingLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestWorkBuddyParseFileStatus_BadLines(t *testing.T) {
 {"id":"msg-002","timestamp":1749312060000,"type":"message","role":"assistant","content":[],"providerData":{"model":"m","usage":{"inputTokens":1500,"outputTokens":800}},"sessionId":"sess-001","cwd":"/path"}
 `
 	path := writeFileStatusFixture(t, content)
-	_, status, err := parseWorkBuddyJSONLContext(context.Background(), path, discardingLogger())
+	_, _, status, err := parseWorkBuddyJSONLContext(context.Background(), path, discardingLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestWorkBuddyParseFileStatus_TimestampInvalid(t *testing.T) {
 	content := `{"id":"msg-001","timestamp":0,"type":"message","role":"assistant","content":[],"providerData":{"model":"m","usage":{"inputTokens":1500,"outputTokens":800}},"sessionId":"sess-001","cwd":"/path"}
 `
 	path := writeFileStatusFixture(t, content)
-	_, status, err := parseWorkBuddyJSONLContext(context.Background(), path, discardingLogger())
+	_, _, status, err := parseWorkBuddyJSONLContext(context.Background(), path, discardingLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestWorkBuddyParseFileStatus_TimestampInvalid(t *testing.T) {
 
 func TestWorkBuddyParseFileStatus_NoTrailingNewline(t *testing.T) {
 	path := writeFileStatusFixture(t, strings.TrimSuffix(workbuddyNormalFixture, "\n"))
-	_, status, err := parseWorkBuddyJSONLContext(context.Background(), path, discardingLogger())
+	_, _, status, err := parseWorkBuddyJSONLContext(context.Background(), path, discardingLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +391,7 @@ func TestTailHasNewlineCRLF(t *testing.T) {
 	if err := os.WriteFile(crlf, []byte("{\"id\":\"a\"}\r\n{\"id\":\"b\"}\r\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, status, err := parseWorkBuddyJSONLContext(context.Background(), crlf, discardingLogger())
+	_, _, status, err := parseWorkBuddyJSONLContext(context.Background(), crlf, discardingLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +402,7 @@ func TestTailHasNewlineCRLF(t *testing.T) {
 	if err := os.WriteFile(cronly, []byte("{\"id\":\"a\"}\r{\"id\":\"b\"}\r"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, status, err = parseWorkBuddyJSONLContext(context.Background(), cronly, discardingLogger())
+	_, _, status, err = parseWorkBuddyJSONLContext(context.Background(), cronly, discardingLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

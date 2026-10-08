@@ -1467,7 +1467,7 @@ function renderSessions(){
       var full=esc(r.title||'');
       return '<tr class="session-row"><th scope="row" class="tname"><div class="session-title-wrap"><span class="session-title-text trunc-name" title="'+full+'">'+full+'</span>'+
         '<button type="button" class="session-title-detail" data-full="'+full+'" data-heading="'+ui('完整会话标题','Full session title')+'" hidden aria-label="'+ui('查看完整会话标题','View full session title')+'" title="'+ui('查看完整会话标题','View full session title')+'"><svg class="ic"><use href="#i-info"/></svg></button></div></th>' +
-        '<td class="num tl" data-label="'+dimLabel('client')+'">'+esc(r.client||'')+'</td><td class="num tl" data-label="'+dimLabel('project')+'">'+esc(r.project||'')+'</td>' +
+        '<td class="num tl" data-label="'+dimLabel('client')+'">'+esc(r.client||'')+'</td><td class="num tl" data-label="'+dimLabel('project')+'">'+esc(r.project||ui('(未分类)','(uncategorized)'))+'</td>' +
         '<td class="num" data-label="'+ui('时长','Duration')+'">'+fmtDur(r.duration_ms)+'</td><td class="num" data-label="'+colLabel(colById('requests'))+'">'+fmtInt(r.requests)+'</td>' +
         '<td class="num tot" data-label="'+colLabel(colById('total'))+'"><span class="nv">'+fmtTok(r.total)+'</span></td></tr>';
     }).join('');

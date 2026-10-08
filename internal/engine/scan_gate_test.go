@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/fsident"
 	"github.com/YuLaiZ/token-usage/internal/model"
+	_ "modernc.org/sqlite"
 )
 
 // === startup 跳过门（file_scan_log）相关测试 ===
@@ -423,6 +425,31 @@ func dumpRows(t *testing.T, usageDB *db.DB, query string) string {
 	return b.String()
 }
 
+// writeWBGateMetaDB 在 root 下写最小 workbuddy.db（元数据强依赖合同要求 db
+// 配置且可读），为 fixture 会话 sess-001 提供有效元组。返回 db 相对路径名。
+func writeWBGateMetaDB(t *testing.T, root string) string {
+	t.Helper()
+	dbPath := filepath.Join(root, "workbuddy.db")
+	d, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`CREATE TABLE sessions (
+		id TEXT PRIMARY KEY, cwd TEXT, user_id TEXT, title TEXT, custom_title TEXT,
+		status TEXT DEFAULT 'Pending', created_at INTEGER, updated_at INTEGER,
+		deleted_at INTEGER, is_playground INTEGER, source_mode TEXT, mode TEXT, expert_id TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO sessions (id, cwd, user_id, is_playground, created_at, updated_at)
+		VALUES ('sess-001', '/Users/test/WorkBuddy/proj1', 'u', 0, 1749312000, 1749312000)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return "workbuddy.db"
+}
+
 // TestScanGate_ContentConsistencyFourFormats：四格式 fixture 在
 // 「有门（第二轮命中跳过）」与「无门（每轮清门表恒全读）」两库下
 // messages/sessions 行集完全一致。其中 claude/codex 验证门路径一致性；
@@ -442,9 +469,11 @@ func TestScanGate_ContentConsistencyFourFormats(t *testing.T) {
 			writeFileT(t, filepath.Join(root, "PROJECTS", "s1.jsonl"), gateFixtureJSONL)
 		}, map[string]string{"projects_dir": "PROJECTS"}, "Claude Code"},
 		{"workbuddy", "workbuddy", func(t *testing.T, root string) {
-			// workbuddy projects_dir 结构为 {projectName}/*.jsonl 两层。
+			// workbuddy projects_dir 结构为 {projectName}/*.jsonl 两层；元数据
+			// 强依赖合同要求同时布置可读的 workbuddy.db。
 			writeFileT(t, filepath.Join(root, "PROJECTS", "proj1", "sess-001.jsonl"), wbGateFixture)
-		}, map[string]string{"projects_dir": "PROJECTS"}, "WorkBuddy"},
+			writeWBGateMetaDB(t, root)
+		}, map[string]string{"projects_dir": "PROJECTS", "db": "workbuddy.db"}, "WorkBuddy"},
 		{"autoclaw", "autoclaw", func(t *testing.T, root string) {
 			writeFileT(t, filepath.Join(root, "sessions", "main", "sessions", "aaa.jsonl"), acGateLine("aaa-m1"))
 		}, map[string]string{"sessions_dir": "sessions"}, "Zhipu-AutoClaw"},
@@ -906,6 +935,7 @@ func TestScanGate_ContentConsistency1MB(t *testing.T) {
 func TestScanGate_UnsupportedClientsExcluded(t *testing.T) {
 	wbFixture := func(t *testing.T, root string) {
 		writeFileT(t, filepath.Join(root, "PROJECTS", "proj1", "sess-001.jsonl"), wbGateFixture)
+		writeWBGateMetaDB(t, root)
 	}
 	acFixture := func(t *testing.T, root string) {
 		writeFileT(t, filepath.Join(root, "sessions", "main", "sessions", "aaa.jsonl"), acGateLine("aaa-m1"))
@@ -916,7 +946,7 @@ func TestScanGate_UnsupportedClientsExcluded(t *testing.T) {
 		paths  map[string]string
 		setup  func(t *testing.T, root string)
 	}{
-		{"workbuddy", "workbuddy", map[string]string{"projects_dir": "PROJECTS"}, wbFixture},
+		{"workbuddy", "workbuddy", map[string]string{"projects_dir": "PROJECTS", "db": "workbuddy.db"}, wbFixture},
 		{"autoclaw", "autoclaw", map[string]string{"sessions_dir": "sessions"}, acFixture},
 	}
 	for _, tc := range cases {
