@@ -67,7 +67,7 @@ token-usage
 
 - 六个分析命令 `chart`、`compare`、`export`、`forecast`、`report`、`top` 已**删除**（无兼容别名）。可视化分析——SVG 图表、用量预测、两期对比、最重会话排行——由 `serve` 仪表板经只读 HTTP 数据面延续，含页面范围内的 CSV 导出；终端查询继续由 `query` 与 `watch` 承担。机器可读的 CLI export 合同与离线 HTML 报告包已有意移除，没有完整直接替代。
 - 顶层生命周期命令已移入 `daemon` 命令组：`token-usage start` → `token-usage daemon start`，`status`、`stop`、`restart` 同理。
-- `token-usage serve` 不再前台启动服务：裸 `serve` 只打印命令组帮助，仪表板用 `serve start` / `serve restart` 启动。
+- `token-usage serve` 不再前台启动服务：裸 `serve` 只打印命令组帮助，仪表板用 `serve start` 启动（`serve restart` 只接管已在运行的实例）。
 
 | v0.1.8 | 现在 |
 |---|---|
@@ -677,7 +677,7 @@ token-usage serve restart
 - `serve status` 的所有状态结论均以退出码 0 返回（只有意外的 I/O 失败才非零）：`/api/meta` 有响应时报告 URL、PID 与启动时间；无响应（或状态文件损坏无法辨识）时删除陈旧/损坏文件并报告未运行。状态迁移由 `serve-state.lock` 串行化；锁被并发的 `serve status`/`serve stop` 持有超过带界重试窗口时，命令以非零退出并提示稍后重试。
 - `serve status --format json` 把同一判定输出为机器可读文档（两空格缩进 + 尾随换行，与 `doctor --format json`、`daemon status --format json` 同一约定）：`state` 取封闭值域——`running`、`not_running`、`not_running_stale_removed`、`not_running_corrupt_removed`；`running` 是 state 对应的布尔值；`pid`/`addr`/`url`/`started_at`（RFC3339，serve.json 原值）仅在运行中出现；`data_dir` 为配置的数据目录。非法 `--format` 值报错并列出允许值，与 `daemon status` 同型。
 - `serve stop` 在 Unix 上发送 SIGTERM 并给 3s 优雅窗口，超时以 SIGKILL 兜底；在 Windows 上使用 `taskkill /F`——Windows 控制台进程没有跨进程的优雅停止通道，对这种本地、无鉴权、唯一写路径是锁内 revision 校验配置保存的服务可接受。是否停止成功仅以 `/api/meta` 不再响应为准（记录的 PID 可能已被无关进程复用，探活的结论优先于信号发送结果——信号投递失败也不会短路探活等待）。只有探活确认下线（或信号发送前就无响应——陈旧/损坏状态被清理）才会删除状态文件。若强杀兜底后服务仍在响应（无论强杀本身是否报错），命令以非零退出码报错并列出记录的 URL 与 PID，保留 `serve.json` 供人工检查进程/端口。若停止进行期间有新实例接管（旧实例下线后状态文件被改写），命令会如实说明并转而停止新实例，而不是报告旧实例已停止。对已停止的服务重复执行是幂等空操作，退出码仍为 0。
-- `serve restart` 以与 `serve stop` 完全相同的编排停止运行中的实例（以探活为判据），随后以与 `serve start` 完全相同的编排拉起全新后台实例（`--addr`/`--open` 作用于新实例）。当前没有实例在运行时等价于直接启动。若运行中的实例在 SIGKILL 兜底后仍在响应，重启以非零错误中止——旧实例继续服务，此类场景请用 `serve stop` 排查。
+- `serve restart` 以与 `serve stop` 完全相同的编排停止运行中的实例（以探活为判据），随后以与 `serve start` 完全相同的编排拉起全新后台实例（`--addr`/`--open` 作用于新实例，报错路径上无效果）。只有运行中的实例才能重启：当前没有实例在运行时命令以非零错误退出并提示使用 `serve start`——与 `daemon restart` 对齐；陈旧或损坏的状态文件会先被清理，随后同样报错。若运行中的实例在 SIGKILL 兜底后仍在响应，重启以非零错误中止——旧实例继续服务，此类场景请用 `serve stop` 排查。
 - 单实例契约：任意时刻至多一个仪表板实例在运行。第二个 `serve start`——无论请求哪个地址——都会在监听之前被单实例守卫拒绝：打印运行中实例的 URL 与 PID 并以退出码 0 幂等返回（要重启请用 `token-usage serve restart`，或先 `token-usage serve stop` 停止）；若撞上另一实例正在启动的窗口，守卫报错并提示稍后重试。服务主体在其整个生命周期持有数据目录下的 `serve.lock` 生命周期锁。由于守卫先于监听执行，与运行中实例的同端口冲突不会再表现为监听失败——监听失败只剩「请求的端口被一个没有留下 `serve.json` 记录的无关进程占用」这一种场景。因此 `serve status` / `serve stop` 始终管理唯一实例。
 - `--open` 由 `serve start` 与 `serve restart` 支持：仅在确认后台服务就绪后打开浏览器（打开失败只是警告）。
 

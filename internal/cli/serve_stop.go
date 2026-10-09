@@ -34,14 +34,15 @@ func newServeStopCmd(load func() (*config.Config, error)) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 			}
-			return serveStopRun(cfg, cmd.OutOrStdout())
+			_, err = serveStopRun(cfg, cmd.OutOrStdout())
+			return err
 		},
 	}
 }
 
 // serveStopRun 执行一次完整的 stop 编排（internal/serve.StopRun 的命令层薄壳，
-// 文案由编排原样透出）。由 `serve stop` 与 `serve restart` 共用。
-func serveStopRun(cfg *config.Config, out io.Writer) error {
-	_, err := serve.StopRun(cfg.DataDir, out)
-	return err
+// 文案由编排原样透出）。由 `serve stop` 与 `serve restart` 共用；restart
+// 消费返回的 StopResult 判定是否进入 start 段（Stopped=false 即未运行）。
+func serveStopRun(cfg *config.Config, out io.Writer) (serve.StopResult, error) {
+	return serve.StopRun(cfg.DataDir, out)
 }
