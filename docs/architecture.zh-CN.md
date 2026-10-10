@@ -55,12 +55,14 @@
 | 客户端 | 数据源类型 | 默认路径 |
 |--------|-----------|---------|
 | Claude Code/Desktop | JSONL（全量按文件扫描） | `~/.claude/projects` |
-| OpenCode | SQLite（message + event 双源） | `~/.local/share/opencode/opencode.db` |
+| OpenCode | SQLite，按表布局自动适配：2.x 前的 `message` + `event` 双源或 2.x 的 `session_message` + `session_v2`（两表同存判定为 V2；每次扫描探测布局） | `~/.local/share/opencode/opencode.db` |
 | Codex | SQLite state DB（token 主源）+ rollout JSONL（辅助，解析层重播去重） | `~/.codex`、`~/.codex/sessions` |
 | WorkBuddy | JSONL（主源）+ SQLite（仅查 title） | `~/.workbuddy/projects`、`~/.workbuddy/workbuddy.db` |
 | ZCode | SQLite | `~/.zcode/cli/db/db.sqlite` |
 | Zhipu-AutoClaw | JSONL（全量按文件扫描） | `~/.openclaw-autoclaw/agents` |
 | MiMo Code + MiMo Desktop（共用同一数据库） | SQLite；按 `session.version` 区分产品归属（严格 `desktop-<hash>` → MiMo Desktop，其余全部 → MiMo Code） | `~/.local/share/mimocode/mimocode.db` |
+
+> **OpenCode 2.x 状态**：V2 读取路径仅经合成测试数据验证，真实 2.x 数据库的兼容性（表结构、迁移行为、event 用法与 `tokens.total` 构成）仍待核实。此期间的边界行为：无日期的增量采集在发现布局转换时执行全量兜底并重建 message 游标；显式日期采集保持其日期范围，从不写布局标记、不推进游标。带用量但 `tokens.total` 缺失或为 `null` 的终态 V2 消息暂不入账——该轮报告部分失败，游标与布局标记保留供后续重试；不会猜测 total，也不会覆盖既有账目。
 
 **路由中间件**：
 
@@ -88,10 +90,10 @@ graph TB
 
 - Collectors 读取 7 个客户端源，输出 `[]model.Message` + `[]model.Session`，在单事务内写入 `messages` 和 `sessions`。
 - RouterAdapter 读取 CC Switch SQLite，输出 `[]model.RouterLog`，写入 `raw_router_logs`；随后查询归因——Claude 系按 `message_id`、Codex 按 session ID 加 300s 时间窗——把 `router_provider/router_model/router_name` 回填到 `messages`。对已配置 router 且支持归因的 client，其采集轮在 messages 入库后同样基于已入库的 `raw_router_logs` 行重算归因（Claude 按 `message_id`；Codex 对触达的 session 查两侧全量——该 session 的全部 proxy 行与全部 Codex messages——任何后续触达该 session 的采集轮都能修复跨日交错）——不限于 CLI 日期模式，daemon 轮因此覆盖「router 日志先入库、message 后入库」的交错。
-- `sync_state` 记录每个 client 各 source 的增量游标，collector 和 router adapter 各自读写自己的 source。
+- `sync_state` 记录每个 client 各 source 的增量游标，collector 和 router adapter 各自读写自己的 source。另有一个内部键存于此：OpenCode 布局标记（`client='opencode'`、`source='opencode_layout'`）以 cursor_value 1/2（V1/V2）记录最近一次成功提交的增量采集所对应的表布局，布局切换据此检出，并与消息、游标在同一写事务内原子提交。
 - 全量采集（`collect all`）传入 `Dates=nil`，不使用 `collection_log` 的日期去重；`messages` 按 `(client, id)` UPSERT，因此可安全重复扫描。
 - collector 部分源失败时，已成功解析的消息、会话和 router 数据仍事务落库，但不写 `collection_log`、不解决历史错误、不推进 `sync_state`；后续普通采集或 retry 会按幂等 UPSERT 重放仍有缺口的区间。
-- 查询层（querier）直接 JOIN `messages`（+ `sessions` 元数据）实时聚合，无中间汇总表。全部分组视图共用一条维度化管线（维度 → 原始聚合 → alias 合并、大小写折叠后的复合键 → 稳定排序 → 表格），末行输出同一日期范围独立聚合的 `Total / 总计`；会话明细与总览摘要不追加。分组键不区分大小写（Unicode 简单折叠，与 `strings.EqualFold` 同一等价语义）：仅大小写不同的值合并为一行，行内代表拼写取组内请求数最多的变体（平手取字节序最小拼写）。供应商别名在组合键形成前合并行，精确键未命中时按大小写不敏感（`EqualFold`）兜底查找，不回写 `messages`。每张表的指标列由同一组按全局 `[query.output]` 布局解析出的有序指标描述符渲染（默认七列；`cache_create` 可选但默认隐藏）——表头、分组行、总计行与会话行遍历同一描述符，`cache_hit` 始终读取含 `cache_create` 的完整聚合值，布局只改显示，不改统计、排序与总计。
+- 查询层（querier）直接 JOIN `messages`（+ `sessions` 元数据）实时聚合，无中间汇总表。全部分组视图共用一条维度化管线（维度 → 原始聚合 → alias 合并、大小写折叠后的复合键 → 稳定排序 → 表格），末行输出同一日期范围独立聚合的 `Total / 总计`；会话明细与总览摘要不追加。分组键不区分大小写（Unicode 简单折叠，与 `strings.EqualFold` 同一等价语义）：仅大小写不同的值合并为一行，行内代表拼写取组内请求数最多的变体（平手取字节序最小拼写）。供应商别名在组合键形成前合并行，精确键未命中时按大小写不敏感（`EqualFold`）兜底查找，不回写 `messages`。每张表的指标列由同一组按全局 `[query.output]` 布局解析出的有序指标描述符渲染（默认七列；`cache_create`、`avg_dur`、`speed` 可选但默认隐藏）——表头、分组行、总计行与会话行遍历同一描述符，`cache_hit` 始终读取含 `cache_create` 的完整聚合值，布局只改显示，不改统计、排序与总计。
 - 裸 `query` 执行 `[query]` 配置的默认对象（未配置回退 client）；`query <name>` 在根命令上按位置参数分派到具名子查询/组合查询，与显式写法 `query custom <name>` 共用同一条具名执行链；`query list` 只依据已解析定义渲染配置视图，绝不打开数据库。定义名称为小写标识符，不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`day`/`month`/`hour`/`weekday`/`heatmap`/`custom`/`list` 冲突。语义校验只发生在这些路径（默认、直接/显式具名、list）与 TUI 保存前，由 `internal/querydef` 完成完整解析——无关的视图定义错误不阻塞九个受布局影响的静态表格命令，它们经隔离的 `ParseOutputLayout` 入口解析布局（合法布局仍生效；`query.output` 自身在开库前使它们失败；顶层 query 问题静默回退默认列）。`query summary` 不读取布局。query 配置无效不会阻塞采集、`daemon status`、守护进程本体、`config set` 与 `config show`，它们继续透传并原样写回问题项。
 - Codex rollout 解析器仅在事件含有效 `total_token_usage` 时，以同一 `limit_id` 最近签名或紧邻 token 事件的完整 `(total,last)` 签名识别重播；不做全表去重，以保留合法计数器重置。去重只影响本次内存解析，不会自动清理既有数据库中的历史重复消息。
 
@@ -112,7 +114,7 @@ Schema 位于 `internal/db/schema.go` 的 `migrateV1`（user_version=1）。
 
 ### Schema 迁移
 
-`user_version` 门控向前迁移，每个迁移单事务提交：v2 重建 `file_scan_log` 为 startup 跳过门状态表；v3 为 `raw_router_logs` 加 `data_source` 列（区分 proxy 直录与 `codex_session` 同步行）；v4 把 `messages` 与 `sessions` 中存量 mimocode client 从 legacy 长名 `Xiaomi MiMo / MiMo Code` 改名为 `MiMo Code`；v5 增加 MiMo Desktop 拆分能力：重建 legacy trigger 并附加副作用（旧名写入同时重置拆分 reconciliation pending 标记）、创建 split trigger（会话已知 Desktop 时把 `MiMo Code` 写入改写为 `MiMo Desktop`）、写入初始 reconciliation pending，最后才把 `user_version` 提升到 5；v6 为 `sessions` 加 `title_source`（NOT NULL，存量行默认 `''` 表示来源未知）与 `title_index_ts`（NOT NULL，默认 0）两列，承载 Codex 标题来源优先级合并与索引记录防倒退时间戳——不做数据回填，运行期标题同步负责填充索引命中行并回填存量空标题子线程的稳定兜底。v4 与 v5 同属一个 v0.1.11。由于 `client` 是两表主键成分，v4 不是裸 UPDATE：先按与 DAO upsert 相同的 `ON CONFLICT` 语义把 legacy 行折叠进 `MiMo Code` 行（同 id 新旧名并存时确定性合并——不报主键冲突、token 不重复计数），删除 legacy 行，再创建两个持久化 `BEFORE INSERT` trigger 把旧版回滚二进制写入的 legacy 名改写为 `MiMo Code` upsert，最后才把 `user_version` 提升到 4。
+`user_version` 门控向前迁移，每个迁移单事务提交：v2 重建 `file_scan_log` 为 startup 跳过门状态表；v3 为 `raw_router_logs` 加 `data_source` 列（区分 proxy 直录与 `codex_session` 同步行）；v4 把 `messages` 与 `sessions` 中存量 mimocode client 从 legacy 长名 `Xiaomi MiMo / MiMo Code` 改名为 `MiMo Code`；v5 增加 MiMo Desktop 拆分能力：重建 legacy trigger 并附加副作用（旧名写入同时重置拆分 reconciliation pending 标记）、创建 split trigger（会话已知 Desktop 时把 `MiMo Code` 写入改写为 `MiMo Desktop`）、写入初始 reconciliation pending，最后才把 `user_version` 提升到 5；v6 为 `sessions` 加 `title_source`（NOT NULL，存量行默认 `''` 表示来源未知）与 `title_index_ts`（NOT NULL，默认 0）两列，承载 Codex 标题来源优先级合并与索引记录防倒退时间戳——不做数据回填，运行期标题同步负责填充索引命中行并回填存量空标题子线程的稳定兜底；v7 为 `messages` 加 `duration_ms`（NOT NULL，默认 0 = 未记录）承载逐请求估算时长——同样不做数据回填，v7 之前采集的行保持 0，源文件被重新读取时自然补齐。v4 与 v5 同属一个 v0.1.11。由于 `client` 是两表主键成分，v4 不是裸 UPDATE：先按与 DAO upsert 相同的 `ON CONFLICT` 语义把 legacy 行折叠进 `MiMo Code` 行（同 id 新旧名并存时确定性合并——不报主键冲突、token 不重复计数），删除 legacy 行，再创建两个持久化 `BEFORE INSERT` trigger 把旧版回滚二进制写入的 legacy 名改写为 `MiMo Code` upsert，最后才把 `user_version` 提升到 4。
 
 ### Client 身份
 
@@ -129,8 +131,9 @@ mimocode 数据源产生两个正式 client：`MiMo Code`（CLI）与 `MiMo Desk
 | `cache_create_tokens` | 缓存创建写入 |
 | `reasoning_tokens` | 推理 token（明细） |
 | `total_tokens` | 总计 token |
+| `duration_ms` | 逐请求估算时长（毫秒，0 = 未记录）。由 Claude / Codex 会话日志估算——Claude 沿回复首块的消息父链推导请求起点，Codex 用边界/模型输出/用量记录的事件序状态机估算；两者都覆盖含等待首 token 的请求全程，且仅在 output ≥ 200 token、时长在 1s–1h 之间时记录。 |
 
-查询聚合时直接 SUM `fresh_input_tokens` 与 `total_tokens`，取源值、不按 client 推断、不叠加 reasoning。
+查询聚合时直接 SUM `fresh_input_tokens` 与 `total_tokens`，取源值、不按 client 推断、不叠加 reasoning。时长指标绝不平均平均值：`avg_dur` 与 `speed` 由每分组三个可加分量（时长和 / 有时长的请求数 / 这些请求的 output 和）计算，合并行与总计保持精确；无有效时长的分组显示 `—`。
 
 ## 模块职责
 

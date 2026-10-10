@@ -321,9 +321,12 @@ columns = ["requests", "input", "output", "total", "cache_hit"]
 | `reasoning` | Reasoning / 推理 | reasoning tokens |
 | `total` | Total / 总计 | 源 total tokens |
 | `cache_hit` | Cache Hit / 缓存命中 | cache_read / (fresh input + cache_read + cache_create) |
+| `avg_dur` | Avg dur (est) / 平均时长(估) | 估算的每请求平均时长，只对有估算值的请求求平均（见下方说明） |
+| `speed` | Speed (est) / 速度(估) | 1000 × Σ output / Σ duration，与平均时长同一有效请求集合（见下方说明） |
 
 - **适用范围**：布局作用于 `query client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday`、`session`，以及裸 query、具名视图（`query <name>` / `query custom <name>`）与组合查询展开的每张表，外加对应的 `watch` 帧（其视图表与 `query` 走同一执行链；`watch --by summary` 保持完整纵向摘要）。`query summary` 不适用——它保持完整纵向摘要（含 Cache Create）；`query list` 不渲染数据表。维度列始终显示在每张表左侧（session 表固定先显示 Client/Project/Title/Duration），不参与布局。
-- **默认值**：缺失 `[query.output]` 或缺失 `columns` 时使用 `requests, input, output, cache_read, reasoning, total, cache_hit` 七列，升级后既有配置与输出保持不变。`cache_create` 是首个可选但默认隐藏的指标；它始终计入缓存命中率分母，显示或隐藏都不改变任何统计值、排序与总计。
+- **估算时长列**：`avg_dur` 与 `speed` 由 Claude / Codex 会话日志估算——时长覆盖含等待首 token 的请求全程，只有记录了估算的请求参与统计（output ≥ 200 token 且时长在 1s–1h 之间）。没有有效样本的分组显示 `—` 而非 0。两列按可加分量（时长和 / 有效请求数 / 有效 output 和）聚合，合并行与总计先合并分量再计算，绝不平均平均值。该列出现前采集的请求未记录时长、显示 `—`；重新采集对应客户端即可自然补齐。
+- **默认值**：缺失 `[query.output]` 或缺失 `columns` 时使用 `requests, input, output, cache_read, reasoning, total, cache_hit` 七列，升级后既有配置与输出保持不变。`cache_create`、`avg_dur`、`speed` 为可选但默认隐藏的指标；`cache_create` 始终计入缓存命中率分母，显示或隐藏都不改变任何统计值、排序与总计。
 - **校验规则**：`query.output` 必须是表且只允许 `columns` 一个子键；数组非空、元素为上表中的字符串、不得重复（元素首尾空格自动去除）。空数组不是「恢复默认」——恢复默认应删除 `query.output`（或 `query.output.columns`）。错误会报出完整配置路径与具体值。`config set` 不支持写入 `query.output.columns`，请使用 TUI 的 Output columns 页或手工编辑 TOML。
 - **错误边界**：无关的视图定义错误（`subqueries`/`groups`/`default`）不阻断九个受布局影响的静态表格命令——合法布局仍生效。`query.output` 自身不合法时，这九个命令在打开数据库前失败。顶层 query 问题（`[query]` 与 `[Query]` 并存、根值非表）下静态表格命令静默回退默认七列，裸 query、具名视图与 `query list` 仍按既有定位错误失败。TUI 保存始终执行完整 query 校验。
 

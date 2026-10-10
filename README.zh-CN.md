@@ -10,6 +10,7 @@
 - 按消息/API 请求统计，准确处理跨日、多模型、分支与 rewind 的归因。
 - 支持 Claude Code/Desktop、OpenCode、Codex、WorkBuddy、ZCode、Zhipu-AutoClaw 与 MiMo Code + MiMo Desktop（按会话版本标记从共用本地数据库区分两个客户端）。
 - 支持 Claude 系列与 Codex 的 CC-Switch router 归因：通过代理日志回填实际 provider/model。
+- Claude / Codex 的每请求估算时长与输出速度：作为表格报表与仪表板中可选的指标列展示（无估算值的行显示 `—`；仅 output ≥ 200 token 且时长 1s–1h 的请求参与统计）。
 - 可单次执行，也可使用实时后台监控守护进程（`token-usage daemon start`）；支持 macOS launchd 与 Windows 注册表自启。
 - 内建可视化分析：按小时/星期分布、星期×小时热力矩阵、实时监视模式，以及本地仪表板服务（`token-usage serve start`，内嵌交互式 HTML 仪表板：预设与自定义日期区间、七项核心指标、四个内置维度与唯一尾部「其他」行、跟随区间的热力图（小时格/日期×小时/4 小时时段/GitHub 风格日历）、来自 `query.subqueries` 的自定义视图、保留原始标题的会话排行，以及经与 `config set` 同一锁内 revision 校验写入链路编辑完整用户配置的配置页——中英双语、五套主题配色与深浅主题；HTTP 面按回环同源使用，唯一写路径是配置保存）。
 - 纯 Go 单二进制 CLI，支持 macOS 和 Windows。
