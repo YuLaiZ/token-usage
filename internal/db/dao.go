@@ -280,39 +280,85 @@ func GetFileScanLogs(ctx context.Context, q dbtx, client string) (map[string]mod
 	return logs, rows.Err()
 }
 
+// upsertMaxSQLParams 是单条 SQL 语句的参数（变量）数上限：SQLite 编译期
+// SQLITE_MAX_VARIABLE_NUMBER 默认 999。多值 INSERT 分块按 行数×列数 ≤ 该值。
+const upsertMaxSQLParams = 999
+
+// 各写路径多值 INSERT 的每块行数推导（行×列 ≤ upsertMaxSQLParams），
+// 提为具名常量供分块合同测试逐一锁定。
+const (
+	upsertMessagesChunkRows     = upsertMaxSQLParams / 20 // messages 20 列
+	upsertSessionsGenericRows   = upsertMaxSQLParams / 8  // sessions 通用 8 列
+	upsertSessionsCodexRows     = upsertMaxSQLParams / 10 // sessions codex 10 列
+	upsertRawRouterLogsChunkRow = upsertMaxSQLParams / 15 // raw_router_logs 15 列
+)
+
+// backfill 批量 UPDATE 的参数推导：backfillBatchSQLPrefix 含 SET 内 6 个
+// CASE 占位符 + WHERE client 1 个（共 7），加 IN 内 id 占位符；id 数上限由
+// 总上限扣除 7 得出（测试按前缀文本实数占位符锁定该口径）。
+const backfillPrefixParams = 7
+
+const maxBackfillIDsPerStmt = upsertMaxSQLParams - backfillPrefixParams
+
+const backfillBatchSQLPrefix = `UPDATE messages SET
+ router_provider=CASE WHEN ?!='' THEN ? ELSE router_provider END,
+ router_model=CASE WHEN ?!='' THEN ? ELSE router_model END,
+ router_name=CASE WHEN ?!='' THEN ? ELSE router_name END
+WHERE client=? AND id IN (`
+
+// multiValuesPlaceholders 生成 n 组每组 cols 个 ? 的多值 VALUES 片段。
+func multiValuesPlaceholders(n, cols int) string {
+	group := "(" + strings.TrimSuffix(strings.Repeat("?,", cols), ",") + ")"
+	return strings.TrimSuffix(strings.Repeat(group+",", n), ",")
+}
+
 // UpsertRawRouterLogs 批量写入路由中间件日志（staging 层）
 // message_id = request_id 前缀提取（claude "session:" / codex "session:codex:{pid}:"）
 // 主键 (request_id, router_name)，INSERT OR REPLACE 幂等（REPLACE 重置 collected_at
 // 为当前时刻属既有副作用；data_source 语义由采集侧保证与 v3 迁移口径一致，
 // REPLACE 不得把既有 'codex_session' 标记降级为 'proxy'）
 func UpsertRawRouterLogs(ctx context.Context, q dbtx, logs []model.RouterLog) (int, error) {
-	stmt := `INSERT OR REPLACE INTO raw_router_logs (
+	const cols = 15
+	const prefix = `INSERT OR REPLACE INTO raw_router_logs (
 		request_id, message_id, router_name, session_id, app_type, model,
 		provider_id, provider_name, input_tokens, output_tokens,
 		cache_read_tokens, cache_create_tokens, created_at, data_source, raw_data
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	) VALUES `
+	const chunkRows = upsertRawRouterLogsChunkRow
 
 	count := 0
-	for _, l := range logs {
-		_, err := q.ExecContext(ctx, stmt,
-			l.RequestID, l.MessageID, l.RouterName, l.SessionID, l.AppType, l.Model,
-			l.ProviderID, l.ProviderName, l.InputTokens, l.OutputTokens,
-			l.CacheReadTokens, l.CacheCreateTokens, l.CreatedAt, l.DataSource, l.RawData,
-		)
-		if err != nil {
-			return count, fmt.Errorf("插入 raw_router_log %q 失败: %w", l.RequestID, err)
+	for start := 0; start < len(logs); start += chunkRows {
+		end := start + chunkRows
+		if end > len(logs) {
+			end = len(logs)
 		}
-		count++
+		chunk := logs[start:end]
+		args := make([]interface{}, 0, len(chunk)*cols)
+		for _, l := range chunk {
+			args = append(args,
+				l.RequestID, l.MessageID, l.RouterName, l.SessionID, l.AppType, l.Model,
+				l.ProviderID, l.ProviderName, l.InputTokens, l.OutputTokens,
+				l.CacheReadTokens, l.CacheCreateTokens, l.CreatedAt, l.DataSource, l.RawData,
+			)
+		}
+		stmt := prefix + multiValuesPlaceholders(len(chunk), cols)
+		if _, err := q.ExecContext(ctx, stmt, args...); err != nil {
+			return count, fmt.Errorf("插入 raw_router_log 批次 %d..%d 失败（首行 %q）: %w",
+				start, end-1, chunk[0].RequestID, err)
+		}
+		count += len(chunk)
 	}
 	return count, nil
 }
 
-const upsertMessageSQL = `INSERT INTO messages (
-	id, session_id, client, date, ts, model, provider,
+const upsertMessageCols = `id, session_id, client, date, ts, model, provider,
 	router_provider, router_model, router_name, directory, project,
 	input_tokens, fresh_input_tokens, output_tokens, cache_read_tokens,
-	cache_create_tokens, reasoning_tokens, total_tokens, duration_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	cache_create_tokens, reasoning_tokens, total_tokens, duration_ms`
+
+// upsertMessageConflictClause 是消息 UPSERT 的冲突子句（单行与多值分块两种
+// 形态共用，逐列语义见 UpsertMessages 注释）。
+const upsertMessageConflictClause = `
 ON CONFLICT(client, id) DO UPDATE SET
 	ts = CASE WHEN excluded.ts < messages.ts THEN excluded.ts ELSE messages.ts END,
 	date = CASE WHEN excluded.ts < messages.ts THEN excluded.date ELSE messages.date END,
@@ -333,22 +379,43 @@ ON CONFLICT(client, id) DO UPDATE SET
 	total_tokens = excluded.total_tokens,
 	duration_ms = excluded.duration_ms`
 
-// UpsertMessages 批量 UPSERT 消息行。任何一行失败立即返回，让调用方事务回滚。
+// upsertMessageSQL 是单行形态（测试参照实现使用）；生产写路径走多值分块
+// 形态（UpsertMessages），冲突键与 SET 子句与之一致。
+const upsertMessageSQL = `INSERT INTO messages (` + upsertMessageCols + `)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` + upsertMessageConflictClause
+
+// UpsertMessages 批量 UPSERT 消息行（多值 INSERT 分块，行×列 ≤ 999 参数）。
+// 任何一批失败立即返回，让调用方事务回滚；同批/跨批重复键按出现顺序后者
+// 覆盖（多值语句内冲突按行序处理，与逐行执行语义一致）。
 // 归因（session_id/date/directory/project）取较早 ts 的版本；token/model/provider 总以新值覆盖；
 // router_* 仅在 excluded 非空时覆盖（空不清除）。
 func UpsertMessages(ctx context.Context, q dbtx, messages []model.Message) (int, error) {
+	const cols = 20
+	const chunkRows = upsertMessagesChunkRows
+	const prefix = `INSERT INTO messages (` + upsertMessageCols + `) VALUES `
+
 	count := 0
-	for _, m := range messages {
-		_, err := q.ExecContext(ctx, upsertMessageSQL,
-			m.ID, m.SessionID, m.Client, m.Date, m.TS, m.Model, m.Provider,
-			m.RouterProvider, m.RouterModel, m.RouterName, m.Directory, m.Project,
-			m.InputTokens, m.FreshInputTokens, m.OutputTokens, m.CacheReadTokens,
-			m.CacheCreateTokens, m.ReasoningTokens, m.TotalTokens, m.DurationMS,
-		)
-		if err != nil {
-			return count, fmt.Errorf("upsert message %q/%q 失败: %w", m.Client, m.ID, err)
+	for start := 0; start < len(messages); start += chunkRows {
+		end := start + chunkRows
+		if end > len(messages) {
+			end = len(messages)
 		}
-		count++
+		chunk := messages[start:end]
+		args := make([]interface{}, 0, len(chunk)*cols)
+		for _, m := range chunk {
+			args = append(args,
+				m.ID, m.SessionID, m.Client, m.Date, m.TS, m.Model, m.Provider,
+				m.RouterProvider, m.RouterModel, m.RouterName, m.Directory, m.Project,
+				m.InputTokens, m.FreshInputTokens, m.OutputTokens, m.CacheReadTokens,
+				m.CacheCreateTokens, m.ReasoningTokens, m.TotalTokens, m.DurationMS,
+			)
+		}
+		stmt := prefix + multiValuesPlaceholders(len(chunk), cols) + upsertMessageConflictClause
+		if _, err := q.ExecContext(ctx, stmt, args...); err != nil {
+			return count, fmt.Errorf("upsert message 批次 %d..%d 失败（首行 %q/%q）: %w",
+				start, end-1, chunk[0].Client, chunk[0].ID, err)
+		}
+		count += len(chunk)
 	}
 	return count, nil
 }
@@ -415,25 +482,100 @@ func isCodexDisplayClient(client string) bool {
 // upsertCodexSessionMetaSQL）；其余 client 走通用语句、不触碰 title_source 列
 // （mimocode 兼容 trigger 的 INSERT 列清单冻结不含该列，语义不受影响）。
 func UpsertSessionMeta(ctx context.Context, q dbtx, sessions []model.Session) (int, error) {
-	count := 0
+	// 按语句类型分两组（普通 8 列 / codex 10 列），组内保序分块批量执行；
+	// 不同 (id,client) 主键互不干扰，组间顺序无关，语义与逐行一致。
+	const genericCols, codexCols = 8, 10
+	genericChunkRows := upsertSessionsGenericRows
+	codexChunkRows := upsertSessionsCodexRows
+
+	var generic, codex []model.Session
 	for _, s := range sessions {
-		var (
-			stmt string
-			args []interface{}
-		)
 		if isCodexDisplayClient(s.Client) {
-			stmt = upsertCodexSessionMetaSQL
-			args = []interface{}{s.ID, s.Client, s.Directory, s.Project, s.Title, s.ParentID, s.FirstTS, s.LastTS, s.TitleSource, s.TitleIndexTS}
+			codex = append(codex, s)
 		} else {
-			stmt = upsertSessionMetaSQL
-			args = []interface{}{s.ID, s.Client, s.Directory, s.Project, s.Title, s.ParentID, s.FirstTS, s.LastTS}
+			generic = append(generic, s)
 		}
-		if _, err := q.ExecContext(ctx, stmt, args...); err != nil {
-			return count, fmt.Errorf("upsert session meta %q/%q 失败: %w", s.Client, s.ID, err)
+	}
+	count := 0
+	for _, group := range []struct {
+		rows      []model.Session
+		cols      int
+		chunkRows int
+	}{
+		{generic, genericCols, genericChunkRows},
+		{codex, codexCols, codexChunkRows},
+	} {
+		for start := 0; start < len(group.rows); start += group.chunkRows {
+			end := start + group.chunkRows
+			if end > len(group.rows) {
+				end = len(group.rows)
+			}
+			chunk := group.rows[start:end]
+			args := make([]interface{}, 0, len(chunk)*group.cols)
+			for _, s := range chunk {
+				args = append(args, s.ID, s.Client, s.Directory, s.Project, s.Title, s.ParentID, s.FirstTS, s.LastTS)
+				if group.cols == codexCols {
+					args = append(args, s.TitleSource, s.TitleIndexTS)
+				}
+			}
+			stmt := sessionMultiValuesPrefix(group.cols == codexCols) +
+				multiValuesPlaceholders(len(chunk), group.cols) + sessionConflictClause(group.cols == codexCols)
+			if _, err := q.ExecContext(ctx, stmt, args...); err != nil {
+				return count, fmt.Errorf("upsert session meta 批次 %d..%d 失败（首行 %q/%q）: %w",
+					start, end-1, chunk[0].Client, chunk[0].ID, err)
+			}
+			count += len(chunk)
 		}
-		count++
 	}
 	return count, nil
+}
+
+// sessionMultiValuesPrefix 生成两种会话语句的多值 INSERT 前缀（含列清单）。
+func sessionMultiValuesPrefix(codex bool) string {
+	base := `INSERT INTO sessions (id,client,directory,project,title,parent_id,first_ts,last_ts`
+	if codex {
+		base += `,title_source,title_index_ts`
+	}
+	return base + `) VALUES `
+}
+
+// sessionConflictClause 生成两种会话语句的 ON CONFLICT 子句（与单行常量一致）。
+func sessionConflictClause(codex bool) string {
+	if codex {
+		return `
+ON CONFLICT(id,client) DO UPDATE SET
+ directory=excluded.directory,
+ project=excluded.project,
+ title=CASE
+  WHEN excluded.title='' THEN sessions.title
+  WHEN excluded.title_source='index' AND excluded.title_index_ts>COALESCE(sessions.title_index_ts,0) THEN excluded.title
+  WHEN sessions.title_source='index' THEN sessions.title
+  WHEN excluded.title_source='fallback' AND sessions.title<>'' AND sessions.title_source<>'fallback' THEN sessions.title
+  ELSE excluded.title END,
+ title_source=CASE
+  WHEN excluded.title='' THEN sessions.title_source
+  WHEN excluded.title_source='index' AND excluded.title_index_ts>COALESCE(sessions.title_index_ts,0) THEN 'index'
+  WHEN sessions.title_source='index' THEN sessions.title_source
+  WHEN excluded.title_source='fallback' AND sessions.title<>'' AND sessions.title_source<>'fallback' THEN sessions.title_source
+  ELSE excluded.title_source END,
+ title_index_ts=CASE
+  WHEN excluded.title='' THEN sessions.title_index_ts
+  WHEN excluded.title_source='index' AND excluded.title_index_ts>COALESCE(sessions.title_index_ts,0) THEN excluded.title_index_ts
+  WHEN sessions.title_source='index' THEN sessions.title_index_ts
+  WHEN excluded.title_source='fallback' AND sessions.title<>'' AND sessions.title_source<>'fallback' THEN sessions.title_index_ts
+  ELSE 0 END,
+ parent_id=excluded.parent_id,
+ first_ts=CASE WHEN sessions.first_ts=0 OR (excluded.first_ts>0 AND excluded.first_ts<sessions.first_ts) THEN excluded.first_ts ELSE sessions.first_ts END,
+ last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END`
+	}
+	return `
+ON CONFLICT(id,client) DO UPDATE SET
+ directory=excluded.directory,
+ project=excluded.project,
+ title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE sessions.title END,
+ parent_id=excluded.parent_id,
+ first_ts=CASE WHEN sessions.first_ts=0 OR (excluded.first_ts>0 AND excluded.first_ts<sessions.first_ts) THEN excluded.first_ts ELSE sessions.first_ts END,
+ last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END`
 }
 
 // ApplyCodexIndexTitles 把标题索引命中的记录以参数化 SQL 同步进 sessions 的
@@ -678,7 +820,74 @@ WHERE client=? AND id=?;`
 
 // BackfillRouterFields 将路由归因（provider/model/router_name）回填到 messages 表。
 // 空字符串不覆盖已有值。返回更新行数。
+//
+// 批量形态：按 (client,provider,model,router_name) 四元组分组，每组一条
+// `UPDATE ... WHERE client=? AND id IN (...)`（组参数 7+ids 个：SET 内
+// CASE 占位符 6 + WHERE client 1；ids ≤ 992）。
+// 唯一键守卫：逐项执行对重复输入键按顺序重复生效（A→B→A 终值 A、计数 3），
+// 按值分组批量执行不等价（IN 不重复计数且改变交错序）——检测到输入中
+// (client,message_id) 存在重复时整批回退逐项执行，不做去重预处理（去重会
+// 改变终值与计数语义，归属调用方数据问题）。
+// 计数口径：累加每条批量语句的 RowsAffected（唯一键前提下与逐行累加严格
+// 一致），该口径是「UPDATE 命中行数」而非「字段实际变化次数」（现状即如此）。
 func BackfillRouterFields(ctx context.Context, q dbtx, infos []model.RouterAttribution) (int, error) {
+	seen := make(map[string]bool, len(infos))
+	for _, info := range infos {
+		key := info.Client + "\x00" + info.MessageID
+		if seen[key] {
+			return backfillRouterFieldsRowByRow(ctx, q, infos)
+		}
+		seen[key] = true
+	}
+
+	type groupKey struct {
+		client, provider, model, routerName string
+	}
+	// 分组保持首现顺序（map 迭代无序，order 记录组序）。
+	var order []groupKey
+	groups := make(map[groupKey][]string)
+	for _, info := range infos {
+		k := groupKey{info.Client, info.Provider, info.Model, info.RouterName}
+		if _, ok := groups[k]; !ok {
+			order = append(order, k)
+		}
+		groups[k] = append(groups[k], info.MessageID)
+	}
+
+	const maxIDsPerStmt = maxBackfillIDsPerStmt
+	count := 0
+	for _, k := range order {
+		ids := groups[k]
+		for start := 0; start < len(ids); start += maxIDsPerStmt {
+			end := start + maxIDsPerStmt
+			if end > len(ids) {
+				end = len(ids)
+			}
+			chunk := ids[start:end]
+			placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+			stmt := backfillBatchSQLPrefix + placeholders + `)`
+			args := make([]interface{}, 0, 7+len(chunk))
+			args = append(args, k.provider, k.provider, k.model, k.model, k.routerName, k.routerName, k.client)
+			for _, id := range chunk {
+				args = append(args, id)
+			}
+			res, err := q.ExecContext(ctx, stmt, args...)
+			if err != nil {
+				return count, fmt.Errorf("回填 router 字段批次失败（client %q，首条 %q）: %w", k.client, chunk[0], err)
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return count, fmt.Errorf("读取回填结果批次失败（client %q，首条 %q）: %w", k.client, chunk[0], err)
+			}
+			count += int(n)
+		}
+	}
+	return count, nil
+}
+
+// backfillRouterFieldsRowByRow 是逐项执行形态：重复输入键的顺序语义
+// （后行覆盖前行）与单行计数口径的唯一保真实现，兼作守卫回退路径。
+func backfillRouterFieldsRowByRow(ctx context.Context, q dbtx, infos []model.RouterAttribution) (int, error) {
 	count := 0
 	for _, info := range infos {
 		res, err := q.ExecContext(ctx, backfillRouterSQL,
