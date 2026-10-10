@@ -152,6 +152,13 @@ type jsonlEntry struct {
 	Timestamp  string `json:"timestamp"`
 	Entrypoint string `json:"entrypoint"`
 	Cwd        string `json:"cwd"`
+	// UUID/ParentUUID 构成会话内的消息链，是请求时长估算的起点推导依据。
+	UUID       string `json:"uuid"`
+	ParentUUID string `json:"parentUuid"`
+	// APIBlockIndex 是该行所属内容块的序号（0 起，顶层字段）；nil 为旧日志
+	// 无该字段。时长起点推导只认回复首块（block 0）的父链——文件中首见的
+	// 块不一定是首块，缺失 block 0 的回复起点会取晚（速度偏高），宁可不估。
+	APIBlockIndex *int64 `json:"apiBlockIndex"`
 	// 标题行 {"type":"custom-title"} 的载荷字段双形态：现行版本为驼峰 customTitle，
 	// kebab custom-title 为历史兼容；同行两形态同现时驼峰优先。
 	CustomTitleCamel string `json:"customTitle"`
@@ -163,6 +170,9 @@ type jsonlEntry struct {
 		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
 		Usage   *tokenUsage     `json:"usage"`
+		// StopReason 非空表示完整回合（末 block 才出现）；时长估算只计入
+		// 完整回合。
+		StopReason *string `json:"stop_reason"`
 	} `json:"message"`
 }
 
@@ -198,6 +208,108 @@ type tokenUsage struct {
 	CacheCreateTokens int64 `json:"cache_creation_input_tokens"`
 }
 
+// claudeChainNode 是消息链上一行的计时线索。hasTS=false（timestamp 缺失或
+// 不可解析）的行仍在链中供跳转，但不能作为起点（对齐上游 Option 语义）。
+type claudeChainNode struct {
+	tsMS         int64
+	hasTS        bool
+	parentUUID   string
+	isAttachment bool
+}
+
+// claudeMessageTiming 聚合同一 message.id（一条回复的多个内容块）的计时线索：
+// 首块的父引用定请求起点，全部块的最晚时间戳定结束，末块的 stop_reason 定
+// 回合完整性。与 token 去重合同并行：token 取首条非零 usage，计时独立汇总。
+type claudeMessageTiming struct {
+	firstParent string
+	// startsAtFirstBlock 报告文件中首见的块是否为回复首块（apiBlockIndex
+	// 为 0 或旧日志无该字段）。非首块起步的回复（block 0 在回看范围外）
+	// 起点会取晚、速度偏高，宁可不估。
+	startsAtFirstBlock bool
+	endMS              int64
+	hasStopReason      bool
+}
+
+// claudeMaxChainHops 限制请求起点沿父链向上的跳数：防御损坏数据成环导致
+// 死循环；正常会话链深度远小于该值。
+const claudeMaxChainHops = 32
+
+// buildClaudeTiming 从全部行构建链缓存与逐回复计时聚合。
+// chain 覆盖所有带 uuid 的行（含 user/attachment/sidechain），attachment 行
+// 的时间戳不可靠（回复开始后才补记），起点推导跳过。
+func buildClaudeTiming(entries []jsonlEntry) (chain map[string]claudeChainNode, timings map[string]*claudeMessageTiming) {
+	chain = make(map[string]claudeChainNode, len(entries))
+	for _, e := range entries {
+		if e.UUID == "" {
+			continue
+		}
+		tsMS := int64(0)
+		hasTS := false
+		if t, err := time.Parse(time.RFC3339, e.Timestamp); err == nil {
+			tsMS = t.UnixMilli()
+			hasTS = true
+		}
+		chain[e.UUID] = claudeChainNode{tsMS: tsMS, hasTS: hasTS, parentUUID: e.ParentUUID, isAttachment: e.Type == "attachment"}
+	}
+	timings = make(map[string]*claudeMessageTiming)
+	for _, e := range entries {
+		if e.Type != "assistant" || e.Message == nil || e.Message.ID == "" {
+			continue
+		}
+		tsMS := int64(0)
+		if t, err := time.Parse(time.RFC3339, e.Timestamp); err == nil {
+			tsMS = t.UnixMilli()
+		}
+		timing, ok := timings[e.Message.ID]
+		if !ok {
+			starts := e.APIBlockIndex == nil || *e.APIBlockIndex == 0
+			timing = &claudeMessageTiming{firstParent: e.ParentUUID, startsAtFirstBlock: starts}
+			timings[e.Message.ID] = timing
+		}
+		if tsMS > timing.endMS {
+			timing.endMS = tsMS
+		}
+		if e.Message.StopReason != nil && *e.Message.StopReason != "" {
+			timing.hasStopReason = true
+		}
+	}
+	return chain, timings
+}
+
+// resolveClaudeStartMS 从回复首块的父引用沿链向上取请求起点：跳过
+// attachment 类节点，遇第一个其他节点取其时间戳；链断（节点缺失）或超过
+// 跳数上限（损坏数据成环）返回 false。
+func resolveClaudeStartMS(chain map[string]claudeChainNode, firstParent string) (int64, bool) {
+	cursor := firstParent
+	for i := 0; i < claudeMaxChainHops; i++ {
+		node, ok := chain[cursor]
+		if !ok {
+			return 0, false
+		}
+		if !node.isAttachment {
+			if !node.hasTS {
+				return 0, false
+			}
+			return node.tsMS, true
+		}
+		cursor = node.parentUUID
+	}
+	return 0, false
+}
+
+// claudeDurationMS 计算一条回复的估算时长：完整回合（stop_reason 非空）+
+// 链式起点可解 + 过滤门（output 与时长双阈值）通过才返回非零。
+func claudeDurationMS(timing *claudeMessageTiming, chain map[string]claudeChainNode, outputTokens int64) int64 {
+	if timing == nil || !timing.hasStopReason || !timing.startsAtFirstBlock {
+		return 0
+	}
+	startMS, ok := resolveClaudeStartMS(chain, timing.firstParent)
+	if !ok {
+		return 0
+	}
+	return estimateDurationMS(outputTokens, timing.endMS-startMS)
+}
+
 // parseClaudeMessageFile 单次全量扫描 JSONL 文件，产出消息级结果。
 // dates 非空时只保留命中日期的 Message；Session 的 first/last 始终来自完整文件，
 // 但仅当存在命中消息时才返回 Session。
@@ -216,6 +328,11 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 	defer file.Close()
 
 	var entries []jsonlEntry
+	// chainOnly 承载字符串 content 形态 user 行的链节点线索：这类行按既有
+	// 归一合同不进 entries（元数据归类与消息产出不可见），但其
+	// uuid/parentUuid/timestamp/type 仍参与请求起点链推导（顶层字段与
+	// content 形态无关），否则直接父级为该类行的回合时长必然落 0。
+	var chainOnly []jsonlEntry
 	// 行解析失败按文件聚合为一条汇总（首行号+首个错误保留定位线索）：
 	// 上游合法数据形态变化（如 user 行 content 为字符串）会让失败在全量扫描中
 	// 必然重复出现，逐行打印只产生噪音。
@@ -247,6 +364,7 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 				continue
 			}
 			if stringForm {
+				chainOnly = append(chainOnly, entry)
 				continue
 			}
 		}
@@ -305,6 +423,10 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 	project := inferProject(cwd)
 
 	// 按首条非零 usage 记录去重 assistant 消息（同一 message.id 的 thinking/text/tool 片段合并）。
+	// 请求时长估算：链缓存 + 逐回复计时聚合（与下方 token 去重循环并行）。
+	// 字符串 content 行只贡献链节点。
+	chain, timings := buildClaudeTiming(append(append([]jsonlEntry(nil), entries...), chainOnly...))
+
 	seen := make(map[string]bool)
 	var messages []model.Message
 	for _, entry := range entries {
@@ -353,6 +475,7 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 			CacheReadTokens:   usage.CacheReadTokens,
 			CacheCreateTokens: usage.CacheCreateTokens,
 			TotalTokens:       usage.InputTokens + usage.CacheReadTokens + usage.CacheCreateTokens + usage.OutputTokens,
+			DurationMS:        claudeDurationMS(timings[entry.Message.ID], chain, usage.OutputTokens),
 		})
 	}
 

@@ -40,8 +40,8 @@ func sessionsTitleSourceColumns(t *testing.T, q interface {
 func TestFreshDBReachesV6(t *testing.T) {
 	d := openFreshDB(t)
 	defer d.Close()
-	if got := userVersion(t, d); got != 6 {
-		t.Fatalf("fresh DB user_version = %d, want 6", got)
+	if got := userVersion(t, d); got != 7 {
+		t.Fatalf("fresh DB user_version = %d, want 7", got)
 	}
 	exists, dflt := sessionsTitleSourceColumns(t, d)
 	if !exists {
@@ -110,8 +110,8 @@ VALUES ('v5row',?,?,?, '历史标题', '', 10, 20)`,
 		t.Fatalf("open v5 db: %v", err)
 	}
 	defer upgraded.Close()
-	if got := userVersion(t, upgraded); got != 6 {
-		t.Fatalf("升级后 user_version = %d, want 6", got)
+	if got := userVersion(t, upgraded); got != currentSchemaVersion {
+		t.Fatalf("升级后 user_version = %d, want %d（v6 链随最新版本继续迁移）", got, currentSchemaVersion)
 	}
 	var title, src string
 	var ts int64
@@ -182,6 +182,6 @@ func TestMigrateV6FailureKeepsV5(t *testing.T) {
 		t.Fatal(err)
 	}
 	if v != 6 {
-		t.Fatalf("重试后 user_version = %d, want 6", v)
+		t.Fatalf("重试后 user_version = %d, want 6（该测试直跑 migrateV6 不含后续迁移）", v)
 	}
 }

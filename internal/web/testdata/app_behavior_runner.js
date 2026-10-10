@@ -774,6 +774,7 @@ function buildReport(def, ctx, fatal, stepStates) {
     resetModalHidden: byId("reset-modal").hidden,
     kpisHtml: byId("kpis").innerHTML,
     groupsHtml: byId("groups").innerHTML,
+    cviewsHtml: byId("cviews").innerHTML,
     chartHtml: byId("chart").innerHTML,
     sessionsSub: byId("sessions-sub").textContent,
     sessionsBodyHtml: byId("sessions-body").innerHTML,

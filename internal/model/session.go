@@ -133,6 +133,10 @@ type Message struct {
 	CacheCreateTokens int64
 	ReasoningTokens   int64
 	TotalTokens       int64
+	// DurationMS 是该请求的估算时长（含等待首 token 的全程），0=未记录。
+	// 会话日志估算口径（Claude 链式起终点 / Codex 边界状态机），落库前经
+	// 过滤门（output 与时长双阈值）降噪。
+	DurationMS int64
 }
 
 // sessions.title_source 的值域（Codex 会话标题来源优先级）。

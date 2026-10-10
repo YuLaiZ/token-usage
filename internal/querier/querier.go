@@ -117,18 +117,24 @@ func (q *Querier) readyContext(ctx context.Context) (context.Context, error) {
 
 // 消息账本聚合列：COUNT(*) 是消息/请求数，所有 token 直接 SUM 源字段。
 // fresh_input_tokens 与 total_tokens 取源值，不按 client 推断，不叠加 reasoning。
+// 时长三分量只在有效样本集合（duration_ms>0）上聚合：时长和/有效请求数/
+// 有效输出和是可加分量，均值与速度由渲染层按分量计算（合并先合并分量，
+// 绝不相加平均值）。
 const groupSelectColumns = `COUNT(*),
        COALESCE(SUM(fresh_input_tokens),0),
        COALESCE(SUM(output_tokens),0),
        COALESCE(SUM(cache_read_tokens),0),
        COALESCE(SUM(cache_create_tokens),0),
        COALESCE(SUM(reasoning_tokens),0),
-       COALESCE(SUM(total_tokens),0)`
+       COALESCE(SUM(total_tokens),0),
+       COALESCE(SUM(CASE WHEN duration_ms>0 THEN duration_ms END),0),
+       COALESCE(SUM(CASE WHEN duration_ms>0 THEN 1 END),0),
+       COALESCE(SUM(CASE WHEN duration_ms>0 THEN output_tokens END),0)`
 
 // rawValueColumns 是 Go 侧累加路径(含时间戳维度的聚合)拉取的 token 源列,
 // 与 groupSelectColumns 的聚合列一一对应(列序即 GroupAggregate 字段序);
 // messages 列恒 NOT NULL,逐行累加与 COUNT(*)/COALESCE(SUM()) 严格等价。
-const rawValueColumns = `fresh_input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, reasoning_tokens, total_tokens`
+const rawValueColumns = `fresh_input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, reasoning_tokens, total_tokens, duration_ms`
 
 // absorbMemoKey 是聚合行显示键映射的 memo 键:维度下标 + 该维度的原始键
 // (时间戳维度为已折算的时间桶键)。memo 落在低基数层(桶键 hour 24 个/
@@ -177,6 +183,38 @@ var metricColumnByID = map[string]metricColumn{
 	ui.MetricCacheHit: {ui.HCacheHit, func(a GroupAggregate) string {
 		return formatCacheHit(a.FreshInput, a.CacheRead, a.CacheCreate)
 	}},
+	ui.MetricAvgDur: {ui.HAvgDur, func(a GroupAggregate) string {
+		return formatAvgDuration(a)
+	}},
+	ui.MetricSpeed: {ui.HSpeed, func(a GroupAggregate) string {
+		return formatSpeed(a)
+	}},
+}
+
+// formatAvgDuration 渲染有效样本平均时长（无有效样本显示 —，与「有效但为零」
+// 区分）。
+func formatAvgDuration(a GroupAggregate) string {
+	if !a.HasDurationSamples() {
+		return "—"
+	}
+	return formatDurationMS(a.AvgDurationMS())
+}
+
+// formatSpeed 渲染有效样本集合上的输出速度（tok/s；无有效样本显示 —）。
+func formatSpeed(a GroupAggregate) string {
+	if !a.HasDurationSamples() {
+		return "—"
+	}
+	return fmt.Sprintf("%.0f tok/s", a.SpeedTokPerSec())
+}
+
+// formatDurationMS 渲染毫秒时长：秒级以上以秒为单位保留一位小数，不足一秒
+// 以毫秒整数显示。
+func formatDurationMS(ms int64) string {
+	if ms >= 1000 {
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	}
+	return fmt.Sprintf("%dms", ms)
 }
 
 // OutputColumnIDs 返回当前布局的指标 ID 序列（独立副本，ID 与 ui.Metric*
@@ -382,6 +420,11 @@ type DimensionView struct {
 // 机器消费方按原始整数读取;渲染侧仅经描述符消费,不直接拼数字文本。
 type GroupAggregate struct {
 	Requests, FreshInput, OutputTokens, CacheRead, CacheCreate, Reasoning, TotalTokens int64
+	// 时长三分量（有效样本集合 = duration_ms>0 的行）：可加分量，均值与速度
+	// 由 AvgDurationMS/SpeedTokPerSec 按分量计算。
+	DurationSumMS     int64
+	DurationCount     int64
+	DurationOutputSum int64
 }
 
 func (a *GroupAggregate) add(o GroupAggregate) {
@@ -392,6 +435,30 @@ func (a *GroupAggregate) add(o GroupAggregate) {
 	a.CacheCreate += o.CacheCreate
 	a.Reasoning += o.Reasoning
 	a.TotalTokens += o.TotalTokens
+	a.DurationSumMS += o.DurationSumMS
+	a.DurationCount += o.DurationCount
+	a.DurationOutputSum += o.DurationOutputSum
+}
+
+// HasDurationSamples 报告是否存在有效时长样本。
+func (a GroupAggregate) HasDurationSamples() bool { return a.DurationCount > 0 }
+
+// AvgDurationMS 返回有效样本平均时长（毫秒）；无有效样本返回 0（渲染层
+// 以 HasDurationSamples 区分 0 与未记录）。
+func (a GroupAggregate) AvgDurationMS() int64 {
+	if a.DurationCount == 0 {
+		return 0
+	}
+	return a.DurationSumMS / a.DurationCount
+}
+
+// SpeedTokPerSec 返回有效样本集合上的输出速度（tok/s，浮点）；无有效样本
+// 返回 0。分子只含有效行的 output（无计时行绝不混入）。
+func (a GroupAggregate) SpeedTokPerSec() float64 {
+	if a.DurationSumMS == 0 {
+		return 0
+	}
+	return 1000 * float64(a.DurationOutputSum) / float64(a.DurationSumMS)
 }
 
 // foldRune 返回 r 所在 unicode.SimpleFold 折叠链(环)上码点最小的 rune,
@@ -726,10 +793,10 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 			// (指针装箱进 any 不逃逸分配);桶键查表折算零分配,显示键与折叠键
 			// memo 均落在低基数层(桶键 hour 24/weekday 7 个、文本维度 distinct
 			// 键),合并键=折叠键 join(单元素 join 返回原串,零额外分配)。
-			var ts, freshIn, output, cacheRead, cacheCreate, reasoning, total int64
+			var ts, freshIn, output, cacheRead, cacheCreate, reasoning, total, durationMS int64
 			keyBuf := make([]string, len(dims))
 			keyCols := 0
-			scanArgs := make([]any, 0, len(dims)+6)
+			scanArgs := make([]any, 0, len(dims)+7)
 			for _, d := range dims {
 				if d.name == "hour" || d.name == "weekday" {
 					continue
@@ -737,7 +804,7 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 				scanArgs = append(scanArgs, &keyBuf[keyCols])
 				keyCols++
 			}
-			scanArgs = append(scanArgs, &ts, &freshIn, &output, &cacheRead, &cacheCreate, &reasoning, &total)
+			scanArgs = append(scanArgs, &ts, &freshIn, &output, &cacheRead, &cacheCreate, &reasoning, &total, &durationMS)
 			rawKeys := make([]string, len(dims))
 			keys := make([]string, 0, len(dims))
 			foldBuf := make([]string, len(dims))
@@ -772,6 +839,11 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 					Requests: 1, FreshInput: freshIn, OutputTokens: output,
 					CacheRead: cacheRead, CacheCreate: cacheCreate,
 					Reasoning: reasoning, TotalTokens: total,
+				}
+				if durationMS > 0 {
+					agg.DurationSumMS = durationMS
+					agg.DurationCount = 1
+					agg.DurationOutputSum = output
 				}
 				for i, disp := range keys {
 					fk, ok := folds[absorbMemoKey{dim: i, raw: rawKeys[i]}]
@@ -812,12 +884,13 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 			var row DimensionRow
 			rawKeys := make([]string, len(dims))
 			foldBuf := make([]string, len(dims))
-			scanArgs := make([]any, 0, len(dims)+7)
+			scanArgs := make([]any, 0, len(dims)+10)
 			for i := range rawKeys {
 				scanArgs = append(scanArgs, &rawKeys[i])
 			}
 			scanArgs = append(scanArgs, &row.Agg.Requests, &row.Agg.FreshInput, &row.Agg.OutputTokens,
-				&row.Agg.CacheRead, &row.Agg.CacheCreate, &row.Agg.Reasoning, &row.Agg.TotalTokens)
+				&row.Agg.CacheRead, &row.Agg.CacheCreate, &row.Agg.Reasoning, &row.Agg.TotalTokens,
+				&row.Agg.DurationSumMS, &row.Agg.DurationCount, &row.Agg.DurationOutputSum)
 			for rows.Next() {
 				if err := rows.Scan(scanArgs...); err != nil {
 					return fmt.Errorf("%s: %w", ui.Bi("scan aggregate rows failed", "扫描聚合结果失败"), err)
@@ -1058,7 +1131,8 @@ func rangeTotals(ctx context.Context, tx *sql.Tx, dates []string) (GroupAggregat
 	var totals GroupAggregate
 	err := tx.QueryRowContext(ctx, query, args...).Scan(
 		&totals.Requests, &totals.FreshInput, &totals.OutputTokens,
-		&totals.CacheRead, &totals.CacheCreate, &totals.Reasoning, &totals.TotalTokens)
+		&totals.CacheRead, &totals.CacheCreate, &totals.Reasoning, &totals.TotalTokens,
+		&totals.DurationSumMS, &totals.DurationCount, &totals.DurationOutputSum)
 	if err != nil {
 		return totals, fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
 	}

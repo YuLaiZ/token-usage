@@ -20,7 +20,7 @@ func TestOutputColumnsPage_DefaultSelection(t *testing.T) {
 	if p.sel == nil {
 		t.Fatal("编辑态应构造 orderedSelect")
 	}
-	wantCandidates := []string{"requests", "input", "output", "cache_read", "reasoning", "total", "cache_hit", "cache_create"}
+	wantCandidates := []string{"requests", "input", "output", "cache_read", "reasoning", "total", "cache_hit", "avg_dur", "speed", "cache_create"}
 	if !reflect.DeepEqual(p.sel.candidates, wantCandidates) {
 		t.Errorf("候选顺序 = %v, want %v", p.sel.candidates, wantCandidates)
 	}

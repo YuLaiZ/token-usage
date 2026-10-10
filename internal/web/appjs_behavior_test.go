@@ -109,6 +109,7 @@ type appJSReport struct {
 	ResetModalHidden  bool   `json:"resetModalHidden"`
 	KpisHTML          string `json:"kpisHtml"`
 	GroupsHTML        string `json:"groupsHtml"`
+	CviewsHTML        string `json:"cviewsHtml"`
 	ChartHTML         string `json:"chartHtml"`
 	SessionsSub       string `json:"sessionsSub"`
 	SessionsBodyHTML  string `json:"sessionsBodyHtml"`
@@ -357,6 +358,44 @@ configWithColsBody 在标准已保存配置上替换 output_columns(如只留 to
 
 	用于验证 KPI 概览不受输出列影响、明细表跟随
 */
+/*
+durationDashboardBody 构造带时长三分量与计算值的维度行:client-a 两行有效
+样本(均值 2s、速度 200 tok/s)、client-b 无有效样本(计算值 null → 前端 —)。
+*/
+func durationDashboardBody() map[string]any {
+	return map[string]any{
+		"totals": map[string]any{"requests": 4, "fresh_input": 0, "output": 11200, "cache_read": 0, "cache_create": 0, "reasoning": 0, "total": 11200},
+		"dimensions": map[string]any{"client": []any{map[string]any{
+			"key": "client-a", "requests": 3, "fresh_input": 0, "output": 10800, "cache_read": 0,
+			"cache_create": 0, "reasoning": 0, "total": 10800,
+			"duration_ms_sum": 4000, "duration_count": 2, "duration_output_sum": 800,
+			"avg_duration_ms": 2000, "speed_tok_s": 200,
+		}, map[string]any{
+			"key": "client-b", "requests": 1, "fresh_input": 0, "output": 400, "cache_read": 0,
+			"cache_create": 0, "reasoning": 0, "total": 400,
+			"duration_ms_sum": 0, "duration_count": 0, "duration_output_sum": 0,
+		}}},
+		"heatmap": map[string]any{"days": []any{}},
+		"custom_views": []any{map[string]any{
+			"name": "cm", "dimensions": []any{"client", "model"},
+			"rows": []any{
+				map[string]any{
+					"keys": []any{"client-a", "m1"}, "requests": 3, "fresh_input": 0,
+					"output": 10800, "cache_read": 0, "cache_create": 0, "reasoning": 0, "total": 10800,
+					"duration_ms_sum": 4000, "duration_count": 2, "duration_output_sum": 800,
+					"avg_duration_ms": 2000, "speed_tok_s": 200,
+				},
+				map[string]any{
+					"keys": []any{"client-b", "m1"}, "requests": 1, "fresh_input": 0,
+					"output": 400, "cache_read": 0, "cache_create": 0, "reasoning": 0, "total": 400,
+					"duration_ms_sum": 0, "duration_count": 0, "duration_output_sum": 0,
+				},
+			},
+		}},
+		"sessions": []any{},
+	}
+}
+
 func configWithColsBody(cols ...string) map[string]any {
 	body := configGetBody(30)
 	cfg := body["config"].(map[string]any)
@@ -554,6 +593,9 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 	resetRoutes["GET /api/config?defaults=1"] = routeSpec{Status: 200, Body: defaultsBody()}
 	colsRoutes := baseRoutes()
 	colsRoutes["GET /api/config"] = routeSpec{Status: 200, Body: configWithColsBody("total")}
+	durationColsRoutes := baseRoutes()
+	durationColsRoutes["GET /api/config"] = routeSpec{Status: 200, Body: configWithColsBody("requests", "avg_dur", "speed")}
+	durationColsRoutes["GET /api/dashboard"] = routeSpec{Status: 200, Body: durationDashboardBody()}
 	diagRoutes := baseRoutes()
 	diagRoutes["GET /api/config"] = routeSpec{Status: 200, Body: configWithDiagBody()}
 	diagRoutes["PUT /api/config"] = routeSpec{Status: 200, Body: saveOKBody("newrev", 30, true)}
@@ -726,6 +768,10 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 		{
 			Name: "output columns apply on first dashboard load",
 			Opts: map[string]any{"routes": colsRoutes},
+		},
+		{
+			Name: "duration columns render formatted cells",
+			Opts: map[string]any{"routes": durationColsRoutes},
 		},
 		{
 			Name: "unchanged query omitted from save",
@@ -1342,7 +1388,7 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				if !strings.Contains(r.GroupsHTML, ">总量<") {
 					t.Errorf("groups html = %q, want detail table with only 总量 column on first load", r.GroupsHTML)
 				}
-				for _, bad := range []string{">请求<", ">输入<", ">缓存读<", ">推理<", ">命中率<"} {
+				for _, bad := range []string{">请求<", ">输入<", ">缓存读<", ">推理<", ">命中率<", ">时长<", ">速度<"} {
 					if strings.Contains(r.GroupsHTML, bad) {
 						t.Errorf("groups html contains column header %s, want output_columns=[total] applied on first load", bad)
 					}
@@ -1356,6 +1402,39 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 					t.Errorf("config PUTs = %d, want 0", n)
 				}
 
+			case "duration columns render formatted cells":
+				/* 区分度:配置含 avg_dur/speed 时明细表渲染新列——2.0s/200 tok/s
+				   来自 client-a 的服务端计算值,client-b 无有效样本渲染 —;
+				   若 COLS 未注册新列(渲染空)或格式化错误(裸数字/undefined),
+				   断言失败 */
+				for _, want := range []string{">时长<", ">速度<", "2.0s", "200 tok/s", "—"} {
+					if !strings.Contains(r.GroupsHTML, want) {
+						t.Errorf("groups html missing %q, want duration columns rendered:\n%s", want, r.GroupsHTML)
+					}
+				}
+				for _, bad := range []string{"undefined", "null", "NaN"} {
+					if strings.Contains(r.GroupsHTML, bad) {
+						t.Errorf("groups html contains %q (formatting regression):\n%s", bad, r.GroupsHTML)
+					}
+				}
+				/* 合计行（aggRows→cellAgg）与数据行同格式：合计 avg=2000ms
+				   须显示 2.0s——合计行漏配新列分支时会落 fmtTok 千分位形态
+				   （2000 → "2.00K"、200 → "200"），速度 200 会被渲染为裸
+				   "200" 而非 "200 tok/s"。 */
+				if strings.Contains(r.GroupsHTML, "2.00K") {
+					t.Errorf("groups html 合计行时长被 token 千分位格式化:\n%s", r.GroupsHTML)
+				}
+				/* 自定义视图数据行（cellCv）与维度行同格式：行级 avg/speed
+				   不得走 token 格式化（cellCv 漏配分支时 2000ms → "2.00K"、
+				   无样本 → "0"），与该视图合计行（cellAggCv）单位一致。 */
+				if strings.Contains(r.CviewsHTML, "2.00K") || strings.Contains(r.CviewsHTML, "200</span>") {
+					t.Errorf("custom views 行格式化回归（千分位/裸数字形态）:\n%s", r.CviewsHTML)
+				}
+				for _, want := range []string{"2.0s", "200 tok/s", "—"} {
+					if !strings.Contains(r.CviewsHTML, want) {
+						t.Errorf("custom views html missing %q, want duration columns rendered:\n%s", want, r.CviewsHTML)
+					}
+				}
 			case "unchanged query omitted from save":
 				/* 区分度:GET 的 query 段带历史 groups+diagnostics(问题态),用户只改
 				   log.max_days——queryTouched 必须为 false,PUT body 的 config 不得

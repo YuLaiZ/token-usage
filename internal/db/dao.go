@@ -311,8 +311,8 @@ const upsertMessageSQL = `INSERT INTO messages (
 	id, session_id, client, date, ts, model, provider,
 	router_provider, router_model, router_name, directory, project,
 	input_tokens, fresh_input_tokens, output_tokens, cache_read_tokens,
-	cache_create_tokens, reasoning_tokens, total_tokens
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	cache_create_tokens, reasoning_tokens, total_tokens, duration_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(client, id) DO UPDATE SET
 	ts = CASE WHEN excluded.ts < messages.ts THEN excluded.ts ELSE messages.ts END,
 	date = CASE WHEN excluded.ts < messages.ts THEN excluded.date ELSE messages.date END,
@@ -330,7 +330,8 @@ ON CONFLICT(client, id) DO UPDATE SET
 	cache_read_tokens = excluded.cache_read_tokens,
 	cache_create_tokens = excluded.cache_create_tokens,
 	reasoning_tokens = excluded.reasoning_tokens,
-	total_tokens = excluded.total_tokens`
+	total_tokens = excluded.total_tokens,
+	duration_ms = excluded.duration_ms`
 
 // UpsertMessages 批量 UPSERT 消息行。任何一行失败立即返回，让调用方事务回滚。
 // 归因（session_id/date/directory/project）取较早 ts 的版本；token/model/provider 总以新值覆盖；
@@ -342,7 +343,7 @@ func UpsertMessages(ctx context.Context, q dbtx, messages []model.Message) (int,
 			m.ID, m.SessionID, m.Client, m.Date, m.TS, m.Model, m.Provider,
 			m.RouterProvider, m.RouterModel, m.RouterName, m.Directory, m.Project,
 			m.InputTokens, m.FreshInputTokens, m.OutputTokens, m.CacheReadTokens,
-			m.CacheCreateTokens, m.ReasoningTokens, m.TotalTokens,
+			m.CacheCreateTokens, m.ReasoningTokens, m.TotalTokens, m.DurationMS,
 		)
 		if err != nil {
 			return count, fmt.Errorf("upsert message %q/%q 失败: %w", m.Client, m.ID, err)

@@ -19,9 +19,9 @@ func TestDefaultOutputColumns(t *testing.T) {
 	}
 }
 
-// 候选指标顺序:默认七列在前,cache_create 殿后,共 8 项且无重复。
+// 候选指标顺序:默认七列在前,估算指标(avg_dur/speed)可配不默认,cache_create 殿后。
 func TestOutputMetricIDsCandidateOrder(t *testing.T) {
-	want := []string{"requests", "input", "output", "cache_read", "reasoning", "total", "cache_hit", "cache_create"}
+	want := []string{"requests", "input", "output", "cache_read", "reasoning", "total", "cache_hit", "avg_dur", "speed", "cache_create"}
 	ids := OutputMetricIDs()
 	if !reflect.DeepEqual(ids, want) {
 		t.Errorf("OutputMetricIDs() = %v, want %v", ids, want)
@@ -67,7 +67,7 @@ func TestOutputMetricHeader(t *testing.T) {
 // ID 列表文本用于 querydef 错误信息的允许集合:与候选顺序一致、逗号分隔。
 func TestOutputColumnIDList(t *testing.T) {
 	got := OutputColumnIDList()
-	want := "requests, input, output, cache_read, reasoning, total, cache_hit, cache_create"
+	want := "requests, input, output, cache_read, reasoning, total, cache_hit, avg_dur, speed, cache_create"
 	if got != want {
 		t.Errorf("OutputColumnIDList() = %q, want %q", got, want)
 	}

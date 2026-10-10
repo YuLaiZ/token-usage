@@ -51,6 +51,8 @@ var (
 	HReasoning   = HeaderLines("Reasoning", "推理")
 	HTotal       = HeaderLines("Total", "总计")
 	HCacheHit    = HeaderLines("Cache Hit", "缓存命中")
+	HAvgDur      = HeaderLines("Avg dur (est)", "平均时长(估)")
+	HSpeed       = HeaderLines("Speed (est)", "速度(估)")
 )
 
 // 输出指标列的稳定 ID：写入 query.output.columns 的有序字符串数组使用
@@ -64,6 +66,8 @@ const (
 	MetricReasoning   = "reasoning"
 	MetricTotal       = "total"
 	MetricCacheHit    = "cache_hit"
+	MetricAvgDur      = "avg_dur"
+	MetricSpeed       = "speed"
 )
 
 // OutputMetric 描述一个可配置的输出指标列：稳定 ID 与双语两行表头。
@@ -83,15 +87,26 @@ var outputMetrics = []OutputMetric{
 	{MetricReasoning, HReasoning},
 	{MetricTotal, HTotal},
 	{MetricCacheHit, HCacheHit},
+	{MetricAvgDur, HAvgDur},
+	{MetricSpeed, HSpeed},
 	{MetricCacheCreate, HCacheCreate},
 }
 
-// DefaultOutputColumns 返回默认七列 ID 序列的独立副本（不含 cache_create）。
-// 缺失 query.output 或缺失 columns 时按该序列渲染，保证升级后输出不变。
+// defaultHiddenOutputColumns 是默认布局排除的指标 ID 集合：cache_create 与
+// 两列估算指标（avg_dur/speed）均可配但不进默认七列。
+var defaultHiddenOutputColumns = map[string]bool{
+	MetricCacheCreate: true,
+	MetricAvgDur:      true,
+	MetricSpeed:       true,
+}
+
+// DefaultOutputColumns 返回默认七列 ID 序列的独立副本（不含 cache_create 与
+// 估算指标列）。缺失 query.output 或缺失 columns 时按该序列渲染，保证升级后
+// 输出不变。
 func DefaultOutputColumns() []string {
 	ids := make([]string, 0, len(outputMetrics))
 	for _, m := range outputMetrics {
-		if m.ID == MetricCacheCreate {
+		if defaultHiddenOutputColumns[m.ID] {
 			continue
 		}
 		ids = append(ids, m.ID)

@@ -865,6 +865,9 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 	lastSigBySource := map[string]tokenUsageSignature{} // limit_id -> 上一条完整 (total,last) 签名
 	prevTokenSig := tokenUsageSignature{}               // 紧邻上一条 (total,last) 复合签名
 	var totalHighWater *codexUsage                      // total 累计高水位（跨 model/limit_id 全局）
+	// 请求时长估算状态机：与重播去重并行逐事件推进，只在产出消息的
+	// token_count（非重播、非全零、有 assistant 关联）上结算。
+	var timer codexRequestTimer
 
 	var (
 		result   CollectResult
@@ -888,13 +891,23 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 			} else if payload.Model != "" {
 				currentModel = payload.Model
 			}
+			if ts, ok := parseCodexTimingTimestamp(entry.Timestamp); ok {
+				timer.observeTiming(ts, codexTimingBoundary, nil)
+			}
 		case "response_item":
 			var payload responseItemPayload
 			if uerr := json.Unmarshal(entry.Payload, &payload); uerr != nil {
 				// payload 结构漂移：assistant 关联可能丢失，计入坏行（数据异常）。
 				outcome.addBad(le.lineNo, fmt.Errorf("response_item payload: %w", uerr))
-			} else if payload.Type == "message" && payload.Role == "assistant" {
-				lastAssistantID = payload.ID
+			} else {
+				if payload.Type == "message" && payload.Role == "assistant" {
+					lastAssistantID = payload.ID
+				}
+				if kind, ok := classifyResponseItemTiming(payload); ok {
+					if ts, tsOK := parseCodexTimingTimestamp(entry.Timestamp); tsOK {
+						timer.observeTiming(ts, kind, nil)
+					}
+				}
 			}
 		case "event_msg":
 			var payload tokenCountPayload
@@ -902,6 +915,15 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 				// payload 结构漂移：token 事件可能丢失，计入坏行（数据异常）。
 				outcome.addBad(le.lineNo, fmt.Errorf("event_msg payload: %w", uerr))
 				continue
+			}
+			if payload.Type == "task_started" || payload.Type == "turn_aborted" {
+				kind := codexTimingTurnAborted
+				if payload.Type == "task_started" {
+					kind = codexTimingTaskStarted
+				}
+				if ts, ok := parseCodexTimingTimestamp(entry.Timestamp); ok {
+					timer.observeTiming(ts, kind, nil)
+				}
 			}
 			if payload.Type != "token_count" {
 				continue
@@ -930,7 +952,13 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 			}
 			prevTokenSig = curSig
 			if duplicate {
-				continue // 重播：不计序号、不生成 Message、不推进高水位
+				// 重播：不计序号、不生成 Message、不推进高水位；但计时状态机
+				// 的「最新 token_count」锚点仍须推进（见 noteReplayedTokenCount），
+				// 否则其后同批的旧布局补写输出会污染下一请求的起点。
+				if ts, tsOK := parseCodexTimingTimestamp(entry.Timestamp); tsOK {
+					timer.noteReplayedTokenCount(ts)
+				}
+				continue
 			}
 			// === delta 选取 ===
 			// last 存在即优先用 last（哪怕全零——全零表示本轮无用量，由 zero-delta 抑制）；
@@ -979,8 +1007,11 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 			if err != nil {
 				return CollectResult{}, status, err
 			}
+			durationMS := estimateDurationMS(usage.OutputTokens,
+				timer.finishRequest(ts, last))
 			message := codexMessageFromUsage(ts, lastAssistantID, index,
 				sessionID, displayClient, currentModel, cwd, usage)
+			message.DurationMS = durationMS
 			// 追踪 rollout 时间范围（用于 Session FirstTS/LastTS）。
 			if firstTS == 0 || ts < firstTS {
 				firstTS = ts
@@ -994,6 +1025,12 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 				}
 			}
 			result.Messages = append(result.Messages, message)
+		case "token_usage_record":
+			// 响应结束时的用量记录（时长估算的优先终点来源）；行级解析
+			// 失败只损失计时精度，不影响采集主流程。
+			if ts, ok := parseCodexTimingTimestamp(entry.Timestamp); ok {
+				timer.observeTiming(ts, codexTimingUsageRecord, parseCodexUsageRecordUsage(entry.Payload))
+			}
 		}
 	}
 

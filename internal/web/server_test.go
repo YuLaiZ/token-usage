@@ -219,7 +219,8 @@ func TestServeDashboard_ShapeAndOrder(t *testing.T) {
 	}
 	// 独立行不得携带 is_other/other_count(omitempty 键缺失,前端据机器字段识别尾行)。
 	assertKeys(t, "dimensions.client[0]", dims["client"].([]any)[0].(map[string]any),
-		"key", "requests", "fresh_input", "output", "cache_read", "cache_create", "reasoning", "total")
+		"key", "requests", "fresh_input", "output", "cache_read", "cache_create", "reasoning", "total",
+		"duration_ms_sum", "duration_count", "duration_output_sum", "avg_duration_ms", "speed_tok_s")
 	// 无配置注入时 custom_views 为空数组(不是 null)。
 	if cv, ok := m["custom_views"].([]any); !ok || len(cv) != 0 {
 		t.Errorf("无配置时 custom_views 应为空数组,实际 %v", m["custom_views"])
@@ -481,7 +482,8 @@ func TestServeDashboard_CustomViews(t *testing.T) {
 	view := cv[0].(map[string]any)
 	assertKeys(t, "custom_views[0]", view, "name", "dimensions", "rows")
 	assertKeys(t, "custom_views[0].rows[0]", view["rows"].([]any)[0].(map[string]any),
-		"keys", "requests", "fresh_input", "output", "cache_read", "cache_create", "reasoning", "total")
+		"keys", "requests", "fresh_input", "output", "cache_read", "cache_create", "reasoning", "total",
+		"duration_ms_sum", "duration_count", "duration_output_sum", "avg_duration_ms", "speed_tok_s")
 
 	// 第二检:结构体反序列化校验语义。
 	var resp dashboardResponse

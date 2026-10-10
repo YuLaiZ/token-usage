@@ -13,7 +13,8 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/querier"
 )
 
-// metricSum 把 src 的七项整数累加到 dst 上(命中率为派生值不参与合并)。
+// metricSum 把 src 的七项整数与时长三分量累加到 dst 上(命中率与均值/速度
+// 为派生值不参与合并,尾行在合并完成后按分量重算)。
 func metricSum(dst *dimensionRowJSON, src dimensionRowJSON) {
 	dst.Requests += src.Requests
 	dst.FreshInput += src.FreshInput
@@ -22,6 +23,9 @@ func metricSum(dst *dimensionRowJSON, src dimensionRowJSON) {
 	dst.CacheCreate += src.CacheCreate
 	dst.Reasoning += src.Reasoning
 	dst.Total += src.Total
+	dst.DurationSumMS += src.DurationSumMS
+	dst.DurationCount += src.DurationCount
+	dst.DurationOutputSum += src.DurationOutputSum
 }
 
 // sortDimensionRows 按「整数 total 降序、同值名称字节序升序」稳定排序——
@@ -51,6 +55,7 @@ func topDimensionRows(rows []dimensionRowJSON, topN int) []dimensionRowJSON {
 	for _, row := range ordered[topN:] {
 		metricSum(&other, row)
 	}
+	other.finalizeDuration()
 	return append(ordered[:topN:topN], other)
 }
 
@@ -87,7 +92,11 @@ func topCustomViewRows(rows []customViewRowJSON, topN int) []customViewRowJSON {
 		other.CacheCreate += row.CacheCreate
 		other.Reasoning += row.Reasoning
 		other.Total += row.Total
+		other.DurationSumMS += row.DurationSumMS
+		other.DurationCount += row.DurationCount
+		other.DurationOutputSum += row.DurationOutputSum
 	}
+	other.finalizeDuration()
 	return append(ordered[:topN:topN], other)
 }
 

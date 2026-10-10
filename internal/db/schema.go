@@ -12,9 +12,10 @@ import (
 // 并创建持久化 trigger 兼容旧版二进制回滚后继续写旧名（见 migrateV4）；v5
 // 赋予 MiMo Desktop 拆分能力（split trigger + 自动 reconciliation pending，
 // 见 migrateV5）；v6 为 sessions 加 title_source 与 title_index_ts 两列
-// （Codex 标题来源优先级合并与索引重建防倒退，见 migrateV6）。v4 与 v5 同属
-// 一个 v0.1.11。
-const currentSchemaVersion = 6
+// （Codex 标题来源优先级合并与索引重建防倒退，见 migrateV6）；v7 为 messages
+// 加 duration_ms 列（会话日志估算的逐请求时长，0=未记录，见 migrateV7）。
+// v4 与 v5 同属一个 v0.1.11。
+const currentSchemaVersion = 7
 
 // ParserVersion 是 JSONL 解析/映射逻辑的版本号（file_scan_log.parser_version）。
 // 任何影响 JSONL 采集产出语义的解析/映射修复都必须递增此值：跳过门按版本整表
@@ -57,6 +58,12 @@ func ensureSchema(db *sql.DB) error {
 	if version < 6 {
 		if err := migrateV6(db); err != nil {
 			return fmt.Errorf("迁移到 v6 失败: %w", err)
+		}
+	}
+	version = getUserVersion(db)
+	if version < 7 {
+		if err := migrateV7(db); err != nil {
+			return fmt.Errorf("迁移到 v7 失败: %w", err)
 		}
 	}
 
@@ -658,6 +665,42 @@ func migrateV6(db *sql.DB) error {
 	}
 	if _, err := tx.Exec(`PRAGMA user_version = 6`); err != nil {
 		return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, `PRAGMA user_version = 6`)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交迁移事务失败: %w", err)
+	}
+	return nil
+}
+
+// migrateV7PostAlterHook 供迁移中段注入失败（测试验证原子性）。
+var migrateV7PostAlterHook func() error
+
+// migrateV7 为 messages 加 duration_ms 列（估算时长，0=未记录）。语句为
+// migration-local 冻结字面量：不随运行期 DAO 演进，行为由升级合同测试锁定。
+// 单事务：ALTER 后、版本号提升前注入失败则整体回滚保持 v6；重试幂等
+// （user_version 门控）。
+func migrateV7(db *sql.DB) error {
+	stmts := []string{
+		`ALTER TABLE messages ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0`,
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("开启迁移事务失败: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, stmt)
+		}
+	}
+	if migrateV7PostAlterHook != nil {
+		if err := migrateV7PostAlterHook(); err != nil {
+			return fmt.Errorf("迁移中段注入失败: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`PRAGMA user_version = 7`); err != nil {
+		return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, `PRAGMA user_version = 7`)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("提交迁移事务失败: %w", err)

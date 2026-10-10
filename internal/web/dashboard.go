@@ -88,8 +88,27 @@ type dimensionRowJSON struct {
 	CacheCreate int64  `json:"cache_create"`
 	Reasoning   int64  `json:"reasoning"`
 	Total       int64  `json:"total"`
-	IsOther     bool   `json:"is_other,omitempty"`
-	OtherCount  int    `json:"other_count,omitempty"`
+	// 估算时长三分量（有效样本 = duration_ms>0 的行）与由分量计算的均值/
+	// 速度：三分量可加（尾行先合并分量再计算），计算值为 null 表示该组
+	// 无有效样本（前端显示 —）。
+	DurationSumMS     int64    `json:"duration_ms_sum"`
+	DurationCount     int64    `json:"duration_count"`
+	DurationOutputSum int64    `json:"duration_output_sum"`
+	AvgDurationMS     *int64   `json:"avg_duration_ms"`
+	SpeedTokPerSec    *float64 `json:"speed_tok_s"`
+	IsOther           bool     `json:"is_other,omitempty"`
+	OtherCount        int      `json:"other_count,omitempty"`
+}
+
+// finalizeDuration 按三分量计算均值与速度（无有效样本保持 null）。
+func (r *dimensionRowJSON) finalizeDuration() {
+	if r.DurationCount <= 0 {
+		return
+	}
+	avg := r.DurationSumMS / r.DurationCount
+	r.AvgDurationMS = &avg
+	speed := 1000 * float64(r.DurationOutputSum) / float64(r.DurationSumMS)
+	r.SpeedTokPerSec = &speed
 }
 
 // trendBucketJSON 是一个趋势桶:Key 为桶边界标识(小时桶 "00".."23"、日桶
@@ -146,8 +165,25 @@ type customViewRowJSON struct {
 	CacheCreate int64    `json:"cache_create"`
 	Reasoning   int64    `json:"reasoning"`
 	Total       int64    `json:"total"`
-	IsOther     bool     `json:"is_other,omitempty"`
-	OtherCount  int      `json:"other_count,omitempty"`
+	// 估算时长三分量与计算值（语义同 dimensionRowJSON）。
+	DurationSumMS     int64    `json:"duration_ms_sum"`
+	DurationCount     int64    `json:"duration_count"`
+	DurationOutputSum int64    `json:"duration_output_sum"`
+	AvgDurationMS     *int64   `json:"avg_duration_ms"`
+	SpeedTokPerSec    *float64 `json:"speed_tok_s"`
+	IsOther           bool     `json:"is_other,omitempty"`
+	OtherCount        int      `json:"other_count,omitempty"`
+}
+
+// finalizeDuration 按三分量计算均值与速度（无有效样本保持 null）。
+func (r *customViewRowJSON) finalizeDuration() {
+	if r.DurationCount <= 0 {
+		return
+	}
+	avg := r.DurationSumMS / r.DurationCount
+	r.AvgDurationMS = &avg
+	speed := 1000 * float64(r.DurationOutputSum) / float64(r.DurationSumMS)
+	r.SpeedTokPerSec = &speed
 }
 
 // customViewJSON 是一个自定义视图(query.subqueries 中的一项)的聚合结果:
@@ -334,15 +370,19 @@ func toCustomViewRows(rows []querier.DimensionRow) []customViewRowJSON {
 	for _, row := range rows {
 		keys := append([]string(nil), row.Keys...)
 		out = append(out, customViewRowJSON{
-			Keys:        keys,
-			Requests:    row.Agg.Requests,
-			FreshInput:  row.Agg.FreshInput,
-			Output:      row.Agg.OutputTokens,
-			CacheRead:   row.Agg.CacheRead,
-			CacheCreate: row.Agg.CacheCreate,
-			Reasoning:   row.Agg.Reasoning,
-			Total:       row.Agg.TotalTokens,
+			Keys:              keys,
+			Requests:          row.Agg.Requests,
+			FreshInput:        row.Agg.FreshInput,
+			Output:            row.Agg.OutputTokens,
+			CacheRead:         row.Agg.CacheRead,
+			CacheCreate:       row.Agg.CacheCreate,
+			Reasoning:         row.Agg.Reasoning,
+			Total:             row.Agg.TotalTokens,
+			DurationSumMS:     row.Agg.DurationSumMS,
+			DurationCount:     row.Agg.DurationCount,
+			DurationOutputSum: row.Agg.DurationOutputSum,
 		})
+		out[len(out)-1].finalizeDuration()
 	}
 	return out
 }
@@ -478,15 +518,19 @@ func toDimensionRows(rows []querier.DimensionRow) []dimensionRowJSON {
 			key = row.Keys[0]
 		}
 		out = append(out, dimensionRowJSON{
-			Key:         key,
-			Requests:    row.Agg.Requests,
-			FreshInput:  row.Agg.FreshInput,
-			Output:      row.Agg.OutputTokens,
-			CacheRead:   row.Agg.CacheRead,
-			CacheCreate: row.Agg.CacheCreate,
-			Reasoning:   row.Agg.Reasoning,
-			Total:       row.Agg.TotalTokens,
+			Key:               key,
+			Requests:          row.Agg.Requests,
+			FreshInput:        row.Agg.FreshInput,
+			Output:            row.Agg.OutputTokens,
+			CacheRead:         row.Agg.CacheRead,
+			CacheCreate:       row.Agg.CacheCreate,
+			Reasoning:         row.Agg.Reasoning,
+			Total:             row.Agg.TotalTokens,
+			DurationSumMS:     row.Agg.DurationSumMS,
+			DurationCount:     row.Agg.DurationCount,
+			DurationOutputSum: row.Agg.DurationOutputSum,
 		})
+		out[len(out)-1].finalizeDuration()
 	}
 	return out
 }

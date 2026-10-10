@@ -132,9 +132,11 @@ var COLS = [
   { id:'reasoning',   field:'reasoning',   label:'Reasoning',   zh:'推理',     shortEn:'Reason',  shortZh:'推理' },
   { id:'total',       field:'total',       label:'Total',       zh:'总量',     shortEn:'Total',   shortZh:'总量' },
   { id:'cache_hit',   field:'cache_hit',   label:'Cache Hit',   zh:'缓存命中率', shortEn:'Hit',   shortZh:'命中率' },
+  { id:'avg_dur',    field:'avg_duration_ms', label:'Avg dur (est)', zh:'平均时长(估)', shortEn:'Dur', shortZh:'时长' },
+  { id:'speed',      field:'speed_tok_s',     label:'Speed (est)',   zh:'速度(估)',     shortEn:'Spd', shortZh:'速度' },
   { id:'cache_create',field:'cache_create',label:'Cache Create',zh:'缓存写入', shortEn:'C.Create',shortZh:'缓存写' }
 ];
-/* 默认七列（不含 cache_create），对齐服务端 ui.DefaultOutputColumns */
+/* 默认七列（不含 cache_create 与估算指标 avg_dur/speed），对齐服务端 ui.DefaultOutputColumns */
 var DEFAULT_OUT = ['requests','input','output','cache_read','reasoning','total','cache_hit'];
 function colById(id){ for(var i=0;i<COLS.length;i++){ if(COLS[i].id===id) return COLS[i]; } return null; }
 function colLabel(c){ return c ? (LOCALE==='en' ? c.label : c.zh) : ''; }
@@ -182,6 +184,14 @@ function hitOf(inp, cr, cc){
   return den ? (+cr||0)/den : null;
 }
 function pctText(frac, dec){ return frac==null ? '—' : (frac*100).toFixed(dec)+'%'; }
+/* 估算时长/速度：null = 该组无有效样本（与有效但为零区分，显示 —） */
+function fmtDurMs(v){ return v==null ? '—' : (v>=1000 ? (v/1000).toFixed(1)+'s' : v+'ms'); }
+function fmtSpd(v){ return v==null ? '—' : Math.round(v).toLocaleString('en-US')+' tok/s'; }
+/* 由三分量计算均值/速度（合计与本地聚合先合并分量再计算，绝不相加平均值） */
+function durCalc(sum, count, outSum){
+  if(!count){ return [null,null]; }
+  return [ Math.floor(sum/count), sum ? 1000*outSum/sum : 0 ];
+}
 function pad2(n){ return (n<10?'0':'')+n; }
 function ymd(d){ return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate()); }
 function fmtMD(d){ return pad2(d.getMonth()+1)+'-'+pad2(d.getDate()); }
@@ -737,7 +747,10 @@ function normRows(raw){
       name: isOther ? ui('其他（'+otherCount+' 项）','Other ('+otherCount+')') : (r.key||''),
       requests: +r.requests||0, fresh_input: +r.fresh_input||0, output: +r.output||0,
       cache_read: +r.cache_read||0, cache_create: +r.cache_create||0, reasoning: +r.reasoning||0,
-      total: +r.total||0, hit: null, isOther:isOther, hiddenCount:otherCount
+      total: +r.total||0, hit: null, isOther:isOther, hiddenCount:otherCount,
+      duration_ms_sum:+r.duration_ms_sum||0, duration_count:+r.duration_count||0, duration_output_sum:+r.duration_output_sum||0,
+      avg_duration_ms: r.avg_duration_ms==null ? null : +r.avg_duration_ms,
+      speed_tok_s: r.speed_tok_s==null ? null : +r.speed_tok_s
     };
     o.hit = hitOf(o.fresh_input, o.cache_read, o.cache_create);
     return o;
@@ -750,22 +763,30 @@ function rowVal(r, id){
   return r[c.field];
 }
 function aggRows(rows){
-  var t={requests:0,fresh_input:0,output:0,cache_read:0,cache_create:0,reasoning:0,total:0,hit:null};
+  var t={requests:0,fresh_input:0,output:0,cache_read:0,cache_create:0,reasoning:0,total:0,hit:null,
+    duration_ms_sum:0, duration_count:0, duration_output_sum:0, avg_duration_ms:null, speed_tok_s:null};
   rows.forEach(function(r){
     t.requests+=r.requests; t.fresh_input+=r.fresh_input; t.output+=r.output;
     t.cache_read+=r.cache_read; t.cache_create+=r.cache_create||0; t.reasoning+=r.reasoning; t.total+=r.total;
+    t.duration_ms_sum+=r.duration_ms_sum||0; t.duration_count+=r.duration_count||0; t.duration_output_sum+=r.duration_output_sum||0;
   });
   t.hit = hitOf(t.fresh_input, t.cache_read, t.cache_create);
+  var dc = durCalc(t.duration_ms_sum, t.duration_count, t.duration_output_sum);
+  t.avg_duration_ms = dc[0]; t.speed_tok_s = dc[1];
   return t;
 }
 function cellFor(k, r, extra){
   if(k==='cache_hit') return '<span class="nv">'+pctText(r.hit,1)+'</span>';
+  if(k==='avg_dur') return '<span class="nv">'+fmtDurMs(r.avg_duration_ms)+'</span>';
+  if(k==='speed') return '<span class="nv">'+fmtSpd(r.speed_tok_s)+'</span>';
   if(k==='total') return '<span class="nv">'+fmtTok(rowVal(r,k))+'</span><i class="mb mb-a" style="width:'+extra+'%"></i>';
   if(k==='requests') return fmtInt(rowVal(r,k));
   return '<span class="nv">'+fmtTok(rowVal(r,k))+'</span>';
 }
 function cellAgg(k, T){
   if(k==='cache_hit') return pctText(T.hit,1);
+  if(k==='avg_dur') return fmtDurMs(T.avg_duration_ms);
+  if(k==='speed') return fmtSpd(T.speed_tok_s);
   if(k==='requests') return fmtInt(T.requests);
   return fmtTok(rowVal(T,k));
 }
@@ -1514,12 +1535,16 @@ sessionTitleModal.addEventListener('keydown',function(e){
 /* ---------- 自定义视图：/api/dashboard.custom_views，Top N + 唯一“其他组合”守恒行 ---------- */
 function cellCv(k, r, extra){
   if(k==='cache_hit') return '<span class="nv">'+pctText(r.hit,2)+'</span>';
+  if(k==='avg_dur') return '<span class="nv">'+fmtDurMs(r.avg_duration_ms)+'</span>';
+  if(k==='speed') return '<span class="nv">'+fmtSpd(r.speed_tok_s)+'</span>';
   if(k==='total') return '<span class="nv">'+fmtTok(rowVal(r,k))+'</span><i class="mb mb-a" style="width:'+extra+'%"></i>';
   if(k==='requests') return fmtInt(rowVal(r,k));
   return '<span class="nv">'+fmtTok(rowVal(r,k))+'</span>';
 }
 function cellAggCv(k, T){
   if(k==='cache_hit') return pctText(T.hit,2);
+  if(k==='avg_dur') return fmtDurMs(T.avg_duration_ms);
+  if(k==='speed') return fmtSpd(T.speed_tok_s);
   if(k==='requests') return fmtInt(T.requests);
   return fmtTok(rowVal(T,k));
 }
@@ -1545,7 +1570,10 @@ function renderCustomViews(){
         requests:+r.requests||0, fresh_input:+r.fresh_input||0, output:+r.output||0,
         cache_read:+r.cache_read||0, cache_create:+r.cache_create||0, reasoning:+r.reasoning||0,
         total:+r.total||0, hit:null, isOther:isOther, hiddenCount:otherCount,
-        otherName: isOther ? ui('其他组合（'+otherCount+' 项）','Other combos ('+otherCount+' items)') : ''
+        otherName: isOther ? ui('其他组合（'+otherCount+' 项）','Other combos ('+otherCount+' items)') : '',
+        duration_ms_sum:+r.duration_ms_sum||0, duration_count:+r.duration_count||0, duration_output_sum:+r.duration_output_sum||0,
+        avg_duration_ms: r.avg_duration_ms==null ? null : +r.avg_duration_ms,
+        speed_tok_s: r.speed_tok_s==null ? null : +r.speed_tok_s
       };
       o.hit = hitOf(o.fresh_input, o.cache_read, o.cache_create);
       return o;
