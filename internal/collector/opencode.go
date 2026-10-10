@@ -46,8 +46,11 @@ func (c *OpenCodeCollector) Name() string {
 	return "opencode"
 }
 
+// SyncSources 含布局标记内部键（opencode_layout）：读取走既有 GetSyncCursors
+// 同链路（cursor_value 0/1/2 = 未标记/V1/V2），写入经 NextCursors 在
+// persistClientBatch 与消息、message 游标同事务提交。
 func (c *OpenCodeCollector) SyncSources() []string {
-	return []string{SyncSourceOpenCodeMessage, SyncSourceOpenCodeEvent}
+	return []string{SyncSourceOpenCodeMessage, SyncSourceOpenCodeEvent, SyncSourceOpenCodeLayout}
 }
 
 // ===== 源行结构 =====
@@ -61,6 +64,32 @@ type openCodeTokens struct {
 		Read  int64 `json:"read"`
 		Write int64 `json:"write"`
 	} `json:"cache"`
+	// TotalPresent 区分「源报 total=0」与「total 键缺失/null」：json 的
+	// int64 零值无法表达后者。V2 布局的 total 构成是未闭合未知项，键缺失
+	// 的行不得按 0 落账（见 scanOCV2MessageRows 的部分失败处理）；V1 行为
+	// 不受影响（V1 的 total==0 跳过对两种形态一致）。
+	TotalPresent bool `json:"-"`
+}
+
+// UnmarshalJSON 记录 total 键的存在性（null 视为缺失）后按原结构解析。
+func (t *openCodeTokens) UnmarshalJSON(data []byte) error {
+	type alias openCodeTokens
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["total"]; ok && string(v) != "null" {
+		t.TotalPresent = true
+	}
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*t = openCodeTokens{
+		Total: a.Total, Input: a.Input, Output: a.Output,
+		Reasoning: a.Reasoning, Cache: a.Cache, TotalPresent: t.TotalPresent,
+	}
+	return nil
 }
 
 type openCodeInfo struct {
@@ -69,7 +98,12 @@ type openCodeInfo struct {
 	Role       string `json:"role"`
 	ProviderID string `json:"providerID"`
 	ModelID    string `json:"modelID"`
-	Time       struct {
+	// Model 是 V2 data.model 双形态字段：{id,providerID,variant} 对象或纯字符串；
+	// V1 行无该字段（nil），解析见 resolveOCModelRef。
+	Model json.RawMessage `json:"model"`
+	// Status 是 V2 compaction 行的终态（completed/failed）；V1 行无该字段。
+	Status string `json:"status"`
+	Time   struct {
 		Created   int64 `json:"created"`
 		Completed int64 `json:"completed"`
 	} `json:"time"`
@@ -147,31 +181,110 @@ func (c *OpenCodeCollector) Collect(ctx context.Context, req CollectRequest, log
 	}
 	defer func() { _ = sourceTx.Rollback() }()
 
+	// 布局探测与三态判定（同一只读事务内一次）：
+	// 持久标记（sync_state opencode_layout）× 本轮探测布局决定消息扫描分支。
+	// 对称转换原则：message 游标只代表其所扫描布局的进度，任何布局转换
+	// （""→V2 / V1→V2 / V2→V1）都不假设跨表游标可复用，一律全量兜底 + 游标
+	// 重建；重复行由目标库 ON CONFLICT(client,id) 幂等吸收。
+	tables, err := detectOCTables(ctx, sourceTx)
+	if err != nil {
+		return CollectResult{}, err
+	}
+	layout := tables.layout()
+	layoutMark := req.Cursors[SyncSourceOpenCodeLayout].Value
+
 	sessionInfos := make(map[string]ocSessionData)
 
-	// Phase 1: message 主源
+	// Phase 1: message 主源（布局分支）
 	currentMessages := make(map[string]model.Message)
 	msgNext := req.Cursors[SyncSourceOpenCodeMessage] // 无新行时保持输入 cursor
+	var nextLayoutMark int64                          // 本轮成功后应持久化的布局标记；0 = 不写
+	// unknownTotalIDs 是「主源存在但 tokens.total 缺失/null」的受保护消息
+	// 集合（V2 total 构成未闭合）：本轮不落账、不得被 event 补偿以旧终态
+	// 绕过、经 PartialErr 暂缓游标/标记/完成状态。
+	unknownTotalIDs := make(map[string]bool)
 
-	if req.Incremental {
-		msgs, n, err := scanOCMessagesIncremental(ctx, sourceTx, msgNext, providerMapping, sessionInfos)
+	switch {
+	case req.Incremental && len(req.Dates) == 0 && layout == ocLayoutV2 && layoutMark != ocLayoutMarkV2:
+		// ""×V2（旧版本游标无法证明历史已按 V2 覆盖）与 V1×V2（防迁移下调
+		// time_updated 跳行漏账）：全量兜底（V2 方向），游标重建、标记 V2。
+		msgs, n, pt, err := scanOCV2MessagesFull(ctx, sourceTx, nil, providerMapping, sessionInfos, tables)
+		if err != nil {
+			return CollectResult{}, err
+		}
+		for id := range pt {
+			unknownTotalIDs[id] = true
+		}
+		currentMessages = msgs
+		msgNext = n
+		nextLayoutMark = ocLayoutMarkV2
+	case req.Incremental && len(req.Dates) == 0 && layout == ocLayoutV1 && layoutMark == ocLayoutMarkV2:
+		// V2×V1（降级）：V1 全量兜底 + 游标重建 + 标记降级 V1。目标库可能只
+		// 经历过 V2 布局（""×V2 兜底轮不保证 V1 表全部行已入账），V1 侧可能
+		// 存在低于旧 V2 游标的未入账行，沿用 V2 游标会永久跳过它们。
+		msgs, n, err := scanOCMessagesIncremental(ctx, sourceTx, model.SyncCursor{}, providerMapping, sessionInfos)
 		if err != nil {
 			return CollectResult{}, err
 		}
 		currentMessages = msgs
 		msgNext = n
-	} else {
-		msgs, err := scanOCMessagesByDate(ctx, sourceTx, req.Dates, providerMapping, sessionInfos)
+		nextLayoutMark = ocLayoutMarkV1
+	case req.Incremental:
+		// 正常增量（""×V1 / V1×V1 / V2×V2）。V2 增量常态主源仅扫
+		// session_message（V1 已冻结）。""×V1 成功后原子写入标记 V1。
+		if layout == ocLayoutV2 {
+			msgs, n, pt, err := scanOCV2MessagesIncremental(ctx, sourceTx, msgNext, providerMapping, sessionInfos)
+			if err != nil {
+				return CollectResult{}, err
+			}
+			for id := range pt {
+				unknownTotalIDs[id] = true
+			}
+			currentMessages = msgs
+			msgNext = n
+		} else {
+			msgs, n, err := scanOCMessagesIncremental(ctx, sourceTx, msgNext, providerMapping, sessionInfos)
+			if err != nil {
+				return CollectResult{}, err
+			}
+			currentMessages = msgs
+			msgNext = n
+			if layoutMark == 0 {
+				nextLayoutMark = ocLayoutMarkV1
+			}
+		}
+	default:
+		// CLI 模式（Incremental=false）：按日期过滤或全量，不触发兜底初始化、
+		// 不写布局标记、不推进任何游标（日期采集与初始化解耦）。V2 布局的
+		// 全量扫描路径含 V1 未迁移行兜底。
+		if layout == ocLayoutV2 {
+			msgs, _, pt, err := scanOCV2MessagesFull(ctx, sourceTx, req.Dates, providerMapping, sessionInfos, tables)
+			if err != nil {
+				return CollectResult{}, err
+			}
+			for id := range pt {
+				unknownTotalIDs[id] = true
+			}
+			currentMessages = msgs
+		} else {
+			msgs, err := scanOCMessagesByDate(ctx, sourceTx, req.Dates, providerMapping, sessionInfos)
+			if err != nil {
+				return CollectResult{}, err
+			}
+			currentMessages = msgs
+		}
+	}
+
+	// Phase 2: event 源。V2 布局下 event 表可能不存在（2.x 形态未知项）：
+	// 缺表时补偿源自然停更（游标保持，无报错），主源为唯一正确性来源。
+	var eventInfos map[string]openCodeInfo
+	var eventSessionIDs map[string]string
+	eventNext := req.Cursors[SyncSourceOpenCodeEvent]
+	if layout != ocLayoutV2 || tables.event {
+		eventInfos, eventSessionIDs, eventNext, err = scanOCEvents(ctx, sourceTx, req)
 		if err != nil {
 			return CollectResult{}, err
 		}
-		currentMessages = msgs
-	}
-
-	// Phase 2: event 源
-	eventInfos, eventSessionIDs, eventNext, err := scanOCEvents(ctx, sourceTx, req)
-	if err != nil {
-		return CollectResult{}, err
 	}
 
 	// Phase 3: 批量回查 message 主表（同事务），把找到的当前 message 并入 currentMessages
@@ -180,7 +293,16 @@ func (c *OpenCodeCollector) Collect(ctx context.Context, req CollectRequest, log
 		for id := range eventInfos {
 			eventIDs = append(eventIDs, id)
 		}
-		lookedUp, err := batchLookupOCMessages(ctx, sourceTx, eventIDs, providerMapping, sessionInfos)
+		var lookedUp map[string]model.Message
+		if layout == ocLayoutV2 {
+			var pt map[string]bool
+			lookedUp, pt, err = batchLookupOCV2Messages(ctx, sourceTx, eventIDs, providerMapping, sessionInfos)
+			for id := range pt {
+				unknownTotalIDs[id] = true
+			}
+		} else {
+			lookedUp, err = batchLookupOCMessages(ctx, sourceTx, eventIDs, providerMapping, sessionInfos)
+		}
 		if err != nil {
 			return CollectResult{}, err
 		}
@@ -189,7 +311,8 @@ func (c *OpenCodeCollector) Collect(ctx context.Context, req CollectRequest, log
 		}
 	}
 
-	// Phase 4: event-only session 元数据（message 不存在时按 session ID 批量查 session 表）
+	// Phase 4: event-only session 元数据（message 不存在时按 session ID 批量查
+	// 会话表：V2 布局查 session_v2，V1 布局查 session）
 	sessionIDsToLookup := make([]string, 0)
 	for msgID, info := range eventInfos {
 		if _, ok := currentMessages[msgID]; ok {
@@ -205,15 +328,26 @@ func (c *OpenCodeCollector) Collect(ctx context.Context, req CollectRequest, log
 			}
 		}
 	}
-	if err := batchLookupOCSessions(ctx, sourceTx, sessionIDsToLookup, sessionInfos); err != nil {
-		return CollectResult{}, err
+	if layout == ocLayoutV2 {
+		if err := batchLookupOCV2Sessions(ctx, sourceTx, sessionIDsToLookup, sessionInfos); err != nil {
+			return CollectResult{}, err
+		}
+	} else {
+		if err := batchLookupOCSessions(ctx, sourceTx, sessionIDsToLookup, sessionInfos); err != nil {
+			return CollectResult{}, err
+		}
 	}
 
-	// Phase 5: event-only 消息转换（message 不存在时用 event 终态）
+	// Phase 5: event-only 消息转换（message 不存在时用 event 终态）。
+	// 受保护 ID（主源存在但 total 未知）同样跳过：event 旧终态会把保护
+	// 绕过（旧值覆盖既有账目）。
 	eventMessages := make(map[string]model.Message, len(eventInfos))
 	for msgID, info := range eventInfos {
 		if _, ok := currentMessages[msgID]; ok {
 			continue // message 主源优先，跳过
+		}
+		if unknownTotalIDs[msgID] {
+			continue // 主源存在但 total 未知：暂缓，不得由 event 补偿代落
 		}
 		sid := eventSessionIDs[msgID]
 		if sid == "" {
@@ -266,10 +400,25 @@ func (c *OpenCodeCollector) Collect(ctx context.Context, req CollectRequest, log
 		Messages: messages,
 		Sessions: sessions,
 	}
+	// V2 total 缺失行 → 部分失败：成功行照常入库，但布局标记/游标/完成状态
+	// 均不推进（engine 的 PartialErr 合同），下一轮幂等重试；真实 2.x total
+	// 构成语义闭合前不得按 0 落账覆盖既有账目。错误文本按 ID 排序保证确定性。
+	if len(unknownTotalIDs) > 0 {
+		ids := make([]string, 0, len(unknownTotalIDs))
+		for id := range unknownTotalIDs {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		result.PartialErr = fmt.Errorf("OpenCode session_message %d 行 tokens.total 缺失（V2 total 构成未闭合，暂不落账）: %s",
+			len(ids), strings.Join(ids, ", "))
+	}
 	if req.Incremental {
 		result.NextCursors = map[string]model.SyncCursor{
 			SyncSourceOpenCodeMessage: msgNext,
 			SyncSourceOpenCodeEvent:   eventNext,
+		}
+		if nextLayoutMark != 0 {
+			result.NextCursors[SyncSourceOpenCodeLayout] = model.SyncCursor{Value: nextLayoutMark}
 		}
 	}
 	return result, nil

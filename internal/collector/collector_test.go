@@ -39,6 +39,7 @@ func TestSyncSourceConstantsUnique(t *testing.T) {
 		SyncSourceZCodeModelUsage,
 		SyncSourceOpenCodeMessage,
 		SyncSourceOpenCodeEvent,
+		SyncSourceOpenCodeLayout,
 		SyncSourceCodexState,
 		SyncSourceCCSwitchRouter,
 	}
