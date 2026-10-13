@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/fsident"
@@ -154,28 +157,28 @@ func (c *CodexCollector) Collect(ctx context.Context, req CollectRequest, logger
 				}
 				continue
 			}
-			info, err := os.Stat(th.RolloutPath)
-			if err != nil {
-				wrapped := fmt.Errorf("%s: %w", th.RolloutPath, err)
+			realPath, info, statErr := resolveCodexRolloutPath(th.RolloutPath)
+			if statErr != nil {
+				wrapped := fmt.Errorf("%s: %w", th.RolloutPath, statErr)
 				partialErr = errors.Join(partialErr, wrapped)
-				logger.Warn("Codex rollout_path access failed, skipped", "rollout_path", th.RolloutPath, "error", err)
+				logger.Warn("Codex rollout_path access failed, skipped", "rollout_path", th.RolloutPath, "error", statErr)
 				continue
 			}
 			if !info.Mode().IsRegular() {
-				wrapped := fmt.Errorf("%s 不是普通文件", th.RolloutPath)
+				wrapped := fmt.Errorf("%s 不是普通文件", realPath)
 				partialErr = errors.Join(partialErr, wrapped)
-				logger.Warn("Codex rollout_path not a regular file, skipped", "rollout_path", th.RolloutPath)
+				logger.Warn("Codex rollout_path not a regular file, skipped", "rollout_path", realPath)
 				continue
 			}
-			part, fstatus, perr := parseRolloutWithStatus(ctx, th.RolloutPath, th, dateSet, logger)
+			part, fstatus, perr := parseRolloutWithStatus(ctx, realPath, th, dateSet, logger)
 			if perr != nil {
 				if errors.Is(perr, context.Canceled) || errors.Is(perr, context.DeadlineExceeded) {
 					return result, perr
 				}
 				fstatus.Err = perr
 				result.FileStatuses = append(result.FileStatuses, fstatus)
-				partialErr = errors.Join(partialErr, fmt.Errorf("%s: %w", th.RolloutPath, perr))
-				logger.Warn("Codex rollout parse failed, skipped", "rollout_path", th.RolloutPath, "error", perr)
+				partialErr = errors.Join(partialErr, fmt.Errorf("%s: %w", realPath, perr))
+				logger.Warn("Codex rollout parse failed, skipped", "rollout_path", realPath, "error", perr)
 				continue
 			}
 			result.FileStatuses = append(result.FileStatuses, fstatus)
@@ -518,7 +521,7 @@ func findExistingCodexJSONLContext(ctx context.Context, sessionsDir string) ([]s
 				}
 				return nil
 			}
-			if entry.IsDir() || filepath.Ext(path) != ".jsonl" {
+			if entry.IsDir() || !isCodexRolloutFileName(entry.Name()) {
 				return nil
 			}
 			path = filepath.Clean(path)
@@ -536,8 +539,69 @@ func findExistingCodexJSONLContext(ctx context.Context, sessionsDir string) ([]s
 			scanErr = errors.Join(scanErr, fmt.Errorf("扫描 Codex JSONL 目录 %s: %w", root, err))
 		}
 	}
+	files = dedupeCodexRolloutSiblings(files)
 	sort.Strings(files)
 	return files, scanErr
+}
+
+// isCodexRolloutFileName 判定 Codex rollout 文件名形态：*.jsonl，或 Codex 本地
+// 历史压缩（[features] local_thread_store_compression）产出的 *.jsonl.zst。
+// 只看文件名后缀，与 cc-switch 参考实现同则；rollout-a.zst、rollout-a.json.gz
+// 等其他后缀不属此形态。
+func isCodexRolloutFileName(name string) bool {
+	return strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".jsonl.zst")
+}
+
+// codexRolloutSibling 返回同逻辑会话的兄弟磁盘形态路径：x.jsonl ↔ x.jsonl.zst。
+// 非 rollout 形态（两者皆非）返回原路径。
+func codexRolloutSibling(path string) string {
+	switch {
+	case strings.HasSuffix(path, ".jsonl"):
+		return path + ".zst"
+	case strings.HasSuffix(path, ".jsonl.zst"):
+		return path[:len(path)-len(".zst")]
+	}
+	return path
+}
+
+// dedupeCodexRolloutSiblings 按「完整路径剥 .zst」的逻辑名分组去重：同一逻辑名
+// 双形态并存（压缩/解压瞬间）只留 .jsonl——它是 Codex 正在写的那份，内容不少于
+// 压缩那份；收 .zst 会与 .jsonl 重复解析同一会话。逻辑名取完整路径而非 basename，
+// sessions 与 archived_sessions 双 root 下同名文件不会跨目录误去重。
+func dedupeCodexRolloutSiblings(files []string) []string {
+	hasJSONL := make(map[string]struct{}, len(files))
+	for _, p := range files {
+		if strings.HasSuffix(p, ".jsonl") {
+			hasJSONL[p] = struct{}{}
+		}
+	}
+	out := files[:0]
+	for _, p := range files {
+		if _, dup := hasJSONL[codexRolloutSibling(p)]; strings.HasSuffix(p, ".jsonl.zst") && dup {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// resolveCodexRolloutPath 解析 state threads 登记的 rollout_path 对应的磁盘真实
+// 路径。Codex 本地历史压缩把 7 天未动的 rollout 变为同名 .jsonl.zst 并删除原
+// 文件，而 state 的 rollout_path 仍指向逻辑 .jsonl 路径；stat 落空时按兄弟形态
+// 双向探测（.jsonl → .jsonl.zst，及反向——覆盖将来 state 直接登记压缩路径、
+// 处于解压回写瞬间的防御形态）。两形态皆缺返回原 stat 错误（真实文件丢失，
+// 维持 warn + partialErr 语义，不得静默）。
+func resolveCodexRolloutPath(rolloutPath string) (string, os.FileInfo, error) {
+	info, err := os.Stat(rolloutPath)
+	if err == nil {
+		return rolloutPath, info, nil
+	}
+	if sibling := codexRolloutSibling(rolloutPath); sibling != rolloutPath {
+		if sibInfo, sibErr := os.Stat(sibling); sibErr == nil {
+			return sibling, sibInfo, nil
+		}
+	}
+	return rolloutPath, nil, err
 }
 
 // ===== rollout payload 类型 =====
@@ -1228,7 +1292,8 @@ func parseRolloutJSONL(path string) ([]rolloutLine, parseFileOutcome, error) {
 
 // parseRolloutJSONLContext 逐行解析 rollout JSONL。行 Unmarshal 失败与超过
 // maxJSONLLineSize 的超限行计入 outcome 坏行计数（超限行数据丢弃但继续读取，
-// 均阻止跳过门推进），尾行是否以 \n 终结一并检测；IO 错误与 ctx 取消返回 err。
+// 均阻止跳过门推进），尾行是否以 \n 终结一并检测（压缩形态改为帧完整性判定，
+// 见函数体注释）；IO 错误与 ctx 取消返回 err。
 func parseRolloutJSONLContext(ctx context.Context, path string) ([]rolloutLine, parseFileOutcome, error) {
 	var outcome parseFileOutcome
 	if ctx == nil {
@@ -1243,8 +1308,21 @@ func parseRolloutJSONLContext(ctx context.Context, path string) ([]rolloutLine, 
 	}
 	defer file.Close()
 
+	// 压缩形态（*.jsonl.zst）经 zstd 流式解码后进入行迭代器，行级语义（超长行
+	// 上限、坏行计数、ctx 取消）全部作用于解压后的数据流。
+	compressed := strings.HasSuffix(path, ".jsonl.zst")
+	var reader io.Reader = file
+	if compressed {
+		zr, zerr := zstd.NewReader(file)
+		if zerr != nil {
+			return nil, outcome, fmt.Errorf("初始化 zstd 解码失败: %w", zerr)
+		}
+		defer zr.Close()
+		reader = zr
+	}
+
 	var entries []rolloutLine
-	it := newJSONLLineIter(ctx, file, maxJSONLLineSize)
+	it := newJSONLLineIter(ctx, reader, maxJSONLLineSize)
 	for it.Next() {
 		if it.Oversized() {
 			outcome.addBad(it.LineNo(), errJSONLLineOversized)
@@ -1266,8 +1344,16 @@ func parseRolloutJSONLContext(ctx context.Context, path string) ([]rolloutLine, 
 	if err := it.Err(); err != nil {
 		return nil, outcome, err
 	}
-	// 尾行未以 \n 终结：可能仍在写，不得视为完整采集。
-	if fi, serr := file.Stat(); serr == nil {
+	if compressed {
+		// 压缩形态以帧完整性代替尾行检测：解压流迭代正常结束（it.Err()==nil，
+		// 即 zstd 帧完整解码至 EOF）即视为完整——「尾行可能仍在写」的语义只对
+		// Codex 追加写入的 .jsonl 成立，完整的 zstd 帧要么整体解码成功，要么经
+		// 解码错误走文件级失败路径；无校验和的中段损坏可能解出垃圾流而非解码
+		// 错误，由坏行计数兜底（FullyParsed 要求 BadLines==0，与 .jsonl 形态
+		// 中段损坏风险对称）。
+		outcome.trailingNewline = true
+	} else if fi, serr := file.Stat(); serr == nil {
+		// 尾行未以 \n 终结：可能仍在写，不得视为完整采集。
 		outcome.trailingNewline = tailHasNewline(file, fi.Size())
 	}
 	if err := ctx.Err(); err != nil {

@@ -183,14 +183,17 @@ type FileScanStatus struct {
 	FirstBadLine int
 	FirstBadErr  error
 	// TrailingNewline 文件最后一行是否以 \n 终结；false 表示尾行可能仍在写，
-	// 即使恰好可解析也不得推进门（下次整读自愈）。
+	// 即使恰好可解析也不得推进门（下次整读自愈）。压缩形态（*.jsonl.zst）该
+	// 字段表示 zstd 帧完整解码至 EOF（帧完整性），压缩产物不存在「仍在写」的
+	// 尾行语义，解码失败走文件级 Err 路径。
 	TrailingNewline bool
 	// Err 文件级失败（打开/读取终止性错误）：该文件本次无完整产出，不推进门。
 	Err error
 }
 
 // FullyParsed 报告该文件本次采集产出是否完整：无文件级错误、无坏行且尾行
-// 以换行终结。被门跳过的文件本次没有读取，不视为 fully parsed。
+// 以换行终结（压缩形态下 TrailingNewline 语义为 zstd 帧完整解码，见字段注释）。
+// 被门跳过的文件本次没有读取，不视为 fully parsed。
 func (s FileScanStatus) FullyParsed() bool {
 	return !s.Skipped && s.Err == nil && s.BadLines == 0 && s.TrailingNewline
 }

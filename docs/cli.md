@@ -201,6 +201,7 @@ Key points:
 - `collect all` already includes router backfill, so normally there is no need to run `collect router` separately.
 - The `--client` passed to `collect router` must have a configured router (`clients.<name>.router` is non-empty), otherwise it fails as “router not configured.”
 - `collect [date]` with no date only collects today; use `collect all` for all history.
+- Compressed Codex rollouts (`*.jsonl.zst`, produced by Codex's local history compression — enabled by the desktop setting or by the background app-server channel, which does not depend on the setting) are collected on every path, including `collect all`/`collect retry` and the daemon's full rollout scan. The support is verified against the single-frame zstd format produced by Codex 0.162.0; the feature is under development upstream and a future format change would require re-evaluation.
 - If the precheck detects a running daemon, the command reports that the daemon is maintaining the data and exits nonzero.
 - Collection failures are summarized by client/phase, and any failure yields a nonzero exit. When some sources fail, successfully parsed data is still stored, but `collection_log` is not written, old errors are not resolved, and incremental cursors are not advanced; a later normal collection or retry idempotently replays the range.
 

@@ -56,13 +56,15 @@
 |--------|-----------|---------|
 | Claude Code/Desktop | JSONL（全量按文件扫描） | `~/.claude/projects` |
 | OpenCode | SQLite，按表布局自动适配：2.x 前的 `message` + `event` 双源或 2.x 的 `session_message` + `session_v2`（两表同存判定为 V2；每次扫描探测布局） | `~/.local/share/opencode/opencode.db` |
-| Codex | SQLite state DB（token 主源）+ rollout JSONL（辅助，解析层重播去重） | `~/.codex`、`~/.codex/sessions` |
+| Codex | SQLite state DB（token 主源）+ rollout JSONL（明文或压缩 `*.jsonl.zst`；辅助源，解析层重播去重，压缩形态经 zstd 流式解码） | `~/.codex`、`~/.codex/sessions` |
 | WorkBuddy | JSONL（主源）+ SQLite（仅查 title） | `~/.workbuddy/projects`、`~/.workbuddy/workbuddy.db` |
 | ZCode | SQLite | `~/.zcode/cli/db/db.sqlite` |
 | Zhipu-AutoClaw | JSONL（全量按文件扫描） | `~/.openclaw-autoclaw/agents` |
 | MiMo Code + MiMo Desktop（共用同一数据库） | SQLite；按 `session.version` 区分产品归属（严格 `desktop-<hash>` → MiMo Desktop，其余全部 → MiMo Code） | `~/.local/share/mimocode/mimocode.db` |
 
 > **OpenCode 2.x 状态**：V2 读取路径仅经合成测试数据验证，真实 2.x 数据库的兼容性（表结构、迁移行为、event 用法与 `tokens.total` 构成）仍待核实。此期间的边界行为：无日期的增量采集在发现布局转换时执行全量兜底并重建 message 游标；显式日期采集保持其日期范围，从不写布局标记、不推进游标。带用量但 `tokens.total` 缺失或为 `null` 的终态 V2 消息暂不入账——该轮报告部分失败，游标与布局标记保留供后续重试；不会猜测 total，也不会覆盖既有账目。
+
+> **Codex 压缩 rollout**：Codex 本地历史压缩把 7 天未动的 rollout 变为 `*.jsonl.zst` 并删除原文件，state DB 仍指向明文逻辑路径。两条发现路径都接受双形态：目录全扫按同逻辑名去重读取（双形态并存时只读 `.jsonl`——它是 Codex 正在追加的那份），state DB 的 `rollout_path` 按磁盘上实际存在的兄弟形态解析。支持范围以 Codex 0.162.0 实测的单帧 zstd 格式为准（该 feature 上游仍在开发中）；其他压缩布局不在处理范围。
 
 **路由中间件**：
 

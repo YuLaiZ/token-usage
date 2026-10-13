@@ -56,13 +56,15 @@
 |--------|-----------|---------|
 | Claude Code/Desktop | JSONL (full scan by file) | `~/.claude/projects` |
 | OpenCode | SQLite, layout-aware: the pre-2.x `message` + `event` pair or the 2.x `session_message` + `session_v2` pair (both present ⇒ V2; the layout is detected per scan) | `~/.local/share/opencode/opencode.db` |
-| Codex | SQLite state DB (primary token source) + rollout JSONL (secondary; replay deduplication in the parser) | `~/.codex`, `~/.codex/sessions` |
+| Codex | SQLite state DB (primary token source) + rollout JSONL, plain or compressed `*.jsonl.zst` (secondary; replay deduplication in the parser; compressed rollouts are streamed through zstd decode) | `~/.codex`, `~/.codex/sessions` |
 | WorkBuddy | JSONL (primary source) + SQLite (title lookup only) | `~/.workbuddy/projects`, `~/.workbuddy/workbuddy.db` |
 | ZCode | SQLite | `~/.zcode/cli/db/db.sqlite` |
 | Zhipu-AutoClaw | JSONL (full scan by file) | `~/.openclaw-autoclaw/agents` |
 | MiMo Code + MiMo Desktop (one shared database) | SQLite; sessions are attributed per product via `session.version` (strict `desktop-<hash>` → MiMo Desktop, everything else → MiMo Code) | `~/.local/share/mimocode/mimocode.db` |
 
 > **OpenCode 2.x status**: the V2 read path is verified against synthetic test data only; compatibility with real 2.x databases (table shapes, migration behavior, event usage, and the `tokens.total` composition) is still to be confirmed. Boundary behavior in the meantime: date-less incremental collection performs a full sweep with a message-cursor rebuild whenever it detects a layout transition; explicit-date collection keeps its date range and never writes the layout marker or advances cursors. A terminal V2 message that has usage but a missing or `null` `tokens.total` is not booked — the round reports a partial failure, keeps the cursor and layout marker for a later retry, and never guesses the total or overwrites an existing amount.
+
+> **Codex compressed rollouts**: Codex's local history compression turns 7-day-idle rollouts into `*.jsonl.zst` files and deletes the originals, while the state DB keeps pointing at the plain logical path. Both discovery paths accept the two forms: the directory scan reads them with same-name dedup (when both siblings exist, only the `.jsonl` is read — it is the copy Codex is appending to), and the state-DB `rollout_path` is resolved to whichever sibling form exists on disk. The support is verified against the single-frame zstd format observed from Codex 0.162.0 (an under-development feature); other compression layouts are not handled.
 
 **Router middleware**:
 

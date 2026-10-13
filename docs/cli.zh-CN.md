@@ -201,6 +201,7 @@ token-usage collect retry
 - `collect all` 已隐含包含 router 回填，通常无需再单独执行 `collect router`。
 - `collect router` 的 `--client` 必须已配置 `router`（`clients.<name>.router` 非空），否则报「未配置 router」。
 - `collect [日期]` 无日期时只采今天；要全量历史请用 `collect all`。
+- Codex 压缩会话（`*.jsonl.zst`，由 Codex 本地历史压缩产生——桌面端设置开启，或由不依赖该设置的后台 app-server 通道触发）在全部采集路径均可采到，含 `collect all`/`collect retry` 与 daemon 的 rollout 全扫。支持范围以 Codex 0.162.0 实测的单帧 zstd 格式为准；该 feature 上游仍在开发中，将来格式变化需重新评估。
 - 预检发现守护进程运行中时返回「守护进程正在运行，数据由守护进程维护」并退出非零。
 - 采集失败按客户端/阶段汇总；任一失败则非零退出。部分源失败时已成功解析的数据仍落库，但不写 `collection_log`、不解决旧错误、不推进增量 cursor，后续普通采集或 retry 会幂等重放。
 
