@@ -25,6 +25,9 @@ var UI_TEXT = {
   '主题配色':'Color palette','配色方案候选':'Color palette options',
   '用量概览':'Usage overview','按客户端、供应商、模型和项目查看用量':'Explore usage by client, provider, model, and project','查看数值单位说明':'View value unit definitions','数值单位':'Value units','十进制':'Decimal','一千':'thousand','一百万':'million','十亿':'billion',
   '私密信息':'Privacy','切换私密信息遮蔽':'Toggle privacy masking',
+  '截图分享':'Screenshot','复制整页截图到剪贴板':'Copy full-page screenshot to clipboard',
+  '已复制到剪贴板':'Copied to clipboard','截图失败：':'Screenshot failed: ','剪贴板不可用':'clipboard unavailable',
+  'SVG 图像加载失败':'SVG image load failed','画布导出失败':'canvas export failed',
   '统计区间':'Date range','自定义统计区间':'Custom date range','今日':'Today','本周':'This week','本月':'This month','本年':'This year','近 7 天':'Last 7 days','近 30 天':'Last 30 days','近 1 年':'Last 12 months',
   '上一月':'Previous month','下一月':'Next month','请选择开始与结束日期':'Select a start and end date','查询':'Apply',
   '按维度查看':'Explore by dimension','维度切换':'Dimension switcher','客户端':'Client','供应商':'Provider','模型':'Model','项目':'Project',
@@ -2512,6 +2515,271 @@ el('locale-switch').addEventListener('click',function(e){
   try{ localStorage.setItem('tu-locale',LOCALE); }catch(_){}
   syncLocaleUI();
 });
+
+/* ---------- 截图分享：整页 PNG 复制到剪贴板（零依赖 foreignObject 光栅化） ----------
+   data URL 加载路线（Blob URL × foreignObject 会污染 canvas，SecurityError）；
+   两层选择器重写：第一层把 html[..] body[::pseudo] 组合根条件合并到
+   同一克隆根，第二层迁移剩余根前缀；视口冻结清单显式处理 vh/fixed 元素；
+   降级序列保完整性（2x → 1x → 整图等比缩放 → 明确失败，绝不交付截断图）。 */
+var TU_SNAPSHOT_ROOT = 'tu-snapshot-root';
+function snapshotRewriteCSS(css){
+  css = css.replace(/html((?:\[[^\]]*\])*)\s+body((?:::[a-z-]+)?)/g, '.'+TU_SNAPSHOT_ROOT+'$1$2');
+  css = css.replace(/html((?:\[[^\]]*\])+)/g, '.'+TU_SNAPSHOT_ROOT+'$1');
+  css = css.replace(/(^|[,\s>+~(])html(?=[\s,>+~{]|$)/g, '$1.'+TU_SNAPSHOT_ROOT);
+  css = css.replace(/(^|[,\s>+~(])body(?=[\s,>+~{:]|$)/g, '$1.'+TU_SNAPSHOT_ROOT);
+  return css;
+}
+function snapshotCollectVarNames(){
+  var names = [], seen = {}, i, j, k, rules, rule, p;
+  for (i=0;i<document.styleSheets.length;i++){
+    try { rules = document.styleSheets[i].cssRules; } catch(e){ continue; }
+    if (!rules) continue;
+    for (j=0;j<rules.length;j++){
+      rule = rules[j];
+      if (!rule.style) continue;
+      for (k=0;k<rule.style.length;k++){
+        p = rule.style[k];
+        if (p.indexOf('--')===0 && !seen[p]){ seen[p]=1; names.push(p); }
+      }
+    }
+  }
+  return names;
+}
+/* CSS 副本必须逐字保真：Chrome 155 实测对含 var() 的简写（如
+   td.num 的 font:500 11.5px/1.3 var(--mono)）cssText 序列化产出
+   font-size: ; font-family: ; 等空分声明——原页面有效、SVG 重放却
+   丢失字体，表格行高退回正文尺寸，SVG 内容高超出测量高致缺尾。
+   故取样式表原始文本（<style> 的 textContent；同源 <link> 同步 XHR
+   拉源文件）。同源原文读不到时不得回退 CSSOM（会把失真重新引入、
+   交付缺尾图仍提示成功），抛错走截图失败分支；CSSOM 序列化仅作
+   跨域样式表的兜底（其 rules 本就不可读，产出为空，不参与布局）。 */
+function snapshotSheetCSSText(sheet){
+  var out = '', j, rules;
+  try { rules = sheet.cssRules; } catch(e){ return ''; }
+  if (!rules) return '';
+  for (j=0;j<rules.length;j++) out += rules[j].cssText + '\n';
+  return out;
+}
+function snapshotAllCSS(){
+  var out = '', i, sheet, node, href;
+  for (i=0;i<document.styleSheets.length;i++){
+    sheet = document.styleSheets[i];
+    node = sheet.ownerNode;
+    if (node && node.tagName==='STYLE'){ out += node.textContent + '\n'; continue; }
+    href = sheet.href;
+    if (href && window.location && String(href).indexOf(String(window.location.protocol+'//'+window.location.host))===0){
+      var text = null;
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', href, false);
+        xhr.send(null);
+        if (xhr.status===200 && xhr.responseText) text = xhr.responseText;
+      } catch(e){ /* text 保持 null */ }
+      if (text===null) throw new Error(ui('样式表读取失败','stylesheet fetch failed'));
+      out += text + '\n';
+      continue;
+    }
+    out += snapshotSheetCSSText(sheet) + '\n';
+  }
+  return snapshotRewriteCSS(out);
+}
+/* 视口冻结清单：.side-toggle(fixed;top:50vh) 改 absolute 并内联原视口
+   计算值；.sidebar(sticky;height:100vh) 与 .app(min-height:100vh) 内联
+   原视口计算值。SVG 图像语境的视口=整页高，vh 按它重算——不冻结的
+   100vh 会从视口高膨胀为整页高，克隆树随之重排膨胀致测量高度失真、
+   底部截缺。getComputedStyle 返回解析后的 px（识别不了原始 vh 声明），
+   新增视口样式须同步扩充本清单。 */
+function snapshotApplyViewportFixes(rootDiv){
+  var pairs = [['.side-toggle', 'position', 'absolute'], ['.side-toggle', 'top', null], ['.sidebar', 'height', null], ['.app', 'minHeight', null]];
+  var i, orig, clone, prop, fixed;
+  for (i=0;i<pairs.length;i++){
+    orig = document.querySelector(pairs[i][0]);
+    clone = rootDiv.querySelector(pairs[i][0]);
+    if (!orig || !clone) continue;
+    prop = pairs[i][1]; fixed = pairs[i][2];
+    clone.style[prop] = fixed || window.getComputedStyle(orig)[prop];
+  }
+}
+function snapshotBuildRoot(){
+  var de = document.documentElement;
+  var rootDiv = document.createElement('div');
+  rootDiv.className = TU_SNAPSHOT_ROOT;
+  rootDiv.setAttribute('data-theme', de.getAttribute('data-theme')||'dark');
+  rootDiv.setAttribute('data-palette', de.getAttribute('data-palette')||'cobalt');
+  rootDiv.setAttribute('data-locale', de.getAttribute('data-locale')||'zh-CN');
+  rootDiv.setAttribute('lang', de.lang||'zh-CN');
+  var cs = window.getComputedStyle(de);
+  var vars = snapshotCollectVarNames(), styleText = '', i, n, v;
+  for (i=0;i<vars.length;i++){
+    n = vars[i]; v = cs.getPropertyValue(n);
+    if (v) styleText += n+':'+v.replace(/^\s+|\s+$/g,'')+';';
+  }
+  rootDiv.setAttribute('style', styleText);
+  var children = Array.prototype.slice.call(document.body.childNodes);
+  for (i=0;i<children.length;i++) rootDiv.appendChild(children[i].cloneNode(true));
+  snapshotApplyViewportFixes(rootDiv);
+  /* backdrop-filter 在 SVG-image 光栅化语境会中断 foreignObject 内后续内容
+     的绘制(实测:侧边栏毛玻璃使其后的整个内容列不被绘制),克隆树内一律
+     去除;玻璃底色(半透明 background)保留,即方案声明的"毛玻璃质感退化"。 */
+  var all = rootDiv.querySelectorAll('*');
+  for (i=0;i<all.length;i++){
+    all[i].style.backdropFilter = 'none';
+    all[i].style.webkitBackdropFilter = 'none';
+  }
+  return rootDiv;
+}
+/* 克隆树在固定视口宽下的真实布局高度(与原页 scrollHeight 可能不同:
+   趋势/热力桶与表格随克隆语境重排),SVG 视口必须按它取,否则底部截缺。 */
+function snapshotCloneHeight(rootDiv, fallback){
+  var meter = document.createElement('div');
+  meter.setAttribute('style', 'position:fixed;left:-99999px;top:0;width:'+document.documentElement.clientWidth+'px');
+  meter.appendChild(rootDiv);
+  document.body.appendChild(meter);
+  var h = Math.ceil(rootDiv.getBoundingClientRect().height);
+  meter.removeChild(rootDiv);
+  document.body.removeChild(meter);
+  return Math.max(h, fallback);
+}
+function snapshotSVGDims(){
+  var de = document.documentElement;
+  var w = de.clientWidth;
+  var rootDiv = snapshotBuildRoot();
+  var h = snapshotCloneHeight(rootDiv, Math.max(de.scrollHeight, document.body.scrollHeight));
+  var inner = new XMLSerializer().serializeToString(rootDiv);
+  return {
+    w: w, h: h,
+    svg: '<svg xmlns="http://www.w3.org/2000/svg" width="'+w+'" height="'+h+'">'+
+      '<style>'+snapshotAllCSS()+'</style>'+
+      '<foreignObject width="100%" height="100%">'+inner+'</foreignObject></svg>'
+  };
+}
+/* 降级档位（纯函数）：dpr 封顶 2 起步 → 1x → 整图等比缩放（保完整）。
+   固定常量仅作缩放比预估；成败以运行时导出结果判断。 */
+function snapshotTiers(w, h, dpr){
+  var H_CAP = 16384, A_CAP = 268435456;
+  var raw = [Math.min(dpr||1, 2), 1, Math.min(1, H_CAP/Math.max(h,1), H_CAP/Math.max(w,1), Math.sqrt(A_CAP/Math.max(w*h,1)))];
+  var scales = [], seen = {}, i, s;
+  for (i=0;i<raw.length;i++){
+    s = Math.round(raw[i]*1000)/1000;
+    if (s>0 && !seen[s]){ seen[s]=1; scales.push(s); }
+  }
+  scales.sort(function(a,b){ return b-a; });
+  return scales;
+}
+function snapshotLoadImage(svgText){
+  return new Promise(function(resolve, reject){
+    var img = new Image();
+    img.onload = function(){ resolve(img); };
+    img.onerror = function(){ reject(new Error(ui('SVG 图像加载失败','SVG image load failed'))); };
+    img.src = 'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svgText);
+  });
+}
+function snapshotToBlob(canvas){
+  return new Promise(function(resolve, reject){
+    try {
+      canvas.toBlob(function(b){
+        if (b && b.size>0) resolve(b); else reject(new Error(ui('画布导出失败','canvas export failed')));
+      }, 'image/png');
+    } catch(e){ reject(e); }
+  });
+}
+/* 绘制与导出封装在同一 Promise:getContext/drawImage 的同步异常也必须
+   落定,否则降级链条悬挂、按钮永久禁用。 */
+function snapshotDrawAndExport(img, w, h, scale){
+  return new Promise(function(resolve, reject){
+    try {
+      var c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(w*scale));
+      c.height = Math.max(1, Math.round(h*scale));
+      var ctx = c.getContext('2d');
+      if (!ctx){ reject(new Error(ui('画布导出失败','canvas export failed'))); return; }
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      snapshotToBlob(c).then(resolve, reject);
+    } catch(e){ reject(e); }
+  });
+}
+function snapshotExport(){
+  /* SVG 视口、降级档位、canvas 共用同一组 w/h：canvas 若另取原页高度，
+     克隆高度与 SVG 实际布局脱节时会纵向压缩（宽高比失配）。 */
+  var dims = snapshotSVGDims();
+  var scales = snapshotTiers(dims.w, dims.h, window.devicePixelRatio);
+  return snapshotLoadImage(dims.svg).then(function(img){
+    var attempt = function(idx){
+      if (idx >= scales.length) return Promise.reject(new Error(ui('画布导出失败','canvas export failed')));
+      return snapshotDrawAndExport(img, dims.w, dims.h, scales[idx]).catch(function(){ return attempt(idx+1); });
+    };
+    return attempt(0);
+  });
+}
+/* S2：截前收起全部弹层与悬停态（收起后不恢复，分享画面干净）。
+   构成图联动高亮（wrap.has-hl/扇区 .hl/图例 .on/中心联动文本）同样在
+   镜内：鼠标停在图例上、用键盘或脚本触发截图时不会自然触发 mouseout，
+   highlightDonut(-1) 是唯一复位出口，须显式执行。 */
+function snapshotCollapseOverlays(){
+  setUnitPop(false);
+  setPalettePop(false);
+  closeCal();
+  if (typeof DV!=='undefined' && DV && DV.open) dvClose(false);
+  var modal = el('session-title-modal');
+  if (modal && !modal.hidden) closeSessionTitle();
+  var tip = el('tip');
+  if (tip) tip.hidden = true;
+  /* 上一轮截图的成功 toast 可能仍在显示期（连续截图），同为弹层不入镜 */
+  var toastEl = el('toast');
+  if (toastEl) toastEl.setAttribute('data-show', 'false');
+  var arts = el('groups').querySelectorAll('.group');
+  for (var i=0;i<arts.length;i++){
+    var art = arts[i], gid = art.dataset.gid, rows = DIMROWS[gid];
+    if (!gid || !rows) continue;
+    /* 中心默认文本由 mouseover 惰性填充（键盘聚焦图例触发的截图从未
+       走过 mouseover），复位前按同一公式补齐，防止中心被清成空白。 */
+    if (!art.dataset.defVal){
+      var T = aggRows(rows);
+      art.dataset.defVal = fmtTok(T.total);
+      art.dataset.defLab = dimLabel(gid)+' · '+colLabel(colById('total'));
+    }
+    highlightDonut(art, rows, -1);
+  }
+}
+/* blobOrP 接受已决 blob 或未决 Promise：Safari 要求 clipboard.write 的
+   调用发生在用户手势期间（WebKit async clipboard 合同），等图像与
+   toBlob 都就绪再 write 已脱离手势、会被拒。故调用方在点击处理栈内
+   以未决 Promise 构造 ClipboardItem 并发起 write，图像就绪后由平台
+   取值写入；Chrome 按同一时序工作。 */
+function snapshotCopy(blobOrP){
+  if (typeof navigator==='undefined' || !navigator.clipboard || !window.ClipboardItem){
+    return Promise.reject(new Error(ui('剪贴板不可用','clipboard unavailable')));
+  }
+  return new Promise(function(resolve, reject){
+    var item;
+    try { item = new ClipboardItem({'image/png': blobOrP}); }
+    catch(e){ reject(new Error(ui('剪贴板不可用','clipboard unavailable'))); return; }
+    navigator.clipboard.write([item]).then(resolve, function(err){ reject(err || new Error(ui('剪贴板不可用','clipboard unavailable'))); });
+  });
+}
+el('shot-trigger').addEventListener('click', function(){
+  var btn = el('shot-trigger');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  var done = function(){
+    btn.disabled = false;
+    toast(ui('已复制到剪贴板','Copied to clipboard'));
+  };
+  var fail = function(err){
+    btn.disabled = false;
+    toast(ui('截图失败：','Screenshot failed: ')+String((err && err.message) || err));
+  };
+  var p;
+  try {
+    snapshotCollapseOverlays();
+    p = snapshotExport();
+  } catch(e){ fail(e); return; }
+  snapshotCopy(p).then(done, fail);
+});
+/* 仅测试沙箱消费的纯函数出口（生产无 __TU_TEST_HOOKS__，不暴露） */
+if (typeof window.__TU_TEST_HOOKS__!=='undefined' && window.__TU_TEST_HOOKS__){
+  window.__tuTest = { snapshotRewriteCSS: snapshotRewriteCSS, snapshotTiers: snapshotTiers, snapshotAllCSS: snapshotAllCSS };
+}
 
 /* ---------- 初始引导：恢复选区 → 日历预选 → 静态本地化 → 拉取 meta 与仪表板 ---------- */
 restoreSavedRange();

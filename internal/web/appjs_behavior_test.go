@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -166,20 +167,51 @@ type appJSReport struct {
 		Hidden bool   `json:"hidden"`
 		Text   string `json:"text"`
 	} `json:"sessionModal"`
+	Shot struct {
+		Disabled bool `json:"disabled"`
+	} `json:"shot"`
+	ShotEvents []string `json:"shotEvents"`
+	CanvasDims []struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	} `json:"canvasDims"`
+	ClipboardBlobs []struct {
+		Size int `json:"size"`
+	} `json:"clipboardBlobs"`
 	Probes []struct {
 		Probe       string `json:"probe"`
 		Gid         string `json:"gid,omitempty"`
 		Index       string `json:"index,omitempty"`
 		Text        string `json:"text,omitempty"`
+		Output      string `json:"output,omitempty"`
 		Pressed     string `json:"pressed,omitempty"`
 		UseHref     string `json:"useHref,omitempty"`
 		ModalHidden string `json:"modalHidden,omitempty"`
 		ModalText   string `json:"modalText,omitempty"`
+		UnitHidden  string `json:"unitHidden,omitempty"`
+		ToastShow   string `json:"toastShow,omitempty"`
+		Disabled    string `json:"disabled,omitempty"`
+		Groups      []struct {
+			Gid      string `json:"gid"`
+			HasHl    string `json:"hasHl"`
+			HlSegs   int    `json:"hlSegs"`
+			OnLegend int    `json:"onLegend"`
+			CenterB  string `json:"centerB"`
+			CenterS  string `json:"centerS"`
+		} `json:"groups,omitempty"`
 	} `json:"probes"`
 	Session    map[string]string `json:"session"`
 	Local      map[string]string `json:"local"`
 	StepStates []stepState       `json:"stepStates"`
 }
+
+/*
+selfDescendantRe 匹配「.tu-snapshot-root…<空白>.tu-snapshot-root」的根类
+
+	自后代选择器形态(逗号并列不算);html/body 根合并到同一元素后不得保留
+	后代组合器。
+*/
+var selfDescendantRe = regexp.MustCompile(`\.tu-snapshot-root[^\s{}]*\s+[^{}]*\.tu-snapshot-root`)
 
 func metaBody(today string) map[string]any {
 	return map[string]any{"version": "v9.9.9-test", "last_collection": "", "data_through": today}
@@ -959,6 +991,116 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				   上遮蔽的保持——先切语言后开启只证明开启生效,测不到保持。 */
 				{Op: "privacy"},
 				{Op: "locale", Value: "en"},
+			},
+		},
+		{
+			Name: "shot selector rewrite contract",
+			Opts: map[string]any{"routes": baseRoutes()},
+			Steps: []stepSpec{
+				{Op: "rewrite", Value: `html[data-theme="light"] body::before{color:red}`},
+				{Op: "rewrite", Value: `html[data-theme="light"] .seg button[aria-pressed="true"]`},
+				{Op: "rewrite", Value: `html,body{margin:0}`},
+				{Op: "rewrite", Value: `body::before{content:""}`},
+				{Op: "rewrite", Value: `html{color-scheme:dark}`},
+				{Op: "rewrite", Value: `[data-locale="en"] .pz{display:grid}`},
+				{Op: "rewrite", Value: `svg[hidden]{display:none}`},
+			},
+		},
+		{
+			Name: "shot css copy keeps raw declarations",
+			Opts: map[string]any{"routes": baseRoutes(), "shot": map[string]any{
+				"dpr":      1,
+				"location": map[string]any{"protocol": "http:", "host": "127.0.0.1:8699"},
+				"xhr":      map[string]any{"status": 200, "text": `.toolbar{position:sticky;top:10px}`},
+				"styleSheets": []any{
+					map[string]any{"styleText": `td.num{font:500 11.5px/1.3 var(--mono);font-variant-numeric:tabular-nums}`},
+					map[string]any{"cssTexts": []any{`html,body{margin:0}`}, "href": "http://cdn.example/app.css"},
+					map[string]any{"cssTexts": []any{`html,body{should-not-appear:1}`}, "href": "http://127.0.0.1:8699/assets/app.css"},
+				},
+			}},
+			Steps: []stepSpec{
+				{Op: "allcss"},
+			},
+		},
+		{
+			Name: "shot css fetch failure reports error",
+			Opts: map[string]any{"routes": baseRoutes(), "shot": map[string]any{
+				"dpr":      1,
+				"location": map[string]any{"protocol": "http:", "host": "127.0.0.1:8699"},
+				"xhr":      map[string]any{"status": 503},
+				"styleSheets": []any{
+					map[string]any{"cssTexts": []any{`html,body{margin:0}`}, "href": "http://127.0.0.1:8699/assets/app.css"},
+				},
+			}},
+			Steps: []stepSpec{
+				{Op: "shotClick"},
+			},
+		},
+		{
+			Name: "shot tiers cover degradation",
+			Opts: map[string]any{"routes": baseRoutes()},
+			Steps: []stepSpec{
+				{Op: "tiers", Value: "1200,1902,2"},
+				{Op: "tiers", Value: "10000,20000,2"},
+				{Op: "tiers", Value: "800,600,1"},
+			},
+		},
+		{
+			Name: "shot button collapses overlays and reports failure",
+			Opts: map[string]any{"routes": baseRoutes()},
+			Steps: []stepSpec{
+				{Op: "click", ID: "unit-trigger"},
+				{Op: "collapseProbe"},
+				{Op: "shotClick"},
+				{Op: "collapseProbe"},
+			},
+		},
+		{
+			Name: "shot hands clipboard write inside gesture",
+			Opts: map[string]any{"routes": baseRoutes(), "shot": map[string]any{"dpr": 1}},
+			Steps: []stepSpec{
+				/* 连续两次截图:第一次成功后的 toast 在第二次克隆前必须被 S2
+				   收起(同属弹层不入镜);首次截图 toast 从未显示,探针为空。 */
+				{Op: "shotClick"},
+				{Op: "shotClick"},
+			},
+		},
+		{
+			Name: "shot draw failure falls back to next tier",
+			Opts: map[string]any{"routes": baseRoutes(), "shot": map[string]any{"dpr": 2, "toBlobFails": 1}},
+			Steps: []stepSpec{
+				{Op: "shotClick"},
+			},
+		},
+		{
+			Name: "shot canvas follows cloned layout height",
+			Opts: map[string]any{"routes": baseRoutes(), "shot": map[string]any{"dpr": 2, "cloneHeight": 2400}},
+			Steps: []stepSpec{
+				{Op: "shotClick"},
+			},
+		},
+		{
+			Name: "shot all tiers fail reports failure",
+			Opts: map[string]any{"routes": baseRoutes(), "shot": map[string]any{"dpr": 1, "toBlobFails": 9}},
+			Steps: []stepSpec{
+				{Op: "shotClick"},
+			},
+		},
+		{
+			Name: "shot clipboard rejection reports failure",
+			Opts: map[string]any{"routes": baseRoutes(), "shot": map[string]any{"dpr": 1, "clipboardReject": true}},
+			Steps: []stepSpec{
+				{Op: "shotClick"},
+			},
+		},
+		{
+			Name: "shot clears donut highlight before capture",
+			Opts: map[string]any{"routes": richRoutes},
+			Steps: []stepSpec{
+				{Op: "donutHover", Gid: "project", Index: 0},
+				{Op: "donutProbe"},
+				{Op: "shotClick"},
+				{Op: "donutProbe"},
 			},
 		},
 		{
@@ -1997,6 +2139,218 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				}
 				if !strings.Contains(r.GroupsHTML, "Other (2)") {
 					t.Errorf("groups html = %q, want EN is_other tail label", r.GroupsHTML)
+				}
+
+			case "shot selector rewrite contract":
+				/* 区分度:两层重写对冻结清单的输出逐一精确断言——第一层组合
+				   选择器合并(浅色背景规则的产物恰为根类+条件+伪元素,不得
+				   保留后代组合器)、第二层根前缀迁移、无根形态选择器原样
+				   保留;任意输出不得出现根类自后代形态。 */
+				wantOutputs := []string{
+					`.tu-snapshot-root[data-theme="light"]::before{color:red}`,
+					`.tu-snapshot-root[data-theme="light"] .seg button[aria-pressed="true"]`,
+					`.tu-snapshot-root,.tu-snapshot-root{margin:0}`,
+					`.tu-snapshot-root::before{content:""}`,
+					`.tu-snapshot-root{color-scheme:dark}`,
+					`[data-locale="en"] .pz{display:grid}`,
+					`svg[hidden]{display:none}`,
+				}
+				if len(r.Probes) != len(wantOutputs) {
+					t.Fatalf("probes = %+v, want %d rewrite probes", r.Probes, len(wantOutputs))
+				}
+				for i, w := range wantOutputs {
+					p := r.Probes[i]
+					if p.Probe != "rewrite" {
+						t.Fatalf("probe#%d = %+v, want rewrite", i, p)
+					}
+					if p.Output != w {
+						t.Errorf("rewrite(%q) = %q, want %q", p.Text, p.Output, w)
+					}
+					selector := strings.SplitN(p.Output, "{", 2)[0]
+					if selfDescendantRe.MatchString(selector) {
+						t.Errorf("rewrite(%q) produced root self-descendant selector: %q", p.Text, p.Output)
+					}
+				}
+
+			case "shot css copy keeps raw declarations":
+				/* 区分度:CSS 副本取样式表原始文本——Chrome 155 对含 var() 的
+				   font 简写 cssText 序列化产出空分声明(font-size: ; 等),SVG
+				   重放丢字体、行高退回正文致缺尾。三条路径逐一取证:<style>
+				   原文、同源 <link> 同步 XHR 原文(带 should-not-appear 负证:
+				   若误走 CSSOM 兜底,该 CSSOM 规则会出现在产物中)、跨域 CSSOM
+				   兜底;产物不得出现任何空分声明形态。 */
+				if len(r.Probes) != 1 || r.Probes[0].Probe != "allcss" {
+					t.Fatalf("probes = %+v, want one allcss probe", r.Probes)
+				}
+				out := r.Probes[0].Output
+				if !strings.Contains(out, `td.num{font:500 11.5px/1.3 var(--mono);font-variant-numeric:tabular-nums}`) {
+					t.Errorf("allcss lost raw font declaration: %q", out)
+				}
+				if !strings.Contains(out, `.toolbar{position:sticky;top:10px}`) {
+					t.Errorf("allcss missing same-origin link XHR text output: %q", out)
+				}
+				if strings.Contains(out, "should-not-appear") {
+					t.Errorf("allcss took CSSOM fallback for a same-origin sheet (XHR text ignored): %q", out)
+				}
+				if !strings.Contains(out, `.tu-snapshot-root,.tu-snapshot-root{margin:0}`) {
+					t.Errorf("allcss missing cross-origin CSSOM fallback rule output: %q", out)
+				}
+				for _, bad := range []string{"font-size: ;", "line-height: ;", "font-family: ;"} {
+					if strings.Contains(out, bad) {
+						t.Errorf("allcss contains empty serialized declaration %q: %q", bad, out)
+					}
+				}
+
+			case "shot css fetch failure reports error":
+				/* 区分度:同源主样式表原文读取失败(503)必须抛错走失败分支——
+				   明确报错、不写剪贴板、按钮恢复,不得回退已知失真的 CSSOM
+				   交付缺尾图仍提示成功。失败发生在 SVG 构建期(Image 之前),
+				   shotEvents 为空即管线未进入光栅化。 */
+				if !strings.Contains(r.Toast, "截图失败") || !strings.Contains(r.Toast, "样式表读取失败") {
+					t.Errorf("toast = %q, want explicit stylesheet fetch failure notice", r.Toast)
+				}
+				if r.Shot.Disabled {
+					t.Errorf("shot button left disabled after stylesheet fetch failure")
+				}
+				if len(r.ClipboardBlobs) != 0 {
+					t.Errorf("clipboard blobs = %+v, want none (failed capture must not write clipboard)", r.ClipboardBlobs)
+				}
+				if len(r.ShotEvents) != 0 {
+					t.Errorf("shot events = %v, want pipeline aborted before rasterization", r.ShotEvents)
+				}
+
+			case "shot tiers cover degradation":
+				/* 区分度:常规页面 2x→1x;超长页面追加整图等比缩放档;
+				   小页面 dpr=1 时单档。 */
+				wantTiers := []string{`[2,1]`, `[2,1,0.819]`, `[1]`}
+				if len(r.Probes) != len(wantTiers) {
+					t.Fatalf("probes = %+v, want %d tiers probes", r.Probes, len(wantTiers))
+				}
+				for i, w := range wantTiers {
+					p := r.Probes[i]
+					if p.Probe != "tiers" || p.Output != w {
+						t.Errorf("tiers(%s) = %s, want %s", p.Text, p.Output, w)
+					}
+				}
+
+			case "shot button collapses overlays and reports failure":
+				/* 区分度:点击截图先收起弹层(probe#0 证明 unit-pop 点击后处于
+				   展开、probe#2 证明 shot 点击后收起);沙箱无渲染 API,失败
+				   必须走 toast 明确报错——静默无输出或按钮卡死在 disabled
+				   (同步失败分支 fail 即恢复,final 态必须 false)都失败。 */
+				if len(r.Probes) != 3 || r.Probes[0].UnitHidden != "false" || r.Probes[2].UnitHidden != "true" {
+					t.Errorf("collapse probes = %+v, want open then collapsed", r.Probes)
+				}
+				if !strings.Contains(r.Toast, "截图失败") && !strings.Contains(r.Toast, "Screenshot failed") {
+					t.Errorf("toast = %q, want explicit screenshot failure notice (sandbox has no canvas)", r.Toast)
+				}
+				if r.Shot.Disabled {
+					t.Errorf("shot button left disabled after pipeline settled")
+				}
+				if r.FetchCalls == nil {
+					t.Errorf("fetch calls missing")
+				}
+
+			case "shot hands clipboard write inside gesture":
+				/* 区分度:Safari 手势合同——clipboard.write 必须在用户手势调用栈内
+				   发起(事件序:image.src → clipboard.write:promise → image.onload),
+				   值为未决 Promise,图像就绪后由平台取值写入;按钮中间态保持
+				   disabled 防连点、final 态恢复,write 收到的 blob 即 toBlob 产物。 */
+				if len(r.Probes) != 2 || r.Probes[0].Probe != "shotMid" || r.Probes[1].Probe != "shotMid" ||
+					r.Probes[0].Disabled != "true" || r.Probes[1].Disabled != "true" {
+					t.Fatalf("mid probes = %+v, want shot button disabled on both clicks", r.Probes)
+				}
+				/* S2 补全:上一轮截图的成功 toast 同属弹层,第二次克隆前须落回
+				   隐藏态(首次截图 toast 未显示过,探针为空;done/fail 的后续
+				   toast 在异步链之后才发生,不覆盖同步窗口的取证)。 */
+				if r.Probes[0].ToastShow == "true" {
+					t.Errorf("first mid probe toastShow = %q, want not shown before first capture", r.Probes[0].ToastShow)
+				}
+				if r.Probes[1].ToastShow != "false" {
+					t.Errorf("second mid probe toastShow = %q, want previous toast collapsed before capture", r.Probes[1].ToastShow)
+				}
+				if len(r.ShotEvents) < 3 || r.ShotEvents[0] != "image.src" ||
+					r.ShotEvents[1] != "clipboard.write:promise" || r.ShotEvents[2] != "image.onload" {
+					t.Errorf("shot events = %v, want src then gesture-stage write with pending promise then load", r.ShotEvents)
+				}
+				if !strings.Contains(r.Toast, "已复制") && !strings.Contains(r.Toast, "Copied") {
+					t.Errorf("toast = %q, want copied confirmation", r.Toast)
+				}
+				if r.Shot.Disabled {
+					t.Errorf("shot button left disabled after success")
+				}
+				if len(r.ClipboardBlobs) != 2 || r.ClipboardBlobs[0].Size == 0 || r.ClipboardBlobs[1].Size == 0 {
+					t.Errorf("clipboard blobs = %+v, want settled toBlob products of both captures", r.ClipboardBlobs)
+				}
+
+			case "shot draw failure falls back to next tier":
+				/* 区分度:dpr=2 首档 2x 导出失败后按降级序列落 1x 重试成功;
+				   两档 canvas 尺寸同源于同一组 SVG 尺寸(800x1902),宽高比一致。 */
+				if len(r.CanvasDims) != 2 || r.CanvasDims[0].Width != 1600 || r.CanvasDims[0].Height != 3804 ||
+					r.CanvasDims[1].Width != 800 || r.CanvasDims[1].Height != 1902 {
+					t.Errorf("canvas dims = %+v, want 2x then 1x of 800x1902", r.CanvasDims)
+				}
+				if !strings.Contains(r.Toast, "已复制") && !strings.Contains(r.Toast, "Copied") {
+					t.Errorf("toast = %q, want fallback success", r.Toast)
+				}
+				if r.Shot.Disabled {
+					t.Errorf("shot button left disabled after fallback")
+				}
+
+			case "shot canvas follows cloned layout height":
+				/* 区分度:canvas 尺寸必须取 SVG 实际视口(克隆布局高 2400),
+				   不得回退原页 scrollHeight(1902)——克隆高大于页高时旧实现
+				   纵向压缩、宽高比失配。 */
+				if len(r.CanvasDims) != 1 || r.CanvasDims[0].Width != 1600 || r.CanvasDims[0].Height != 4800 {
+					t.Errorf("canvas dims = %+v, want 2x of 800x2400 (cloned layout height)", r.CanvasDims)
+				}
+				if !strings.Contains(r.Toast, "已复制") && !strings.Contains(r.Toast, "Copied") {
+					t.Errorf("toast = %q, want success with dimension-following canvas", r.Toast)
+				}
+
+			case "shot all tiers fail reports failure":
+				/* 区分度:全部档位失败必须明确报错并恢复按钮,不交付截断图。 */
+				if !strings.Contains(r.Toast, "截图失败") && !strings.Contains(r.Toast, "Screenshot failed") {
+					t.Errorf("toast = %q, want explicit failure after all tiers", r.Toast)
+				}
+				if r.Shot.Disabled {
+					t.Errorf("shot button left disabled after all tiers failed")
+				}
+				if len(r.CanvasDims) == 0 {
+					t.Errorf("no draw attempts recorded, want tier canvases")
+				}
+
+			case "shot clipboard rejection reports failure":
+				/* 区分度:导出成功但剪贴板被拒必须走失败 toast 并恢复按钮;
+				   blob 已 settle 到 ClipboardItem 后才拒绝。 */
+				if !strings.Contains(r.Toast, "截图失败") && !strings.Contains(r.Toast, "Screenshot failed") {
+					t.Errorf("toast = %q, want explicit failure on clipboard denial", r.Toast)
+				}
+				if r.Shot.Disabled {
+					t.Errorf("shot button left disabled after clipboard rejection")
+				}
+				if len(r.ClipboardBlobs) != 1 {
+					t.Errorf("clipboard blobs = %+v, want settled blob observed before denial", r.ClipboardBlobs)
+				}
+
+			case "shot clears donut highlight before capture":
+				/* 区分度:鼠标停留图例(高亮在)直接触发截图,S2 必须显式复位
+				   构成图联动——wrap.has-hl/扇区 .hl/图例 .on 清除、中心从联动
+				   文本恢复默认(非空、非联动值)。无截前清理时 probe#3 与
+				   probe#1 相同。探针序列:donutCenter(#0)→donut(#1)→
+				   shotMid(#2)→donut(#3)。 */
+				if len(r.Probes) != 4 || r.Probes[1].Probe != "donut" || r.Probes[3].Probe != "donut" {
+					t.Fatalf("probes = %+v, want donut snapshots at #1 and #3", r.Probes)
+				}
+				hv, pvd := r.Probes[1].Groups[0], r.Probes[3].Groups[0]
+				if hv.HasHl != "true" || hv.HlSegs != 1 || hv.OnLegend != 1 {
+					t.Errorf("hover state = %+v, want highlight active before shot", hv)
+				}
+				if pvd.HasHl != "false" || pvd.HlSegs != 0 || pvd.OnLegend != 0 {
+					t.Errorf("post-shot state = %+v, want highlight cleared", pvd)
+				}
+				if pvd.CenterB == "" || pvd.CenterS == "" || pvd.CenterS == hv.CenterS {
+					t.Errorf("post-shot center = %q/%q, want restored default (hover was %q/%q)", pvd.CenterB, pvd.CenterS, hv.CenterB, hv.CenterS)
 				}
 
 			case "refresh interval selects and save round trip":

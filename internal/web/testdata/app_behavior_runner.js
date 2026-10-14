@@ -295,6 +295,10 @@ function makeSandbox(opts) {
   const docRoot = makeElement({ tag: "html", attrs: { lang: "zh-CN", "data-theme": "dark", "data-palette": "cobalt", "data-locale": "zh-CN" } });
   const body = makeElement({ tag: "body" });
   docRoot.appendChild(body);
+  /* 克隆树来源:截图管线读 body.childNodes;vm 语境里 slice.call(undefined)
+     会抛 TypeError(与浏览器 this 替换语义不同),桩给空数组代表"克隆出
+     空树",行为断言只看编排不看克隆内容。 */
+  body.childNodes = [];
   const appEl = makeElement({ classes: ["app"] });
   body.appendChild(appEl);
   const sidebar = makeElement({ classes: ["sidebar"] });
@@ -385,6 +389,7 @@ function makeSandbox(opts) {
   makeElement({ id: "unit-pop", hidden: true });
   makeElement({ id: "privacy-trigger", tag: "button", attrs: { "aria-pressed": "false", "aria-label": "切换私密信息遮蔽" } });
   makeElement({ id: "privacy-use", attrs: { href: "#i-eye" } });
+  makeElement({ id: "shot-trigger", tag: "button", attrs: { "aria-label": "复制整页截图到剪贴板" } });
   /* ----- 配置页骨架 ----- */
   makeElement({ id: "config-query-title", tag: "h3" });
   makeElement({ id: "client-table", tag: "table" });
@@ -627,6 +632,116 @@ function makeSandbox(opts) {
     };
   }
   sandbox.window = sandbox; /* window.matchMedia / window.scrollTo / resize 监听都落在沙箱全局 */
+  sandbox.__TU_TEST_HOOKS__ = true; /* app.js 据此暴露截图纯函数(__tuTest),生产环境无此键 */
+
+  /* ----- 截图渲染桩(opts.shot 注入):Image/canvas/ClipboardItem/剪贴板按
+     配置编排成功、降档、全败、拒绝四类路径,并按发生顺序记录事件与 canvas
+     尺寸。无此键时沙箱保留「无渲染 API」退化分支(同步异常→失败 toast)。 */
+  const shotEvents = [];
+  const canvasDims = [];
+  const clipboardBlobs = [];
+  if (opts.shot) {
+    const shotCfg = opts.shot;
+    const record = (name) => shotEvents.push(name);
+    docRoot.scrollHeight = 1902;
+    body.scrollHeight = 1902;
+    sandbox.devicePixelRatio = shotCfg.dpr || 1;
+    sandbox.XMLSerializer = function () {
+      this.serializeToString = () => "<div></div>";
+    };
+    sandbox.getComputedStyle = () => ({
+      height: "935px",
+      minHeight: "935px",
+      top: "467px",
+      position: "absolute",
+      getPropertyValue: () => ""
+    });
+    /* 样式表桩:styleText 模拟 <style> 原始文本路径,cssTexts+href 模拟
+       跨域 <link> 的 CSSOM 兜底路径,xhrText+同源 href 模拟同源 <link>
+       的同步 XHR 原文路径;缺省空数组代表无样式表页面。location 桩供
+       同源判定(opts.shot.location={protocol,host}),xhr 桩按配置返回
+       status/text(缺省未定义=同源分支内 new XMLHttpRequest 抛
+       ReferenceError,同样走「原文读取失败」路径)。 */
+    if (Array.isArray(shotCfg.styleSheets)) {
+      doc.styleSheets = shotCfg.styleSheets.map((s) => {
+        if (s.styleText !== undefined) return { ownerNode: { tagName: "STYLE", textContent: String(s.styleText) }, cssRules: [], href: null };
+        return { ownerNode: null, cssRules: (s.cssTexts || []).map((t) => ({ cssText: String(t) })), href: String(s.href || "") };
+      });
+    } else {
+      doc.styleSheets = [];
+    }
+    if (shotCfg.location) sandbox.location = shotCfg.location;
+    if (shotCfg.xhr) {
+      sandbox.XMLHttpRequest = function () {
+        this.open = () => {};
+        this.send = () => {
+          this.status = shotCfg.xhr.status;
+          this.responseText = shotCfg.xhr.text || "";
+        };
+      };
+    }
+    sandbox.Image = function () {
+      const img = this;
+      Object.defineProperty(img, "src", {
+        set() {
+          record("image.src");
+          Promise.resolve().then(() => {
+            if (shotCfg.imageError) {
+              record("image.onerror");
+              if (img.onerror) img.onerror(new Error("stub image error"));
+            } else {
+              record("image.onload");
+              if (img.onload) img.onload();
+            }
+          });
+        }
+      });
+    };
+    let toBlobCalls = 0;
+    const baseCreate = doc.createElement;
+    doc.createElement = function (tag) {
+      const elm = baseCreate.call(doc, tag);
+      const t = String(tag).toLowerCase();
+      if (t === "canvas") {
+        elm.getContext = () => ({ drawImage() {} });
+        elm.toBlob = (cb) => {
+          const i = toBlobCalls++;
+          canvasDims.push({ width: elm.width, height: elm.height });
+          record("canvas.toBlob#" + i);
+          const fail = i < (shotCfg.toBlobFails || 0);
+          Promise.resolve().then(() => cb(fail ? null : { size: 42, stub: true }));
+        };
+      } else if (t === "div" && shotCfg.cloneHeight) {
+        /* 克隆树在测量语境的布局高(cloneHeight > scrollHeight 时 SVG 视口
+           取克隆高),canvas 尺寸链回归用。 */
+        elm.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: shotCfg.cloneHeight });
+      }
+      return elm;
+    };
+    sandbox.ClipboardItem = function (map) {
+      this.mimeType = Object.keys(map)[0];
+      this.value = map[this.mimeType];
+    };
+    sandbox.navigator = {
+      clipboard: {
+        write(items) {
+          const item = items && items[0];
+          if (!item || item.mimeType !== "image/png") return Promise.reject(new Error("stub: unexpected clipboard item"));
+          const v = item.value;
+          /* 值形态随事件名记录:手势内交付 = write 以未决 Promise 被调用 */
+          record("clipboard.write" + (v && typeof v.then === "function" ? ":promise" : ":value"));
+          const settle = (b) => {
+            if (b) clipboardBlobs.push(b);
+            return shotCfg.clipboardReject ? Promise.reject(new Error("stub clipboard denied")) : Promise.resolve();
+          };
+          /* 未决 Promise 值:等导出就绪后落定;已 reject 的值(如 SVG 加载
+             失败)原样抛出,让 write 按 ClipboardItem 合同失败。 */
+          if (v && typeof v.then === "function") return v.then(settle, (e) => { throw e; });
+          return settle(v);
+        }
+      }
+    };
+  }
 
   /* navType 与 navEntries 都不注入 = performance 整体缺失;navEntries 存在时
      注入「API 在、返回该数组」的 Navigation Timing(空数组即无 navigation 条目),
@@ -653,6 +768,9 @@ function makeSandbox(opts) {
     make: makeElement,
     probes: probes,
     fetchCalls: fetchCalls,
+    shotEvents: shotEvents,
+    canvasDims: canvasDims,
+    clipboardBlobs: clipboardBlobs,
     storeSession: storeSession,
     storeLocal: storeLocal,
     navButtons: navButtons,
@@ -775,6 +893,26 @@ function applyStep(step, ctx) {
       ctx.probes.push({ probe: "donutCenter", gid: gid, index: idx, text: center ? center.textContent : "" });
       return;
     }
+    case "donutProbe": {
+      /* 构成图联动状态快照:wrap.has-hl/扇区 .hl/图例 .on/中心联动文本,
+         截图前清理(S2)回归取证。 */
+      const arts = ctx.byId("groups").querySelectorAll(".group");
+      const groups = arts.map((art) => {
+        const wrap = art.querySelector(".donut-wrap");
+        const cb = art.querySelector(".donut-c b");
+        const cs = art.querySelector(".donut-c span");
+        return {
+          gid: art.dataset.gid || "",
+          hasHl: wrap ? String(wrap.classList.contains("has-hl")) : "none",
+          hlSegs: art.querySelectorAll(".seg-d.hl").length,
+          onLegend: art.querySelectorAll(".legend li.on").length,
+          centerB: cb ? cb.textContent : "",
+          centerS: cs ? cs.textContent : ""
+        };
+      });
+      ctx.probes.push({ probe: "donut", groups: groups });
+      return;
+    }
     case "sessionDetail": {
       /* 明文态点开「查看完整会话标题」:合成 detail 按钮后走 document 级
          委托监听,取证弹窗文本(验证开启遮蔽前的残留来源)。 */
@@ -791,6 +929,57 @@ function applyStep(step, ctx) {
         useHref: ctx.byId("privacy-use").getAttribute("href"),
         modalHidden: String(!!ctx.byId("session-title-modal").hidden),
         modalText: ctx.byId("session-title-modal-text").textContent
+      });
+      return;
+    }
+    case "rewrite": {
+      /* 截图选择器重写纯函数断言:输入冻结清单选择器,取证精确输出 */
+      const fn = ctx.sandbox.__tuTest && ctx.sandbox.__tuTest.snapshotRewriteCSS;
+      if (typeof fn !== "function") throw new Error("rewrite: __tuTest.snapshotRewriteCSS missing");
+      const out = fn(String(step.value));
+      ctx.probes.push({ probe: "rewrite", text: String(step.value), output: out });
+      return;
+    }
+    case "tiers": {
+      /* 降级档位纯函数断言:Value = "w,h,dpr" */
+      const fn = ctx.sandbox.__tuTest && ctx.sandbox.__tuTest.snapshotTiers;
+      if (typeof fn !== "function") throw new Error("tiers: __tuTest.snapshotTiers missing");
+      const parts = String(step.value).split(",").map((x) => Number(x));
+      const out = fn(parts[0], parts[1], parts[2]);
+      ctx.probes.push({ probe: "tiers", text: String(step.value), output: JSON.stringify(out) });
+      return;
+    }
+    case "shotClick": {
+      /* 截图按钮点击:同步派发后立即取证按钮中间态(管线执行中必须保持
+         disabled 防连点)与 S2 toast 收起(上一轮截图的成功 toast 同属
+         弹层,须在克隆前落回隐藏态;后续 done/fail toast 在异步链后才
+         发生,不覆盖本同步窗口的取证),最终态由 report.shot 断言。 */
+      const btn = ctx.byId("shot-trigger");
+      btn.dispatch("click");
+      ctx.probes.push({
+        probe: "shotMid",
+        disabled: String(!!btn.disabled),
+        toastShow: ctx.byId("toast").getAttribute("data-show")
+      });
+      return;
+    }
+    case "allcss": {
+      /* CSS 副本保真断言:产物须来自样式表原始文本(Chrome 155 对含
+         var() 简写的 cssText 序列化产出空分声明,SVG 重放会丢字体) */
+      const fn = ctx.sandbox.__tuTest && ctx.sandbox.__tuTest.snapshotAllCSS;
+      if (typeof fn !== "function") throw new Error("allcss: __tuTest.snapshotAllCSS missing");
+      ctx.probes.push({ probe: "allcss", output: fn() });
+      return;
+    }
+    case "collapseProbe": {
+      /* S2 弹层收起取证:点击 shot 后断言弹层 hidden —— 由 click shot-trigger
+         + 读弹层状态组成,这里只读不派发;toast 的 data-show 同属弹层显隐。 */
+      ctx.probes.push({
+        probe: "collapse",
+        unitHidden: String(!!ctx.byId("unit-pop").hidden),
+        calHidden: String(!!ctx.byId("calpop").hidden),
+        tipHidden: String(!!ctx.byId("tip").hidden),
+        toastShow: ctx.byId("toast").getAttribute("data-show")
       });
       return;
     }
@@ -877,6 +1066,10 @@ function buildReport(def, ctx, fatal, stepStates) {
       useHref: byId("privacy-use").getAttribute("href")
     },
     sessionModal: { hidden: !!byId("session-title-modal").hidden, text: byId("session-title-modal-text").textContent },
+    shot: { disabled: !!byId("shot-trigger").disabled },
+    shotEvents: ctx.shotEvents,
+    canvasDims: ctx.canvasDims,
+    clipboardBlobs: ctx.clipboardBlobs,
     probes: ctx.probes,
     session: mapToObj(ctx.storeSession),
     local: mapToObj(ctx.storeLocal),
