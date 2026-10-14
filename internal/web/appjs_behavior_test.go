@@ -42,6 +42,8 @@ type stepSpec struct {
 	ID    string `json:"id,omitempty"`
 	Page  string `json:"page,omitempty"`
 	Value string `json:"value,omitempty"`
+	Gid   string `json:"gid,omitempty"`
+	Index int    `json:"index"` /* 不带 omitempty:0 是合法 hover 序号 */
 }
 
 type scenarioDef struct {
@@ -155,10 +157,28 @@ type appJSReport struct {
 		WatchCustom       string `json:"watchCustom"`
 		WatchCustomHidden bool   `json:"watchCustomHidden"`
 	} `json:"refreshCfg"`
-	PendingFetches int               `json:"pendingFetches"`
-	Session        map[string]string `json:"session"`
-	Local          map[string]string `json:"local"`
-	StepStates     []stepState       `json:"stepStates"`
+	PendingFetches int `json:"pendingFetches"`
+	Privacy        struct {
+		Pressed string `json:"pressed"`
+		UseHref string `json:"useHref"`
+	} `json:"privacy"`
+	SessionModal struct {
+		Hidden bool   `json:"hidden"`
+		Text   string `json:"text"`
+	} `json:"sessionModal"`
+	Probes []struct {
+		Probe       string `json:"probe"`
+		Gid         string `json:"gid,omitempty"`
+		Index       string `json:"index,omitempty"`
+		Text        string `json:"text,omitempty"`
+		Pressed     string `json:"pressed,omitempty"`
+		UseHref     string `json:"useHref,omitempty"`
+		ModalHidden string `json:"modalHidden,omitempty"`
+		ModalText   string `json:"modalText,omitempty"`
+	} `json:"probes"`
+	Session    map[string]string `json:"session"`
+	Local      map[string]string `json:"local"`
+	StepStates []stepState       `json:"stepStates"`
 }
 
 func metaBody(today string) map[string]any {
@@ -225,6 +245,46 @@ func sessionsDashboardBody() map[string]any {
 		map[string]any{"title": "正常会话", "client": "Claude Code", "project": "app", "duration_ms": 3400, "requests": 5, "total": 900},
 	}
 	return body
+}
+
+/*
+privacyDashboardBody 覆盖遮蔽目标面：project 维度含独立行+「其他」尾行、
+
+	带 project 列与不带 project 列的自定义视图各一张、含密会话（正常 project）
+	与空 project/空标题会话。遮蔽开启时密值须变 ***，占位/尾行/其他维度保持原文。
+*/
+func privacyDashboardBody() map[string]any {
+	return map[string]any{
+		"totals":  map[string]any{"requests": 6, "fresh_input": 100, "output": 100, "cache_read": 100, "cache_create": 0, "reasoning": 0, "total": 900},
+		"columns": []any{"requests", "input", "output", "cache_read", "reasoning", "total", "cache_hit"},
+		"dimensions": map[string]any{
+			"client": []any{
+				map[string]any{"key": "Codex", "requests": 3, "total": 600},
+				map[string]any{"key": "Claude Code", "requests": 2, "total": 200},
+			},
+			"provider": []any{map[string]any{"key": "OpenAI", "requests": 3, "total": 500}},
+			"model":    []any{map[string]any{"key": "gpt-5.2", "requests": 3, "total": 500}},
+			"project": []any{
+				map[string]any{"key": "Alpha-Secret", "requests": 2, "total": 400},
+				map[string]any{"key": "Beta-Repo", "requests": 1, "total": 300},
+				map[string]any{"key": "", "requests": 3, "total": 200, "is_other": true, "other_count": 2},
+			},
+		},
+		"heatmap": map[string]any{"days": []any{}},
+		"custom_views": []any{
+			map[string]any{"name": "cp", "dimensions": []any{"client", "project"}, "rows": []any{
+				map[string]any{"keys": []any{"Codex", "top-secret-repo"}, "requests": 2, "total": 400},
+				map[string]any{"keys": []any{}, "requests": 4, "total": 500, "is_other": true, "other_count": 3},
+			}},
+			map[string]any{"name": "nm", "dimensions": []any{"client", "model"}, "rows": []any{
+				map[string]any{"keys": []any{"Codex", "gpt-5.2"}, "requests": 3, "total": 500},
+			}},
+		},
+		"sessions": []any{
+			map[string]any{"title": "机密会话标题", "client": "Codex", "project": "秘密项目", "duration_ms": 1200, "requests": 2, "total": 300},
+			map[string]any{"title": "", "client": "WorkBuddy", "project": "", "duration_ms": 60, "requests": 1, "total": 100},
+		},
+	}
 }
 
 func richDashboardBody(totalMarker int) map[string]any {
@@ -637,6 +697,10 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 	}
 	composeRoutes := baseRoutes()
 	composeRoutes["GET /api/dashboard"] = routeSpec{Status: 200, Body: richDashboardBody(1111)}
+	richRoutes := baseRoutes()
+	richRoutes["GET /api/dashboard"] = routeSpec{Status: 200, Body: richDashboardBody(1111)}
+	privacyRoutes := baseRoutes()
+	privacyRoutes["GET /api/dashboard"] = routeSpec{Status: 200, Body: privacyDashboardBody()}
 	refreshCfgRoutes := baseRoutes()
 	refreshCfgRoutes["GET /api/config"] = routeSpec{Status: 200, Body: configGetBodyWithRefresh(30, 20, 90)}
 	refreshCfgRoutes["PUT /api/config"] = routeSpec{Status: 200, Body: saveOKBodyWithRefresh("newrev", 30, 20, 60, true)}
@@ -835,6 +899,66 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 			Opts: map[string]any{"routes": composeRoutes},
 			Steps: []stepSpec{
 				{Op: "seg", ID: "view-seg", Value: "compose"},
+			},
+		},
+		{
+			Name: "privacy toggle masks all private surfaces",
+			Opts: map[string]any{"routes": privacyRoutes},
+			Steps: []stepSpec{
+				{Op: "privacy"},
+			},
+		},
+		{
+			Name: "privacy off keeps plaintext baseline",
+			Opts: map[string]any{"routes": privacyRoutes},
+		},
+		{
+			Name: "privacy round trip restores plaintext without refetch",
+			Opts: map[string]any{"routes": privacyRoutes},
+			Steps: []stepSpec{
+				{Op: "privacy"},
+				{Op: "privacy"},
+			},
+		},
+		{
+			Name: "privacy enable clears session title modal residue",
+			Opts: map[string]any{"routes": privacyRoutes},
+			Steps: []stepSpec{
+				{Op: "sessionDetail", Value: "我的秘密会话"},
+				{Op: "privacy"},
+			},
+		},
+		{
+			Name: "modal reopen works after privacy round trip",
+			Opts: map[string]any{"routes": privacyRoutes},
+			Steps: []stepSpec{
+				{Op: "sessionDetail", Value: "我的秘密会话"},
+				{Op: "click", ID: "session-title-modal-close"},
+				{Op: "privacy"},
+				{Op: "privacy"},
+				{Op: "sessionDetail", Value: "我的秘密会话"},
+			},
+		},
+		{
+			Name: "privacy masks donut hover on both branches",
+			Opts: map[string]any{"routes": richRoutes},
+			Steps: []stepSpec{
+				{Op: "privacy"},
+				{Op: "donutHover", Gid: "project", Index: 0},
+				{Op: "seg", ID: "view-seg", Value: "compose"},
+				{Op: "donutHover", Gid: "project", Index: 0},
+				{Op: "donutHover", Gid: "project", Index: 9},
+				{Op: "donutHover", Gid: "client", Index: 0},
+			},
+		},
+		{
+			Name: "locale switch keeps privacy mask applied",
+			Opts: map[string]any{"routes": privacyRoutes},
+			Steps: []stepSpec{
+				/* 先开启遮蔽再切语言:覆盖 syncLocaleUI/renderAll 重渲染路径
+				   上遮蔽的保持——先切语言后开启只证明开启生效,测不到保持。 */
+				{Op: "privacy"},
+				{Op: "locale", Value: "en"},
 			},
 		},
 		{
@@ -1686,6 +1810,193 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				}
 				if strings.Contains(r.GroupsHTML, "client-10") {
 					t.Errorf("rows beyond top 9 must not render independently: %q", r.GroupsHTML)
+				}
+
+			case "privacy toggle masks all private surfaces":
+				/* 区分度:开启后三处目标面全部遮蔽且 DOM 全层(含 title/data-full/
+				   aria-label/SVG title)无明文;占位/尾行/其他维度列保持原文;
+				   客户端名不遮;开关不发起任何新请求。若任一接入点漏遮蔽
+				   (可见文本或隐形通道)或误遮占位,对应断言失败。 */
+				if r.Privacy.Pressed != "true" || r.Privacy.UseHref != "#i-eye-off" {
+					t.Errorf("privacy state = %+v, want pressed #i-eye-off", r.Privacy)
+				}
+				if !strings.Contains(r.GroupsHTML, "***") {
+					t.Errorf("groups html missing *** (project names unmasked):\n%s", r.GroupsHTML)
+				}
+				for _, leak := range []string{"Alpha-Secret", "Beta-Repo"} {
+					if strings.Contains(r.GroupsHTML, leak) {
+						t.Errorf("groups html leaks project name %q:\n%s", leak, r.GroupsHTML)
+					}
+				}
+				if !strings.Contains(r.GroupsHTML, "其他（2 项）") {
+					t.Errorf("groups html must keep is_other tail label unmasked:\n%s", r.GroupsHTML)
+				}
+				if !strings.Contains(r.GroupsHTML, "Codex") {
+					t.Errorf("groups html must keep client names plaintext:\n%s", r.GroupsHTML)
+				}
+				if !strings.Contains(r.CviewsHTML, "***") {
+					t.Errorf("cviews html missing *** (project column unmasked):\n%s", r.CviewsHTML)
+				}
+				if strings.Contains(r.CviewsHTML, "top-secret-repo") {
+					t.Errorf("cviews html leaks project column value:\n%s", r.CviewsHTML)
+				}
+				if !strings.Contains(r.CviewsHTML, "其他组合（3 项）") {
+					t.Errorf("cviews html must keep other-combo label unmasked:\n%s", r.CviewsHTML)
+				}
+				if !strings.Contains(r.CviewsHTML, "gpt-5.2") {
+					t.Errorf("cviews html must keep non-project dimension values plaintext:\n%s", r.CviewsHTML)
+				}
+				if !strings.Contains(r.SessionsBodyHTML, "***") {
+					t.Errorf("sessions html missing *** (title/project unmasked):\n%s", r.SessionsBodyHTML)
+				}
+				for _, leak := range []string{"机密会话标题", "秘密项目"} {
+					if strings.Contains(r.SessionsBodyHTML, leak) {
+						t.Errorf("sessions html leaks %q:\n%s", leak, r.SessionsBodyHTML)
+					}
+				}
+				if !strings.Contains(r.SessionsBodyHTML, "(未分类)") {
+					t.Errorf("sessions html must keep empty-project placeholder:\n%s", r.SessionsBodyHTML)
+				}
+				if !strings.Contains(r.SessionsBodyHTML, `title=""`) {
+					t.Errorf("sessions html must keep empty session title empty, not ***:\n%s", r.SessionsBodyHTML)
+				}
+				if n := countFetch(r, "GET", "/api/dashboard"); n != 1 {
+					t.Errorf("dashboard fetches = %d, want 1 (privacy toggle must not refetch)", n)
+				}
+
+			case "privacy off keeps plaintext baseline":
+				/* 区分度:同一夹具不开启时全部明文且无 ***——红测区分度来源
+				   (若实现恒遮蔽或恒为空,与上一场景双失败);按钮初始态为
+				   未按下 + 睁眼图标。 */
+				if r.Privacy.Pressed != "false" || r.Privacy.UseHref != "#i-eye" {
+					t.Errorf("privacy initial state = %+v, want unpressed #i-eye", r.Privacy)
+				}
+				for _, want := range []string{"Alpha-Secret", "Beta-Repo"} {
+					if !strings.Contains(r.GroupsHTML, want) {
+						t.Errorf("groups html missing plaintext project %q:\n%s", want, r.GroupsHTML)
+					}
+				}
+				if !strings.Contains(r.CviewsHTML, "top-secret-repo") || !strings.Contains(r.SessionsBodyHTML, "机密会话标题") || !strings.Contains(r.SessionsBodyHTML, "秘密项目") {
+					t.Errorf("plaintext baseline broken: cviews/sessions must render raw values")
+				}
+				for _, html := range []string{r.GroupsHTML, r.CviewsHTML, r.SessionsBodyHTML} {
+					if strings.Contains(html, "***") {
+						t.Errorf("plaintext baseline contains *** with privacy off:\n%s", html)
+					}
+				}
+
+			case "privacy round trip restores plaintext without refetch":
+				/* 区分度:开关→关回后明文完整恢复且无 ***;全程只有 init 的
+				   一次 dashboard 请求(遮蔽是纯渲染层状态)。 */
+				if r.Privacy.Pressed != "false" || r.Privacy.UseHref != "#i-eye" {
+					t.Errorf("privacy state after round trip = %+v, want unpressed #i-eye", r.Privacy)
+				}
+				for _, want := range []string{"Alpha-Secret", "top-secret-repo", "机密会话标题", "秘密项目"} {
+					inGroups := strings.Contains(r.GroupsHTML, want)
+					inCviews := strings.Contains(r.CviewsHTML, want)
+					inSessions := strings.Contains(r.SessionsBodyHTML, want)
+					if !inGroups && !inCviews && !inSessions {
+						t.Errorf("plaintext %q lost after round trip", want)
+					}
+				}
+				for _, html := range []string{r.GroupsHTML, r.CviewsHTML, r.SessionsBodyHTML} {
+					if strings.Contains(html, "***") {
+						t.Errorf("round trip leaves *** behind:\n%s", html)
+					}
+				}
+				if n := countFetch(r, "GET", "/api/dashboard"); n != 1 {
+					t.Errorf("dashboard fetches = %d, want 1 (round trip must not refetch)", n)
+				}
+
+			case "privacy enable clears session title modal residue":
+				/* 区分度:明文态点开弹窗写入弹窗文本(probe#1 证明残留来源),
+				   开启遮蔽后弹窗文本必须清空且弹窗关闭——若只遮蔽新渲染的
+				   data-full 而不清残留,#session-title-modal-text 仍持明文。 */
+				if len(r.Probes) != 2 || r.Probes[0].Probe != "modalText" || r.Probes[0].Text != "我的秘密会话" {
+					t.Fatalf("probes = %+v, want modalText residue 我的秘密会话 first", r.Probes)
+				}
+				p := r.Probes[1]
+				if p.Probe != "privacy" || p.ModalHidden != "true" || p.ModalText != "" {
+					t.Errorf("privacy probe = %+v, want modal closed with empty text", p)
+				}
+				if r.SessionModal.Text != "" || !r.SessionModal.Hidden {
+					t.Errorf("session modal final = %+v, want cleared+hidden", r.SessionModal)
+				}
+				if strings.Contains(r.SessionsBodyHTML, "机密会话标题") {
+					t.Errorf("sessions html leaks title after privacy on")
+				}
+
+			case "modal reopen works after privacy round trip":
+				/* 区分度:遮蔽开启清空弹窗后,关闭遮蔽再点开新行仍能正常写入
+				   明文(closeSessionTitle 既有语义不被破坏)。 */
+				if r.SessionModal.Hidden {
+					t.Errorf("session modal = %+v, want open after reopen", r.SessionModal)
+				}
+				if r.SessionModal.Text != "我的秘密会话" {
+					t.Errorf("session modal text = %q, want plaintext after privacy off", r.SessionModal.Text)
+				}
+				if r.Privacy.Pressed != "false" {
+					t.Errorf("privacy = %q, want off at scenario end", r.Privacy.Pressed)
+				}
+
+			case "privacy masks donut hover on both branches":
+				/* 区分度:项目卡中心联动在 rows 回退(list)与 metas 主(compose)
+				   两条分支都遮蔽;「其他（3 项）」尾行与非项目卡保持原文——
+				   任一分支漏判 isOther 或误遮非项目卡则失败。 */
+				want := []struct {
+					probe string
+					check func(text string) error
+				}{
+					{"donutCenter", func(text string) error {
+						/* 中心文本为「名称 · 占比」结构:名称段须遮蔽,占比后缀不属隐私 */
+						if !strings.HasPrefix(text, "***") {
+							return fmt.Errorf("rows-branch project center = %q, want ***-prefixed", text)
+						}
+						return nil
+					}},
+					{"donutCenter", func(text string) error {
+						if !strings.HasPrefix(text, "***") {
+							return fmt.Errorf("metas-branch project center = %q, want ***-prefixed", text)
+						}
+						return nil
+					}},
+					{"donutCenter", func(text string) error {
+						if !strings.HasPrefix(text, "其他（3 项）") || strings.Contains(text, "***") {
+							return fmt.Errorf("isOther center = %q, want unmasked 其他（3 项） prefix", text)
+						}
+						return nil
+					}},
+					{"donutCenter", func(text string) error {
+						if !strings.HasPrefix(text, "client-01") || strings.Contains(text, "***") {
+							return fmt.Errorf("non-project center = %q, want plaintext client-01 prefix", text)
+						}
+						return nil
+					}},
+				}
+				if len(r.Probes) != len(want)+1 { /* probe#0 是 privacy 开关状态 */
+					t.Fatalf("probes = %+v, want %d donutCenter probes after privacy step", r.Probes, len(want))
+				}
+				for i, w := range want {
+					p := r.Probes[i+1] /* probe#0 是 privacy 开关状态 */
+					if p.Probe != w.probe {
+						t.Fatalf("probe#%d = %+v, want %s", i+1, p, w.probe)
+					}
+					if err := w.check(p.Text); err != nil {
+						t.Errorf("probe#%d (gid=%s index=%s): %v", i+1, p.Gid, p.Index, err)
+					}
+				}
+
+			case "locale switch keeps privacy mask applied":
+				/* 区分度:语言切换(renderAll)不得重置遮蔽——EN 下密值仍 ***、
+				   尾行走 EN 文案、开关图标状态保持。 */
+				if r.Privacy.Pressed != "true" || r.Privacy.UseHref != "#i-eye-off" {
+					t.Errorf("privacy state after locale switch = %+v, want still on", r.Privacy)
+				}
+				if !strings.Contains(r.GroupsHTML, "***") || strings.Contains(r.GroupsHTML, "Alpha-Secret") {
+					t.Errorf("mask lost across locale switch: %s", r.GroupsHTML)
+				}
+				if !strings.Contains(r.GroupsHTML, "Other (2)") {
+					t.Errorf("groups html = %q, want EN is_other tail label", r.GroupsHTML)
 				}
 
 			case "refresh interval selects and save round trip":

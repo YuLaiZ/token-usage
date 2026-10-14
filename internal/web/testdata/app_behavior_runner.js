@@ -119,6 +119,7 @@ function makeSandbox(opts) {
   const storeLocal = new Map();
   const fetchCalls = [];
   const pendingFetches = []; /* gate 响应:被 resolve 步骤放行的挂起 fetch */
+  const probes = []; /* 行为探针:donut 中心联动文本、弹窗文本等中间态取证 */
   let activeEl = null;
 
   function queryAll(scope, selector) {
@@ -382,6 +383,8 @@ function makeSandbox(opts) {
   makeElement({ id: "session-title-modal-close", tag: "button" });
   makeElement({ id: "unit-trigger", tag: "button" });
   makeElement({ id: "unit-pop", hidden: true });
+  makeElement({ id: "privacy-trigger", tag: "button", attrs: { "aria-pressed": "false", "aria-label": "切换私密信息遮蔽" } });
+  makeElement({ id: "privacy-use", attrs: { href: "#i-eye" } });
   /* ----- 配置页骨架 ----- */
   makeElement({ id: "config-query-title", tag: "h3" });
   makeElement({ id: "client-table", tag: "table" });
@@ -647,6 +650,8 @@ function makeSandbox(opts) {
     },
     doc: doc,
     byId: memoById,
+    make: makeElement,
+    probes: probes,
     fetchCalls: fetchCalls,
     storeSession: storeSession,
     storeLocal: storeLocal,
@@ -734,6 +739,61 @@ function applyStep(step, ctx) {
       ctx.resolvePending();
       return;
     }
+    case "donutHover": {
+      /* 构成图联动 hover:合成 .group 卡片链(含 .donut-wrap/.donut-c b/span
+         与 .seg-d、.legend li[data-i])挂在 #groups 下,复用已存在卡片;在
+         #groups 上以 li 为 target 派发 mouseover,取证中心 span 文本。
+         compose 视图下 renderGroups 会先给已存在卡片挂 _donut(metas 主路径);
+         list 视图下 _donut 缺省走 rows 回退路径。 */
+      const gid = String(step.gid);
+      const idx = String(step.index);
+      const host = ctx.byId("groups");
+      let art = host.querySelectorAll('.group[data-gid="' + gid + '"]')[0];
+      if (!art) {
+        art = ctx.make({ tag: "article", classes: ["group"], attrs: { "data-gid": gid } });
+        const wrap = ctx.make({ classes: ["donut-wrap"] });
+        const dc = ctx.make({ classes: ["donut-c"] });
+        const b = ctx.make({ tag: "b" });
+        const span = ctx.make({ tag: "span" });
+        dc.appendChild(b);
+        dc.appendChild(span);
+        wrap.appendChild(dc);
+        art.appendChild(wrap);
+        for (let s = 0; s < 3; s++) {
+          art.appendChild(ctx.make({ classes: ["seg-d"], attrs: { "data-i": String(s) } }));
+        }
+        const ul = ctx.make({ classes: ["legend"] });
+        ul.appendChild(ctx.make({ tag: "li", attrs: { "data-i": idx } }));
+        art.appendChild(ul);
+        host.appendChild(art);
+      }
+      const li = art.querySelectorAll('.legend [data-i]')[0];
+      if (!li) throw new Error("donutHover: no legend li in synthetic card " + gid);
+      li.setAttribute("data-i", idx); /* 复用卡片时跟随本次步骤的 hover 序号 */
+      host.dispatch("mouseover", { target: li });
+      const center = art.querySelector(".donut-c span");
+      ctx.probes.push({ probe: "donutCenter", gid: gid, index: idx, text: center ? center.textContent : "" });
+      return;
+    }
+    case "sessionDetail": {
+      /* 明文态点开「查看完整会话标题」:合成 detail 按钮后走 document 级
+         委托监听,取证弹窗文本(验证开启遮蔽前的残留来源)。 */
+      const btn = ctx.make({ tag: "button", classes: ["session-title-detail"], attrs: { "data-full": String(step.value) } });
+      ctx.doc.dispatch("click", { target: btn });
+      ctx.probes.push({ probe: "modalText", text: ctx.byId("session-title-modal-text").textContent });
+      return;
+    }
+    case "privacy": {
+      ctx.byId("privacy-trigger").dispatch("click");
+      ctx.probes.push({
+        probe: "privacy",
+        pressed: ctx.byId("privacy-trigger").getAttribute("aria-pressed"),
+        useHref: ctx.byId("privacy-use").getAttribute("href"),
+        modalHidden: String(!!ctx.byId("session-title-modal").hidden),
+        modalText: ctx.byId("session-title-modal-text").textContent
+      });
+      return;
+    }
     default:
       throw new Error("unknown step op " + step.op);
   }
@@ -812,6 +872,12 @@ function buildReport(def, ctx, fatal, stepStates) {
       watchCustomHidden: !!byId("cfg-watch-refresh-custom").hidden
     },
     pendingFetches: ctx.pendingCount(),
+    privacy: {
+      pressed: byId("privacy-trigger").getAttribute("aria-pressed"),
+      useHref: byId("privacy-use").getAttribute("href")
+    },
+    sessionModal: { hidden: !!byId("session-title-modal").hidden, text: byId("session-title-modal-text").textContent },
+    probes: ctx.probes,
     session: mapToObj(ctx.storeSession),
     local: mapToObj(ctx.storeLocal),
     stepStates: stepStates

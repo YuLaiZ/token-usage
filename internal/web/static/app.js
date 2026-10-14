@@ -24,6 +24,7 @@ var UI_TEXT = {
   '语言与外观':'Language and appearance','界面语言':'Interface language','切换主题':'Switch theme','选择主题配色':'Choose color palette',
   '主题配色':'Color palette','配色方案候选':'Color palette options',
   '用量概览':'Usage overview','按客户端、供应商、模型和项目查看用量':'Explore usage by client, provider, model, and project','查看数值单位说明':'View value unit definitions','数值单位':'Value units','十进制':'Decimal','一千':'thousand','一百万':'million','十亿':'billion',
+  '私密信息':'Privacy','切换私密信息遮蔽':'Toggle privacy masking',
   '统计区间':'Date range','自定义统计区间':'Custom date range','今日':'Today','本周':'This week','本月':'This month','本年':'This year','近 7 天':'Last 7 days','近 30 天':'Last 30 days','近 1 年':'Last 12 months',
   '上一月':'Previous month','下一月':'Next month','请选择开始与结束日期':'Select a start and end date','查询':'Apply',
   '按维度查看':'Explore by dimension','维度切换':'Dimension switcher','客户端':'Client','供应商':'Provider','模型':'Model','项目':'Project',
@@ -207,6 +208,10 @@ function fmtDur(ms){
 var state = { range:0, view:'list', mode:'trend', meta:{}, data:null, heat:[] };
 var CUSTOM = null;            /* 自定义区间 {s,e} 日期串；预设区间时恒为 null */
 var DIMROWS = {};             /* 各维度当前展示行（构成图联动用） */
+/* 私密信息遮蔽：纯展示层开关（不持久化，刷新重置）。pv 是唯一遮蔽出口，
+   空值安全（falsy 原样返回空串），调用点维持各自的 esc 时序。 */
+var PRIVACY = { on:false };
+function pv(v){ return (PRIVACY.on && v) ? '***' : String(v==null?'':v); }
 var RANGE_KEY = 'tu-range';
 /* 统一刷新状态机:自动/手动/区间变更共用一个请求入口与一套
    加载/成功/失败状态。seq 保证新请求胜出,过期响应不写回;自动计时
@@ -734,6 +739,20 @@ document.addEventListener('click',function(){ setUnitPop(false); });
 document.addEventListener('keydown',function(e){
   if(e.key==='Escape' && el('unit-pop') && !el('unit-pop').hidden){ setUnitPop(false); el('unit-trigger').focus(); }
 });
+/* 私密信息遮蔽开关：不持久化（刷新重置）；开启时先清理完整名称/会话标题
+   弹窗的明文残留（弹窗在 #page-dash 外，renderAll 不触碰该节点），再整体
+   重渲染。关闭即恢复明文，不发起任何网络请求。 */
+el('privacy-trigger').addEventListener('click',function(){
+  PRIVACY.on = !PRIVACY.on;
+  el('privacy-trigger').setAttribute('aria-pressed', PRIVACY.on?'true':'false');
+  el('privacy-use').setAttribute('href', PRIVACY.on ? '#i-eye-off' : '#i-eye');
+  if(PRIVACY.on){
+    var modal = el('session-title-modal');
+    if(modal && !modal.hidden) closeSessionTitle();
+    el('session-title-modal-text').textContent='';
+  }
+  renderAll();
+});
 
 /* ---------- 按维度查看：真实区间聚合行，直接渲染 ---------- */
 var HUES = { client:'--d1', provider:'--d2', model:'--d3', project:'--d4' };
@@ -802,10 +821,12 @@ function tableView(rows, dim){
     '</tr></thead><tbody>';
   rows.forEach(function(r){
     /* 「截断后可查看全文」交互仅项目维度使用(长仓库名/路径高频截断);
-       客户端/供应商/模型保持纯文本省略,不加按钮。 */
+       客户端/供应商/模型保持纯文本省略,不加按钮。
+       私密遮蔽(私密信息开启):仅项目维度非 isOther 行,名称/title/data-full
+       三处同步遮蔽,「其他（N 项）」尾行是本地化文案不遮。 */
     var th;
     if(dim==='project'){
-      var nameFull=esc(r.name);
+      var nameFull=esc(r.isOther ? r.name : pv(r.name));
       th = '<th scope="row" class="tname"><div class="session-title-wrap"><span class="trunc-name" title="'+nameFull+'">'+nameFull+'</span>'+
         '<button type="button" class="session-title-detail" data-full="'+nameFull+'" data-heading="'+ui('完整名称','Full name')+'" hidden aria-label="'+ui('查看完整名称','View full name')+'" title="'+ui('查看完整名称','View full name')+'"><svg class="ic"><use href="#i-info"/></svg></button></div></th>';
     }else{
@@ -832,7 +853,7 @@ function arcPath(r1, r2, a0, a1){
 /* 构成图与列表消费完全相同的后端行(total 降序、"其他"尾行固定最后):
    图例与扇区一一对应列表行,不再按份额或排名二次合并;百分比仅供显示。 */
 function donutMetas(rows){
-  return { metas: rows.map(function(r){ return { name:r.name, total:r.total }; }), T: aggRows(rows) };
+  return { metas: rows.map(function(r){ return { name:r.name, total:r.total, isOther:!!r.isOther }; }), T: aggRows(rows) };
 }
 function composeView(dimId, rows){
   var meta = donutMetas(rows), T = meta.T, metas = meta.metas;
@@ -843,14 +864,18 @@ function composeView(dimId, rows){
     var a0 = acc*360, a1 = Math.min((acc + share)*360, 360);
     acc += share;
     var s0 = a0 + GAP/2, s1 = Math.max(a1 - GAP/2, s0 + 0.4);
+    /* 私密遮蔽:仅项目维度卡、非 isOther 行;扇区 title/图例 aria/图例名
+       三处同源(m.name 原值),避免悬停通道漏明文。 */
+    var label = (dimId==='project' && !m.isOther) ? pv(m.name) : m.name;
     segs += '<path class="seg-d" data-i="'+i+'" d="'+arcPath(50, 94, s0, s1)+'" fill="color-mix(in srgb, var(--gh) '+RAMP[i%RAMP.length]+'%, var(--raised))">' +
-      '<title>'+esc(m.name)+' · '+(share*100).toFixed(1)+'% · '+fmtTok(m.total)+'</title></path>';
+      '<title>'+esc(label)+' · '+(share*100).toFixed(1)+'% · '+fmtTok(m.total)+'</title></path>';
   });
   var lg = metas.map(function(m,i){
     var share = T.total ? m.total/T.total : 0;
-    return '<li tabindex="0" data-i="'+i+'" aria-label="'+esc(m.name)+ui('，占比 ',', ')+(share*100).toFixed(1)+'%, '+fmtTok(m.total)+'">' +
+    var label = (dimId==='project' && !m.isOther) ? pv(m.name) : m.name;
+    return '<li tabindex="0" data-i="'+i+'" aria-label="'+esc(label)+ui('，占比 ',', ')+(share*100).toFixed(1)+'%, '+fmtTok(m.total)+'">' +
       '<i class="lg-dot" style="background:color-mix(in srgb, var(--gh) '+RAMP[i%RAMP.length]+'%, var(--raised))"></i>' +
-      '<span class="lg-name">'+esc(m.name)+'</span><span class="lg-val">'+(share*100).toFixed(1)+'%</span></li>';
+      '<span class="lg-name">'+esc(label)+'</span><span class="lg-val">'+(share*100).toFixed(1)+'%</span></li>';
   }).join('');
   return '<div class="compose"><div class="donut-wrap">' +
     '<svg class="donut" viewBox="0 0 200 200" role="img" aria-label="'+title+ui('构成图',' composition chart')+'">' +
@@ -907,13 +932,16 @@ function highlightDonut(art, rows, i){
   var cb = art.querySelector('.donut-c b'), cs = art.querySelector('.donut-c span');
   if(!cb || !cs) return;
   var meta = art._donut;
+  /* 私密遮蔽:仅项目维度卡、非 isOther 行;metas 主路径与 rows 回退路径
+     两条分支同判,保证中心联动文本与图例的遮蔽口径一致。 */
+  var mask = art.dataset.gid==='project';
   if(i>=0 && meta && meta.metas[i]){
     cb.textContent = fmtTok(meta.metas[i].total);
-    cs.textContent = meta.metas[i].name+' · '+(meta.T.total ? (meta.metas[i].total/meta.T.total*100).toFixed(1) : '0.0')+'%';
+    cs.textContent = (mask && !meta.metas[i].isOther ? pv(meta.metas[i].name) : meta.metas[i].name)+' · '+(meta.T.total ? (meta.metas[i].total/meta.T.total*100).toFixed(1) : '0.0')+'%';
   }else if(i>=0 && rows[i]){
     var T = aggRows(rows);
     cb.textContent = fmtTok(rows[i].total);
-    cs.textContent = rows[i].name+' · '+(T.total ? (rows[i].total/T.total*100).toFixed(1) : '0.0')+'%';
+    cs.textContent = (mask && !rows[i].isOther ? pv(rows[i].name) : rows[i].name)+' · '+(T.total ? (rows[i].total/T.total*100).toFixed(1) : '0.0')+'%';
   }else{
     cb.textContent = art.dataset.defVal||''; cs.textContent = art.dataset.defLab||'';
   }
@@ -1485,10 +1513,12 @@ function renderSessions(){
     body.innerHTML = '<tr class="session-row"><td colspan="6" class="tl">'+ui('该区间暂无会话','No sessions in this range')+'</td></tr>';
   }else{
     body.innerHTML = rows.map(function(r){
-      var full=esc(r.title||'');
+      /* 私密遮蔽:会话名(title/可见文本/data-full 三处同源)与项目名,
+         空标题经 pv 保持空串;「(未分类)」占位与客户端列不遮。 */
+      var full=esc(pv(r.title||''));
       return '<tr class="session-row"><th scope="row" class="tname"><div class="session-title-wrap"><span class="session-title-text trunc-name" title="'+full+'">'+full+'</span>'+
         '<button type="button" class="session-title-detail" data-full="'+full+'" data-heading="'+ui('完整会话标题','Full session title')+'" hidden aria-label="'+ui('查看完整会话标题','View full session title')+'" title="'+ui('查看完整会话标题','View full session title')+'"><svg class="ic"><use href="#i-info"/></svg></button></div></th>' +
-        '<td class="num tl" data-label="'+dimLabel('client')+'">'+esc(r.client||'')+'</td><td class="num tl" data-label="'+dimLabel('project')+'">'+esc(r.project||ui('(未分类)','(uncategorized)'))+'</td>' +
+        '<td class="num tl" data-label="'+dimLabel('client')+'">'+esc(r.client||'')+'</td><td class="num tl" data-label="'+dimLabel('project')+'">'+esc(r.project ? pv(r.project) : ui('(未分类)','(uncategorized)'))+'</td>' +
         '<td class="num" data-label="'+ui('时长','Duration')+'">'+fmtDur(r.duration_ms)+'</td><td class="num" data-label="'+colLabel(colById('requests'))+'">'+fmtInt(r.requests)+'</td>' +
         '<td class="num tot" data-label="'+colLabel(colById('total'))+'"><span class="nv">'+fmtTok(r.total)+'</span></td></tr>';
     }).join('');
@@ -1598,7 +1628,11 @@ function renderCustomViews(){
       h += '<tr class="cv-row" tabindex="0" aria-expanded="false">' + dims.map(function(d,i){
         var val;
         if(r.isOther){ val = i===0 ? r.otherName : '—'; }
-        else{ val = String((r.keys||[])[i]!=null ? r.keys[i] : ''); }
+        else{
+          /* 私密遮蔽:仅 project 维度列的数据值;「其他组合」行与空值不遮。 */
+          var raw = String((r.keys||[])[i]!=null ? r.keys[i] : '');
+          val = (d==='project' && !r.isOther) ? pv(raw) : raw;
+        }
         var safe=esc(val);
         var disp = val.length>26 ? val.slice(0,12)+'…'+val.slice(-8) : val;
         return '<th scope="row" class="tname" title="'+safe+'" data-label="'+dimLabel(d)+'">'+esc(disp)+'</th>';
