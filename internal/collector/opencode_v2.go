@@ -15,7 +15,8 @@ import (
 // session_message 表并停止写 V1 表（V1 表保留但内容冻结）。两表同时存在才
 // 视为迁移完成（V2 布局）；仅预建的空 session_message（1.18 中间版本形态）
 // 仍是 V1 布局，防止误判造成漏采。
-// V2 表列结构为合成 fixture 形态（真实 2.x 完整列清单与 total 构成待实测闭合）。
+// V2 表列结构与 total 构成已按上游 v2.0.28 源码闭合（session_v2 37 列；
+// data.tokens 无 total 键，total 按上游官方聚合公式五分项之和回退）。
 
 // SyncSourceOpenCodeLayout 是布局标记的 sync_state 内部 source 键：cursor_value
 // 承载标记值（0=未标记零值、1=V1、2=V2），与消息、message 游标在 persistClientBatch
@@ -200,26 +201,22 @@ func ocV2DateFilter(dates []string) (string, []interface{}) {
 }
 
 // scanOCV2MessageRows 扫描 V2 查询行、解析、转换，记录 (time_updated,id) 最大游标。
-// Go 侧跳过规则：assistant 未 completed（completed<=0）跳过；五分项全零跳过。
+// Go 侧跳过规则：assistant 未 completed（completed<=0）跳过；五分项全零跳过
+// （与 total 存在与否无关，V2 结构下五分项是唯一事实来源）。total 键缺失/
+// null 时按上游官方聚合公式回退（openCodeTokens.derivedTotal）；键存在时
+// 直取源报值（值为 0 亦落账，源报零值合同）。
 // 游标推进与 V1 对称：扫描行即推进，Go 侧跳过不回退游标。
-// total 键缺失/null 的行（V2 total 构成是未闭合未知项）经 protectedIDs
-// 返回：该行不落账（防未知语义按 0 覆盖既有账目），调用方以 PartialErr
-// 语义处理——成功行照常入库，游标与完成状态不推进，下一轮幂等重试，待
-// 真实语义闭合后由升级实现正确落账。protectedIDs 还用于把「主源存在但
-// total 未知」与「主源不存在」区分开：受保护 ID 不得被 event 补偿源以
-// 旧终态重新带入（否则旧值覆盖既有账目，保护被绕过）。
 func scanOCV2MessageRows(ctx context.Context, q openCodeQueryer, query string, args []interface{},
 	providerMapping map[string]string, sessionInfos map[string]ocSessionData, init model.SyncCursor,
-) (map[string]model.Message, model.SyncCursor, map[string]bool, error) {
+) (map[string]model.Message, model.SyncCursor, error) {
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, model.SyncCursor{}, nil, fmt.Errorf("查询 OpenCode session_message 失败: %w", err)
+		return nil, model.SyncCursor{}, fmt.Errorf("查询 OpenCode session_message 失败: %w", err)
 	}
 	defer rows.Close()
 
 	messages := make(map[string]model.Message)
 	next := init
-	protectedIDs := make(map[string]bool)
 
 	for rows.Next() {
 		var id, sessionID, data, msgType string
@@ -230,7 +227,7 @@ func scanOCV2MessageRows(ctx context.Context, q openCodeQueryer, query string, a
 			&id, &sessionID, &timeUpdated, &data, &msgType,
 			&sessDirectory, &sessTitle, &sessTimeCreated, &sessTimeUpdated,
 		); err != nil {
-			return nil, model.SyncCursor{}, nil, fmt.Errorf("扫描 OpenCode session_message 行失败: %w", err)
+			return nil, model.SyncCursor{}, fmt.Errorf("扫描 OpenCode session_message 行失败: %w", err)
 		}
 		if timeUpdated > next.Value || (timeUpdated == next.Value && id > next.ID) {
 			next = model.SyncCursor{Value: timeUpdated, ID: id}
@@ -256,11 +253,11 @@ func scanOCV2MessageRows(ctx context.Context, q openCodeQueryer, query string, a
 			continue // 五分项全零：无用量载荷，不落账（游标已推进）
 		}
 		if !info.Tokens.TotalPresent {
-			// total 键缺失/null：构成未知，不得按 0 落账覆盖既有账目；
-			// 记入受保护集合，阻止 event 补偿以旧终态绕过保护。
-			protectedIDs[id] = true
-			continue
+			info.Tokens.Total = info.Tokens.derivedTotal()
 		}
+		// total 键存在且值为 0 属「源报零值」：仍直取落账 TotalTokens=0
+		// （零值是上游的合法报告，与键缺失/null 的回退区分）；回退值=
+		// 五分项之和，进入回退的行五分项非全零，恒 >0 不会出现该形态。
 		if _, ok := sessionInfos[sessionID]; !ok {
 			sessionInfos[sessionID] = ocSessionData{
 				directory:   sessDirectory,
@@ -272,21 +269,20 @@ func scanOCV2MessageRows(ctx context.Context, q openCodeQueryer, query string, a
 		messages[id] = openCodeV2Message(id, sessionID, msgType, info, sessionInfos[sessionID], providerMapping)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, model.SyncCursor{}, nil, fmt.Errorf("遍历 OpenCode session_message 行失败: %w", err)
+		return nil, model.SyncCursor{}, fmt.Errorf("遍历 OpenCode session_message 行失败: %w", err)
 	}
-	return messages, next, protectedIDs, nil
+	return messages, next, nil
 }
 
 // scanOCV2MessagesIncremental 增量常态：主源仅扫 session_message（V1 已冻结）。
 func scanOCV2MessagesIncremental(ctx context.Context, tx *sql.Tx, cursor model.SyncCursor,
 	providerMapping map[string]string, sessionInfos map[string]ocSessionData,
-) (map[string]model.Message, model.SyncCursor, map[string]bool, error) {
+) (map[string]model.Message, model.SyncCursor, error) {
 	query := ocV2MessageBaseQuery + ` WHERE m.type IN ('assistant','compaction')` + ocV2TerminalFilter +
 		` AND (m.time_updated>? OR (m.time_updated=? AND m.id>?))` +
 		` ORDER BY m.time_updated,m.id`
 	args := []interface{}{cursor.Value, cursor.Value, cursor.ID}
-	msgs, next, protected, err := scanOCV2MessageRows(ctx, tx, query, args, providerMapping, sessionInfos, cursor)
-	return msgs, next, protected, err
+	return scanOCV2MessageRows(ctx, tx, query, args, providerMapping, sessionInfos, cursor)
 }
 
 // scanOCV2MessagesFull 全量扫描路径（布局兜底轮与 CLI Dates/全量模式）：
@@ -295,7 +291,7 @@ func scanOCV2MessagesIncremental(ctx context.Context, tx *sql.Tx, cursor model.S
 // 返回的 message 游标只从 V2 侧扫描重建（V1 兜底不是该布局的游标来源）。
 func scanOCV2MessagesFull(ctx context.Context, tx *sql.Tx, dates []string,
 	providerMapping map[string]string, sessionInfos map[string]ocSessionData, tables ocTablePresence,
-) (map[string]model.Message, model.SyncCursor, map[string]bool, error) {
+) (map[string]model.Message, model.SyncCursor, error) {
 	query := ocV2MessageBaseQuery + ` WHERE m.type IN ('assistant','compaction')` + ocV2TerminalFilter
 	var args []interface{}
 	if len(dates) > 0 {
@@ -304,14 +300,14 @@ func scanOCV2MessagesFull(ctx context.Context, tx *sql.Tx, dates []string,
 		args = dateArgs
 	}
 	query += ` ORDER BY m.time_updated,m.id`
-	v2Msgs, next, protected, err := scanOCV2MessageRows(ctx, tx, query, args, providerMapping, sessionInfos, model.SyncCursor{})
+	v2Msgs, next, err := scanOCV2MessageRows(ctx, tx, query, args, providerMapping, sessionInfos, model.SyncCursor{})
 	if err != nil {
-		return nil, model.SyncCursor{}, nil, err
+		return nil, model.SyncCursor{}, err
 	}
 	if tables.message && tables.session {
 		v1Msgs, err := scanOCV1Unmigrated(ctx, tx, dates, providerMapping, sessionInfos)
 		if err != nil {
-			return nil, model.SyncCursor{}, nil, err
+			return nil, model.SyncCursor{}, err
 		}
 		for id, m := range v1Msgs {
 			if _, ok := v2Msgs[id]; ok {
@@ -320,7 +316,7 @@ func scanOCV2MessagesFull(ctx context.Context, tx *sql.Tx, dates []string,
 			v2Msgs[id] = m
 		}
 	}
-	return v2Msgs, next, protected, nil
+	return v2Msgs, next, nil
 }
 
 // ocV1UnmigratedFilter 圈定 V1 未迁移行：会话在 session_v2 无对应行。
@@ -347,15 +343,14 @@ func scanOCV1Unmigrated(ctx context.Context, tx *sql.Tx, dates []string,
 
 // batchLookupOCV2Messages 是 batchLookupOCV2 的 V2 布局形态：按 message ID 分块
 // （500）回查 session_message 主表（同事务）。不加 type/终态 SQL 过滤；Go 侧
-// 过滤由 scanOCV2MessageRows 承担（与 V1 回查对称）。
+// 过滤（含 total 回退）由 scanOCV2MessageRows 承担（与 V1 回查对称）。
 func batchLookupOCV2Messages(ctx context.Context, tx *sql.Tx, ids []string,
 	providerMapping map[string]string, sessionInfos map[string]ocSessionData,
-) (map[string]model.Message, map[string]bool, error) {
+) (map[string]model.Message, error) {
 	result := make(map[string]model.Message)
 	if len(ids) == 0 {
-		return result, nil, nil
+		return result, nil
 	}
-	protectedIDs := make(map[string]bool)
 	const chunkSize = 500
 	for _, chunk := range chunkStrings(ids, chunkSize) {
 		placeholders := strings.Repeat("?,", len(chunk)-1) + "?"
@@ -364,18 +359,15 @@ func batchLookupOCV2Messages(ctx context.Context, tx *sql.Tx, ids []string,
 		for i, id := range chunk {
 			args[i] = id
 		}
-		msgs, _, pt, err := scanOCV2MessageRows(ctx, tx, query, args, providerMapping, sessionInfos, model.SyncCursor{})
+		msgs, _, err := scanOCV2MessageRows(ctx, tx, query, args, providerMapping, sessionInfos, model.SyncCursor{})
 		if err != nil {
-			return nil, nil, err
-		}
-		for id := range pt {
-			protectedIDs[id] = true
+			return nil, err
 		}
 		for id, msg := range msgs {
 			result[id] = msg
 		}
 	}
-	return result, protectedIDs, nil
+	return result, nil
 }
 
 // batchLookupOCV2Sessions 是 batchLookupOCSessions 的 V2 布局形态：按 session ID

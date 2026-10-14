@@ -805,17 +805,29 @@ func ocV2AssistantDataNullTotal(id, sessionID string, created, completed int64,
 		id, sessionID, created, completed, input, output)
 }
 
-func TestOpenCodeV2_MissingTotalIsPartialFailure(t *testing.T) {
+// T1/T2：total 键缺失与 null 双形态均按上游 total() 公式（五分项之和）回退
+// 落账，不再 PartialErr 暂缓；同批 total 正常行照常直取。full-parts 两形态
+// 五分项全非零（含 reasoning 与 cache 双项），锁定回退公式不遗漏任何分项。
+func TestOpenCodeV2_MissingTotalFallsBackToDerived(t *testing.T) {
+	const fullParts = `"input":100,"output":200,"reasoning":30,"cache":{"read":7296,"write":50}`
 	for _, tc := range []struct {
-		name string
-		data func() string
+		name   string
+		rowID  string
+		data   string
+		ts     int64
+		msgTyp string
+		want   int64
 	}{
-		{"key-absent", func() string {
-			return ocV2AssistantDataNoTotal("nt-1", "s2", 1000, 2000, 50, 60)
-		}},
-		{"null-value", func() string {
-			return ocV2AssistantDataNullTotal("nt-1", "s2", 1000, 2000, 50, 60)
-		}},
+		{"key-absent-assistant", "nt-1",
+			ocV2AssistantDataNoTotal("nt-1", "s2", 1000, 2000, 50, 60), 2000, "assistant", 110},
+		{"null-value-assistant", "nt-1",
+			ocV2AssistantDataNullTotal("nt-1", "s2", 1000, 2000, 50, 60), 2000, "assistant", 110},
+		{"key-absent-compaction", "ntc-1",
+			fmt.Sprintf(`{"id":"ntc-1","sessionID":"s2","time":{"created":%d},"status":"completed","tokens":{"input":2,"output":7}}`, 3000), 3000, "compaction", 9},
+		{"full-parts-key-absent", "fp-1",
+			fmt.Sprintf(`{"id":"fp-1","sessionID":"s2","time":{"created":1000,"completed":2000},"tokens":{%s}}`, fullParts), 2000, "assistant", 7676},
+		{"full-parts-null", "fp-2",
+			fmt.Sprintf(`{"id":"fp-2","sessionID":"s2","time":{"created":1000,"completed":2000},"tokens":{"total":null,%s}}`, fullParts), 2000, "assistant", 7676},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
@@ -823,10 +835,10 @@ func TestOpenCodeV2_MissingTotalIsPartialFailure(t *testing.T) {
 			createTestOpenCodeV2DB(t, dbPath)
 			insertOCSessionV2(t, dbPath, ocSessionV2Row{id: "s2"})
 			insertOCV2Message(t, dbPath, ocV2MessageRow{
-				id: "nt-1", sessionID: "s2", timeCreated: 1000, timeUpdated: 2000, msgType: "assistant",
-				data: tc.data(),
+				id: tc.rowID, sessionID: "s2", timeCreated: tc.ts, timeUpdated: tc.ts, msgType: tc.msgTyp,
+				data: tc.data,
 			})
-			// 同批一条 total 正常行：应照常落账（成功部分入库）。
+			// 同批一条 total 正常行：直取源报值（不参与回退）。
 			tsOK := ocDateMS(2026, 10, 8, 6, 0)
 			insertOCV2Message(t, dbPath, ocV2MessageRow{
 				id: "ok-1", sessionID: "s2", timeCreated: tsOK, timeUpdated: tsOK, msgType: "assistant",
@@ -836,20 +848,46 @@ func TestOpenCodeV2_MissingTotalIsPartialFailure(t *testing.T) {
 			c := newTestOpenCodeCollector(t, dbPath, "../../testdata")
 			res := ocCollect(t, c, CollectRequest{Incremental: true})
 			byID := ocMsgsByID(res.Messages)
-			if _, ok := byID["nt-1"]; ok {
-				t.Fatalf("total 缺失行不得落账（未知构成不得按 0 入库）")
+			m := byID[tc.rowID]
+			if m.ID != tc.rowID {
+				t.Fatalf("total 缺失行应按回退落账: %+v", byID)
 			}
-			if byID["ok-1"].ID != "ok-1" {
-				t.Fatalf("成功部分应照常落账: %+v", byID)
+			want := tc.want
+			if tc.msgTyp == "compaction" && m.TS != tc.ts {
+				t.Fatalf("compaction TS = %d, want %d（取 created）", m.TS, tc.ts)
 			}
-			if res.PartialErr == nil {
-				t.Fatalf("total 缺失行应产生 PartialErr（游标/标记不推进、可重试）")
+			if m.TotalTokens != want {
+				t.Fatalf("回退 total = %d, want %d（五分项之和）", m.TotalTokens, want)
+			}
+			if byID["ok-1"].ID != "ok-1" || byID["ok-1"].TotalTokens != 40 {
+				t.Fatalf("正常行应照常直取: %+v", byID["ok-1"])
+			}
+			if res.PartialErr != nil {
+				t.Fatalf("total 缺失不再产生 PartialErr: %v", res.PartialErr)
 			}
 		})
 	}
 }
 
-// total 键存在但值为 0：属「源报零值」而非缺失，按方案直取落账（不触发保护）。
+// T4 负向锚定：五分项全零且 total 键缺失——无用量载荷，不落账（游标照推）。
+func TestOpenCodeV2_AllZeroNoTotalSkipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "opencode.db")
+	createTestOpenCodeV2DB(t, dbPath)
+	insertOCSessionV2(t, dbPath, ocSessionV2Row{id: "s2"})
+	ts := ocDateMS(2026, 10, 8, 7, 0)
+	insertOCV2Message(t, dbPath, ocV2MessageRow{
+		id: "zz-1", sessionID: "s2", timeCreated: ts, timeUpdated: ts, msgType: "assistant",
+		data: fmt.Sprintf(`{"id":"zz-1","sessionID":"s2","time":{"created":%d,"completed":%d},"tokens":{}}`, ts, ts),
+	})
+	c := newTestOpenCodeCollector(t, dbPath, "../../testdata")
+	res := ocCollect(t, c, CollectRequest{Incremental: true})
+	if _, ok := ocMsgsByID(res.Messages)["zz-1"]; ok {
+		t.Fatalf("五分项全零（total 缺失）不得落账")
+	}
+}
+
+// total 键存在但值为 0：属「源报零值」而非缺失，按方案直取落账（不触发回退）。
 func TestOpenCodeV2_ZeroTotalStillLanded(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "opencode.db")
@@ -870,13 +908,13 @@ func TestOpenCodeV2_ZeroTotalStillLanded(t *testing.T) {
 		t.Fatalf("tokens = %+v", m)
 	}
 	if res.PartialErr != nil {
-		t.Fatalf("源报零值不触发保护: %v", res.PartialErr)
+		t.Fatalf("源报零值不触发回退: %v", res.PartialErr)
 	}
 }
 
-// 受保护 ID 不得被 event 补偿绕过：主源行 total 缺失（暂缓落账）+ event 表
-// 存在同 ID 旧终态（total=100）——event 不得代落（否则旧值覆盖既有账目）。
-func TestOpenCodeV2_MissingTotalBlocksEventCompensation(t *testing.T) {
+// T6（collector 级）：主源 total 缺失经回退落账后，event 同 ID 旧终态不得
+// 干扰——message 优先规则不变（Phase 3 回查并入 currentMessages 覆盖 event）。
+func TestOpenCodeV2_MissingTotalFallbackOverEvent(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "opencode.db")
 	createTestOpenCodeV2DB(t, dbPath)
@@ -886,17 +924,36 @@ func TestOpenCodeV2_MissingTotalBlocksEventCompensation(t *testing.T) {
 		id: "prot-1", sessionID: "s2", timeCreated: ts, timeUpdated: ts, msgType: "assistant",
 		data: ocV2AssistantDataNoTotal("prot-1", "s2", ts, ts, 50, 60),
 	})
-	// event 终态（旧 total=100）：若保护被绕过，它会以 event-only 形态落账。
+	// event 终态（旧 total=100）：主源存在（回退 110）时以主源为准。
 	ev := ocCompletedInfo("prot-1", "s2", "m1", "anthropic", ts, 100, 40, 60)
 	insertOCEvent(t, dbPath, ocEventRow{id: "ev-1", aggregateID: "s2", eventType: "message.updated.1", info: ev})
 
 	c := newTestOpenCodeCollector(t, dbPath, "../../testdata")
 	res := ocCollect(t, c, CollectRequest{Incremental: true})
-	byID := ocMsgsByID(res.Messages)
-	if _, ok := byID["prot-1"]; ok {
-		t.Fatalf("受保护 ID 不得被 event 补偿以旧终态带入: %+v", byID["prot-1"])
+	m := ocMsgsByID(res.Messages)["prot-1"]
+	if m.ID != "prot-1" {
+		t.Fatalf("主源行应落账: %+v", m)
 	}
-	if res.PartialErr == nil {
-		t.Fatalf("total 缺失行应产生 PartialErr")
+	if m.TotalTokens != 110 {
+		t.Fatalf("total = %d, want 110（主源回退值优先于 event 旧终态 100）", m.TotalTokens)
+	}
+}
+
+// T7：CLI Dates 模式（Incremental=false）对 total 缺失行同样回退（四入口一致）。
+func TestOpenCodeV2_MissingTotalFallbackDatesMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "opencode.db")
+	createTestOpenCodeV2DB(t, dbPath)
+	insertOCSessionV2(t, dbPath, ocSessionV2Row{id: "s2"})
+	ts := ocDateMS(2026, 10, 8, 9, 0)
+	insertOCV2Message(t, dbPath, ocV2MessageRow{
+		id: "d-1", sessionID: "s2", timeCreated: ts, timeUpdated: ts, msgType: "assistant",
+		data: ocV2AssistantDataNoTotal("d-1", "s2", ts, ts, 50, 60),
+	})
+	c := newTestOpenCodeCollector(t, dbPath, "../../testdata")
+	res := ocCollect(t, c, CollectRequest{Incremental: false, Dates: []string{"2026-10-08"}})
+	m := ocMsgsByID(res.Messages)["d-1"]
+	if m.ID != "d-1" || m.TotalTokens != 110 {
+		t.Fatalf("Dates 模式回退落账: %+v", m)
 	}
 }

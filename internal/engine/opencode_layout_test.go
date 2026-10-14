@@ -80,6 +80,17 @@ func ocLayoutTokenSum(t *testing.T, usageDB *db.DB, id string) int64 {
 	return sum
 }
 
+// ocLayoutMessageCount 统计 OpenCode 客户端已入库消息行数（零重扫断言用）。
+func ocLayoutMessageCount(t *testing.T, usageDB *db.DB) int64 {
+	t.Helper()
+	var n int64
+	if err := usageDB.QueryRow(`SELECT COUNT(*) FROM messages WHERE client=?`,
+		model.ClientOpenCode).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 // ===== F8：空目标库 + 混合源库 + 无日期增量请求 =====
 
 func TestOpenCodeLayout_EmptyTargetMixedSourceFullSweep(t *testing.T) {
@@ -311,22 +322,20 @@ func TestOpenCodeLayout_RoundTripV2V1V2(t *testing.T) {
 	}
 }
 
-// ===== V2 total 缺失行：既有正确账目不得被覆盖，PartialErr 轮不推游标/标记，
-// 语义闭合后（补上 total）重采可正确落账。 =====
+// ===== V2 total 缺失行：按上游 total() 公式（五分项之和）回退落账，游标/
+// 标记正常推进；源行后续补上 total 后按源报值直取更新。 =====
 
-func TestOpenCodeLayout_MissingTotalDoesNotOverwrite(t *testing.T) {
+func TestOpenCodeLayout_MissingTotalFallsBackToDerived(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "opencode.db")
 	ocFixtureCreateV1(t, dbPath)
 	ocFixtureCreateV2(t, dbPath)
 	ocFixtureInsertSessionV2(t, dbPath, "s2", "/p", "T")
 	ts := ocLayoutMSAt(2026, 10, 8, 8, 0)
-	// 先以正常 total 行完成一轮（目标已有正确账目 total=300）。
+	// 先以正常 total 行完成一轮（既有账目 total=300）。
 	ocFixtureV2Message(t, dbPath, "keep-1", "s2", ts, 300)
 	usageDB, deps := ocLayoutTestEnv(t, dbPath)
-	if result := ocLayoutRunIncremental(t, usageDB, deps); result.Complete() {
-		// 首轮 PartialErr 应为零（total 正常）。
-	} else {
+	if result := ocLayoutRunIncremental(t, usageDB, deps); !result.Complete() {
 		t.Fatalf("首轮 result = %+v", result)
 	}
 	if got := ocLayoutTokenSum(t, usageDB, "keep-1"); got != 300 {
@@ -334,44 +343,52 @@ func TestOpenCodeLayout_MissingTotalDoesNotOverwrite(t *testing.T) {
 	}
 
 	// 同 ID 行以「五分项非零、total 缺失」形态更新（time_updated 更大）：
-	// 不得把既有 300 覆盖为 0。
+	// V2 无 total 键是常态，按上游公式回退 50+60=110 落账（源行更新的真实
+	// 语义），本轮 Complete、游标推进。
 	noTotal := fmt.Sprintf(`{"id":"keep-1","sessionID":"s2","time":{"created":%d,"completed":%d},"tokens":{"input":50,"output":60}}`, ts+1000, ts+1000)
 	ocFixtureExec(t, dbPath,
 		`INSERT OR REPLACE INTO session_message (id,session_id,data,time_created,time_updated,type,seq) VALUES (?,?,?,?,?, 'assistant', 1)`,
 		"keep-1", "s2", noTotal, ts+1000, ts+1000)
 
-	result := ocLayoutRunIncremental(t, usageDB, deps)
-	if result.Complete() || result.Err == nil {
-		t.Fatalf("total 缺失行应使本轮以 PartialErr 失败: %+v", result)
+	if result := ocLayoutRunIncremental(t, usageDB, deps); !result.Complete() {
+		t.Fatalf("回退落账轮应以 Complete 结束（不再 PartialErr）: %+v", result)
 	}
-	if got := ocLayoutTokenSum(t, usageDB, "keep-1"); got != 300 {
-		t.Fatalf("既有正确账目被覆盖: total=%d, want 300（未知构成不得按 0 落账）", got)
+	if got := ocLayoutTokenSum(t, usageDB, "keep-1"); got != 110 {
+		t.Fatalf("回退 total = %d, want 110（五分项之和）", got)
 	}
-	// PartialErr 轮不推进 message 游标（下一轮重试同一区间）。
-	if cur := ocLayoutMessageCursor(t, usageDB); cur.Value != ts || cur.ID != "keep-1" {
-		t.Fatalf("PartialErr 轮不得推进 message 游标: %+v", cur)
+	if cur := ocLayoutMessageCursor(t, usageDB); cur.Value != ts+1000 || cur.ID != "keep-1" {
+		t.Fatalf("回退轮应推进 message 游标: %+v", cur)
 	}
 
-	// 语义闭合（行补上 total=110）后重采：正确落账，游标推进。
+	// T8：回退轮已计入成功，下一轮增量零重扫（messages 行数不变）。
+	before := ocLayoutMessageCount(t, usageDB)
+	if result := ocLayoutRunIncremental(t, usageDB, deps); !result.Complete() {
+		t.Fatalf("空轮 result = %+v", result)
+	}
+	if after := ocLayoutMessageCount(t, usageDB); after != before {
+		t.Fatalf("下一轮增量应零重扫: %d → %d", before, after)
+	}
+
+	// 源行后续补上 total=110（键存在）后重采：直取源报值，行为不变。
 	fixed := fmt.Sprintf(`{"id":"keep-1","sessionID":"s2","time":{"created":%d,"completed":%d},"tokens":{"total":110,"input":50,"output":60}}`, ts+2000, ts+2000)
 	ocFixtureExec(t, dbPath,
 		`INSERT OR REPLACE INTO session_message (id,session_id,data,time_created,time_updated,type,seq) VALUES (?,?,?,?,?, 'assistant', 2)`,
 		"keep-1", "s2", fixed, ts+2000, ts+2000)
 	if result := ocLayoutRunIncremental(t, usageDB, deps); !result.Complete() {
-		t.Fatalf("修复后重采 result = %+v", result)
+		t.Fatalf("补 total 后重采 result = %+v", result)
 	}
 	if got := ocLayoutTokenSum(t, usageDB, "keep-1"); got != 110 {
-		t.Fatalf("修复后 total = %d, want 110", got)
+		t.Fatalf("补 total 后 total = %d, want 110", got)
 	}
 	if cur := ocLayoutMessageCursor(t, usageDB); cur.Value != ts+2000 || cur.ID != "keep-1" {
-		t.Fatalf("修复后游标应推进: %+v", cur)
+		t.Fatalf("补 total 后游标应推进: %+v", cur)
 	}
 }
 
-// 受保护 ID 的完整链路回归（外审场景）：既有 total=300 → V2 主源改 total
-// 缺失 + event 存在同 ID 旧终态 total=100 → PartialErr 轮后既有账目保持 300
-// （event 不得绕过保护代落）；补齐 total 后重采恢复。
-func TestOpenCodeLayout_MissingTotalEventDoesNotOverwrite(t *testing.T) {
+// 回退与 event 补偿的合并链路：主源 total 缺失（回退 110）+ event 存在同 ID
+// 旧终态（total=100）——主源优先规则不变（回退值落账，非 event 旧值）；补齐
+// total 后重采仍以主源为准。
+func TestOpenCodeLayout_MissingTotalFallbackOverEvent(t *testing.T) {
 	for _, form := range []struct {
 		name   string
 		tokens string
@@ -380,12 +397,12 @@ func TestOpenCodeLayout_MissingTotalEventDoesNotOverwrite(t *testing.T) {
 		{"null-value", `"tokens":{"total":null,"input":50,"output":60}`},
 	} {
 		t.Run(form.name, func(t *testing.T) {
-			testMissingTotalEventDoesNotOverwrite(t, form.tokens)
+			testMissingTotalFallbackOverEvent(t, form.tokens)
 		})
 	}
 }
 
-func testMissingTotalEventDoesNotOverwrite(t *testing.T, missingTokens string) {
+func testMissingTotalFallbackOverEvent(t *testing.T, missingTokens string) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "opencode.db")
 	ocFixtureCreateV1(t, dbPath)
@@ -401,36 +418,36 @@ func testMissingTotalEventDoesNotOverwrite(t *testing.T, missingTokens string) {
 		t.Fatalf("首轮 total = %d, want 300", got)
 	}
 
-	// 主源更新为 total 缺失/null 形态；event 插入同 ID 旧终态（total=100）。
+	// 主源更新为 total 缺失/null 形态（回退 110）；event 插入同 ID 旧终态
+	// （total=100）——主源优先，落 110 而非 event 旧值。
 	noTotal := fmt.Sprintf(`{"id":"keep-1","sessionID":"s2","time":{"created":%d,"completed":%d},%s}`, ts+1000, ts+1000, missingTokens)
 	ocFixtureExec(t, dbPath,
 		`INSERT OR REPLACE INTO session_message (id,session_id,data,time_created,time_updated,type,seq) VALUES (?,?,?,?,?, 'assistant', 1)`,
 		"keep-1", "s2", noTotal, ts+1000, ts+1000)
 	ocFixtureEvent(t, dbPath, "keep-1", "s2", ts+500, 100, 40, 60)
 
-	result := ocLayoutRunIncremental(t, usageDB, deps)
-	if result.Complete() || result.Err == nil {
-		t.Fatalf("total 缺失行应使本轮以 PartialErr 失败: %+v", result)
+	if result := ocLayoutRunIncremental(t, usageDB, deps); !result.Complete() {
+		t.Fatalf("回退轮应以 Complete 结束: %+v", result)
 	}
-	if got := ocLayoutTokenSum(t, usageDB, "keep-1"); got != 300 {
-		t.Fatalf("受保护 ID 的既有账目被 event 旧终态覆盖: total=%d, want 300", got)
+	if got := ocLayoutTokenSum(t, usageDB, "keep-1"); got != 110 {
+		t.Fatalf("主源回退值应优先于 event 旧终态: total=%d, want 110", got)
 	}
-	if cur := ocLayoutMessageCursor(t, usageDB); cur.Value != ts || cur.ID != "keep-1" {
-		t.Fatalf("PartialErr 轮不得推进 message 游标: %+v", cur)
+	if cur := ocLayoutMessageCursor(t, usageDB); cur.Value != ts+1000 || cur.ID != "keep-1" {
+		t.Fatalf("回退轮应推进 message 游标: %+v", cur)
 	}
 
-	// 补齐 total 后重采恢复（event 旧终态存在也不得干扰主源覆盖）。
+	// 补齐 total 后重采仍以主源为准（event 旧终态存在不干扰）。
 	fixed := fmt.Sprintf(`{"id":"keep-1","sessionID":"s2","time":{"created":%d,"completed":%d},"tokens":{"total":110,"input":50,"output":60}}`, ts+2000, ts+2000)
 	ocFixtureExec(t, dbPath,
 		`INSERT OR REPLACE INTO session_message (id,session_id,data,time_created,time_updated,type,seq) VALUES (?,?,?,?,?, 'assistant', 2)`,
 		"keep-1", "s2", fixed, ts+2000, ts+2000)
 	if result := ocLayoutRunIncremental(t, usageDB, deps); !result.Complete() {
-		t.Fatalf("修复后重采 result = %+v", result)
+		t.Fatalf("补齐后重采 result = %+v", result)
 	}
 	if got := ocLayoutTokenSum(t, usageDB, "keep-1"); got != 110 {
-		t.Fatalf("修复后 total = %d, want 110", got)
+		t.Fatalf("补齐后 total = %d, want 110", got)
 	}
 	if cur := ocLayoutMessageCursor(t, usageDB); cur.Value != ts+2000 || cur.ID != "keep-1" {
-		t.Fatalf("修复后游标应推进: %+v", cur)
+		t.Fatalf("补齐后游标应推进: %+v", cur)
 	}
 }
