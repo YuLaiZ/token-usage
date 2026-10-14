@@ -65,7 +65,7 @@ token-usage
 
 本次命令面做了有意的收敛，面向 v0.1.8 编写的脚本需要更新：
 
-- 六个分析命令 `chart`、`compare`、`export`、`forecast`、`report`、`top` 已**删除**（无兼容别名）。可视化分析——SVG 图表、用量预测、两期对比、最重会话排行——由 `serve` 仪表板经只读 HTTP 数据面延续，含页面范围内的 CSV 导出；终端查询继续由 `query` 与 `watch` 承担。机器可读的 CLI export 合同与离线 HTML 报告包已有意移除，没有完整直接替代。
+- 六个分析命令 `chart`、`compare`、`export`、`forecast`、`report`、`top` 已**删除**（无兼容别名）。可视化分析——SVG 图表、用量预测、两期对比、最重会话排行——由 `serve` 仪表板经只读 HTTP 数据面延续；终端查询继续由 `query` 与 `watch` 承担。机器可读的 CLI export 合同与离线 HTML 报告包已有意移除，没有完整直接替代。
 - 顶层生命周期命令已移入 `daemon` 命令组：`token-usage start` → `token-usage daemon start`，`status`、`stop`、`restart` 同理。
 - `token-usage serve` 不再前台启动服务：裸 `serve` 只打印命令组帮助，仪表板用 `serve start` 启动（`serve restart` 只接管已在运行的实例）。
 
@@ -74,7 +74,7 @@ token-usage
 | `token-usage start` / `status` / `stop` / `restart` | `token-usage daemon start` / `daemon status` / `daemon stop` / `daemon restart` |
 | `token-usage serve`（前台） | `token-usage serve start`（后台） |
 | `token-usage chart` / `forecast` / `compare` / `top` | `token-usage serve start`，然后打开仪表板 |
-| `token-usage export` / `report` | 终端查询继续用 `query` / `watch`；仪表板提供页面范围内的 CSV 导出。机器可读 CLI export 与离线报告包已移除，无完整直接替代 |
+| `token-usage export` / `report` | 终端查询继续用 `query` / `watch`。仪表板的早期 CSV 导出已随 v0.2.0 重做移除；机器可读 CLI export 与离线报告包已移除，无完整直接替代 |
 
 ## 通用约定
 

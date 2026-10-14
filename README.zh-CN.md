@@ -155,14 +155,14 @@ token-usage query list
 
 ### 从 v0.1.8 迁移
 
-v0.1.9 是一次有意的破坏性 CLI 收敛（详见 [CLI 参考](docs/cli.zh-CN.md#从-v018-迁移破坏性变更)）。`chart`、`compare`、`export`、`forecast`、`report`、`top` 六个命令已删除。可视化分析（SVG 图表、用量预测、两期对比、最重会话排行）由 `serve` 仪表板经只读 HTTP 数据面延续——含页面范围内的一键 CSV 导出；终端查询继续由 `query` 与 `watch` 承担。机器可读的 CLI export 合同与离线 HTML 报告包已有意移除，没有完整直接替代。顶层 `start`/`status`/`stop`/`restart` 已移入 `daemon` 命令组，裸 `serve` 不再前台启动服务。
+v0.1.9 是一次有意的破坏性 CLI 收敛（详见 [CLI 参考](docs/cli.zh-CN.md#从-v018-迁移破坏性变更)）。`chart`、`compare`、`export`、`forecast`、`report`、`top` 六个命令已删除。可视化分析（SVG 图表、用量预测、两期对比、最重会话排行）由 `serve` 仪表板经只读 HTTP 数据面延续；终端查询继续由 `query` 与 `watch` 承担。机器可读的 CLI export 合同与离线 HTML 报告包已有意移除，没有完整直接替代。顶层 `start`/`status`/`stop`/`restart` 已移入 `daemon` 命令组，裸 `serve` 不再前台启动服务。
 
 | v0.1.8 | 现在 |
 |---|---|
 | `token-usage start` / `status` / `stop` / `restart` | `token-usage daemon start` / `daemon status` / `daemon stop` / `daemon restart` |
 | `token-usage serve`（前台） | `token-usage serve start`（后台） |
 | `token-usage chart` / `forecast` / `compare` / `top` | `token-usage serve start`，然后打开仪表板 |
-| `token-usage export` / `report` | 终端查询继续用 `query` / `watch`；仪表板提供页面范围内的 CSV 导出。机器可读 CLI export 与离线报告包已移除，无完整直接替代 |
+| `token-usage export` / `report` | 终端查询继续用 `query` / `watch`。仪表板的早期 CSV 导出已随 v0.2.0 重做移除；机器可读 CLI export 与离线报告包已移除，无完整直接替代 |
 
 运行 `token-usage --help` 查看命令概览；标志、退出码、副作用边界、配置行为与两个服务的生命周期见 [CLI 参考](docs/cli.zh-CN.md)。
 

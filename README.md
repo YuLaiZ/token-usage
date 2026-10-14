@@ -155,14 +155,14 @@ token-usage query list
 
 ### Migrating from v0.1.8
 
-v0.1.9 is a deliberate breaking CLI change (details in the [CLI Reference](docs/cli.md#migrating-from-v018-breaking-changes)). The chart, compare, export, forecast, report, and top commands have been removed. The visual analytics (SVG charts, usage forecasts, period comparisons, top-session rankings) live on in the `serve` dashboard over its read-only HTTP data surface — including page-scoped CSV export there — and `query` / `watch` remain the terminal reports. The machine-readable CLI export contract and the offline HTML report bundle were removed intentionally and have no full replacement. The top-level `start`/`status`/`stop`/`restart` commands have moved into the `daemon` group, and bare `serve` no longer runs a foreground server.
+v0.1.9 is a deliberate breaking CLI change (details in the [CLI Reference](docs/cli.md#migrating-from-v018-breaking-changes)). The chart, compare, export, forecast, report, and top commands have been removed. The visual analytics (SVG charts, usage forecasts, period comparisons, top-session rankings) live on in the `serve` dashboard over its read-only HTTP data surface, and `query` / `watch` remain the terminal reports. The machine-readable CLI export contract and the offline HTML report bundle were removed intentionally and have no full replacement. The top-level `start`/`status`/`stop`/`restart` commands have moved into the `daemon` group, and bare `serve` no longer runs a foreground server.
 
 | v0.1.8 | now |
 |---|---|
 | `token-usage start` / `status` / `stop` / `restart` | `token-usage daemon start` / `daemon status` / `daemon stop` / `daemon restart` |
 | `token-usage serve` (foreground) | `token-usage serve start` (background) |
 | `token-usage chart` / `forecast` / `compare` / `top` | `token-usage serve start`, then open the dashboard |
-| `token-usage export` / `report` | Terminal queries stay on `query` / `watch`; the dashboard offers page-scoped CSV export. The machine-readable CLI export and the offline report bundle are gone without a full replacement. |
+| `token-usage export` / `report` | Terminal queries stay on `query` / `watch`. The dashboard's early CSV export was removed with the v0.2.0 redesign; the machine-readable CLI export and the offline report bundle are gone without a full replacement. |
 
 Run `token-usage --help` for a command overview, or read the [CLI Reference](docs/cli.md) for flags, exit codes, side-effect boundaries, configuration behavior, and both service lifecycles.
 
