@@ -191,7 +191,7 @@ func TestServeMeta(t *testing.T) {
 }
 
 // TestServeDashboard_ShapeAndOrder:/api/dashboard 默认范围含今天;顶层与
-// 各嵌套对象的字段名精确匹配(载荷 v4:无 compare/forecast,新增 custom_views
+// 各嵌套对象的字段名精确匹配(载荷 v5:含同快照的全库数据时间；无 compare/forecast，保留 custom_views
 // 与 trend,dimensions 固定四维度,各维度返回最终行——夹具独立项不足上限,
 // 不生成尾行);client 维度按总量降序;sessions 按总量降序且上限 20(夹具
 // 13 个会话全部返回);totals 数值精确。map 反序列化与结构体反序列化双检。
@@ -204,7 +204,10 @@ func TestServeDashboard_ShapeAndOrder(t *testing.T) {
 
 	// 第一检:map 键集合精确匹配(多字段/少字段/拼错均失败)。
 	m := decodeJSON(t, rec)
-	assertKeys(t, "dashboard 顶层", m, "range", "totals", "columns", "dimensions", "trend", "heatmap", "custom_views", "sessions")
+	assertKeys(t, "dashboard 顶层", m, "range", "totals", "columns", "dimensions", "trend", "heatmap", "custom_views", "sessions", "data_through", "last_collection")
+	if m["data_through"] != fx.dataThru || m["last_collection"] != nil {
+		t.Errorf("freshness = %v/%v, want %s/null", m["data_through"], m["last_collection"], fx.dataThru)
+	}
 	assertKeys(t, "range", m["range"].(map[string]any), "from", "to")
 	assertKeys(t, "totals", m["totals"].(map[string]any),
 		"requests", "fresh_input", "output", "cache_read", "cache_create", "reasoning", "total", "active_days")
@@ -543,13 +546,16 @@ func TestServeDashboard_CustomViews(t *testing.T) {
 // 天数且全零、全部日期标记 future(尚未发生→空白格,与真实零格区分)、
 // 会话为空数组、四维度行与自定义视图行为空。
 func TestServeDashboard_FutureRange(t *testing.T) {
-	h, _ := newTestServer(t)
+	h, fx := newTestServer(t)
 	rec := doGet(h, "/api/dashboard?from=2027-01-01&to=2027-01-31")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("未来范围应 200(不伪装成错误),实际 %d:\n%s", rec.Code, rec.Body.String())
 	}
 	m := decodeJSON(t, rec)
-	assertKeys(t, "dashboard 顶层", m, "range", "totals", "columns", "dimensions", "trend", "heatmap", "custom_views", "sessions")
+	assertKeys(t, "dashboard 顶层", m, "range", "totals", "columns", "dimensions", "trend", "heatmap", "custom_views", "sessions", "data_through", "last_collection")
+	if m["data_through"] != fx.dataThru {
+		t.Errorf("future range must preserve global data_through, got %v", m["data_through"])
+	}
 	if got := m["range"].(map[string]any); got["from"] != "2027-01-01" || got["to"] != "2027-01-31" {
 		t.Errorf("range 应原样返回未来范围,实际 %v", got)
 	}

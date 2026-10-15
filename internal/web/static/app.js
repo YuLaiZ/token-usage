@@ -24,8 +24,9 @@ var UI_TEXT = {
   '语言与外观':'Language and appearance','界面语言':'Interface language','切换主题':'Switch theme','选择主题配色':'Choose color palette',
   '主题配色':'Color palette','配色方案候选':'Color palette options',
   '用量概览':'Usage overview','按客户端、供应商、模型和项目查看用量':'Explore usage by client, provider, model, and project','查看数值单位说明':'View value unit definitions','数值单位':'Value units','十进制':'Decimal','一千':'thousand','一百万':'million','十亿':'billion',
-  '私密信息':'Privacy','切换私密信息遮蔽':'Toggle privacy masking',
-  '截图分享':'Screenshot','复制整页截图到剪贴板':'Copy full-page screenshot to clipboard',
+  '隐私遮蔽':'Privacy masking','切换隐私遮蔽':'Toggle privacy masking','切换本次图片的隐私遮蔽':'Toggle privacy masking for this image',
+  '隐藏项目名和会话标题':'Hide project names and session titles','隐藏本次图片中的项目名和会话标题':'Hide project names and session titles in this image',
+  '截图分享':'Screenshot','选择截图内容':'Choose screenshot content','复制图片':'Copy image','重新生成':'Retry preview','截图预览':'Screenshot preview',
   '已复制到剪贴板':'Copied to clipboard','截图失败：':'Screenshot failed: ','剪贴板不可用':'clipboard unavailable',
   'SVG 图像加载失败':'SVG image load failed','画布导出失败':'canvas export failed',
   '统计区间':'Date range','自定义统计区间':'Custom date range','今日':'Today','本周':'This week','本月':'This month','本年':'This year','近 7 天':'Last 7 days','近 30 天':'Last 30 days','近 1 年':'Last 12 months',
@@ -211,10 +212,10 @@ function fmtDur(ms){
 var state = { range:0, view:'list', mode:'trend', meta:{}, data:null, heat:[] };
 var CUSTOM = null;            /* 自定义区间 {s,e} 日期串；预设区间时恒为 null */
 var DIMROWS = {};             /* 各维度当前展示行（构成图联动用） */
-/* 私密信息遮蔽：纯展示层开关（不持久化，刷新重置）。pv 是唯一遮蔽出口，
+/* 隐私遮蔽：纯展示层开关（不持久化，刷新重置）。pv 是唯一遮蔽出口，
    空值安全（falsy 原样返回空串），调用点维持各自的 esc 时序。 */
 var PRIVACY = { on:false };
-function pv(v){ return (PRIVACY.on && v) ? '***' : String(v==null?'':v); }
+function pv(v, masked){ return ((typeof masked==='boolean' ? masked : PRIVACY.on) && v) ? '***' : String(v==null?'':v); }
 var RANGE_KEY = 'tu-range';
 /* 统一刷新状态机:自动/手动/区间变更共用一个请求入口与一套
    加载/成功/失败状态。seq 保证新请求胜出,过期响应不写回;自动计时
@@ -742,7 +743,7 @@ document.addEventListener('click',function(){ setUnitPop(false); });
 document.addEventListener('keydown',function(e){
   if(e.key==='Escape' && el('unit-pop') && !el('unit-pop').hidden){ setUnitPop(false); el('unit-trigger').focus(); }
 });
-/* 私密信息遮蔽开关：不持久化（刷新重置）；开启时先清理完整名称/会话标题
+/* 隐私遮蔽开关：不持久化（刷新重置）；开启时先清理完整名称/会话标题
    弹窗的明文残留（弹窗在 #page-dash 外，renderAll 不触碰该节点），再整体
    重渲染。关闭即恢复明文，不发起任何网络请求。 */
 el('privacy-trigger').addEventListener('click',function(){
@@ -812,7 +813,7 @@ function cellAgg(k, T){
   if(k==='requests') return fmtInt(T.requests);
   return fmtTok(rowVal(T,k));
 }
-function tableView(rows, dim){
+function tableView(rows, dim, masked){
   var ids=colIds();
   var maxT = rows.length && rows[0].total>0 ? rows[0].total : 1, T = aggRows(rows);
   var colgroup = '<colgroup><col style="width:27%">'+ids.map(function(){ return '<col>'; }).join('')+'</colgroup>';
@@ -825,11 +826,11 @@ function tableView(rows, dim){
   rows.forEach(function(r){
     /* 「截断后可查看全文」交互仅项目维度使用(长仓库名/路径高频截断);
        客户端/供应商/模型保持纯文本省略,不加按钮。
-       私密遮蔽(私密信息开启):仅项目维度非 isOther 行,名称/title/data-full
+       隐私遮蔽开启:仅项目维度非 isOther 行,名称/title/data-full
        三处同步遮蔽,「其他（N 项）」尾行是本地化文案不遮。 */
     var th;
     if(dim==='project'){
-      var nameFull=esc(r.isOther ? r.name : pv(r.name));
+      var nameFull=esc(r.isOther ? r.name : pv(r.name, masked));
       th = '<th scope="row" class="tname"><div class="session-title-wrap"><span class="trunc-name" title="'+nameFull+'">'+nameFull+'</span>'+
         '<button type="button" class="session-title-detail" data-full="'+nameFull+'" data-heading="'+ui('完整名称','Full name')+'" hidden aria-label="'+ui('查看完整名称','View full name')+'" title="'+ui('查看完整名称','View full name')+'"><svg class="ic"><use href="#i-info"/></svg></button></div></th>';
     }else{
@@ -858,7 +859,7 @@ function arcPath(r1, r2, a0, a1){
 function donutMetas(rows){
   return { metas: rows.map(function(r){ return { name:r.name, total:r.total, isOther:!!r.isOther }; }), T: aggRows(rows) };
 }
-function composeView(dimId, rows){
+function composeView(dimId, rows, masked){
   var meta = donutMetas(rows), T = meta.T, metas = meta.metas;
   var title = dimLabel(dimId);
   var segs = '', acc = 0, GAP = 1.2;
@@ -869,13 +870,13 @@ function composeView(dimId, rows){
     var s0 = a0 + GAP/2, s1 = Math.max(a1 - GAP/2, s0 + 0.4);
     /* 私密遮蔽:仅项目维度卡、非 isOther 行;扇区 title/图例 aria/图例名
        三处同源(m.name 原值),避免悬停通道漏明文。 */
-    var label = (dimId==='project' && !m.isOther) ? pv(m.name) : m.name;
+    var label = (dimId==='project' && !m.isOther) ? pv(m.name, masked) : m.name;
     segs += '<path class="seg-d" data-i="'+i+'" d="'+arcPath(50, 94, s0, s1)+'" fill="color-mix(in srgb, var(--gh) '+RAMP[i%RAMP.length]+'%, var(--raised))">' +
       '<title>'+esc(label)+' · '+(share*100).toFixed(1)+'% · '+fmtTok(m.total)+'</title></path>';
   });
   var lg = metas.map(function(m,i){
     var share = T.total ? m.total/T.total : 0;
-    var label = (dimId==='project' && !m.isOther) ? pv(m.name) : m.name;
+    var label = (dimId==='project' && !m.isOther) ? pv(m.name, masked) : m.name;
     return '<li tabindex="0" data-i="'+i+'" aria-label="'+esc(label)+ui('，占比 ',', ')+(share*100).toFixed(1)+'%, '+fmtTok(m.total)+'">' +
       '<i class="lg-dot" style="background:color-mix(in srgb, var(--gh) '+RAMP[i%RAMP.length]+'%, var(--raised))"></i>' +
       '<span class="lg-name">'+esc(label)+'</span><span class="lg-val">'+(share*100).toFixed(1)+'%</span></li>';
@@ -1071,19 +1072,22 @@ function syncModeSeg(){
     x.setAttribute('aria-pressed', x.dataset.v===state.mode ? 'true':'false');
   });
 }
-function drawTrend(){
-  frame.classList.remove('calendar-layout');
-  var W = Math.max(320, frame.clientWidth-24), H = frame.clientHeight || 260;
+function drawTrend(target){
+  var chartSVG = target ? target.svg : svg, chartFrame = target ? target.frame : frame;
+  var chartEl = function(id){ return target ? (id==='chart-title-h' ? target.title : target.sub) : el(id); };
+  chartFrame.classList.remove('calendar-layout');
+  var W = Math.max(320, (target ? target.width : chartFrame.clientWidth)-24), H = (target ? target.height : chartFrame.clientHeight) || 260;
   var s = seriesFor();
-  CUR = { t:s.t, labels:s.labels, hourly:s.hourly, granularity:s.granularity };
+  var cur = { t:s.t, labels:s.labels, hourly:s.hourly, granularity:s.granularity };
+  if(!target) CUR = cur;
   /* 空区间由后端显式标识(empty=true,无桶或全零):显示明确空状态,不渲染
      「峰值 0」的假图表;未来范围与无数据范围同语义。 */
   var empty = s.empty;
   if(!s.t.length || empty){
-    svg.setAttribute('viewBox','0 0 '+W+' '+H);
-    svg.innerHTML = '<text class="ax ta-c" x="'+(W/2).toFixed(1)+'" y="'+(H/2).toFixed(1)+'">'+ui('该区间暂无用量','No usage in this range')+'</text>';
-    el('chart-title-h').textContent = ui('用量趋势','Usage trend');
-    el('chart-sub').textContent = rangeName(state.range)+' · '+rangeDateText();
+    chartSVG.setAttribute('viewBox','0 0 '+W+' '+H);
+    chartSVG.innerHTML = '<text class="ax ta-c" x="'+(W/2).toFixed(1)+'" y="'+(H/2).toFixed(1)+'">'+ui('该区间暂无用量','No usage in this range')+'</text>';
+    chartEl('chart-title-h').textContent = ui('用量趋势','Usage trend');
+    chartEl('chart-sub').textContent = rangeName(state.range)+' · '+rangeDateText();
     return;
   }
   var padL=46, padR=40, padT=12, padB=20, pw=W-padL-padR, ph=H-padT-padB;
@@ -1118,23 +1122,25 @@ function drawTrend(){
   s.t.forEach(function(_,i){
     out += '<rect x="'+(padL+i*slot).toFixed(1)+'" y="'+padT+'" width="'+slot.toFixed(1)+'" height="'+ph+'" fill="transparent" data-i="'+i+'"/>';
   });
-  svg.setAttribute('viewBox','0 0 '+W+' '+H);
-  svg.setAttribute('aria-label', rangeName(state.range)+ui(' 用量柱状图',' tokens bar chart'));
-  svg.innerHTML = out;
-  decorateChartTargets();
-  el('chart-title-h').textContent = ui('用量趋势','Usage trend');
-  var grain = CUR.granularity==='hour' ? ui('按小时','Hourly') : (CUR.granularity==='week' ? ui('按周','Weekly') : ui('按日','Daily'));
-  el('chart-sub').innerHTML = ui('峰值 ','Peak ')+s.labels[peakI]+' '+fmtTok(s.t[peakI])+' · '+rangeName(state.range)+' · '+rangeDateText()+' · '+grain+' · <i class="key-dot"></i>'+ui('用量','Tokens');
+  chartSVG.setAttribute('viewBox','0 0 '+W+' '+H);
+  chartSVG.setAttribute('aria-label', rangeName(state.range)+ui(' 用量柱状图',' tokens bar chart'));
+  chartSVG.innerHTML = out;
+  if(!target) decorateChartTargets();
+  chartEl('chart-title-h').textContent = ui('用量趋势','Usage trend');
+  var grain = cur.granularity==='hour' ? ui('按小时','Hourly') : (cur.granularity==='week' ? ui('按周','Weekly') : ui('按日','Daily'));
+  chartEl('chart-sub').innerHTML = ui('峰值 ','Peak ')+s.labels[peakI]+' '+fmtTok(s.t[peakI])+' · '+rangeName(state.range)+' · '+rangeDateText()+' · '+grain+' · <i class="key-dot"></i>'+ui('用量','Tokens');
 }
-function drawHeat(){
+function drawHeat(target){
+  var chartSVG = target ? target.svg : svg, chartFrame = target ? target.frame : frame;
+  var chartEl = function(id){ return target ? (id==='chart-title-h' ? target.title : target.sub) : el(id); };
   var b = rangeBounds();
   var hm = (state.data && state.data.heatmap) || {};
   var mode = hm.mode || 'day_hour';
   var days = hm.days || [];
-  frame.classList.toggle('calendar-layout', mode==='calendar');
-  var W = Math.max(320, frame.clientWidth-24), H = frame.clientHeight || 260;
+  chartFrame.classList.toggle('calendar-layout', mode==='calendar');
+  var W = Math.max(320, (target ? target.width : chartFrame.clientWidth)-24), H = (target ? target.height : chartFrame.clientHeight) || 260;
   var map = heatMap();
-  HEATVALS=[]; HEATLAB=[]; HEATTIPS=[]; HEATSCOPE=rangeDateText();
+  var heatVals=[], heatLab=[], heatTips=[];
   var out='', sub2='', maxCell=1, hasBlank=false;
 
   if(mode==='day_hour'){
@@ -1158,12 +1164,12 @@ function drawHeat(){
     var cw=Math.min((W-padL-padR-23*gap)/24,42), ch=(H-padT-padB-(rows.length-1)*gap)/rows.length;
     var gridW=24*cw+23*gap,x0=padL+Math.max((W-padL-padR-gridW)/2,0);
     rows.forEach(function(r,ri){
-      HEATVALS.push(r.vals); HEATLAB.push(r.label); HEATTIPS.push([]);
+      heatVals.push(r.vals); heatLab.push(r.label); heatTips.push([]);
       var y=padT+ri*(ch+gap);
       out+='<text class="ax ta-e" x="'+(x0-8)+'" y="'+(y+ch/2+3).toFixed(1)+'">'+r.label+'</text>';
       r.vals.forEach(function(val,c){
         if(val===null){ out+='<rect class="hc-empty" x="'+(x0+c*(cw+gap)).toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+cw.toFixed(1)+'" height="'+ch.toFixed(1)+'" rx="2"/>'; return; }
-        HEATTIPS[ri][c]=r.date+' · '+pad2(c)+':00';
+        heatTips[ri][c]=r.date+' · '+pad2(c)+':00';
         var op=Math.round(7+93*Math.pow(Math.min(val/maxCell,1),.8));
         out+='<rect class="hc" data-r="'+ri+'" data-c="'+c+'" x="'+(x0+c*(cw+gap)).toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+cw.toFixed(1)+'" height="'+ch.toFixed(1)+'" rx="2" style="fill:color-mix(in srgb,var(--accent) '+op+'%,transparent)"/>';
       });
@@ -1203,7 +1209,7 @@ function drawHeat(){
     var cW=Math.min((W-pL-pR-(dates.length-1)*g)/dates.length,64),cH=(H-pT-pB-5*g)/6;
     var gw=dates.length*cW+(dates.length-1)*g,xStart=pL+Math.max((W-pL-pR-gw)/2,0);
     vals.forEach(function(row,ri){
-      HEATVALS.push(row); HEATLAB.push(blocks[ri]); HEATTIPS.push(tips[ri]);
+      heatVals.push(row); heatLab.push(blocks[ri]); heatTips.push(tips[ri]);
       var y=pT+ri*(cH+g);
       out+='<text class="ax ta-e" x="'+(xStart-8)+'" y="'+(y+cH/2+3).toFixed(1)+'">'+blocks[ri]+'</text>';
       row.forEach(function(val,c){
@@ -1230,9 +1236,9 @@ function drawHeat(){
     var calW=weeks*cellW+(weeks-1)*gp,calH=7*cellH+6*gp;
     var sx=pl+Math.max((W-pl-pr-calW)/2,0),sy=pt+Math.max((H-pt-pb-calH)/2,0);
     var rI,cI;
-    HEATVALS=[]; for(rI=0;rI<7;rI++){ HEATVALS.push([]); for(cI=0;cI<weeks;cI++) HEATVALS[rI].push(null); }
-    HEATLAB=(LOCALE==='en'?WD_EN:WD_ZH.map(function(w){return '周'+w;}));
-    HEATTIPS=[]; for(rI=0;rI<7;rI++){ HEATTIPS.push([]); for(cI=0;cI<weeks;cI++) HEATTIPS[rI].push(''); }
+    heatVals=[]; for(rI=0;rI<7;rI++){ heatVals.push([]); for(cI=0;cI<weeks;cI++) heatVals[rI].push(null); }
+    heatLab=(LOCALE==='en'?WD_EN:WD_ZH.map(function(w){return '周'+w;}));
+    heatTips=[]; for(rI=0;rI<7;rI++){ heatTips.push([]); for(cI=0;cI<weeks;cI++) heatTips[rI].push(''); }
     var cells=[],months={},dailyMax=1;
     for(var n2=0;n2<displayDays;n2++){
       var cd=new Date(start); cd.setDate(cd.getDate()+n2);
@@ -1241,12 +1247,12 @@ function drawHeat(){
       var val=(rec3 && !rec3.future)?(+rec3.total||0):null;
       if(rec3 && rec3.future) hasBlank=true;
       if(yearFuture && n2>=inRangeDays) hasBlank=true;
-      HEATVALS[row][col]=val; HEATTIPS[row][col]=val!==null?cds:'';
+      heatVals[row][col]=val; heatTips[row][col]=val!==null?cds:'';
       if(val!==null&&val>dailyMax)dailyMax=val;
       cells.push({row:row,col:col,val:val,date:cd});
       var mk=cd.getFullYear()+'-'+cd.getMonth(); if(months[mk]===undefined)months[mk]=col;
     }
-    HEATLAB.forEach(function(label,r){
+    heatLab.forEach(function(label,r){
       out+='<text class="ax ta-e" x="'+(sx-8)+'" y="'+(sy+r*(cellH+gp)+cellH/2+3).toFixed(1)+'">'+label+'</text>';
     });
     cells.forEach(function(c){
@@ -1263,13 +1269,13 @@ function drawHeat(){
     });
     maxCell=dailyMax; sub2=ui('日历热力图 · 每格 1 天','Calendar heatmap · 1 day per cell');
   }
-  svg.setAttribute('viewBox','0 0 '+W+' '+H);
-  svg.setAttribute('aria-label',ui('用量热力图：','Usage heatmap: ')+rangeDateText()+' · '+sub2);
-  svg.innerHTML=out;
-  decorateChartTargets();
-  el('chart-title-h').textContent=ui('用量热力图','Usage heatmap');
+  chartSVG.setAttribute('viewBox','0 0 '+W+' '+H);
+  chartSVG.setAttribute('aria-label',ui('用量热力图：','Usage heatmap: ')+rangeDateText()+' · '+sub2);
+  chartSVG.innerHTML=out;
+  if(!target){ HEATVALS=heatVals; HEATLAB=heatLab; HEATTIPS=heatTips; HEATSCOPE=rangeDateText(); decorateChartTargets(); }
+  chartEl('chart-title-h').textContent=ui('用量热力图','Usage heatmap');
   if(hasBlank) sub2+=' · '+ui('空白为尚未发生','Blank = not yet');
-  el('chart-sub').innerHTML=rangeName(state.range)+' · '+rangeDateText()+' · '+sub2+' · <span class="heat-scale">'+ui('低','Low')+'<i></i>'+ui('高','High')+'</span>';
+  chartEl('chart-sub').innerHTML=rangeName(state.range)+' · '+rangeDateText()+' · '+sub2+' · <span class="heat-scale">'+ui('低','Low')+'<i></i>'+ui('高','High')+'</span>';
 }
 function chartTargetLabel(tg){
   if(!tg || !tg.dataset) return '';
@@ -1331,6 +1337,12 @@ function api(url, opts){
     });
   });
 }
+/* 顶部同日只显示时间，跨日补月日；完整服务端时间保留在悬停提示。 */
+function compactFreshness(value, short){
+  if(!value) return '—';
+  var today = value.slice(0,10) === ymd(startToday());
+  return value.slice(today ? 11 : 5, short ? 16 : 19);
+}
 function renderMeta(){
   var m = state.meta||{};
   var v = m.version||'';
@@ -1348,25 +1360,27 @@ function renderMeta(){
   /* 在线状态只来自「本页已成功取得 /api/meta」这一事实;请求失败一律
      显示离线态,不保留任何写死的在线字样。 */
   var online = !!state.meta;
-  var last = (state.meta && m.last_collection)||'';
+  /* 首次可用 meta；取得仪表板后只用同一统计快照的时间，null 不回退旧值。 */
+  var freshness = state.data || m;
+  var last = freshness.last_collection||'', through = freshness.data_through||'';
   var dot = document.querySelector('.asof .dot');
   var asof = document.querySelector('.asof');
   if(asof) asof.classList.toggle('offline', !online);
   if(dot && dot!==asof) dot.classList.toggle('offline', !online);
-  var ft, st;
+  var ft, st, title;
   if(!online){
     ft = ui('离线 · 无法连接本地服务','Offline · cannot reach the local service');
     st = ui('离线','Offline');
-  }else if(last){
-    ft = ui('在线 · 最近同步 ','Online · Last synced ')+last;
-    st = ui('在线 · ','Online · ')+(last.length>=16 ? last.slice(5,16) : last);
+    title = ft;
   }else{
-    ft = ui('在线','Online');
-    st = ui('在线','Online');
+    title = ui('在线 · 最近同步 ','Online · Last synced ')+(last||'—')+'\n'+ui('数据截至 · ','Data through · ')+(through||'—');
+    ft = '<span>'+ui('在线 · 最近同步 ','Online · Last synced ')+esc(compactFreshness(last,false))+'</span><span class="asof-divider" aria-hidden="true"></span><span>'+ui('数据截至 · ','Data through · ')+esc(compactFreshness(through,false))+'</span>';
+    st = '<span>'+ui('同步 ','Synced ')+esc(compactFreshness(last,true))+'</span><span class="asof-divider" aria-hidden="true"></span><span>'+ui('截至 ','Through ')+esc(compactFreshness(through,true))+'</span>';
   }
+  if(asof) asof.title = title;
   var full = el('asof-t'), short = document.querySelector('.asof-short');
-  if(full) full.textContent = ft;
-  if(short) short.textContent = st;
+  if(full) full.innerHTML = ft;
+  if(short) short.innerHTML = st;
 }
 function fetchMeta(){
   return api('/api/meta').then(function(r){
@@ -1486,7 +1500,9 @@ function requestRefresh(source){
     state.heat = (state.data.heatmap && state.data.heatmap.days) || [];
     REFRESH.lastAt = new Date();
     REFRESH.loadedRange = state.range;
+    REFRESH.loadedFrom = from; REFRESH.loadedTo = to;
     REFRESH.state = 'done';
+    renderMeta();
     renderAll();
     renderRefreshState();
     REFRESH.doneTimer = setTimeout(function(){
@@ -1508,24 +1524,23 @@ el('dash-refresh').addEventListener('click', function(){ requestRefresh('manual'
 document.addEventListener('visibilitychange', function(){ if(!document.hidden) catchUpRefresh(); });
 
 /* ---------- 用量最高的会话：真实区间会话，直接渲染 ---------- */
-function renderSessions(){
-  var body = el('sessions-body');
-  if(!body) return;
-  var rows = (state.data && state.data.sessions) || [];
-  if(!rows.length){
-    body.innerHTML = '<tr class="session-row"><td colspan="6" class="tl">'+ui('该区间暂无会话','No sessions in this range')+'</td></tr>';
-  }else{
-    body.innerHTML = rows.map(function(r){
+function sessionsHTML(rows, masked){
+  if(!rows.length) return '<tr class="session-row"><td colspan="6" class="tl">'+ui('该区间暂无会话','No sessions in this range')+'</td></tr>';
+  return rows.map(function(r){
       /* 私密遮蔽:会话名(title/可见文本/data-full 三处同源)与项目名,
          空标题经 pv 保持空串;「(未分类)」占位与客户端列不遮。 */
-      var full=esc(pv(r.title||''));
+      var full=esc(pv(r.title||'', masked));
       return '<tr class="session-row"><th scope="row" class="tname"><div class="session-title-wrap"><span class="session-title-text trunc-name" title="'+full+'">'+full+'</span>'+
         '<button type="button" class="session-title-detail" data-full="'+full+'" data-heading="'+ui('完整会话标题','Full session title')+'" hidden aria-label="'+ui('查看完整会话标题','View full session title')+'" title="'+ui('查看完整会话标题','View full session title')+'"><svg class="ic"><use href="#i-info"/></svg></button></div></th>' +
-        '<td class="num tl" data-label="'+dimLabel('client')+'">'+esc(r.client||'')+'</td><td class="num tl" data-label="'+dimLabel('project')+'">'+esc(r.project ? pv(r.project) : ui('(未分类)','(uncategorized)'))+'</td>' +
+        '<td class="num tl" data-label="'+dimLabel('client')+'">'+esc(r.client||'')+'</td><td class="num tl" data-label="'+dimLabel('project')+'">'+esc(r.project ? pv(r.project, masked) : ui('(未分类)','(uncategorized)'))+'</td>' +
         '<td class="num" data-label="'+ui('时长','Duration')+'">'+fmtDur(r.duration_ms)+'</td><td class="num" data-label="'+colLabel(colById('requests'))+'">'+fmtInt(r.requests)+'</td>' +
         '<td class="num tot" data-label="'+colLabel(colById('total'))+'"><span class="nv">'+fmtTok(r.total)+'</span></td></tr>';
     }).join('');
-  }
+}
+function renderSessions(){
+  var body = el('sessions-body');
+  if(!body) return;
+  body.innerHTML = sessionsHTML((state.data && state.data.sessions) || []);
   el('sessions-sub').textContent = rangeName(state.range)+' · '+rangeDateText();
   syncTruncationButtons();
 }
@@ -1581,18 +1596,9 @@ function cellAggCv(k, T){
   if(k==='requests') return fmtInt(T.requests);
   return fmtTok(rowVal(T,k));
 }
-function renderCustomViews(){
-  var host = el('cviews');
-  if(!host) return;
-  if(!state.data){ host.innerHTML=''; return; }
-  var views = state.data.custom_views||[];
-  if(!views.length){
-    host.innerHTML = '<section class="sessions-card"><div class="sessions-head"><div><h3>'+ui('自定义视图','Custom views')+'</h3>' +
-      '<p>'+ui('尚未配置自定义视图','No custom views configured')+'</p></div></div></section>';
-    return;
-  }
-  var ids = colIds();
-  host.innerHTML = views.map(function(v){
+function customViewsHTML(views, masked){
+  var ids=colIds();
+  return views.map(function(v){
     var dims = v.dimensions||[];
     /* 行即后端最终行(前 19 独立组合 + 至多一行「其他组合」固定最后):
        前端不再截断、缩放或重算;尾行按机器字段 is_other/other_count 渲染。 */
@@ -1634,7 +1640,7 @@ function renderCustomViews(){
         else{
           /* 私密遮蔽:仅 project 维度列的数据值;「其他组合」行与空值不遮。 */
           var raw = String((r.keys||[])[i]!=null ? r.keys[i] : '');
-          val = (d==='project' && !r.isOther) ? pv(raw) : raw;
+          val = (d==='project' && !r.isOther) ? pv(raw, masked) : raw;
         }
         var safe=esc(val);
         var disp = val.length>26 ? val.slice(0,12)+'…'+val.slice(-8) : val;
@@ -1649,6 +1655,13 @@ function renderCustomViews(){
       '</tr></tbody></table></div></section>';
     return h;
   }).join('');
+}
+function renderCustomViews(){
+  var host = el('cviews');
+  if(!host) return;
+  if(!state.data){ host.innerHTML=''; return; }
+  var views=state.data.custom_views||[];
+  host.innerHTML=views.length ? customViewsHTML(views) : '<section class="sessions-card"><div class="sessions-head"><div><h3>'+ui('自定义视图','Custom views')+'</h3><p>'+ui('尚未配置自定义视图','No custom views configured')+'</p></div></div></section>';
   syncTruncationButtons();
 }
 function toggleCustomRow(row){
@@ -2516,7 +2529,7 @@ el('locale-switch').addEventListener('click',function(e){
   syncLocaleUI();
 });
 
-/* ---------- 截图分享：整页 PNG 复制到剪贴板（零依赖 foreignObject 光栅化） ----------
+/* ---------- 截图分享：配置内容并复制 PNG 到剪贴板（零依赖 foreignObject 光栅化） ----------
    data URL 加载路线（Blob URL × foreignObject 会污染 canvas，SecurityError）；
    两层选择器重写：第一层把 html[..] body[::pseudo] 组合根条件合并到
    同一克隆根，第二层迁移剩余根前缀；视口冻结清单显式处理 vh/fixed 元素；
@@ -2583,75 +2596,139 @@ function snapshotAllCSS(){
   }
   return snapshotRewriteCSS(out);
 }
-/* 视口冻结清单：.side-toggle(fixed;top:50vh) 改 absolute 并内联原视口
-   计算值；.sidebar(sticky;height:100vh) 与 .app(min-height:100vh) 内联
-   原视口计算值。SVG 图像语境的视口=整页高，vh 按它重算——不冻结的
-   100vh 会从视口高膨胀为整页高，克隆树随之重排膨胀致测量高度失真、
-   底部截缺。getComputedStyle 返回解析后的 px（识别不了原始 vh 声明），
-   新增视口样式须同步扩充本清单。 */
-function snapshotApplyViewportFixes(rootDiv){
-  var pairs = [['.side-toggle', 'position', 'absolute'], ['.side-toggle', 'top', null], ['.sidebar', 'height', null], ['.app', 'minHeight', null]];
-  var i, orig, clone, prop, fixed;
-  for (i=0;i<pairs.length;i++){
-    orig = document.querySelector(pairs[i][0]);
-    clone = rootDiv.querySelector(pairs[i][0]);
-    if (!orig || !clone) continue;
-    prop = pairs[i][1]; fixed = pairs[i][2];
-    clone.style[prop] = fixed || window.getComputedStyle(orig)[prop];
-  }
+/* 分享图在固定宽的独立文档中排版，避免原页侧栏和移动端折叠状态入镜。
+   所有片段及样式在打开时同步捕获；后台刷新不影响正在选择的这份快照。 */
+var SHOT = { open:false, seq:0, capture:null, options:null, blob:null, url:null, busy:false };
+var SHOT_WIDTH = 1280, SHOT_KEY = 'tu-shot-options';
+function shotOptions(saved, names, view, mode){
+  var defaults = { list:view==='list', compose:view==='compose', trend:mode==='trend', heat:mode==='heat', sessions:false, custom:[] };
+  if(!saved || typeof saved!=='object' || Array.isArray(saved)) return defaults;
+  ['list','compose','trend','heat','sessions'].forEach(function(k){
+    if(typeof saved[k]==='boolean') defaults[k]=saved[k];
+  });
+  defaults.custom = names.filter(function(n){ return Array.isArray(saved.custom) && saved.custom.indexOf(n)!==-1; });
+  return defaults;
 }
-function snapshotBuildRoot(){
-  var de = document.documentElement;
-  var rootDiv = document.createElement('div');
-  rootDiv.className = TU_SNAPSHOT_ROOT;
-  rootDiv.setAttribute('data-theme', de.getAttribute('data-theme')||'dark');
-  rootDiv.setAttribute('data-palette', de.getAttribute('data-palette')||'cobalt');
-  rootDiv.setAttribute('data-locale', de.getAttribute('data-locale')||'zh-CN');
-  rootDiv.setAttribute('lang', de.lang||'zh-CN');
-  var cs = window.getComputedStyle(de);
-  var vars = snapshotCollectVarNames(), styleText = '', i, n, v;
-  for (i=0;i<vars.length;i++){
-    n = vars[i]; v = cs.getPropertyValue(n);
-    if (v) styleText += n+':'+v.replace(/^\s+|\s+$/g,'')+';';
-  }
-  rootDiv.setAttribute('style', styleText);
-  var children = Array.prototype.slice.call(document.body.childNodes);
-  for (i=0;i<children.length;i++) rootDiv.appendChild(children[i].cloneNode(true));
-  snapshotApplyViewportFixes(rootDiv);
-  /* backdrop-filter 在 SVG-image 光栅化语境会中断 foreignObject 内后续内容
-     的绘制(实测:侧边栏毛玻璃使其后的整个内容列不被绘制),克隆树内一律
-     去除;玻璃底色(半透明 background)保留,即方案声明的"毛玻璃质感退化"。 */
-  var all = rootDiv.querySelectorAll('*');
-  for (i=0;i<all.length;i++){
-    all[i].style.backdropFilter = 'none';
-    all[i].style.webkitBackdropFilter = 'none';
-  }
-  return rootDiv;
+function shotRoot(){
+  var de=document.documentElement, div=document.createElement('div');
+  div.className=TU_SNAPSHOT_ROOT+' share-sheet';
+  ['data-theme','data-palette','data-locale','lang'].forEach(function(k){
+    div.setAttribute(k,de.getAttribute(k)||'');
+  });
+  var cs=window.getComputedStyle(de);
+  snapshotCollectVarNames().forEach(function(k){ div.style.setProperty(k,cs.getPropertyValue(k)); });
+  return div;
 }
-/* 克隆树在固定视口宽下的真实布局高度(与原页 scrollHeight 可能不同:
-   趋势/热力桶与表格随克隆语境重排),SVG 视口必须按它取,否则底部截缺。 */
-function snapshotCloneHeight(rootDiv, fallback){
-  var meter = document.createElement('div');
-  meter.setAttribute('style', 'position:fixed;left:-99999px;top:0;width:'+document.documentElement.clientWidth+'px');
-  meter.appendChild(rootDiv);
-  document.body.appendChild(meter);
-  var h = Math.ceil(rootDiv.getBoundingClientRect().height);
-  meter.removeChild(rootDiv);
-  document.body.removeChild(meter);
-  return Math.max(h, fallback);
+function shotChart(mode){
+  var card=document.createElement('section');
+  card.className='chart-card';
+  card.innerHTML='<div class="chart-head"><div class="chart-title"><h3></h3><p class="chart-sub"></p></div></div><div class="chart-frame"><svg class="share-chart-svg" xmlns="http://www.w3.org/2000/svg" role="img" preserveAspectRatio="none"></svg></div>';
+  var target={svg:card.querySelector('svg'),frame:card.querySelector('.chart-frame'),title:card.querySelector('h3'),sub:card.querySelector('p'),width:SHOT_WIDTH-64,height:mode==='heat' && state.data.heatmap && state.data.heatmap.mode==='calendar' ? 214 : 180};
+  if(mode==='trend') drawTrend(target); else drawHeat(target);
+  return card.outerHTML;
 }
-function snapshotSVGDims(){
-  var de = document.documentElement;
-  var w = de.clientWidth;
-  var rootDiv = snapshotBuildRoot();
-  var h = snapshotCloneHeight(rootDiv, Math.max(de.scrollHeight, document.body.scrollHeight));
-  var inner = new XMLSerializer().serializeToString(rootDiv);
-  return {
-    w: w, h: h,
-    svg: '<svg xmlns="http://www.w3.org/2000/svg" width="'+w+'" height="'+h+'">'+
-      '<style>'+snapshotAllCSS()+'</style>'+
-      '<foreignObject width="100%" height="100%">'+inner+'</foreignObject></svg>'
-  };
+/* 日期栏复用原控件的外观，转为静态 span，不携带查询入口或日历弹层。
+   显式复制已解析字体各分项，避免 CSSOM 简写空声明问题。 */
+function shotStaticControl(source){
+  var span=document.createElement('span'), cs=window.getComputedStyle(source);
+  span.className='share-static-control'; span.innerHTML=source.innerHTML;
+  ['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','padding','border','borderRadius','background','boxShadow','color','minHeight'].forEach(function(k){span.style[k]=cs[k];});
+  span.style.display='inline-flex';span.style.alignItems='center';span.style.justifyContent='center';span.style.whiteSpace='nowrap';
+  if(source.getAttribute('aria-pressed')==='true') span.setAttribute('data-selected','true');
+  return span;
+}
+function shotIcon(id){
+  var symbol=el(id);
+  return '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">'+(symbol ? symbol.innerHTML : '')+'</svg>';
+}
+function shotCapture(){
+  var bounds=rangeBounds();
+  if(!state.data || REFRESH.state==='loading' || REFRESH.loadedFrom!==ymd(bounds.s) || REFRESH.loadedTo!==ymd(bounds.e)){
+    throw new Error(ui('请等待当前区间加载成功后重试','Wait for the current range to load successfully'));
+  }
+  var base=shotRoot(), css=snapshotAllCSS();
+  var brand=document.querySelector('.brand .mark').outerHTML;
+  var version=el('version-badge').textContent || ui('版本未知','Version unavailable');
+  var pageHead=document.querySelector('#page-dash .page-head').cloneNode(true);
+  pageHead.querySelectorAll('.unit-help,.privacy-trigger,.shot-trigger').forEach(function(n){n.parentNode.removeChild(n);});
+  var periods=document.createElement('div');periods.className='seg share-range-seg';
+  el('range-seg').querySelectorAll('button').forEach(function(button){
+    var choice=shotStaticControl(button);
+    ['background','box-shadow','color','font-weight'].forEach(function(k){choice.style.removeProperty(k);});
+    periods.appendChild(choice);
+  });
+  var date=shotStaticControl(el('range-custom'));
+  date.classList.add('share-date-box');
+  date.innerHTML=shotIcon('i-calendar')+'<span>'+esc(ymd(bounds.s)+(ymd(bounds.s)===ymd(bounds.e)?'':' ~ '+ymd(bounds.e)))+'</span>';
+  var header='<header class="share-head"><div class="share-topline">'+pageHead.outerHTML+'<div class="share-brand">'+brand+'<div><strong>Token Usage</strong><span class="version-badge">'+esc(version)+'</span></div></div></div><div class="toolbar share-toolbar">'+periods.outerHTML+date.outerHTML+'<span class="share-query-time">'+ui('数据截至','Data through')+' · '+esc(state.data.data_through||'—')+'</span></div></header>';
+  var custom=(state.data.custom_views||[]).map(function(v){return {name:v.name,label:(v.dimensions||[]).map(dimLabel).join(' × ')+' ('+v.name+')'};});
+  var variants=[false,true].map(function(masked){
+    var cards=DIMS.map(function(id){
+      var rows=normRows((state.data.dimensions||{})[id]);
+      return {id:id,head:'<header class="group-head"><div class="group-title"><i class="g-dot"></i><h4>'+esc(dimLabel(id))+'</h4></div></header>',list:tableView(rows,id,masked),compose:composeView(id,rows,masked)};
+    });
+    var html={};(state.data.custom_views||[]).forEach(function(v){html[v.name]=customViewsHTML([v],masked);});
+    var sessions=document.querySelector('.top-sessions').cloneNode(true);
+    sessions.querySelector('tbody').innerHTML=sessionsHTML(state.data.sessions||[],masked);
+    return {cards:cards,custom:html,sessions:sessions.outerHTML,privacy:'<span class="privacy-trigger share-privacy-badge" data-masked="'+masked+'">'+shotIcon(masked?'i-eye-off':'i-eye')+'<span>'+ui('隐私遮蔽','Privacy masking')+'</span></span>'};
+  });
+  return {base:base,css:css,header:header,kpis:el('kpis').outerHTML,variants:variants,trend:shotChart('trend'),heat:shotChart('heat'),custom:custom,masked:PRIVACY.on,dimensionTitle:ui('按维度查看','Explore by dimension')};
+}
+function shotMarkup(c, o){
+  var variant=c.variants[o.masked?1:0];
+  var html=c.header+c.kpis;
+  if(o.list || o.compose){
+    html+='<section class="share-dimensions"><h2>'+esc(c.dimensionTitle)+'</h2><div class="groups">';
+    variant.cards.forEach(function(card){
+      html+='<article class="group" data-gid="'+card.id+'" style="--gh:var('+HUES[card.id]+')">'+card.head+(o.compose?card.compose:'')+(o.list?card.list:'')+'</article>';
+    });
+    html+='</div></section>';
+  }
+  if(o.trend) html+=c.trend;
+  if(o.heat) html+=c.heat;
+  c.custom.forEach(function(v){ if(o.custom.indexOf(v.name)!==-1) html+=variant.custom[v.name]; });
+  if(o.sessions) html+=variant.sessions;
+  var div=c.base.cloneNode(false); div.innerHTML=html;
+  div.querySelector('.page-note-row').insertAdjacentHTML('beforeend',variant.privacy);
+  div.querySelectorAll('button,[tabindex]').forEach(function(node){
+    if(node.tagName==='BUTTON') node.parentNode.removeChild(node); else node.removeAttribute('tabindex');
+  });
+  div.querySelectorAll('[id]').forEach(function(node){ node.removeAttribute('id'); });
+  div.querySelectorAll('*').forEach(function(node){ node.style.backdropFilter='none'; node.style.webkitBackdropFilter='none'; });
+  return div;
+}
+/* iframe 的 1280px 视口与 SVG 宽度一致，测量和重放命中同一媒体规则。
+   空白 iframe 不携带脚本/外部资源；关闭或重选时旧任务只清理、不回写。 */
+function snapshotSVGDims(c, o){
+  var div=shotMarkup(c,o), inner=new XMLSerializer().serializeToString(div);
+  return new Promise(function(resolve,reject){
+    var iframe=document.createElement('iframe'), timer;
+    iframe.setAttribute('aria-hidden','true'); iframe.tabIndex=-1;
+    iframe.setAttribute('sandbox','allow-same-origin');
+    iframe.style.cssText='position:fixed;left:-100000px;top:0;width:'+SHOT_WIDTH+'px;height:900px;border:0;visibility:hidden';
+    function clean(){ clearTimeout(timer); iframe.onload=null; iframe.onerror=null; if(iframe.parentNode) iframe.parentNode.removeChild(iframe); }
+    timer=setTimeout(function(){clean();reject(new Error(ui('截图排版超时','Screenshot layout timed out')));},15000);
+    iframe.onerror=function(){clean();reject(new Error(ui('截图排版失败','Screenshot layout failed')));};
+    iframe.onload=function(){
+      var doc=iframe.contentDocument;
+      Promise.resolve(doc.fonts ? doc.fonts.ready : null).then(function(){
+        try{
+          var sheet=doc.querySelector('.share-sheet'), h=Math.ceil(sheet.getBoundingClientRect().height);
+          if(!h) throw new Error(ui('截图排版失败','Screenshot layout failed'));
+          var markup=new XMLSerializer().serializeToString(sheet);
+          /* SVG 按 XML 解析：序列化文本节点以保留 CSS 中的 <、&、]]>，
+             不能照搬 HTML srcdoc 的结束标签转义。 */
+          var style=document.createElementNS('http://www.w3.org/2000/svg','style');
+          style.textContent=c.css;
+          var styleMarkup=new XMLSerializer().serializeToString(style);
+          clean();
+          resolve({w:SHOT_WIDTH,h:h,svg:'<svg xmlns="http://www.w3.org/2000/svg" width="'+SHOT_WIDTH+'" height="'+h+'">'+styleMarkup+'<foreignObject width="100%" height="100%">'+markup+'</foreignObject></svg>'});
+        }catch(e){clean();reject(e);}
+      },function(e){clean();reject(e);});
+    };
+    iframe.srcdoc='<!doctype html><html><head><meta charset="utf-8"><style>'+c.css.replace(/<\/style/gi,'<\\/style')+'</style></head><body style="margin:0">'+inner+'</body></html>';
+    document.body.appendChild(iframe);
+  });
 }
 /* 降级档位（纯函数）：dpr 封顶 2 起步 → 1x → 整图等比缩放（保完整）。
    固定常量仅作缩放比预估；成败以运行时导出结果判断。 */
@@ -2698,10 +2775,9 @@ function snapshotDrawAndExport(img, w, h, scale){
     } catch(e){ reject(e); }
   });
 }
-function snapshotExport(){
+function snapshotExport(dims){
   /* SVG 视口、降级档位、canvas 共用同一组 w/h：canvas 若另取原页高度，
      克隆高度与 SVG 实际布局脱节时会纵向压缩（宽高比失配）。 */
-  var dims = snapshotSVGDims();
   var scales = snapshotTiers(dims.w, dims.h, window.devicePixelRatio);
   return snapshotLoadImage(dims.svg).then(function(img){
     var attempt = function(idx){
@@ -2711,10 +2787,10 @@ function snapshotExport(){
     return attempt(0);
   });
 }
-/* S2：截前收起全部弹层与悬停态（收起后不恢复，分享画面干净）。
-   构成图联动高亮（wrap.has-hl/扇区 .hl/图例 .on/中心联动文本）同样在
-   镜内：鼠标停在图例上、用键盘或脚本触发截图时不会自然触发 mouseout，
-   highlightDonut(-1) 是唯一复位出口，须显式执行。 */
+/* 打开分享弹窗前收起原页面的弹层、提示与悬停态（收起后不恢复）。
+   分享布局按数据重建，弹层本不入镜，构成图也不复制原页高亮；
+   此处保留界面清理行为，避免打开分享弹窗时仍残留旧浮层和联动状态，
+   不作为导出图片排除这些元素的必要条件。 */
 function snapshotCollapseOverlays(){
   setUnitPop(false);
   setPalettePop(false);
@@ -2724,7 +2800,7 @@ function snapshotCollapseOverlays(){
   if (modal && !modal.hidden) closeSessionTitle();
   var tip = el('tip');
   if (tip) tip.hidden = true;
-  /* 上一轮截图的成功 toast 可能仍在显示期（连续截图），同为弹层不入镜 */
+  /* 连续打开分享时，收起上一轮仍在显示的成功 toast。 */
   var toastEl = el('toast');
   if (toastEl) toastEl.setAttribute('data-show', 'false');
   var arts = el('groups').querySelectorAll('.group');
@@ -2757,28 +2833,129 @@ function snapshotCopy(blobOrP){
     navigator.clipboard.write([item]).then(resolve, function(err){ reject(err || new Error(ui('剪贴板不可用','clipboard unavailable'))); });
   });
 }
-el('shot-trigger').addEventListener('click', function(){
-  var btn = el('shot-trigger');
-  if (btn.disabled) return;
-  btn.disabled = true;
-  var done = function(){
-    btn.disabled = false;
-    toast(ui('已复制到剪贴板','Copied to clipboard'));
-  };
-  var fail = function(err){
-    btn.disabled = false;
-    toast(ui('截图失败：','Screenshot failed: ')+String((err && err.message) || err));
-  };
-  var p;
-  try {
-    snapshotCollapseOverlays();
-    p = snapshotExport();
-  } catch(e){ fail(e); return; }
-  snapshotCopy(p).then(done, fail);
+function shotReleasePreview(){
+  SHOT.blob=null;
+  el('shot-preview').hidden=true; el('shot-preview').removeAttribute('src');
+  if(SHOT.url){ URL.revokeObjectURL(SHOT.url); SHOT.url=null; }
+}
+function shotSaveOptions(){
+  try{localStorage.setItem(SHOT_KEY,JSON.stringify(SHOT.options));}catch(_){}
+}
+function shotGenerate(){
+  var seq=++SHOT.seq, c=SHOT.capture, options=clone(SHOT.options);
+  options.masked=SHOT.masked;
+  shotReleasePreview(); el('shot-copy').disabled=true;
+  el('shot-status').textContent=ui('正在生成预览…','Generating preview…');
+  el('shot-retry').hidden=true;
+  Promise.resolve().then(function(){
+    if(!SHOT.open || seq!==SHOT.seq) return null;
+    return snapshotSVGDims(c,options);
+  }).then(function(dims){
+    if(!dims || !SHOT.open || seq!==SHOT.seq) return null;
+    return snapshotExport(dims);
+  }).then(function(blob){
+    if(!SHOT.open || seq!==SHOT.seq) return;
+    SHOT.blob=blob; SHOT.url=URL.createObjectURL(blob);
+    el('shot-preview').src=SHOT.url; el('shot-preview').hidden=false;
+    el('shot-copy').disabled=false;
+    el('shot-status').textContent=ui('预览与复制图片一致','The preview is the image copied');
+  }).catch(function(err){
+    if(!SHOT.open || seq!==SHOT.seq) return;
+    shotReleasePreview();
+    el('shot-copy').disabled=true;
+    el('shot-status').textContent=ui('截图失败：','Screenshot failed: ')+String(err.message||err);
+    el('shot-retry').hidden=false;
+  });
+}
+function shotClose(){
+  if(SHOT.busy) return;
+  SHOT.open=false; ++SHOT.seq; shotReleasePreview(); SHOT.capture=null;
+  el('shot-modal').hidden=true; el('shot-choices').innerHTML='';
+  el('shot-trigger').focus();
+}
+function shotOpen(){
+  if(SHOT.open) return;
+  try{
+    snapshotCollapseOverlays(); SHOT.capture=shotCapture();
+    var saved=null;
+    try{saved=JSON.parse(localStorage.getItem(SHOT_KEY));}catch(_){}
+    SHOT.masked=SHOT.capture.masked;
+    SHOT.options=shotOptions(saved,SHOT.capture.custom.map(function(v){return v.name;}),state.view,state.mode);
+    var h='<p class="shot-fixed">'+ui('固定包含品牌、统计区间与概要指标','Brand, date range and key metrics are always included')+'</p>';
+    function option(k,label){return '<label class="shot-option"><input type="checkbox" data-shot="'+k+'"'+(SHOT.options[k]?' checked':'')+'><span>'+label+'</span></label>';}
+    h+='<fieldset><legend>'+ui('按维度查看','Explore by dimension')+'</legend>'+option('list',ui('列表','List'))+option('compose',ui('构成','Composition'))+'</fieldset>';
+    h+='<fieldset><legend>'+ui('时间图表','Time charts')+'</legend>'+option('trend',ui('趋势','Trend'))+option('heat',ui('热力','Heatmap'))+'</fieldset>';
+    h+='<fieldset><legend>'+ui('自定义视图','Custom views')+'</legend><div class="shot-select-all"><button type="button" class="button" data-shot-all="yes">'+ui('全选','Select all')+'</button><button type="button" class="button" data-shot-all="no">'+ui('全不选','Clear all')+'</button></div>';
+    SHOT.capture.custom.forEach(function(v){h+='<label class="shot-option"><input type="checkbox" data-shot-custom="'+esc(v.name)+'"'+(SHOT.options.custom.indexOf(v.name)!==-1?' checked':'')+'><span>'+esc(v.label)+'</span></label>';});
+    if(!SHOT.capture.custom.length) h+='<p class="page-note">'+ui('尚未配置自定义视图','No custom views configured')+'</p>';
+    h+='</fieldset><fieldset><legend>'+ui('会话','Sessions')+'</legend>'+option('sessions',ui('用量最高的会话','Highest-usage sessions'))+'</fieldset>';
+    el('shot-choices').innerHTML=h;
+    shotSyncPrivacy();
+    SHOT.open=true; el('shot-modal').hidden=false;
+    el('shot-privacy-toggle').focus(); shotGenerate();
+  }catch(e){ SHOT.capture=null; toast(ui('截图失败：','Screenshot failed: ')+String(e.message||e)); }
+}
+function shotSyncPrivacy(){
+  el('shot-privacy-toggle').setAttribute('aria-pressed',SHOT.masked?'true':'false');
+  el('shot-privacy-use').setAttribute('href',SHOT.masked?'#i-eye-off':'#i-eye');
+  el('shot-privacy').textContent=SHOT.masked ? ui('本次图片：敏感名称已隐藏','This image: sensitive names are hidden') : ui('本次图片：敏感名称可见','This image: sensitive names are visible');
+}
+el('shot-privacy-toggle').addEventListener('click',function(){
+  if(!SHOT.open || SHOT.busy) return;
+  SHOT.masked=!SHOT.masked;shotSyncPrivacy();shotGenerate();
 });
-/* 仅测试沙箱消费的纯函数出口（生产无 __TU_TEST_HOOKS__，不暴露） */
+el('shot-trigger').addEventListener('click',shotOpen);
+el('shot-close').addEventListener('click',shotClose);
+el('shot-retry').addEventListener('click',shotGenerate);
+el('shot-choices').addEventListener('change',function(e){
+  if(SHOT.busy) return;
+  var node=e.target, key=node.getAttribute('data-shot'), name=node.getAttribute('data-shot-custom');
+  if(key) SHOT.options[key]=node.checked;
+  else if(name!==null){
+    SHOT.options.custom=SHOT.options.custom.filter(function(v){return v!==name;});
+    if(node.checked) SHOT.options.custom.push(name);
+  }else return;
+  shotSaveOptions(); shotGenerate();
+});
+el('shot-choices').addEventListener('click',function(e){
+  var button=e.target.closest('[data-shot-all]'); if(!button || SHOT.busy) return;
+  var all=button.getAttribute('data-shot-all')==='yes';
+  SHOT.options.custom=all ? SHOT.capture.custom.map(function(v){return v.name;}) : [];
+  el('shot-choices').querySelectorAll('[data-shot-custom]').forEach(function(node){node.checked=all;});
+  shotSaveOptions(); shotGenerate();
+});
+el('shot-copy').addEventListener('click',function(){
+  if(!SHOT.blob || SHOT.busy || el('shot-copy').disabled) return;
+  SHOT.busy=true; el('shot-copy').disabled=true;
+  el('shot-close').disabled=true; el('shot-privacy-toggle').disabled=true;
+  el('shot-modal').querySelector('[role="dialog"]').focus();
+  el('shot-choices').querySelectorAll('input,button').forEach(function(node){node.disabled=true;});
+  /* 同一 Blob 在点击栈内交付，不重新生成、不捕获刷新后的数据。 */
+  snapshotCopy(Promise.resolve(SHOT.blob)).then(function(){
+    finish(); toast(ui('已复制到剪贴板','Copied to clipboard'));
+  },function(err){
+    finish(); el('shot-status').textContent=ui('截图失败：','Screenshot failed: ')+String(err.message||err);
+  });
+  function finish(){
+    SHOT.busy=false; el('shot-copy').disabled=false; el('shot-close').disabled=false; el('shot-privacy-toggle').disabled=false;
+    el('shot-copy').focus();
+    el('shot-choices').querySelectorAll('input,button').forEach(function(node){node.disabled=false;});
+  }
+});
+el('shot-modal').addEventListener('click',function(e){if(e.target.classList.contains('modal-scrim')) shotClose();});
+el('shot-modal').addEventListener('keydown',function(e){
+  if(e.key==='Escape'){e.preventDefault();shotClose();return;}
+  if(e.key==='Tab'){
+    var nodes=Array.prototype.slice.call(el('shot-modal').querySelectorAll('button,input')).filter(function(n){return !n.disabled && !n.hidden;});
+    var first=nodes[0], last=nodes[nodes.length-1];
+    if(!first){e.preventDefault();return;}
+    if(e.shiftKey && document.activeElement===first){e.preventDefault();last.focus();}
+    else if(!e.shiftKey && document.activeElement===last){e.preventDefault();first.focus();}
+  }
+});
+/* 仅测试沙箱消费的函数出口（生产无 __TU_TEST_HOOKS__，不暴露） */
 if (typeof window.__TU_TEST_HOOKS__!=='undefined' && window.__TU_TEST_HOOKS__){
-  window.__tuTest = { snapshotRewriteCSS: snapshotRewriteCSS, snapshotTiers: snapshotTiers, snapshotAllCSS: snapshotAllCSS };
+  window.__tuTest = { snapshotRewriteCSS: snapshotRewriteCSS, snapshotTiers: snapshotTiers, snapshotAllCSS: snapshotAllCSS, shotOptions: shotOptions, snapshotExport: snapshotExport, snapshotCopy: snapshotCopy, snapshotCollapseOverlays: snapshotCollapseOverlays };
 }
 
 /* ---------- 初始引导：恢复选区 → 日历预选 → 静态本地化 → 拉取 meta 与仪表板 ---------- */

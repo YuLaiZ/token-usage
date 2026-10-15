@@ -387,7 +387,7 @@ function makeSandbox(opts) {
   makeElement({ id: "session-title-modal-close", tag: "button" });
   makeElement({ id: "unit-trigger", tag: "button" });
   makeElement({ id: "unit-pop", hidden: true });
-  makeElement({ id: "privacy-trigger", tag: "button", attrs: { "aria-pressed": "false", "aria-label": "切换私密信息遮蔽" } });
+  makeElement({ id: "privacy-trigger", tag: "button", attrs: { "aria-pressed": "false", "aria-label": "切换隐私遮蔽" } });
   makeElement({ id: "privacy-use", attrs: { href: "#i-eye" } });
   makeElement({ id: "shot-trigger", tag: "button", attrs: { "aria-label": "复制整页截图到剪贴板" } });
   /* ----- 配置页骨架 ----- */
@@ -728,7 +728,7 @@ function makeSandbox(opts) {
           const item = items && items[0];
           if (!item || item.mimeType !== "image/png") return Promise.reject(new Error("stub: unexpected clipboard item"));
           const v = item.value;
-          /* 值形态随事件名记录:手势内交付 = write 以未决 Promise 被调用 */
+          /* 值形态随事件名记录；这里只验证 Promise 合同，不证明真实点击栈 */
           record("clipboard.write" + (v && typeof v.then === "function" ? ":promise" : ":value"));
           const settle = (b) => {
             if (b) clipboardBlobs.push(b);
@@ -781,7 +781,8 @@ function makeSandbox(opts) {
     appEl: appEl,
     asofEl: asofEl,
     root: docRoot,
-    rangeCustom: rangeCustom
+    rangeCustom: rangeCustom,
+    shotConfig: opts.shot || {}
   };
 }
 
@@ -949,18 +950,29 @@ function applyStep(step, ctx) {
       ctx.probes.push({ probe: "tiers", text: String(step.value), output: JSON.stringify(out) });
       return;
     }
-    case "shotClick": {
-      /* 截图按钮点击:同步派发后立即取证按钮中间态(管线执行中必须保持
-         disabled 防连点)与 S2 toast 收起(上一轮截图的成功 toast 同属
-         弹层,须在克隆前落回隐藏态;后续 done/fail toast 在异步链后才
-         发生,不覆盖本同步窗口的取证),最终态由 report.shot 断言。 */
-      const btn = ctx.byId("shot-trigger");
-      btn.dispatch("click");
-      ctx.probes.push({
-        probe: "shotMid",
-        disabled: String(!!btn.disabled),
-        toastShow: ctx.byId("toast").getAttribute("data-show")
-      });
+    case "shotPipeline": {
+      /* 仅取证真实导出/复制函数的结果。这里不伪造按钮或 toast；
+         配置弹窗、布局及点击时序由真实浏览器回归覆盖。 */
+      const api = ctx.sandbox.__tuTest;
+      api.snapshotExport({w:800,h:ctx.shotConfig.cloneHeight || 1902,svg:"<svg/>"})
+        .then(blob => api.snapshotCopy(Promise.resolve(blob)))
+        .then(() => ctx.probes.push({probe:"pipelineResult",output:"ok"}),
+              e => ctx.probes.push({probe:"pipelineResult",output:String(e.message || e)}));
+      return;
+    }
+    case "shotCollapse": {
+      ctx.sandbox.__tuTest.snapshotCollapseOverlays();
+      return;
+    }
+    case "allcssFailure": {
+      let error = "did not throw";
+      try { ctx.sandbox.__tuTest.snapshotAllCSS(); } catch(e) { error=String(e.message || e); }
+      ctx.probes.push({probe:"allcssFailure",output:error});
+      return;
+    }
+    case "shotOptions": {
+      const args = JSON.parse(step.value);
+      ctx.probes.push({probe: "shotOptions", output: JSON.stringify(ctx.sandbox.__tuTest.shotOptions(args.saved, args.names, args.view, args.mode))});
       return;
     }
     case "allcss": {
@@ -1014,7 +1026,7 @@ function buildReport(def, ctx, fatal, stepStates) {
     cfgSave: { disabled: !!byId("cfg-save").disabled, text: byId("cfg-save").textContent },
     dirtyPill: { text: byId("dirty-pill").textContent },
     cfgActionsDirty: byId("cfg-actions").getAttribute("data-dirty"),
-    asofText: byId("asof-t").textContent,
+    asofTitle: ctx.asofEl.title,
     asofOffline: ctx.asofEl.classList.contains("offline"),
     dvPopHidden: byId("dv-pop").hidden,
     dvTriggerExpanded: byId("q-default").getAttribute("aria-expanded"),

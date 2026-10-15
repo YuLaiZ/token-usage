@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -11,7 +12,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
-// dashboard.go 输出 GET /api/dashboard 的载荷(v4):区间汇总、四个内置
+// dashboard.go 输出 GET /api/dashboard 的载荷(v5):区间汇总、四个内置
 // 维度的最终行(前 9 独立项+至多一行"其他")、与范围形态匹配的趋势桶与
 // 热力展示桶、按 query.subqueries 配置生成的自定义视图最终行(前 19 组合
 // +至多一行"其他组合")与前 20 会话。compare/forecast 区块已随仪表板重做
@@ -216,14 +217,17 @@ type sessionRowJSON struct {
 // columns 是 query 输出列布局的指标 ID 序列,只影响明细表,顶部七项概览
 // 独立于此。
 type dashboardResponse struct {
-	Range       rangeJSON                     `json:"range"`
-	Totals      totalsJSON                    `json:"totals"`
-	Columns     []string                      `json:"columns"`
-	Dimensions  map[string][]dimensionRowJSON `json:"dimensions"`
-	Trend       trendJSON                     `json:"trend"`
-	Heatmap     heatmapJSON                   `json:"heatmap"`
-	CustomViews []customViewJSON              `json:"custom_views"`
-	Sessions    []sessionRowJSON              `json:"sessions"`
+	// 与 /api/meta 相同的全库口径，和本次统计结果在同一读事务取得。
+	DataThrough    *string                       `json:"data_through"`
+	LastCollection *string                       `json:"last_collection"`
+	Range          rangeJSON                     `json:"range"`
+	Totals         totalsJSON                    `json:"totals"`
+	Columns        []string                      `json:"columns"`
+	Dimensions     map[string][]dimensionRowJSON `json:"dimensions"`
+	Trend          trendJSON                     `json:"trend"`
+	Heatmap        heatmapJSON                   `json:"heatmap"`
+	CustomViews    []customViewJSON              `json:"custom_views"`
+	Sessions       []sessionRowJSON              `json:"sessions"`
 }
 
 // handleMeta 输出服务版本与全库数据边界:最小/最大日期、数据截至
@@ -241,30 +245,36 @@ func (s *server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		if found {
 			resp.MinDate, resp.MaxDate = &minDate, &maxDate
 		}
-		through, err := tq.DataThrough(ctx)
-		if err != nil {
-			return err
-		}
-		if through > 0 {
-			formatted := time.UnixMilli(through).Local().Format(time.DateTime)
-			resp.DataThrough = &formatted
-		}
-		// dates 为 nil 时 Freshness 只回最近成功采集,不做范围过滤。
-		fresh, err := tq.Freshness(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if !fresh.LastCollection.IsZero() {
-			formatted := fresh.LastCollection.Format(time.DateTime)
-			resp.LastCollection = &formatted
-		}
-		return nil
+		resp.DataThrough, resp.LastCollection, err = readDataFreshness(ctx, tq)
+		return err
 	})
 	if err != nil {
 		writeInternal(w, "failed to load metadata", "读取元信息失败", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// readDataFreshness 由调用方在读事务内调用；无消息或采集记录时返回 null。
+func readDataFreshness(ctx context.Context, q *querier.Querier) (*string, *string, error) {
+	through, err := q.DataThrough(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	fresh, err := q.Freshness(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	var dataThrough, lastCollection *string
+	if through > 0 {
+		formatted := time.UnixMilli(through).Local().Format(time.DateTime)
+		dataThrough = &formatted
+	}
+	if !fresh.LastCollection.IsZero() {
+		formatted := fresh.LastCollection.Format(time.DateTime)
+		lastCollection = &formatted
+	}
+	return dataThrough, lastCollection, nil
 }
 
 // handleDashboard 输出统计区间内的汇总、四个业务维度行、日期×小时热力
@@ -354,7 +364,8 @@ func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.Trend = buildTrend(hm)
 		resp.Heatmap.Days, resp.Heatmap.Mode = buildHeatmapDays(hm, now)
-		return nil
+		resp.DataThrough, resp.LastCollection, err = readDataFreshness(ctx, tq)
+		return err
 	})
 	if err != nil {
 		writeInternal(w, "dashboard query failed", "仪表板查询失败", err)

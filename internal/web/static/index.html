@@ -101,8 +101,8 @@ d.lang=l;d.setAttribute('data-locale',l);})();
                 </div>
               </div>
             </div>
-            <button type="button" class="privacy-trigger" id="privacy-trigger" aria-pressed="false" aria-label="切换私密信息遮蔽" title="切换私密信息遮蔽"><svg class="ic" aria-hidden="true"><use id="privacy-use" href="#i-eye"/></svg><span>私密信息</span></button>
-            <button type="button" class="shot-trigger" id="shot-trigger" aria-label="复制整页截图到剪贴板" title="复制整页截图到剪贴板"><svg class="ic" aria-hidden="true"><use href="#i-camera"/></svg><span>截图分享</span></button>
+            <button type="button" class="privacy-trigger" id="privacy-trigger" aria-pressed="false" aria-label="切换隐私遮蔽" title="隐藏项目名和会话标题"><svg class="ic" aria-hidden="true"><use id="privacy-use" href="#i-eye"/></svg><span>隐私遮蔽</span></button>
+            <button type="button" class="shot-trigger" id="shot-trigger" aria-label="选择截图内容" title="选择截图内容"><svg class="ic" aria-hidden="true"><use href="#i-camera"/></svg><span>截图分享</span></button>
           </div>
         </div>
       </div>
@@ -358,7 +358,16 @@ d.lang=l;d.setAttribute('data-locale',l);})();
   </div>
 </div>
 
-<!-- 会话完整标题弹窗：表格保持稳定列宽，按需查看原始标题全文 -->
+<!-- 截图内容配置与真实 PNG 预览 -->
+<div class="modal" id="shot-modal" hidden>
+  <div class="modal-scrim"></div>
+  <div class="modal-card shot-modal-card" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="shot-modal-title" aria-describedby="shot-privacy">
+    <div class="shot-modal-head"><div><h3 id="shot-modal-title">选择截图内容</h3><p id="shot-privacy" class="page-note"></p></div><div class="shot-head-actions"><button type="button" class="privacy-trigger" id="shot-privacy-toggle" aria-pressed="false" aria-label="切换本次图片的隐私遮蔽" title="隐藏本次图片中的项目名和会话标题"><svg class="ic" aria-hidden="true"><use id="shot-privacy-use" href="#i-eye"/></svg><span>隐私遮蔽</span></button><button type="button" class="button" id="shot-close">关闭</button></div></div>
+    <div class="shot-layout"><div class="shot-choices" id="shot-choices"></div><div class="shot-preview-pane"><img id="shot-preview" alt="截图预览" hidden><p id="shot-status" role="status" aria-live="polite"></p></div></div>
+    <div class="modal-foot"><button type="button" class="button" id="shot-retry" hidden>重新生成</button><button type="button" class="button primary" id="shot-copy" disabled>复制图片</button></div>
+  </div>
+</div>
+
 <div class="modal" id="session-title-modal" hidden>
   <div class="modal-scrim"></div>
   <div class="modal-card session-modal-card" role="dialog" aria-modal="true" aria-labelledby="session-title-modal-heading" aria-describedby="session-title-modal-text">

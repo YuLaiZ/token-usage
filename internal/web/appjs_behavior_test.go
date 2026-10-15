@@ -103,7 +103,7 @@ type appJSReport struct {
 		Text string `json:"text"`
 	} `json:"dirtyPill"`
 	CfgActionsDirty   string `json:"cfgActionsDirty"`
-	AsofText          string `json:"asofText"`
+	AsofTitle         string `json:"asofTitle"`
 	AsofOffline       bool   `json:"asofOffline"`
 	DvPopHidden       bool   `json:"dvPopHidden"`
 	DvTriggerExpanded string `json:"dvTriggerExpanded"`
@@ -727,6 +727,25 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 		{Status: 200, Body: richDashboardBody(1111)},
 		{Status: 200, Body: richDashboardBody(2222), Pending: true},
 	}
+	freshnessBody := func(at string) map[string]any {
+		body := richDashboardBody(1111)
+		if at == "" {
+			body["data_through"], body["last_collection"] = nil, nil
+		} else {
+			body["data_through"] = today + " " + at + ":01"
+			body["last_collection"] = today + " " + at + ":05"
+		}
+		return body
+	}
+	freshnessRoutes := baseRoutes()
+	freshnessRoutes["GET /api/meta"] = routeSpec{Status: 200, Body: metaOnlineBody(today)}
+	freshnessRoutes["GET /api/dashboard"] = []routeSpec{{Status: 200, Body: freshnessBody("11:00")}, {Status: 200, Body: freshnessBody("12:00")}}
+	nullFreshnessRoutes := baseRoutes()
+	nullFreshnessRoutes["GET /api/meta"] = routeSpec{Status: 200, Body: metaOnlineBody(today)}
+	nullFreshnessRoutes["GET /api/dashboard"] = []routeSpec{{Status: 200, Body: freshnessBody("11:00")}, {Status: 200, Body: freshnessBody("")}}
+	failedFreshnessRoutes := baseRoutes()
+	failedFreshnessRoutes["GET /api/meta"] = routeSpec{Status: 200, Body: metaOnlineBody(today)}
+	failedFreshnessRoutes["GET /api/dashboard"] = []routeSpec{{Status: 200, Body: freshnessBody("11:00")}, {Status: 503, Body: map[string]any{"error": map[string]any{"message": "failed refresh"}}}}
 	composeRoutes := baseRoutes()
 	composeRoutes["GET /api/dashboard"] = routeSpec{Status: 200, Body: richDashboardBody(1111)}
 	richRoutes := baseRoutes()
@@ -927,6 +946,26 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 			},
 		},
 		{
+			Name:  "manual refresh updates snapshot freshness",
+			Opts:  map[string]any{"routes": freshnessRoutes},
+			Steps: []stepSpec{{Op: "click", ID: "dash-refresh"}},
+		},
+		{
+			Name:  "auto refresh updates snapshot freshness",
+			Opts:  map[string]any{"routes": freshnessRoutes, "timers": "manual"},
+			Steps: []stepSpec{{Op: "tick", Value: "30000"}},
+		},
+		{
+			Name:  "null freshness does not reuse old metadata",
+			Opts:  map[string]any{"routes": nullFreshnessRoutes},
+			Steps: []stepSpec{{Op: "click", ID: "dash-refresh"}},
+		},
+		{
+			Name:  "failed refresh keeps last successful freshness",
+			Opts:  map[string]any{"routes": failedFreshnessRoutes},
+			Steps: []stepSpec{{Op: "click", ID: "dash-refresh"}},
+		},
+		{
 			Name: "compose shares dimension rows with list",
 			Opts: map[string]any{"routes": composeRoutes},
 			Steps: []stepSpec{
@@ -994,6 +1033,16 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 			},
 		},
 		{
+			Name: "shot options preserve explicit empty and reconcile custom names",
+			Opts: map[string]any{"routes": baseRoutes()},
+			Steps: []stepSpec{
+				{Op: "shotOptions", Value: `{"names":["cp","pc"],"view":"compose","mode":"heat"}`},
+				{Op: "shotOptions", Value: `{"saved":{"list":false,"compose":false,"trend":false,"heat":false,"sessions":false,"custom":[]},"names":["cp"],"view":"list","mode":"trend"}`},
+				{Op: "shotOptions", Value: `{"saved":{"list":true,"compose":true,"trend":true,"heat":true,"sessions":true,"custom":["deleted","pc","pc"]},"names":["cp","pc","new"],"view":"list","mode":"trend"}`},
+				{Op: "shotOptions", Value: `{"saved":{"list":"false","custom":"cp"},"names":["cp"],"view":"list","mode":"trend"}`},
+			},
+		},
+		{
 			Name: "shot selector rewrite contract",
 			Opts: map[string]any{"routes": baseRoutes()},
 			Steps: []stepSpec{
@@ -1023,7 +1072,7 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 			},
 		},
 		{
-			Name: "shot css fetch failure reports error",
+			Name: "shot css fetch failure rejects raw stylesheet",
 			Opts: map[string]any{"routes": baseRoutes(), "shot": map[string]any{
 				"dpr":      1,
 				"location": map[string]any{"protocol": "http:", "host": "127.0.0.1:8699"},
@@ -1033,7 +1082,7 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				},
 			}},
 			Steps: []stepSpec{
-				{Op: "shotClick"},
+				{Op: "allcssFailure"},
 			},
 		},
 		{
@@ -1046,51 +1095,51 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 			},
 		},
 		{
-			Name: "shot button collapses overlays and reports failure",
+			Name: "shot overlays clear before share",
 			Opts: map[string]any{"routes": baseRoutes()},
 			Steps: []stepSpec{
 				{Op: "click", ID: "unit-trigger"},
 				{Op: "collapseProbe"},
-				{Op: "shotClick"},
+				{Op: "shotCollapse"},
 				{Op: "collapseProbe"},
 			},
 		},
 		{
-			Name: "shot hands clipboard write inside gesture",
+			Name: "shot pipeline copies generated PNG promise",
 			Opts: map[string]any{"routes": baseRoutes(), "shot": map[string]any{"dpr": 1}},
 			Steps: []stepSpec{
-				/* 连续两次截图:第一次成功后的 toast 在第二次克隆前必须被 S2
-				   收起(同属弹层不入镜);首次截图 toast 从未显示,探针为空。 */
-				{Op: "shotClick"},
-				{Op: "shotClick"},
+				/* 连续两次管线运行：每次导出产物均以 Promise 交给复制函数。
+				   真实按钮的手势时序和连续操作由浏览器用例验证。 */
+				{Op: "shotPipeline"},
+				{Op: "shotPipeline"},
 			},
 		},
 		{
 			Name: "shot draw failure falls back to next tier",
 			Opts: map[string]any{"routes": baseRoutes(), "shot": map[string]any{"dpr": 2, "toBlobFails": 1}},
 			Steps: []stepSpec{
-				{Op: "shotClick"},
+				{Op: "shotPipeline"},
 			},
 		},
 		{
-			Name: "shot canvas follows cloned layout height",
+			Name: "shot canvas follows supplied SVG dimensions",
 			Opts: map[string]any{"routes": baseRoutes(), "shot": map[string]any{"dpr": 2, "cloneHeight": 2400}},
 			Steps: []stepSpec{
-				{Op: "shotClick"},
+				{Op: "shotPipeline"},
 			},
 		},
 		{
-			Name: "shot all tiers fail reports failure",
+			Name: "shot all tiers fail rejects export",
 			Opts: map[string]any{"routes": baseRoutes(), "shot": map[string]any{"dpr": 1, "toBlobFails": 9}},
 			Steps: []stepSpec{
-				{Op: "shotClick"},
+				{Op: "shotPipeline"},
 			},
 		},
 		{
-			Name: "shot clipboard rejection reports failure",
+			Name: "shot clipboard rejection propagates error",
 			Opts: map[string]any{"routes": baseRoutes(), "shot": map[string]any{"dpr": 1, "clipboardReject": true}},
 			Steps: []stepSpec{
-				{Op: "shotClick"},
+				{Op: "shotPipeline"},
 			},
 		},
 		{
@@ -1099,7 +1148,7 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 			Steps: []stepSpec{
 				{Op: "donutHover", Gid: "project", Index: 0},
 				{Op: "donutProbe"},
-				{Op: "shotClick"},
+				{Op: "shotCollapse"},
 				{Op: "donutProbe"},
 			},
 		},
@@ -1178,6 +1227,19 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				t.Fatalf("app.js threw during scenario: %s", r.Fatal)
 			}
 			switch sc.Name {
+			case "manual refresh updates snapshot freshness", "auto refresh updates snapshot freshness", "null freshness does not reuse old metadata", "failed refresh keeps last successful freshness":
+				want := "在线 · 最近同步 " + today + " 12:00:05\n数据截至 · " + today + " 12:00:01"
+				if sc.Name == "null freshness does not reuse old metadata" {
+					want = "在线 · 最近同步 —\n数据截至 · —"
+				} else if sc.Name == "failed refresh keeps last successful freshness" {
+					want = "在线 · 最近同步 " + today + " 11:00:05\n数据截至 · " + today + " 11:00:01"
+				}
+				if r.AsofTitle != want {
+					t.Errorf("freshness title = %q, want %q", r.AsofTitle, want)
+				}
+				if countFetch(r, "GET", "/api/dashboard") != 2 || countFetch(r, "GET", "/api/meta") != 1 {
+					t.Errorf("refresh must reuse dashboard response without additional meta requests: %+v", r.FetchCalls)
+				}
 			case "reload restores saved custom range":
 				/* 区分度:URL 精确等于记忆区间——若 restoreSavedRange 丢失/解析坏
 				   (回退 Today),URL 与 range-custom 高亮双双失败;若重复发起请求
@@ -1617,8 +1679,8 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				/* 区分度:meta 请求失败必须显示离线态——若 renderMeta 退回写死
 				   「在线」或漏加 offline class,两个断言分别失败;同时仪表板拉取
 				   不得被 meta 失败阻断 */
-				if !strings.Contains(r.AsofText, "离线 · 无法连接本地服务") {
-					t.Errorf("asof text = %q, want offline message", r.AsofText)
+				if !strings.Contains(r.AsofTitle, "离线 · 无法连接本地服务") {
+					t.Errorf("asof text = %q, want offline message", r.AsofTitle)
 				}
 				if !r.AsofOffline {
 					t.Errorf(".asof missing offline class on meta failure")
@@ -1630,8 +1692,8 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 			case "meta success shows online":
 				/* 区分度:meta 成功必须走「在线 · 最近同步」分支且不带 offline
 				   class——在线时误加 offline class 或 last 拼接丢失都会失败 */
-				if !strings.Contains(r.AsofText, "在线 · 最近同步") {
-					t.Errorf("asof text = %q, want online message with last sync", r.AsofText)
+				if !strings.Contains(r.AsofTitle, "在线 · 最近同步") {
+					t.Errorf("asof text = %q, want online message with last sync", r.AsofTitle)
 				}
 				if r.AsofOffline {
 					t.Errorf(".asof has offline class despite meta success")
@@ -2141,6 +2203,22 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 					t.Errorf("groups html = %q, want EN is_other tail label", r.GroupsHTML)
 				}
 
+			case "shot options preserve explicit empty and reconcile custom names":
+				want := []string{
+					`{"list":false,"compose":true,"trend":false,"heat":true,"sessions":false,"custom":[]}`,
+					`{"list":false,"compose":false,"trend":false,"heat":false,"sessions":false,"custom":[]}`,
+					`{"list":true,"compose":true,"trend":true,"heat":true,"sessions":true,"custom":["pc"]}`,
+					`{"list":true,"compose":false,"trend":true,"heat":false,"sessions":false,"custom":[]}`,
+				}
+				if len(r.Probes) != len(want) {
+					t.Fatalf("probes = %v", r.Probes)
+				}
+				for i, p := range r.Probes {
+					if p.Output != want[i] {
+						t.Errorf("option case %d = %s, want %s", i, p.Output, want[i])
+					}
+				}
+
 			case "shot selector rewrite contract":
 				/* 区分度:两层重写对冻结清单的输出逐一精确断言——第一层组合
 				   选择器合并(浅色背景规则的产物恰为根类+条件+伪元素,不得
@@ -2201,22 +2279,9 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 					}
 				}
 
-			case "shot css fetch failure reports error":
-				/* 区分度:同源主样式表原文读取失败(503)必须抛错走失败分支——
-				   明确报错、不写剪贴板、按钮恢复,不得回退已知失真的 CSSOM
-				   交付缺尾图仍提示成功。失败发生在 SVG 构建期(Image 之前),
-				   shotEvents 为空即管线未进入光栅化。 */
-				if !strings.Contains(r.Toast, "截图失败") || !strings.Contains(r.Toast, "样式表读取失败") {
-					t.Errorf("toast = %q, want explicit stylesheet fetch failure notice", r.Toast)
-				}
-				if r.Shot.Disabled {
-					t.Errorf("shot button left disabled after stylesheet fetch failure")
-				}
-				if len(r.ClipboardBlobs) != 0 {
-					t.Errorf("clipboard blobs = %+v, want none (failed capture must not write clipboard)", r.ClipboardBlobs)
-				}
-				if len(r.ShotEvents) != 0 {
-					t.Errorf("shot events = %v, want pipeline aborted before rasterization", r.ShotEvents)
+			case "shot css fetch failure rejects raw stylesheet":
+				if len(r.Probes) != 1 || !strings.Contains(r.Probes[0].Output, "样式表读取失败") {
+					t.Errorf("raw stylesheet failure = %+v", r.Probes)
 				}
 
 			case "shot tiers cover degradation":
@@ -2233,124 +2298,56 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 					}
 				}
 
-			case "shot button collapses overlays and reports failure":
-				/* 区分度:点击截图先收起弹层(probe#0 证明 unit-pop 点击后处于
-				   展开、probe#2 证明 shot 点击后收起);沙箱无渲染 API,失败
-				   必须走 toast 明确报错——静默无输出或按钮卡死在 disabled
-				   (同步失败分支 fail 即恢复,final 态必须 false)都失败。 */
-				if len(r.Probes) != 3 || r.Probes[0].UnitHidden != "false" || r.Probes[2].UnitHidden != "true" {
+			case "shot overlays clear before share":
+				if len(r.Probes) != 2 || r.Probes[0].UnitHidden != "false" || r.Probes[1].UnitHidden != "true" {
 					t.Errorf("collapse probes = %+v, want open then collapsed", r.Probes)
 				}
-				if !strings.Contains(r.Toast, "截图失败") && !strings.Contains(r.Toast, "Screenshot failed") {
-					t.Errorf("toast = %q, want explicit screenshot failure notice (sandbox has no canvas)", r.Toast)
+
+			case "shot pipeline copies generated PNG promise", "shot draw failure falls back to next tier", "shot canvas follows supplied SVG dimensions":
+				for _, p := range r.Probes {
+					if p.Probe != "pipelineResult" || p.Output != "ok" {
+						t.Errorf("pipeline result = %+v", p)
+					}
 				}
-				if r.Shot.Disabled {
-					t.Errorf("shot button left disabled after pipeline settled")
-				}
-				if r.FetchCalls == nil {
-					t.Errorf("fetch calls missing")
+				if sc.Name == "shot pipeline copies generated PNG promise" {
+					if len(r.Probes) != 2 || len(r.ClipboardBlobs) != 2 {
+						t.Errorf("two captures = %+v / %+v", r.Probes, r.ClipboardBlobs)
+					}
+					if len(r.ShotEvents) < 4 || r.ShotEvents[0] != "image.src" || r.ShotEvents[1] != "image.onload" || r.ShotEvents[3] != "clipboard.write:promise" {
+						t.Errorf("pipeline order = %v", r.ShotEvents)
+					}
+				} else if sc.Name == "shot draw failure falls back to next tier" {
+					if len(r.Probes) != 1 || len(r.CanvasDims) != 2 || r.CanvasDims[0].Width != 1600 || r.CanvasDims[0].Height != 3804 || r.CanvasDims[1].Width != 800 || r.CanvasDims[1].Height != 1902 {
+						t.Errorf("fallback dimensions = %+v", r.CanvasDims)
+					}
+				} else {
+					if len(r.Probes) != 1 || len(r.CanvasDims) != 1 || r.CanvasDims[0].Width != 1600 || r.CanvasDims[0].Height != 4800 {
+						t.Errorf("SVG dimension chain = %+v", r.CanvasDims)
+					}
 				}
 
-			case "shot hands clipboard write inside gesture":
-				/* 区分度:Safari 手势合同——clipboard.write 必须在用户手势调用栈内
-				   发起(事件序:image.src → clipboard.write:promise → image.onload),
-				   值为未决 Promise,图像就绪后由平台取值写入;按钮中间态保持
-				   disabled 防连点、final 态恢复,write 收到的 blob 即 toBlob 产物。 */
-				if len(r.Probes) != 2 || r.Probes[0].Probe != "shotMid" || r.Probes[1].Probe != "shotMid" ||
-					r.Probes[0].Disabled != "true" || r.Probes[1].Disabled != "true" {
-					t.Fatalf("mid probes = %+v, want shot button disabled on both clicks", r.Probes)
+			case "shot all tiers fail rejects export", "shot clipboard rejection propagates error":
+				if len(r.Probes) != 1 || r.Probes[0].Output == "ok" {
+					t.Fatalf("expected pipeline rejection, got %+v", r.Probes)
 				}
-				/* S2 补全:上一轮截图的成功 toast 同属弹层,第二次克隆前须落回
-				   隐藏态(首次截图 toast 未显示过,探针为空;done/fail 的后续
-				   toast 在异步链之后才发生,不覆盖同步窗口的取证)。 */
-				if r.Probes[0].ToastShow == "true" {
-					t.Errorf("first mid probe toastShow = %q, want not shown before first capture", r.Probes[0].ToastShow)
-				}
-				if r.Probes[1].ToastShow != "false" {
-					t.Errorf("second mid probe toastShow = %q, want previous toast collapsed before capture", r.Probes[1].ToastShow)
-				}
-				if len(r.ShotEvents) < 3 || r.ShotEvents[0] != "image.src" ||
-					r.ShotEvents[1] != "clipboard.write:promise" || r.ShotEvents[2] != "image.onload" {
-					t.Errorf("shot events = %v, want src then gesture-stage write with pending promise then load", r.ShotEvents)
-				}
-				if !strings.Contains(r.Toast, "已复制") && !strings.Contains(r.Toast, "Copied") {
-					t.Errorf("toast = %q, want copied confirmation", r.Toast)
-				}
-				if r.Shot.Disabled {
-					t.Errorf("shot button left disabled after success")
-				}
-				if len(r.ClipboardBlobs) != 2 || r.ClipboardBlobs[0].Size == 0 || r.ClipboardBlobs[1].Size == 0 {
-					t.Errorf("clipboard blobs = %+v, want settled toBlob products of both captures", r.ClipboardBlobs)
-				}
-
-			case "shot draw failure falls back to next tier":
-				/* 区分度:dpr=2 首档 2x 导出失败后按降级序列落 1x 重试成功;
-				   两档 canvas 尺寸同源于同一组 SVG 尺寸(800x1902),宽高比一致。 */
-				if len(r.CanvasDims) != 2 || r.CanvasDims[0].Width != 1600 || r.CanvasDims[0].Height != 3804 ||
-					r.CanvasDims[1].Width != 800 || r.CanvasDims[1].Height != 1902 {
-					t.Errorf("canvas dims = %+v, want 2x then 1x of 800x1902", r.CanvasDims)
-				}
-				if !strings.Contains(r.Toast, "已复制") && !strings.Contains(r.Toast, "Copied") {
-					t.Errorf("toast = %q, want fallback success", r.Toast)
-				}
-				if r.Shot.Disabled {
-					t.Errorf("shot button left disabled after fallback")
-				}
-
-			case "shot canvas follows cloned layout height":
-				/* 区分度:canvas 尺寸必须取 SVG 实际视口(克隆布局高 2400),
-				   不得回退原页 scrollHeight(1902)——克隆高大于页高时旧实现
-				   纵向压缩、宽高比失配。 */
-				if len(r.CanvasDims) != 1 || r.CanvasDims[0].Width != 1600 || r.CanvasDims[0].Height != 4800 {
-					t.Errorf("canvas dims = %+v, want 2x of 800x2400 (cloned layout height)", r.CanvasDims)
-				}
-				if !strings.Contains(r.Toast, "已复制") && !strings.Contains(r.Toast, "Copied") {
-					t.Errorf("toast = %q, want success with dimension-following canvas", r.Toast)
-				}
-
-			case "shot all tiers fail reports failure":
-				/* 区分度:全部档位失败必须明确报错并恢复按钮,不交付截断图。 */
-				if !strings.Contains(r.Toast, "截图失败") && !strings.Contains(r.Toast, "Screenshot failed") {
-					t.Errorf("toast = %q, want explicit failure after all tiers", r.Toast)
-				}
-				if r.Shot.Disabled {
-					t.Errorf("shot button left disabled after all tiers failed")
-				}
-				if len(r.CanvasDims) == 0 {
-					t.Errorf("no draw attempts recorded, want tier canvases")
-				}
-
-			case "shot clipboard rejection reports failure":
-				/* 区分度:导出成功但剪贴板被拒必须走失败 toast 并恢复按钮;
-				   blob 已 settle 到 ClipboardItem 后才拒绝。 */
-				if !strings.Contains(r.Toast, "截图失败") && !strings.Contains(r.Toast, "Screenshot failed") {
-					t.Errorf("toast = %q, want explicit failure on clipboard denial", r.Toast)
-				}
-				if r.Shot.Disabled {
-					t.Errorf("shot button left disabled after clipboard rejection")
-				}
-				if len(r.ClipboardBlobs) != 1 {
-					t.Errorf("clipboard blobs = %+v, want settled blob observed before denial", r.ClipboardBlobs)
+				if sc.Name == "shot all tiers fail rejects export" {
+					if !strings.Contains(r.Probes[0].Output, "画布导出失败") || len(r.CanvasDims) == 0 || len(r.ClipboardBlobs) != 0 {
+						t.Errorf("canvas rejection = %+v / %+v / %+v", r.Probes, r.CanvasDims, r.ClipboardBlobs)
+					}
+				} else if !strings.Contains(r.Probes[0].Output, "stub clipboard denied") || len(r.ClipboardBlobs) != 1 {
+					t.Errorf("clipboard rejection = %+v / %+v", r.Probes, r.ClipboardBlobs)
 				}
 
 			case "shot clears donut highlight before capture":
-				/* 区分度:鼠标停留图例(高亮在)直接触发截图,S2 必须显式复位
-				   构成图联动——wrap.has-hl/扇区 .hl/图例 .on 清除、中心从联动
-				   文本恢复默认(非空、非联动值)。无截前清理时 probe#3 与
-				   probe#1 相同。探针序列:donutCenter(#0)→donut(#1)→
-				   shotMid(#2)→donut(#3)。 */
-				if len(r.Probes) != 4 || r.Probes[1].Probe != "donut" || r.Probes[3].Probe != "donut" {
-					t.Fatalf("probes = %+v, want donut snapshots at #1 and #3", r.Probes)
+				if len(r.Probes) != 3 || r.Probes[1].Probe != "donut" || r.Probes[2].Probe != "donut" {
+					t.Fatalf("donut probes = %+v", r.Probes)
 				}
-				hv, pvd := r.Probes[1].Groups[0], r.Probes[3].Groups[0]
+				hv, after := r.Probes[1].Groups[0], r.Probes[2].Groups[0]
 				if hv.HasHl != "true" || hv.HlSegs != 1 || hv.OnLegend != 1 {
-					t.Errorf("hover state = %+v, want highlight active before shot", hv)
+					t.Errorf("initial highlight = %+v", hv)
 				}
-				if pvd.HasHl != "false" || pvd.HlSegs != 0 || pvd.OnLegend != 0 {
-					t.Errorf("post-shot state = %+v, want highlight cleared", pvd)
-				}
-				if pvd.CenterB == "" || pvd.CenterS == "" || pvd.CenterS == hv.CenterS {
-					t.Errorf("post-shot center = %q/%q, want restored default (hover was %q/%q)", pvd.CenterB, pvd.CenterS, hv.CenterB, hv.CenterS)
+				if after.HasHl != "false" || after.HlSegs != 0 || after.OnLegend != 0 || after.CenterB == "" || after.CenterS == "" || after.CenterS == hv.CenterS {
+					t.Errorf("cleared highlight = %+v", after)
 				}
 
 			case "refresh interval selects and save round trip":
