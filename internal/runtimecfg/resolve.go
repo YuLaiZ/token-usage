@@ -262,6 +262,7 @@ func copyStringMap(in map[string]string) map[string]string {
 }
 
 // expandTildeAll 展开所有路径字段的 ~ 前缀。
+// Log.Dir 在展开前先去掉前后空白，其他路径字段不去空白。
 func expandTildeAll(cfg *config.Config, home string) {
 	cfg.DataDir = expandTilde(cfg.DataDir, home)
 	cfg.Log.Dir = expandTilde(strings.TrimSpace(cfg.Log.Dir), home)
