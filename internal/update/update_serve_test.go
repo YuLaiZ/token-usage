@@ -11,6 +11,7 @@ package update
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +21,7 @@ import (
 
 type recordedServeStart struct {
 	dataDir string
+	logDir  string
 	binPath string
 	addr    string
 }
@@ -56,10 +58,10 @@ func (f *fakeServeLifecycle) Stop(dataDir string) (bool, error) {
 	return f.stopStopped, f.stopErr
 }
 
-func (f *fakeServeLifecycle) Start(dataDir, binPath, addr string) error {
+func (f *fakeServeLifecycle) Start(dataDir, logDir, binPath, addr string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.startCalls = append(f.startCalls, recordedServeStart{dataDir: dataDir, binPath: binPath, addr: addr})
+	f.startCalls = append(f.startCalls, recordedServeStart{dataDir: dataDir, logDir: logDir, binPath: binPath, addr: addr})
 	if index := len(f.startCalls) - 1; index < len(f.startErrs) {
 		return f.startErrs[index]
 	}
@@ -81,11 +83,28 @@ func (f *fakeServeLifecycle) lastStart() recordedServeStart {
 	return f.startCalls[len(f.startCalls)-1]
 }
 
+func (f *fakeServeLifecycle) assertLogDir(t *testing.T, want string) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, call := range f.startCalls {
+		if call.logDir != want {
+			t.Errorf("第 %d 次 dashboard 恢复应携带 log.dir, got %q, want %q", i+1, call.logDir, want)
+		}
+	}
+}
+
 // makeServeInstallService 在 makeInstallService 之上注入 dashboard 生命周期依赖。
 func makeServeInstallService(t *testing.T, daemonRunning bool, serve *fakeServeLifecycle) (*Service, *fakeControlSession, *fakeInstaller, *recordingConfigLoader) {
 	t.Helper()
 	svc, sess, _, installer, cfgLoader := makeInstallService(t, daemonRunning)
 	svc.ServeLifecycle = serve
+	cfgLoader.cfg.Log.Dir = filepath.Join(t.TempDir(), "custom logs")
+	t.Cleanup(func() {
+		if current, ok := svc.ServeLifecycle.(*fakeServeLifecycle); ok {
+			current.assertLogDir(t, cfgLoader.cfg.Log.Dir)
+		}
+	})
 	return svc, sess, installer, cfgLoader
 }
 

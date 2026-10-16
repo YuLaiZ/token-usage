@@ -787,7 +787,7 @@ func (s *Service) recoverIntentWithSession(ctx context.Context, sess ControlSess
 				"遗留恢复意图记录 dashboard 原在运行，但未装配 dashboard 生命周期依赖",
 			))
 		}
-		if startErr := s.ServeLifecycle.Start(cfg.DataDir, target, intent.ServeAddr); startErr != nil {
+		if startErr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, target, intent.ServeAddr); startErr != nil {
 			return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard per the leftover recovery intent", "按遗留恢复意图恢复 dashboard 失败"), startErr)
 		}
 	}
@@ -833,7 +833,7 @@ func (s *Service) recoverJournalWithSession(ctx context.Context, sess ControlSes
 					"遗留 journal 记录 dashboard 原在运行，但未装配 dashboard 生命周期依赖",
 				))
 			}
-			if startErr := s.ServeLifecycle.Start(cfg.DataDir, journalOutcome.NewBinPath, journalOutcome.ServeAddr); startErr != nil {
+			if startErr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, journalOutcome.NewBinPath, journalOutcome.ServeAddr); startErr != nil {
 				if cleanupErr != nil {
 					return installOutcome{}, false, errors.Join(
 						fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard per the leftover journal after the interrupted transaction", "恢复遗留事务后按 journal 记录恢复 dashboard 失败"), startErr),
@@ -877,7 +877,7 @@ func (s *Service) recoverJournalWithSession(ctx context.Context, sess ControlSes
 					"遗留 journal 记录 dashboard 原在运行，但未装配 dashboard 生命周期依赖",
 				))
 			}
-			if startErr := s.ServeLifecycle.Start(cfg.DataDir, journalOutcome.NewBinPath, journalOutcome.ServeAddr); startErr != nil {
+			if startErr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, journalOutcome.NewBinPath, journalOutcome.ServeAddr); startErr != nil {
 				if cleanupErr != nil {
 					return installOutcome{}, false, errors.Join(
 						fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard per the leftover journal after the interrupted transaction", "恢复遗留事务后按 journal 记录恢复 dashboard 失败"), startErr),
@@ -1120,7 +1120,7 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 			if serr := sess.Stop(ctx, cfg); serr != nil {
 				stopErr := fmt.Errorf("%s: %w", ui.Bi("failed to stop daemon before replacement", "替换前停止 daemon 失败"), serr)
 				if serveWasRunning {
-					if rerr := s.ServeLifecycle.Start(cfg.DataDir, oldBinPath, serveAddr); rerr != nil {
+					if rerr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, oldBinPath, serveAddr); rerr != nil {
 						return errors.Join(stopErr, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard after the daemon stop failure", "daemon 停止失败后恢复 dashboard 失败"), rerr))
 					}
 				}
@@ -1166,7 +1166,7 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 				}
 			}
 			if serveWasRunning {
-				if serveErr := s.ServeLifecycle.Start(cfg.DataDir, oldBinPath, serveAddr); serveErr != nil {
+				if serveErr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, oldBinPath, serveAddr); serveErr != nil {
 					errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), serveErr))
 				}
 			}
@@ -1188,7 +1188,7 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 		// 主失败与各回滚失败聚合保留。
 		if serveWasRunning {
 			s.report(Event{Kind: EventStartServe})
-			if serr := s.ServeLifecycle.Start(cfg.DataDir, newBinPath, serveAddr); serr != nil {
+			if serr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, newBinPath, serveAddr); serr != nil {
 				return s.rollbackAfterServeStartFailure(ctx, sess, cfg, oldBinPath, wasRunning, serveAddr, serr)
 			}
 		}
@@ -1233,7 +1233,7 @@ func (s *Service) rollbackAfterDaemonStartFailure(ctx context.Context, sess Cont
 		errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("rollback restart with the old binary also failed", "回滚重启旧二进制也失败"), rerr))
 	}
 	if serveWasRunning {
-		if serr := s.ServeLifecycle.Start(cfg.DataDir, oldBinPath, serveAddr); serr != nil {
+		if serr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, oldBinPath, serveAddr); serr != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), serr))
 		}
 	}
@@ -1272,7 +1272,7 @@ func (s *Service) rollbackAfterServeStartFailure(ctx context.Context, sess Contr
 			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("rollback restart with the old binary also failed", "回滚重启旧二进制也失败"), restartErr))
 		}
 	}
-	if resErr := s.ServeLifecycle.Start(cfg.DataDir, oldBinPath, serveAddr); resErr != nil {
+	if resErr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, oldBinPath, serveAddr); resErr != nil {
 		errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), resErr))
 	}
 	return errors.Join(errs...)

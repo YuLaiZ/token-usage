@@ -161,7 +161,8 @@ func TestUpdateServeAdapter_StartNeverOpensBrowser(t *testing.T) {
 	t.Cleanup(func() { serveOpenBrowser = origOpen })
 
 	adapter := newUpdateServeLifecycle()
-	if err := adapter.Start(t.TempDir(), "/opt/new/token-usage", "127.0.0.1:8677"); err != nil {
+	dataDir, logDir := t.TempDir(), filepath.Join(t.TempDir(), "custom logs")
+	if err := adapter.Start(dataDir, logDir, "/opt/new/token-usage", "127.0.0.1:8677"); err != nil {
 		t.Fatalf("Start err=%v", err)
 	}
 	if browserCalls != 0 {
@@ -169,6 +170,9 @@ func TestUpdateServeAdapter_StartNeverOpensBrowser(t *testing.T) {
 	}
 	if captured.binPath != "/opt/new/token-usage" {
 		t.Errorf("恢复必须用显式新二进制路径, got %q", captured.binPath)
+	}
+	if captured.dataDir != dataDir || captured.logPath != filepath.Join(logDir, "serve.log") {
+		t.Errorf("恢复应透传独立的日志目录, got %+v", captured)
 	}
 	if captured.addr != "127.0.0.1:8677" {
 		t.Errorf("恢复必须携带原监听地址, got %q", captured.addr)

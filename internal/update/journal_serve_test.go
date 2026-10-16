@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/YuLaiZ/token-usage/internal/config"
 )
 
 // recWithServe 返回带 dashboard 快照的 journal 记录。
@@ -62,6 +64,13 @@ func TestApply_RecoverJournalWithServeRestoresDashboard(t *testing.T) {
 	svc, sess, binPath, _ := makeApplyInstallService(t, false)
 	serveFake := &fakeServeLifecycle{}
 	svc.ServeLifecycle = serveFake
+	cfg, err := svc.ConfigLoader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Log.Dir = filepath.Join(t.TempDir(), "custom logs")
+	svc.ConfigLoader = func() (*config.Config, error) { return cfg, nil }
+	t.Cleanup(func() { serveFake.assertLogDir(t, cfg.Log.Dir) })
 	// 中断场景：上次更新的 daemon 停止发生在 journal 之前——本轮恢复由 journal
 	// 驱动，而非锁内 Inspect。
 	rec := journalRecord{

@@ -32,5 +32,6 @@ type ServeLifecycle interface {
 	// spawn `_serve-run --addr`，等待 serve.json 出现并以 /api/meta 探活
 	// 确认）。实现绝不允许打开浏览器、绝不继承手工 `serve start --open`
 	// 行为；失败返回非 nil error（实例未就绪，状态文件由编排清理）。
-	Start(dataDir, binPath, addr string) error
+	// logDir 为生效的 log.dir；空串使用 dataDir/logs。
+	Start(dataDir, logDir, binPath, addr string) error
 }

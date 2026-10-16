@@ -72,8 +72,8 @@ func TestStartInBackground_ExplicitBinPathPassedThrough(t *testing.T) {
 	if captured.addr != "127.0.0.1:8699" {
 		t.Errorf("请求地址必须透传, got %q", captured.addr)
 	}
-	if captured.logPath != LogPath(dir) {
-		t.Errorf("日志路径应为 DataDir 下的 serve.log, got %q", captured.logPath)
+	if captured.logPath != LogPath(dir, "") {
+		t.Errorf("日志路径应为 DataDir/logs 下的 serve.log, got %q", captured.logPath)
 	}
 	if got.PID != 4242 || got.Addr != liveAddr {
 		t.Errorf("结果应来自 spawn 返回值, got %+v", got)
@@ -151,7 +151,10 @@ func TestStartInBackground_MissingAddr(t *testing.T) {
 // TestStartInBackground_FailureIncludesLogTail spawn 失败时错误附带日志尾。
 func TestStartInBackground_FailureIncludesLogTail(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(LogPath(dir), []byte("line-1\n监听失败详情\n"), 0644); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(LogPath(dir, ""), []byte("line-1\n监听失败详情\n"), 0644); err != nil {
 		t.Fatalf("写日志: %v", err)
 	}
 	stubSpawnAndWait(t, func(string, string, string, string) (int, string, error) {
@@ -229,5 +232,76 @@ func TestStartInBackground_StaleStateRemovedBeforeSpawn(t *testing.T) {
 	}
 	if got.AlreadyRunning || got.Addr != liveAddr {
 		t.Errorf("应完成全新启动, got %+v", got)
+	}
+}
+
+func TestStartInBackground_DefaultLogDirectory(t *testing.T) {
+	dir := t.TempDir()
+	captured := stubSpawnAndWait(t, func(string, string, string, string) (int, string, error) {
+		return 4242, "127.0.0.1:8694", nil
+	})
+	if _, err := StartInBackground(StartOptions{DataDir: dir, Addr: "127.0.0.1:8694"}); err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, "logs", "serve.log"); captured.logPath != want {
+		t.Errorf("默认日志应归入 logs 目录, got %q, want %q", captured.logPath, want)
+	}
+}
+
+func TestTruncateLog_CreatesDirectoryAndClearsPreviousRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "logs", "serve.log")
+	if err := truncateLog(path); err != nil {
+		t.Fatalf("应创建缺失的日志目录: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("previous run\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := truncateLog(path); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(path); err != nil || len(data) != 0 {
+		t.Errorf("再次启动应截断旧日志, got (%q, %v)", data, err)
+	}
+}
+
+func TestStartInBackground_CustomLogDirectoryFailure(t *testing.T) {
+	dir := t.TempDir()
+	logDir := filepath.Join(t.TempDir(), "custom logs")
+	if err := os.WriteFile(filepath.Join(dir, "serve.log"), []byte("legacy log must stay\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stubSpawnAndWait(t, func(dataDir, binPath, addr, logPath string) (int, string, error) {
+		if want := filepath.Join(logDir, "serve.log"); logPath != want {
+			t.Fatalf("应使用自定义日志目录, got %q, want %q", logPath, want)
+		}
+		if err := truncateLog(logPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(logPath, []byte("custom startup failure\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return 0, "", errors.New("not ready")
+	})
+	_, err := StartInBackground(StartOptions{DataDir: dir, LogDir: logDir, Addr: "127.0.0.1:8694"})
+	if err == nil || !strings.Contains(err.Error(), "custom startup failure") || strings.Contains(err.Error(), "legacy log must stay") {
+		t.Fatalf("失败应附自定义目录日志, got %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "serve.log")); err != nil || string(data) != "legacy log must stay\n" {
+		t.Errorf("不应搬移或修改旧日志, got (%q, %v)", data, err)
+	}
+}
+
+func TestSpawnAndWait_LogDirectoryFailurePreventsSpawn(t *testing.T) {
+	parent := t.TempDir()
+	blocked := filepath.Join(parent, "not-a-directory")
+	if err := os.WriteFile(blocked, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := SpawnAndWait(parent, filepath.Join(parent, "nonexistent-binary"), "127.0.0.1:0", filepath.Join(blocked, "serve.log"))
+	if err == nil || !strings.Contains(err.Error(), "failed to create serve log directory") {
+		t.Fatalf("目录创建失败应在尝试拉起二进制前返回, got %v", err)
+	}
+	if data, err := os.ReadFile(blocked); err != nil || string(data) != "keep" {
+		t.Errorf("目录冲突不应覆盖已有文件, got (%q, %v)", data, err)
 	}
 }

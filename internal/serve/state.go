@@ -58,9 +58,12 @@ func StatePath(dataDir string) string {
 	return filepath.Join(dataDir, StateFile)
 }
 
-// LogPath 返回后台日志文件完整路径。
-func LogPath(dataDir string) string {
-	return filepath.Join(dataDir, LogFile)
+// LogPath 返回后台日志文件完整路径。logDir 为生效的 log.dir；空值按 dataDir/logs 推导。
+func LogPath(dataDir, logDir string) string {
+	if logDir == "" {
+		logDir = filepath.Join(dataDir, "logs")
+	}
+	return filepath.Join(logDir, LogFile)
 }
 
 // WriteState 原子写出状态文件（0644）。

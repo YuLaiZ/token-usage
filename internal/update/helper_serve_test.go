@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -19,6 +20,12 @@ import (
 func newServeHelperFixture(t *testing.T, wasRunning, serveWasRunning bool, serveAddr string) *helperFixture {
 	t.Helper()
 	f := newHelperFixture(t, wasRunning)
+	f.cfgLoad.cfg.Log.Dir = filepath.Join(t.TempDir(), "custom logs")
+	t.Cleanup(func() {
+		if current, ok := f.serve.(*fakeServeLifecycle); ok {
+			current.assertLogDir(t, f.cfgLoad.cfg.Log.Dir)
+		}
+	})
 	f.plan.ServeWasRunning = serveWasRunning
 	f.plan.ServeAddr = serveAddr
 	if err := writeHelperPlan(f.paths.Plan, f.plan); err != nil {

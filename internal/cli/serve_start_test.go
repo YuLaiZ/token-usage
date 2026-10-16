@@ -126,7 +126,7 @@ func TestServeStartCmd_StaleStateRemovedBeforeSpawn(t *testing.T) {
 		"dashboard started in background",
 		"http://" + liveAddr,
 		"4242",
-		serve.LogPath(dir),
+		serve.LogPath(dir, ""),
 		"token-usage serve stop",
 		"仪表板已后台启动",
 	} {
@@ -138,7 +138,10 @@ func TestServeStartCmd_StaleStateRemovedBeforeSpawn(t *testing.T) {
 
 func TestServeStartCmd_FailureIncludesLogTail(t *testing.T) {
 	dir := t.TempDir()
-	logPath := serve.LogPath(dir)
+	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := serve.LogPath(dir, "")
 	if err := os.WriteFile(logPath, []byte("line-1\nline-2\n监听 127.0.0.1:8619 失败\n"), 0644); err != nil {
 		t.Fatalf("写日志: %v", err)
 	}
@@ -168,6 +171,9 @@ func TestServeStartCmd_FailureIncludesLogTail(t *testing.T) {
 
 func TestServeStartCmd_FailureLogTailCappedAtTenLines(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0755); err != nil {
+		t.Fatal(err)
+	}
 	stubServeSpawnAndWait(t, func(string, string, string, string) (int, string, error) {
 		return 0, "", errors.New("not ready")
 	})
@@ -177,7 +183,7 @@ func TestServeStartCmd_FailureLogTailCappedAtTenLines(t *testing.T) {
 	for i := 1; i <= 15; i++ {
 		logBuf.WriteString("unique-log-line-" + strings.Repeat("x", i) + "\n")
 	}
-	if err := os.WriteFile(serve.LogPath(dir), []byte(logBuf.String()), 0644); err != nil {
+	if err := os.WriteFile(serve.LogPath(dir, ""), []byte(logBuf.String()), 0644); err != nil {
 		t.Fatalf("写日志: %v", err)
 	}
 
@@ -193,6 +199,30 @@ func TestServeStartCmd_FailureLogTailCappedAtTenLines(t *testing.T) {
 	}
 	if strings.Contains(msg, "unique-log-line-x\n") {
 		t.Errorf("最早的一行不应出现在日志尾:\n%s", msg)
+	}
+}
+
+func TestServeStartCmd_CustomLogDirectory(t *testing.T) {
+	dataDir, logDir := t.TempDir(), filepath.Join(t.TempDir(), "custom logs")
+	wantLogPath := filepath.Join(logDir, "serve.log")
+	stubServeSpawnAndWait(t, func(dir, binPath, addr, logPath string) (int, string, error) {
+		if dir != dataDir || logPath != wantLogPath {
+			t.Errorf("状态目录与日志目录应独立透传, dataDir=%q logPath=%q", dir, logPath)
+		}
+		return 4242, "127.0.0.1:8677", nil
+	})
+	cmd := newServeCmdWithDeps(func() (*config.Config, error) {
+		return &config.Config{DataDir: dataDir, Log: config.LogConfig{Dir: logDir}}, nil
+	}, "test-version")
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"start"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), wantLogPath) {
+		t.Errorf("启动结果应打印实际日志位置, got %q", out.String())
 	}
 }
 

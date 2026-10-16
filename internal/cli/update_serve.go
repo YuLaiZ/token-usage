@@ -56,9 +56,10 @@ func (updateServeLifecycle) Stop(dataDir string) (bool, error) {
 // Start 以指定二进制、原监听地址后台恢复 dashboard（internal/serve.StartInBackground
 // 静默编排：serve-start.lock 串行化、已运行预检、detached spawn `_serve-run --addr`、
 // 探活确认）。不含任何浏览器打开逻辑。
-func (updateServeLifecycle) Start(dataDir, binPath, addr string) error {
+func (updateServeLifecycle) Start(dataDir, logDir, binPath, addr string) error {
 	_, err := serve.StartInBackground(serve.StartOptions{
 		DataDir: dataDir,
+		LogDir:  logDir,
 		Addr:    addr,
 		BinPath: binPath,
 	})

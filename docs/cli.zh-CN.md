@@ -676,7 +676,7 @@ token-usage serve restart
 ```
 
 - 状态文件：数据目录下的 `serve.json`（默认 `~/.token-usage/serve.json`），在服务完成监听时原子写出 `{"pid":…,"addr":…,"started_at":…}`（记录的 `addr` 为实际绑定的地址）。优雅停止时自动删除（`serve stop`，或 restart 的停止段）；崩溃或 `SIGKILL` 遗留的文件由 `serve status`/`serve stop` 的陈旧探活与下一次 `serve start` 的单实例守卫兜底删除。状态迁移由数据目录下的 `serve-state.lock` 文件锁串行化，陈旧清理为条件删除：只有与判定所据内容仍一致的陈旧状态才会被移除——若新实例已接管，其新写出的 `serve.json` 绝不会被误删。
-- 日志文件：数据目录下的 `serve.log`（默认 `~/.token-usage/serve.log`）。每次 `serve start` 都会截断；子进程的 stdout 与 stderr 都写入其中，为纯文本（无终端超链接）。启动失败时错误信息会附带日志末尾 10 行。
+- 日志文件：生效 `log.dir` 下的 `serve.log`（日志目录默认 `<data_dir>/logs`，默认数据目录下即 `~/.token-usage/logs/serve.log`）。启动前会创建缺失的日志目录。每次实际启动都会截断文件；子进程的 stdout 与 stderr 都写入其中，为纯文本（无终端超链接）。启动失败时错误信息会附带日志末尾 10 行。修改 `log.dir` 在下一次实际启动时生效，包括 restart 和 update 恢复；已运行时再次 start 幂等返回，不改动原日志。旧 `<data_dir>/serve.log` 不会自动搬移或删除，可在旧实例退出后手动清理。该独立文件不参与按天日志的过期清理。
 - `serve start` 在已记录状态于 `/api/meta` 上仍有响应时报告已在运行并以退出码 0 幂等返回（要重启请用 `token-usage serve restart`，或先 `token-usage serve stop` 停止）；不再响应的陈旧状态与损坏的状态文件会被删除并照常启动。子进程 5s 内未就绪则启动失败，并指向日志末尾。并发的 `serve start` 由数据目录下的 `serve-start.lock` 文件锁串行化（仅用于启动协调——运行中的实例由 `serve.json` 描述、以 `serve.lock` 生命周期锁持有）：另一个 start 尚在执行时，第二个以非零退出码报错并提示稍后重试。
 - `serve status` 的所有状态结论均以退出码 0 返回（只有意外的 I/O 失败才非零）：`/api/meta` 有响应时报告 URL、PID 与启动时间；无响应（或状态文件损坏无法辨识）时删除陈旧/损坏文件并报告未运行。状态迁移由 `serve-state.lock` 串行化；锁被并发的 `serve status`/`serve stop` 持有超过带界重试窗口时，命令以非零退出并提示稍后重试。
 - `serve status --format json` 把同一判定输出为机器可读文档（两空格缩进 + 尾随换行，与 `doctor --format json`、`daemon status --format json` 同一约定）：`state` 取封闭值域——`running`、`not_running`、`not_running_stale_removed`、`not_running_corrupt_removed`；`running` 是 state 对应的布尔值；`pid`/`addr`/`url`/`started_at`（RFC3339，serve.json 原值）仅在运行中出现；`data_dir` 为配置的数据目录。非法 `--format` 值报错并列出允许值，与 `daemon status` 同型。

@@ -18,7 +18,7 @@
 // 注入 fake 或缩短窗口保持用例确定性。
 package serve
 
-// StateFile 与 LogFile 是 DataDir 下的状态文件与后台日志文件固定名。
+// StateFile 与 LogFile 分别为数据目录下的状态文件名和日志目录下的后台日志文件名。
 const (
 	StateFile = "serve.json"
 	LogFile   = "serve.log"

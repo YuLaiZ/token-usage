@@ -165,7 +165,7 @@ func (r *helperRunner) executeUnderLock(ctx context.Context, sess ControlSession
 		runningErr := errors.New(ui.Bi("daemon is unexpectedly running after stop; aborting replacement", "daemon 在停止后意外运行，放弃替换"))
 		var serveErr error
 		if plan.ServeWasRunning {
-			if serr := r.serve.Start(cfg.DataDir, paths.Target, plan.ServeAddr); serr != nil {
+			if serr := r.serve.Start(cfg.DataDir, cfg.Log.Dir, paths.Target, plan.ServeAddr); serr != nil {
 				serveErr = fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), serr)
 			}
 		}
@@ -221,7 +221,7 @@ func (r *helperRunner) executeUnderLock(ctx context.Context, sess ControlSession
 			}
 			var serveErr error
 			if plan.ServeWasRunning {
-				serveErr = r.serve.Start(cfg.DataDir, paths.Target, plan.ServeAddr)
+				serveErr = r.serve.Start(cfg.DataDir, cfg.Log.Dir, paths.Target, plan.ServeAddr)
 			}
 			r.fail(paths.Result,
 				fmt.Errorf("%s: %w", ui.Bi("failed to start new daemon", "启动新 daemon 失败"), serr),
@@ -238,7 +238,7 @@ func (r *helperRunner) executeUnderLock(ctx context.Context, sess ControlSession
 	// 保留，绝不谎报成功。
 	if plan.ServeWasRunning {
 		r.helperLog.step("restoring dashboard at %s", plan.ServeAddr)
-		if serr := r.serve.Start(cfg.DataDir, paths.Target, plan.ServeAddr); serr != nil {
+		if serr := r.serve.Start(cfg.DataDir, cfg.Log.Dir, paths.Target, plan.ServeAddr); serr != nil {
 			serveErr := fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the new binary", "用新二进制恢复 dashboard 失败"), serr)
 			rbErr := rollbackForHelper(paths.Target, paths.Backup, plan.OldSHA256)
 			var stopErr, restartErr, resErr error
@@ -250,7 +250,7 @@ func (r *helperRunner) executeUnderLock(ctx context.Context, sess ControlSession
 					restartErr = fmt.Errorf("%s: %w", ui.Bi("rollback restart with the old binary also failed", "回滚重启旧二进制也失败"), e)
 				}
 			}
-			if e := r.serve.Start(cfg.DataDir, paths.Target, plan.ServeAddr); e != nil {
+			if e := r.serve.Start(cfg.DataDir, cfg.Log.Dir, paths.Target, plan.ServeAddr); e != nil {
 				resErr = fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), e)
 			}
 			r.fail(paths.Result, serveErr,
@@ -285,7 +285,7 @@ func (r *helperRunner) restoreOriginalServices(ctx context.Context, sess Control
 		}
 	}
 	if plan.ServeWasRunning {
-		if err := r.serve.Start(cfg.DataDir, paths.Target, plan.ServeAddr); err != nil {
+		if err := r.serve.Start(cfg.DataDir, cfg.Log.Dir, paths.Target, plan.ServeAddr); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), err))
 		}
 	}

@@ -41,8 +41,10 @@ var (
 
 // StartOptions 是后台启动编排的入参。
 type StartOptions struct {
-	// DataDir 状态文件/日志/锁所在的数据目录。
+	// DataDir 状态文件与锁所在的数据目录。
 	DataDir string
+	// LogDir 生效的 log.dir；空串按 DataDir/logs 推导。
+	LogDir string
 	// Addr 请求的监听地址（":0" 端口由子命令实际监听结果决定，见 StartResult.Addr）。
 	Addr string
 	// BinPath 拉起 `_serve-run` 使用的二进制绝对路径；空串表示运行时探测
@@ -156,11 +158,12 @@ func StartInBackground(opts StartOptions) (StartResult, error) {
 		return StartResult{PID: running.PID, Addr: running.Addr, AlreadyRunning: true}, nil
 	}
 
-	pid, realAddr, err := SpawnAndWait(opts.DataDir, opts.BinPath, opts.Addr, LogPath(opts.DataDir))
+	logPath := LogPath(opts.DataDir, opts.LogDir)
+	pid, realAddr, err := SpawnAndWait(opts.DataDir, opts.BinPath, opts.Addr, logPath)
 	if err != nil {
 		// 失败时把 serve.log 末尾 ≤10 行附在错误里，调用方无需另开日志。
 		return StartResult{}, fmt.Errorf("%s: %w", ui.Bi("failed to start dashboard in background", "后台启动仪表板失败"),
-			errors.Join(err, logTailError(LogPath(opts.DataDir), StartLogTailLines)))
+			errors.Join(err, logTailError(logPath, StartLogTailLines)))
 	}
 	return StartResult{PID: pid, Addr: realAddr}, nil
 }
@@ -214,8 +217,11 @@ func startPreflight(dataDir string) (*ServeState, error) {
 	return nil, nil
 }
 
-// truncateLog 截断重建后台日志文件（O_TRUNC|O_CREATE 0644）。
+// truncateLog 创建日志目录并截断重建后台日志文件（O_TRUNC|O_CREATE 0644）。
 func truncateLog(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("failed to create serve log directory", "创建后台日志目录失败"), err)
+	}
 	f, err := os.OpenFile(path, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("%s: %w", ui.Bi("failed to create serve log file", "创建后台日志文件失败"), err)
