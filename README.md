@@ -2,17 +2,17 @@
 
 > [简体中文](README.zh-CN.md) | English
 
-A local LLM usage analytics CLI. It collects token usage from the AI clients you use, keeps each model invocation as an independent record, and turns the data into reusable reports without SQL.
+A local LLM usage analytics CLI. It collects token usage from the AI clients you use, keeps each model invocation as an independent record, turns the data into reusable reports without SQL, and ships a built-in local dashboard for exploring it.
 
 ## Highlights
 
+- **Visual analytics built in.** Hourly and weekday distributions, a weekday-by-hour heat matrix, and a live watch mode, plus a local dashboard server (`token-usage serve start`) with an embedded interactive HTML dashboard — preset and custom date ranges, seven headline metrics, the four built-in dimensions with a single trailing "other" row, range-matched heat maps (hour cells, date-by-hour, 4-hour slots, and a GitHub-style calendar), custom views from `query.subqueries`, top sessions with original titles, and a Config page that edits the full user configuration through the same locked, revision-checked write chain as `config set` — bilingual (Chinese/English) with five accent palettes and light/dark themes, served over a loopback, same-origin HTTP surface whose only write path is the config save. See the [Dashboard Guide](docs/dashboard.md) for the full page and API contract.
 - **Build the report you actually want — no SQL required.** Define a named multi-dimensional view from `client`, `model`, `provider`, `project`, `day`, `month`, `hour`, or `weekday`; then compose built-in and custom views into a reusable, ordered report group. Set it as the default, discover it with `query list`, run it by name, and choose the metric columns in table-based reports and their order. Dimension grouping is case-insensitive across every view: case-only variants of a value merge into one row showing the spelling with the most requests.
 - Message/API-request-level accounting, including accurate attribution across dates, models, branches, and rewinds.
 - Collectors for Claude Code/Desktop, OpenCode, Codex, WorkBuddy, ZCode, Zhipu-AutoClaw, and MiMo Code + MiMo Desktop (two clients attributed from one shared local database via session version markers).
 - CC-Switch router attribution for the Claude family and Codex, backfilling the actual provider and model from proxy logs.
 - Estimated per-request duration and output speed for Claude and Codex, available as optional metric columns in table reports and on the dashboard (rows without an estimate show `—`; only requests with output ≥ 200 tokens and a 1s–1h duration take part).
 - One-off commands or a real-time background monitoring daemon (`token-usage daemon start`), with macOS launchd and Windows Registry autostart.
-- **Visual analytics built in.** Hourly and weekday distributions, a weekday-by-hour heat matrix, and a live watch mode, plus a local dashboard server (`token-usage serve start`) with an embedded interactive HTML dashboard — preset and custom date ranges, seven headline metrics, the four built-in dimensions with a single trailing "other" row, range-matched heat maps (hour cells, date-by-hour, 4-hour slots, and a GitHub-style calendar), custom views from `query.subqueries`, top sessions with original titles, and a Config page that edits the full user configuration through the same locked, revision-checked write chain as `config set` — bilingual (Chinese/English) with five accent palettes and light/dark themes, served over a loopback, same-origin HTTP surface whose only write path is the config save.
 - A pure-Go, single-binary CLI for macOS and Windows.
 
 ![token-usage serve dashboard](docs/images/dashboard.png)
@@ -186,6 +186,7 @@ The official installer script sets all of this up automatically (on zsh it asks 
 |---|---|
 | [Installation Guide](docs/install.md) | All installation methods, self-update, uninstall, migration, PATH, and platform notes. |
 | [CLI Reference](docs/cli.md) | Command tree, arguments, flags, examples, configuration, and daemon behavior. |
+| [Dashboard Guide](docs/dashboard.md) | The embedded dashboard: page behavior, the Config page, and the HTTP API. |
 | [Architecture](docs/architecture.md) | Data flow, storage, process control, update design, and extension points. |
 | [Contributing Guide](CONTRIBUTING.md) | Development setup, tests, documentation, commits, and pull requests. |
 

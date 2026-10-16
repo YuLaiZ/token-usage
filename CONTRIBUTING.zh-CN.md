@@ -83,6 +83,7 @@ make release-verify VERSION=vX.Y.Z[-rc.N]
 | `docs/install.md` | `docs/install.zh-CN.md` |
 | `docs/architecture.md` | `docs/architecture.zh-CN.md` |
 | `docs/cli.md` | `docs/cli.zh-CN.md` |
+| `docs/dashboard.md` | `docs/dashboard.zh-CN.md` |
 | `CONTRIBUTING.md` | `CONTRIBUTING.zh-CN.md` |
 
 - 两种语言版本应保持语义等价。翻译用户可见说明、标题、表格和注释；命令、路径、配置 key 和代码标识符保持原样。

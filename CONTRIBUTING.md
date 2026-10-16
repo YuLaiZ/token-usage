@@ -83,6 +83,7 @@ English is the default public documentation. The Chinese versions are complete c
 | `docs/install.md` | `docs/install.zh-CN.md` |
 | `docs/architecture.md` | `docs/architecture.zh-CN.md` |
 | `docs/cli.md` | `docs/cli.zh-CN.md` |
+| `docs/dashboard.md` | `docs/dashboard.zh-CN.md` |
 | `CONTRIBUTING.md` | `CONTRIBUTING.zh-CN.md` |
 
 - Keep both language versions semantically equivalent. Translate user-facing descriptions, headings, tables, and comments while leaving commands, paths, configuration keys, and code identifiers unchanged.

@@ -2,17 +2,17 @@
 
 > 简体中文 | [English](README.md)
 
-本地 LLM 使用数据统计 CLI：采集你正在使用的 AI 客户端 token 数据，以每次模型调用为独立记录保存，并在无需 SQL 的前提下生成可复用报表。
+本地 LLM 使用数据统计 CLI：采集你正在使用的 AI 客户端 token 数据，以每次模型调用为独立记录保存，在无需 SQL 的前提下生成可复用报表，并内建本地仪表板呈现。
 
 ## 核心能力
 
+- 内建可视化分析：按小时/星期分布、星期×小时热力矩阵、实时监视模式，以及本地仪表板服务（`token-usage serve start`，内嵌交互式 HTML 仪表板：预设与自定义日期区间、七项核心指标、四个内置维度与唯一尾部「其他」行、跟随区间的热力图（小时格/日期×小时/4 小时时段/GitHub 风格日历）、来自 `query.subqueries` 的自定义视图、保留原始标题的会话排行，以及经与 `config set` 同一锁内 revision 校验写入链路编辑完整用户配置的配置页——中英双语、五套主题配色与深浅主题；HTTP 面按回环同源使用，唯一写路径是配置保存）。页面与 HTTP 接口的完整说明见[仪表板指南](docs/dashboard.zh-CN.md)。
 - **把你真正想要的报表做出来，无需 SQL。** 从 `client`、`model`、`provider`、`project`、`day`、`month`、`hour`、`weekday` 组合出具名多维视图，再把内置与自定义视图编排成可复用、按顺序输出的报表组合；设为默认、用 `query list` 查找、按名称运行，并统一选择表格型报表展示的指标列及其顺序。所有视图的维度分组不区分大小写：仅大小写不同的值合并为一行，行内显示请求数最多的拼写。
 - 按消息/API 请求统计，准确处理跨日、多模型、分支与 rewind 的归因。
 - 支持 Claude Code/Desktop、OpenCode、Codex、WorkBuddy、ZCode、Zhipu-AutoClaw 与 MiMo Code + MiMo Desktop（按会话版本标记从共用本地数据库区分两个客户端）。
 - 支持 Claude 系列与 Codex 的 CC-Switch router 归因：通过代理日志回填实际 provider/model。
 - Claude / Codex 的每请求估算时长与输出速度：作为表格报表与仪表板中可选的指标列展示（无估算值的行显示 `—`；仅 output ≥ 200 token 且时长 1s–1h 的请求参与统计）。
 - 可单次执行，也可使用实时后台监控守护进程（`token-usage daemon start`）；支持 macOS launchd 与 Windows 注册表自启。
-- 内建可视化分析：按小时/星期分布、星期×小时热力矩阵、实时监视模式，以及本地仪表板服务（`token-usage serve start`，内嵌交互式 HTML 仪表板：预设与自定义日期区间、七项核心指标、四个内置维度与唯一尾部「其他」行、跟随区间的热力图（小时格/日期×小时/4 小时时段/GitHub 风格日历）、来自 `query.subqueries` 的自定义视图、保留原始标题的会话排行，以及经与 `config set` 同一锁内 revision 校验写入链路编辑完整用户配置的配置页——中英双语、五套主题配色与深浅主题；HTTP 面按回环同源使用，唯一写路径是配置保存）。
 - 纯 Go 单二进制 CLI，支持 macOS 和 Windows。
 
 ![token-usage serve 仪表板](docs/images/dashboard.png)
@@ -186,6 +186,7 @@ zsh 上 `compinit` 可能报告不安全目录（insecure directories，即 grou
 |---|---|
 | [安装指南](docs/install.zh-CN.md) | 全部安装方式、自更新、卸载与迁移、PATH 与平台差异。 |
 | [CLI 参考](docs/cli.zh-CN.md) | 命令树、参数、标志、示例、配置和守护进程行为。 |
+| [仪表板指南](docs/dashboard.zh-CN.md) | 内嵌仪表板：页面行为、配置页与 HTTP 接口。 |
 | [架构说明](docs/architecture.zh-CN.md) | 数据流、存储、进程控制、更新设计与扩展点。 |
 | [贡献指南](CONTRIBUTING.zh-CN.md) | 开发环境、测试、文档、提交与 PR 规范。 |
 
