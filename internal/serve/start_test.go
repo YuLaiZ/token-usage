@@ -72,7 +72,7 @@ func TestStartInBackground_ExplicitBinPathPassedThrough(t *testing.T) {
 	if captured.addr != "127.0.0.1:8699" {
 		t.Errorf("请求地址必须透传, got %q", captured.addr)
 	}
-	if captured.logPath != LogPath(dir, "") {
+	if captured.logPath != LogPath(filepath.Join(dir, "logs")) {
 		t.Errorf("日志路径应为 DataDir/logs 下的 serve.log, got %q", captured.logPath)
 	}
 	if got.PID != 4242 || got.Addr != liveAddr {
@@ -154,7 +154,7 @@ func TestStartInBackground_FailureIncludesLogTail(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(LogPath(dir, ""), []byte("line-1\n监听失败详情\n"), 0644); err != nil {
+	if err := os.WriteFile(LogPath(filepath.Join(dir, "logs")), []byte("line-1\n监听失败详情\n"), 0644); err != nil {
 		t.Fatalf("写日志: %v", err)
 	}
 	stubSpawnAndWait(t, func(string, string, string, string) (int, string, error) {

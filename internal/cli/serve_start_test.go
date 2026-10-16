@@ -21,6 +21,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/daemon"
+	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
 	"github.com/YuLaiZ/token-usage/internal/serve"
 )
 
@@ -29,7 +30,9 @@ import (
 func serveFamilyFixture(t *testing.T, dataDir string) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	cmd := newServeCmdWithDeps(
-		func() (*config.Config, error) { return &config.Config{DataDir: dataDir}, nil },
+		func() (*config.Config, error) {
+			return &config.Config{DataDir: dataDir, Log: config.LogConfig{Dir: filepath.Join(dataDir, "logs")}}, nil
+		},
 		"test-version",
 	)
 	var out, errBuf bytes.Buffer
@@ -126,7 +129,7 @@ func TestServeStartCmd_StaleStateRemovedBeforeSpawn(t *testing.T) {
 		"dashboard started in background",
 		"http://" + liveAddr,
 		"4242",
-		serve.LogPath(dir, ""),
+		serve.LogPath(filepath.Join(dir, "logs")),
 		"token-usage serve stop",
 		"仪表板已后台启动",
 	} {
@@ -141,7 +144,7 @@ func TestServeStartCmd_FailureIncludesLogTail(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	logPath := serve.LogPath(dir, "")
+	logPath := serve.LogPath(filepath.Join(dir, "logs"))
 	if err := os.WriteFile(logPath, []byte("line-1\nline-2\n监听 127.0.0.1:8619 失败\n"), 0644); err != nil {
 		t.Fatalf("写日志: %v", err)
 	}
@@ -183,7 +186,7 @@ func TestServeStartCmd_FailureLogTailCappedAtTenLines(t *testing.T) {
 	for i := 1; i <= 15; i++ {
 		logBuf.WriteString("unique-log-line-" + strings.Repeat("x", i) + "\n")
 	}
-	if err := os.WriteFile(serve.LogPath(dir, ""), []byte(logBuf.String()), 0644); err != nil {
+	if err := os.WriteFile(serve.LogPath(filepath.Join(dir, "logs")), []byte(logBuf.String()), 0644); err != nil {
 		t.Fatalf("写日志: %v", err)
 	}
 
@@ -212,7 +215,10 @@ func TestServeStartCmd_CustomLogDirectory(t *testing.T) {
 		return 4242, "127.0.0.1:8677", nil
 	})
 	cmd := newServeCmdWithDeps(func() (*config.Config, error) {
-		return &config.Config{DataDir: dataDir, Log: config.LogConfig{Dir: logDir}}, nil
+		user := &config.Config{DataDir: dataDir, Log: config.LogConfig{Dir: " \t" + logDir + "\t "}}
+		return runtimecfg.ResolveEffectiveConfig(user, runtimecfg.ResolveEnv{
+			Home: t.TempDir(), GOOS: "linux", DefaultPaths: runtimecfg.NewStandardProvider(),
+		})
 	}, "test-version")
 	var out bytes.Buffer
 	cmd.SetOut(&out)

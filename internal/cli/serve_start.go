@@ -75,8 +75,8 @@ func serveStartRun(cfg *config.Config, addr string, autoOpen bool, out, errOut i
 		fmt.Sprintf("仪表板已后台启动 %s（PID %d）", linked, res.PID),
 	))
 	fmt.Fprintf(out, "%s\n", ui.Bi(
-		fmt.Sprintf("log: %s · stop: token-usage serve stop", serve.LogPath(cfg.DataDir, cfg.Log.Dir)),
-		fmt.Sprintf("日志 %s · 停止 token-usage serve stop", serve.LogPath(cfg.DataDir, cfg.Log.Dir)),
+		fmt.Sprintf("log: %s · stop: token-usage serve stop", serve.LogPath(cfg.Log.Dir)),
+		fmt.Sprintf("日志 %s · 停止 token-usage serve stop", serve.LogPath(cfg.Log.Dir)),
 	))
 
 	if autoOpen {

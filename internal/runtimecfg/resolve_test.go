@@ -250,6 +250,37 @@ func TestResolveEffectiveConfig_TildeExpansion(t *testing.T) {
 	}
 }
 
+func TestResolveEffectiveConfig_LogDirWhitespace(t *testing.T) {
+	home := t.TempDir()
+	dataDir := filepath.Join(home, "data")
+	customDir := filepath.Join(home, "custom logs")
+	cases := []struct {
+		name, raw, want string
+	}{
+		{"空值", "", filepath.Join(dataDir, "logs")},
+		{"纯空白", " \t\n ", filepath.Join(dataDir, "logs")},
+		{"绝对路径两端空白", " \t" + customDir + "\t ", customDir},
+		{"先去空白再展开波浪号", " \t~/custom logs\t ", customDir},
+		{"单独波浪号", " ~ ", home},
+		{"相对路径内部空格保留", " relative logs \t", "relative logs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			user := &config.Config{DataDir: dataDir, Log: config.LogConfig{Dir: tc.raw}}
+			eff, err := ResolveEffectiveConfig(user, ResolveEnv{Home: home, GOOS: "linux", DefaultPaths: &fakeProvider{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if eff.Log.Dir != tc.want {
+				t.Errorf("Log.Dir = %q, want %q", eff.Log.Dir, tc.want)
+			}
+			if user.Log.Dir != tc.raw {
+				t.Errorf("有效配置解析不应改写用户层, got %q, want %q", user.Log.Dir, tc.raw)
+			}
+		})
+	}
+}
+
 // TestResolveEffectiveConfig_RelativePathUnchanged 相对路径（非 ~）保持原样。
 func TestResolveEffectiveConfig_RelativePathUnchanged(t *testing.T) {
 	user := &config.Config{

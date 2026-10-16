@@ -505,6 +505,8 @@ token-usage config set <key> <value> --confirm-migrate   # 仅迁移 data_dir �
 | 路由 | `routers.cc_switch.db_path` |
 | 供应商别名 | `provider_aliases.<原始 provider 名>` |
 
+`log.dir` 先忽略前后空白再展开 `~`；纯空白值使用 `<data_dir>/logs`。目录名内部的空格保留。运行时日志、自启定义和 daemon 兜底输出遵守相同规则，原始配置值保持不变。
+
 受支持 client 为 `claude`、`opencode`、`codex`、`mimocode`、`workbuddy`、`zcode`、`autoclaw`。path key 分别为：Claude `projects_dir`；OpenCode `db`；Codex `state_dir`/`sessions_dir`；`mimocode` `db`（Xiaomi MiMo Desktop 与 MiMo Code CLI 共用同一库）；WorkBuddy `db`/`projects_dir`；ZCode `db`；AutoClaw `sessions_dir`。
 
 `provider_aliases` 只改变 `query provider` 中的标签与分组，不修改采集或路由回填的数据，下一次查询立即生效。名称含 `.` 时使用引号段，例如：

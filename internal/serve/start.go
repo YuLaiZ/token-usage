@@ -158,7 +158,11 @@ func StartInBackground(opts StartOptions) (StartResult, error) {
 		return StartResult{PID: running.PID, Addr: running.Addr, AlreadyRunning: true}, nil
 	}
 
-	logPath := LogPath(opts.DataDir, opts.LogDir)
+	logDir := opts.LogDir
+	if logDir == "" {
+		logDir = filepath.Join(opts.DataDir, "logs")
+	}
+	logPath := LogPath(logDir)
 	pid, realAddr, err := SpawnAndWait(opts.DataDir, opts.BinPath, opts.Addr, logPath)
 	if err != nil {
 		// 失败时把 serve.log 末尾 ≤10 行附在错误里，调用方无需另开日志。

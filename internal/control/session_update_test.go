@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
+	"github.com/YuLaiZ/token-usage/internal/service"
 )
 
 // ---- Session.Stop ----
@@ -455,6 +457,41 @@ func TestFallbackLogDir_ExpandsTilde(t *testing.T) {
 	want := filepath.Join("/home/tester/.token-usage", "logs")
 	if got := fallbackLogDir(emptyLog); got != want {
 		t.Errorf("空 log.dir 回退 = %q, want %q", got, want)
+	}
+}
+
+func TestLogDirectoryResolution_ConsistentAcrossRuntimeAutostartAndFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	cases := []struct {
+		name, raw, want string
+	}{
+		{"空值", "", filepath.Join(home, "data", "logs")},
+		{"纯空白", " \t\n ", filepath.Join(home, "data", "logs")},
+		{"波浪号与前后空白", " \t~/custom logs\t ", filepath.Join(home, "custom logs")},
+		{"绝对路径与前后空白", " " + filepath.Join(home, "custom logs") + " ", filepath.Join(home, "custom logs")},
+		{"相对路径保留内部空格", " relative logs ", "relative logs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			user := &config.Config{DataDir: "~/data", Log: config.LogConfig{Dir: tc.raw}}
+			eff, err := runtimecfg.ResolveEffectiveConfig(user, runtimecfg.ResolveEnv{
+				Home: home, GOOS: goruntime.GOOS, DefaultPaths: runtimecfg.NewStandardProvider(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for source, got := range map[string]string{
+				"运行时日志": eff.Log.Dir,
+				"自启定义":  service.EffectiveLogDir(user),
+				"启动兜底":  fallbackLogDir(user),
+			} {
+				if got != tc.want {
+					t.Errorf("%s 目录 = %q, want %q", source, got, tc.want)
+				}
+			}
+		})
 	}
 }
 

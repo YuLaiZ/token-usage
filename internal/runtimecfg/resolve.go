@@ -36,7 +36,7 @@ type ResolveEnv struct {
 //  1. 校验用户层配置；
 //  2. 深拷贝 user；
 //  3. 初始化 nil map（避免后续写入 panic）；
-//  4. 展开 ~（DataDir / Log.Dir / client paths / router db_path）；
+//  4. 去掉 Log.Dir 前后空白，再展开 ~（DataDir / Log.Dir / client paths / router db_path）；
 //  5. 应用核心默认值（poll==0→30、log level→info、log dir→data_dir/logs、max_days→7）；
 //  6. 调用 env.DefaultPaths.ApplyDefaults 补 client/router 默认路径。
 //
@@ -264,7 +264,7 @@ func copyStringMap(in map[string]string) map[string]string {
 // expandTildeAll 展开所有路径字段的 ~ 前缀。
 func expandTildeAll(cfg *config.Config, home string) {
 	cfg.DataDir = expandTilde(cfg.DataDir, home)
-	cfg.Log.Dir = expandTilde(cfg.Log.Dir, home)
+	cfg.Log.Dir = expandTilde(strings.TrimSpace(cfg.Log.Dir), home)
 
 	for name, router := range cfg.Routers {
 		router.DBPath = expandTilde(router.DBPath, home)

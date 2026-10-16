@@ -505,6 +505,8 @@ token-usage config set <key> <value> --confirm-migrate   # only when migrating d
 | Router | `routers.cc_switch.db_path` |
 | Provider aliases | `provider_aliases.<raw-provider-name>` |
 
+`log.dir` ignores leading and trailing whitespace before expanding `~`; whitespace-only values use `<data_dir>/logs`. Spaces inside a directory name are preserved. This rule is shared by runtime logging, autostart definitions, and daemon fallback output; the raw configuration value is preserved.
+
 Supported clients are `claude`, `opencode`, `codex`, `mimocode`, `workbuddy`, `zcode`, and `autoclaw`. Their path keys are: Claude `projects_dir`; OpenCode `db`; Codex `state_dir`/`sessions_dir`; `mimocode` `db` (one database shared by Xiaomi MiMo Desktop and MiMo Code CLI); WorkBuddy `db`/`projects_dir`; ZCode `db`; AutoClaw `sessions_dir`.
 
 `provider_aliases` changes labels and grouping only in `query provider`; it does not alter collected or router-backfilled data, and takes effect on the next query. When a name contains `.`, use a quoted segment, for example:

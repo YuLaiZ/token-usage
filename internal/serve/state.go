@@ -58,11 +58,8 @@ func StatePath(dataDir string) string {
 	return filepath.Join(dataDir, StateFile)
 }
 
-// LogPath 返回后台日志文件完整路径。logDir 为生效的 log.dir；空值按 dataDir/logs 推导。
-func LogPath(dataDir, logDir string) string {
-	if logDir == "" {
-		logDir = filepath.Join(dataDir, "logs")
-	}
+// LogPath 在已解析的日志目录下拼接后台日志文件名。
+func LogPath(logDir string) string {
 	return filepath.Join(logDir, LogFile)
 }
 
