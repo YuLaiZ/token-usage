@@ -15,7 +15,16 @@ A local LLM usage analytics CLI. It collects token usage from the AI clients you
 - One-off commands or a real-time background monitoring daemon (`token-usage daemon start`), with macOS launchd and Windows Registry autostart.
 - A pure-Go, single-binary CLI for macOS and Windows.
 
-![token-usage serve dashboard](docs/images/dashboard.png)
+![token-usage dashboard](docs/images/dashboard.en.png)
+
+<details>
+<summary>See the usage trend, heatmap, and shareable screenshot</summary>
+
+The built-in screenshot sharing combines the overview metrics, usage trend, and heatmap into one PNG, with the selected date range and version included.
+
+![Usage trend and heatmap](docs/images/dashboard-sharing.en.png)
+
+</details>
 
 ## Quick Start
 
