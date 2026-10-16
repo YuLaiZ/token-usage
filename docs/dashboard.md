@@ -2,7 +2,7 @@
 
 > [简体中文](dashboard.zh-CN.md) | English
 
-This document covers the embedded dashboard served by `token-usage serve`: how to start it, what the Dashboard and Config pages do, and the HTTP API behind them. Source-code behavior takes precedence over this document.
+This document covers the embedded dashboard served by `token-usage serve`: how to start it, what the Dashboard and Config pages do, privacy masking and screenshot sharing, and the HTTP API behind them. Source-code behavior takes precedence over this document.
 
 ## Starting the Dashboard
 
@@ -27,6 +27,22 @@ Auto refresh, manual refresh, and range changes share one request entry and one 
 ## The Config Page
 
 The Config page edits the full user configuration with live dirty-state diffing against the last saved snapshot — including the two query refresh intervals (`[refresh] dashboard_interval`/`watch_interval`, dropdowns 10/20/30/60 seconds plus a custom 1–3600 value; untouched fields keep their user-layer value so an unrelated save never solidifies the implicit defaults) — with revision-conflict (409) and validation (400) reporting that never overwrite local edits, and restore-to-saved as a confirmed action.
+
+## Privacy Masking and Screenshot Sharing
+
+The Dashboard page has a privacy-mask toggle in the control bar. When masking is on, project names and session titles are displayed as `***` everywhere they appear — dimension rows, composition views, custom-view tables, and the session table. The aggregated "other" rows and the "(uncategorized)" placeholder are never masked, and the client, model, and provider dimensions are not masked. Masking is a display-layer treatment: the HTTP API responses and the raw data held in the browser remain plaintext, and nothing is rewritten in the database.
+
+The mask state follows three rules:
+
+- Masking is off by default and a page reload resets it — it is not persisted. Turning it on also closes any open full-title dialog.
+- Auto refresh, manual refresh, and range changes keep the current mask state.
+- The screenshot dialog starts from the page's current mask state; the toggle inside the dialog affects that image only and is not persisted.
+
+The **Share screenshot** button opens a dialog that composes a full-page PNG:
+
+- The image always includes the brand header, the selected date range, and the headline metrics. The remaining content is selectable: the dimension list and composition views, the trend and heat charts, each configured custom view (with select-all / clear-all), and the highest-usage sessions.
+- Content selections are remembered per browser, separately from the mask state.
+- The preview shown in the dialog and the image copied to the clipboard are the same PNG — what you preview is exactly what you paste.
 
 ## HTTP API
 

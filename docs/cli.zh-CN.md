@@ -65,7 +65,7 @@ token-usage
 
 本次命令面做了有意的收敛，面向 v0.1.8 编写的脚本需要更新：
 
-- 六个分析命令 `chart`、`compare`、`export`、`forecast`、`report`、`top` 已**删除**（无兼容别名）。可视化分析——SVG 图表、用量预测、两期对比、最重会话排行——由 `serve` 仪表板经只读 HTTP 数据面延续；终端查询继续由 `query` 与 `watch` 承担。机器可读的 CLI export 合同与离线 HTML 报告包已有意移除，没有完整直接替代。
+- 六个分析命令 `chart`、`compare`、`export`、`forecast`、`report`、`top` 已**删除**（无兼容别名）。终端查询继续由 `query` 与 `watch` 承担。仪表板一侧：最重会话排行由会话表延续；SVG 图表接口、用量预测面板与两期对比面板已随 v0.2.0 重做移除，无替代入口（见[仪表板指南](dashboard.zh-CN.md)）。机器可读的 CLI export 合同与离线 HTML 报告包已有意移除，没有完整直接替代。
 - 顶层生命周期命令已移入 `daemon` 命令组：`token-usage start` → `token-usage daemon start`，`status`、`stop`、`restart` 同理。
 - `token-usage serve` 不再前台启动服务：裸 `serve` 只打印命令组帮助，仪表板用 `serve start` 启动（`serve restart` 只接管已在运行的实例）。
 
@@ -73,7 +73,9 @@ token-usage
 |---|---|
 | `token-usage start` / `status` / `stop` / `restart` | `token-usage daemon start` / `daemon status` / `daemon stop` / `daemon restart` |
 | `token-usage serve`（前台） | `token-usage serve start`（后台） |
-| `token-usage chart` / `forecast` / `compare` / `top` | `token-usage serve start`，然后打开仪表板 |
+| `token-usage top` | `token-usage serve start`——仪表板的会话排行（前 20 条、原始标题） |
+| `token-usage chart` | `token-usage serve start`——仪表板的趋势图与热力图覆盖可视化分析；逐图 SVG 导出已移除 |
+| `token-usage forecast` / `compare` | 已随 v0.2.0 仪表板重做移除——预测面板与两期对比面板无替代入口 |
 | `token-usage export` / `report` | 终端查询继续用 `query` / `watch`。仪表板的早期 CSV 导出已随 v0.2.0 重做移除；机器可读 CLI export 与离线报告包已移除，无完整直接替代 |
 
 ## 通用约定
@@ -271,7 +273,7 @@ Last successful collection / 最近成功采集: 2026-07-22 08:15:03
 
 所有分组视图（九个内置视图与全部自定义多维表）末行显示 `Total / 总计`，总计与表格使用同一日期范围独立聚合；会话明细与总览摘要不追加该行。
 
-所有分组视图的维度分组不区分大小写（Unicode 简单折叠，与 `strings.EqualFold` 同一等价语义）：仅大小写不同的值合并为一行，行内显示该查询范围内请求数最多的拼写（平手取字节序最小拼写），聚合值为各变体之和。该语义覆盖文本维度（`client`、`model`、`provider`、`project`）与时间维度（分组值不存在仅大小写不同的变体，行为不变），内置视图、自定义视图与 serve 仪表板一致；`messages` 源数据不改写。
+所有分组视图的维度分组不区分大小写（Unicode 简单折叠，与 `strings.EqualFold` 同一等价语义）：仅大小写不同的值合并为一行，行内显示该查询范围内请求数最多的拼写（平手取字节序最小拼写），聚合值为各变体之和——显示上的唯一例外是 `model` 维度：其行恒以大写显示（显示键经 `strings.ToUpper` 归一；库内原始值与 rawKeys 保持原大小写，大小写折叠合并仍然生效）。该语义覆盖文本维度（`client`、`model`、`provider`、`project`）与时间维度（分组值不存在仅大小写不同的变体，行为不变），内置视图、自定义视图与 serve 仪表板一致；`messages` 源数据不改写。
 
 `query day`、`query month`、`query hour`、`query weekday` 及任何含 `day`、`month`、`hour` 或 `weekday` 时间维度的视图按时间升序呈现时间轴：行按时间维度升序排列（日 `YYYY-MM-DD`、月 `YYYY-MM`、小时 `00:00`..`23:00` 或 ISO 周序的星期名，而非按总量降序；多个时间维度并存时按声明首个为排序主轴），`Trend / 趋势` 条形列以区间内最繁忙的行为基准对比各行总量。纯 `day` 与 `month` 视图为请求区间内无数据的日期/月份插入零值行；纯 `hour` 与 `weekday` 视图按本机时区折算小时/星期（与 date 列同一时区语义），任一请求区间都呈现整日 24 小时固定刻度与 ISO 周序（周一在首）的整周 7 天固定刻度，为无数据小时/星期补零值行，时间轴不留缺口。
 
@@ -444,7 +446,7 @@ token-usage config init                # 初始化配置文件与数据库
 
 ### config（TUI）
 
-无参数时打开交互式配置 TUI（`bubbletea`）。配置文件不存在时先写默认模板再打开；可编辑客户端、路由、守护进程、日志、查询配置（`v` 进入的 Query 页归拢视图定义、输出列布局与 provider aliases），以及两个查询刷新间隔（**查询刷新**页：仪表盘自动刷新与 CLI watch，单位秒，`0` 表示默认 30 秒——与 `daemon.poll_interval` 互相独立，修改不会重启守护进程），`data_dir` 在 TUI 中只读。保存统一走 `ApplyConfig`（见下文「config set」）。非 router 支持客户端（当前除 Claude 外全部）不展示「绑定路由」字段；此类客户端上存量非空 router 仍会显示（便于清回「无」），保存校验拒绝非空值（见下文「config set」的 router 拦截）。
+无参数时打开交互式配置 TUI（`bubbletea`）。配置文件不存在时先写默认模板再打开；可编辑客户端、路由、守护进程、日志、查询配置（`v` 进入的 Query 页归拢视图定义、输出列布局与 provider aliases），以及两个查询刷新间隔（**查询刷新**页：仪表盘自动刷新与 CLI watch，单位秒，`0` 表示默认 30 秒——与 `daemon.poll_interval` 互相独立，修改不会重启守护进程），`data_dir` 在 TUI 中只读。保存统一走 `ApplyConfig`（见下文「config set」）。非 router 支持客户端（当前为除 Claude 与 Codex 外的其他客户端）不展示「绑定路由」字段；此类客户端上存量非空 router 仍会显示（便于清回「无」），保存校验拒绝非空值（见下文「config set」的 router 拦截）。
 
 ### config show
 
@@ -509,7 +511,7 @@ token-usage config set <key> <value> --confirm-migrate   # 仅迁移 data_dir �
 
 受支持 client 为 `claude`、`opencode`、`codex`、`mimocode`、`workbuddy`、`zcode`、`autoclaw`。path key 分别为：Claude `projects_dir`；OpenCode `db`；Codex `state_dir`/`sessions_dir`；`mimocode` `db`（Xiaomi MiMo Desktop 与 MiMo Code CLI 共用同一库）；WorkBuddy `db`/`projects_dir`；ZCode `db`；AutoClaw `sessions_dir`。
 
-`provider_aliases` 只改变 `query provider` 中的标签与分组，不修改采集或路由回填的数据，下一次查询立即生效。名称含 `.` 时使用引号段，例如：
+`provider_aliases` 改变所有含 provider 维度视图中的标签与分组——`query provider`、自定义视图、对应的 `watch` 帧与 serve 仪表板一致生效；不修改采集或路由回填的数据，下一次查询立即生效。名称含 `.` 时使用引号段，例如：
 
 ```bash
 token-usage config set 'provider_aliases."Zhipu AI Coding Plan"' 'Zhipu GLM'

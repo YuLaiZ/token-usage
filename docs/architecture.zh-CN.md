@@ -43,7 +43,8 @@
 | `internal/engine/` | 采集编排（依赖装配、主循环、事务化写入、重试、结果校验） |
 | `internal/analyzer/` | 守护进程实时监控（JSONL watcher、SQLite poller、debounce、串行化锁） |
 | `internal/querier/` | 查询引擎（从 messages 实时聚合） |
-| `internal/web/` | 只读本地仪表板 HTTP 服务，含内嵌静态资源与 JSON 接口；图表由前端按数值行自绘 |
+| `internal/web/` | 本地仪表板 HTTP 服务——用量数据只读、唯一写路径是配置保存；含内嵌静态资源与 JSON 接口，图表由前端按数值行自绘 |
+| `internal/serve/` | 仪表板共用生命周期层：`serve.json` 状态文件、三把生命周期文件锁、`/api/meta` 探活与后台停止/启动编排；供 `serve` 命令族与 `update` 共用 |
 | `internal/charts/` | 遗留 SVG 图表包；仪表板图表改为前端自绘后已无 Go 代码引用 |
 | `internal/fmtx/` | dashboard 变化值共用的显示格式化 |
 | `internal/ui/` | 双语输出助手（`Bi`）、按显示宽度对齐的框线表格，以及 `query`/`watch`/仪表板共用的查询输出列注册表 |
@@ -57,7 +58,7 @@
 | Claude Code/Desktop | JSONL（全量按文件扫描） | `~/.claude/projects` |
 | OpenCode | SQLite，按表布局自动适配：2.x 前的 `message` + `event` 双源或 2.x 的 `session_message` + `session_v2`（两表同存判定为 V2；每次扫描探测布局） | `~/.local/share/opencode/opencode.db` |
 | Codex | SQLite state DB（token 主源）+ rollout JSONL（明文或压缩 `*.jsonl.zst`；辅助源，解析层重播去重，压缩形态经 zstd 流式解码） | `~/.codex`、`~/.codex/sessions` |
-| WorkBuddy | JSONL（主源）+ SQLite（仅查 title） | `~/.workbuddy/projects`、`~/.workbuddy/workbuddy.db` |
+| WorkBuddy | JSONL（主源）+ SQLite（逐会话元数据：title、自定义标题、cwd、mode、is_playground、expert_id） | `~/.workbuddy/projects`、`~/.workbuddy/workbuddy.db` |
 | ZCode | SQLite | `~/.zcode/cli/db/db.sqlite` |
 | Zhipu-AutoClaw | JSONL（全量按文件扫描） | `~/.openclaw-autoclaw/agents` |
 | MiMo Code + MiMo Desktop（共用同一数据库） | SQLite；按 `session.version` 区分产品归属（严格 `desktop-<hash>` → MiMo Desktop，其余全部 → MiMo Code） | `~/.local/share/mimocode/mimocode.db` |
@@ -95,7 +96,7 @@ graph TB
 - `sync_state` 记录每个 client 各 source 的增量游标，collector 和 router adapter 各自读写自己的 source。另有一个内部键存于此：OpenCode 布局标记（`client='opencode'`、`source='opencode_layout'`）以 cursor_value 1/2（V1/V2）记录最近一次成功提交的增量采集所对应的表布局，布局切换据此检出，并与消息、游标在同一写事务内原子提交。
 - 全量采集（`collect all`）传入 `Dates=nil`，不使用 `collection_log` 的日期去重；`messages` 按 `(client, id)` UPSERT，因此可安全重复扫描。
 - collector 部分源失败时，已成功解析的消息、会话和 router 数据仍事务落库，但不写 `collection_log`、不解决历史错误、不推进 `sync_state`；后续普通采集或 retry 会按幂等 UPSERT 重放仍有缺口的区间。
-- 查询层（querier）直接 JOIN `messages`（+ `sessions` 元数据）实时聚合，无中间汇总表。全部分组视图共用一条维度化管线（维度 → 原始聚合 → alias 合并、大小写折叠后的复合键 → 稳定排序 → 表格），末行输出同一日期范围独立聚合的 `Total / 总计`；会话明细与总览摘要不追加。分组键不区分大小写（Unicode 简单折叠，与 `strings.EqualFold` 同一等价语义）：仅大小写不同的值合并为一行，行内代表拼写取组内请求数最多的变体（平手取字节序最小拼写）。供应商别名在组合键形成前合并行，精确键未命中时按大小写不敏感（`EqualFold`）兜底查找，不回写 `messages`。每张表的指标列由同一组按全局 `[query.output]` 布局解析出的有序指标描述符渲染（默认七列；`cache_create`、`avg_dur`、`speed` 可选但默认隐藏）——表头、分组行、总计行与会话行遍历同一描述符，`cache_hit` 始终读取含 `cache_create` 的完整聚合值，布局只改显示，不改统计、排序与总计。
+- 查询层（querier）直接 JOIN `messages`（+ `sessions` 元数据）实时聚合，无中间汇总表。全部分组视图共用一条维度化管线（维度 → 原始聚合 → alias 合并、大小写折叠后的复合键 → 稳定排序 → 表格），末行输出同一日期范围独立聚合的 `Total / 总计`；会话明细与总览摘要不追加。分组键不区分大小写（Unicode 简单折叠，与 `strings.EqualFold` 同一等价语义）：仅大小写不同的值合并为一行，行内代表拼写取组内请求数最多的变体（平手取字节序最小拼写）——例外是 `model` 行恒以大写显示（显示键经 `strings.ToUpper` 归一；库内原始值与 rawKeys 保持原大小写）。供应商别名在组合键形成前合并行，精确键未命中时按大小写不敏感（`EqualFold`）兜底查找，不回写 `messages`。每张表的指标列由同一组按全局 `[query.output]` 布局解析出的有序指标描述符渲染（默认七列；`cache_create`、`avg_dur`、`speed` 可选但默认隐藏）——表头、分组行、总计行与会话行遍历同一描述符，`cache_hit` 始终读取含 `cache_create` 的完整聚合值，布局只改显示，不改统计、排序与总计。
 - 裸 `query` 执行 `[query]` 配置的默认对象（未配置回退 client）；`query <name>` 在根命令上按位置参数分派到具名子查询/组合查询，与显式写法 `query custom <name>` 共用同一条具名执行链；`query list` 只依据已解析定义渲染配置视图，绝不打开数据库。定义名称为小写标识符，不能与 `client`/`model`/`provider`/`project`/`session`/`summary`/`day`/`month`/`hour`/`weekday`/`heatmap`/`custom`/`list` 冲突。语义校验只发生在这些路径（默认、直接/显式具名、list）与 TUI 保存前，由 `internal/querydef` 完成完整解析——无关的视图定义错误不阻塞九个受布局影响的静态表格命令，它们经隔离的 `ParseOutputLayout` 入口解析布局（合法布局仍生效；`query.output` 自身在开库前使它们失败；顶层 query 问题静默回退默认列）。`query summary` 不读取布局。query 配置无效不会阻塞采集、`daemon status`、守护进程本体、`config set` 与 `config show`，它们继续透传并原样写回问题项。
 - Codex rollout 解析器仅在事件含有效 `total_token_usage` 时，以同一 `limit_id` 最近签名或紧邻 token 事件的完整 `(total,last)` 签名识别重播；不做全表去重，以保留合法计数器重置。去重只影响本次内存解析，不会自动清理既有数据库中的历史重复消息。
 
@@ -158,7 +159,7 @@ mimocode 数据源产生两个正式 client：`MiMo Code`（CLI）与 `MiMo Desk
 | `engine/` | 采集编排：依赖装配、主循环、事务化写入、重试、结果校验 | `NewDeps()`, `RunCollect()`, `RunRetryWithDeps()`, `RunRouterBackfill()`, `ValidateResult()` |
 | `analyzer/` | 守护进程监控：ChangedFile/Incremental/router source 触发采集，debounce 合并，串行化锁 | `NewFromConfig()`, `JSONLWatcher`, `SQLitePoller` |
 | `querier/` | 从 messages 实时聚合查询，格式化输出 | `ByClient()`, `ByModel()`, `ByProject()`, `ByHour()`, `ByWeekday()`, `Heatmap()`, `HeatmapMatrix()`, `RunDimensionView()`, `Sessions()`, `Summary()`, `StatsBetween()` |
-| `web/` | serve 命令组的本地只读仪表板服务：go:embed 内嵌 HTML 页面（图表由前端按数值行自绘）、JSON 接口（`/api/meta`、`/api/dashboard`、`/api/config`）。单请求全部查询在同一读事务快照完成；`/api/dashboard` 在响应前完成整理——四维度前 9＋「其他」、自定义视图前 19＋「其他组合」、前 20 会话，以及按区间形态变化的趋势/热力展示桶，浏览器不再截断或重聚合 | `NewServer()` |
+| `web/` | serve 命令组的本地仪表板服务——用量数据只读、唯一写路径是配置保存：go:embed 内嵌 HTML 页面（图表由前端按数值行自绘）、JSON 接口（`/api/meta`、`/api/dashboard`、`/api/config`）。单请求全部查询在同一读事务快照完成；`/api/dashboard` 在响应前完成整理，浏览器不再截断或重聚合（完整载荷合同见[仪表板指南](dashboard.zh-CN.md)） | `NewServer()` |
 | `charts/` | 遗留 SVG 图表包（柱状、折线、饼图、星期×小时热力矩阵），当前无调用方，保留待裁决 | — |
 | `querydef/` | query 视图词表：内置维度常量、内置视图名与保留名清单，由 cli 的 query/watch 视图名解析共用 | `BuiltinDimensionNames()`, `IsReservedName()` |
 | `fmtx/` | 跨命令共享的显示格式化助手：千分位、带符号 K/M/B、差值着色 class 与变化百分比 | `Thousands()`, `SignedTokens()`, `CountChange()`, `ChangeClass()`, `ChangePercent()` |
@@ -173,7 +174,7 @@ mimocode 数据源产生两个正式 client：`MiMo Code`（CLI）与 `MiMo Desk
 用户执行命令 → 加载配置 → 执行采集/查询/配置编辑 → 输出结果 → 退出
 ```
 
-命令组：`version`（五行详细输出）、Cobra 内置 `help`/`completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`heatmap`/`session`/`summary`，另加 `custom <name>` 与只读的 `list`）、`errors`、`watch`（定间隔刷新的 `query` 输出）、`doctor`（只读健康自检）、`daemon` 命令组（`start`/`status`/`stop`/`restart` 管理采集守护进程）、`serve` 命令组（`start`/`status`/`stop`/`restart` 管理本地只读仪表板；裸 `serve` 只显示帮助）、`update`（自更新到最新或指定版本），以及 Hidden 内部命令 `_run`/`_serve-run`/`_update-helper`/`_update-cleanup`。根命令另带 `-v, --version` flag（单行短输出）。原顶层 `start`/`status`/`stop`/`restart` 与分析命令 `chart`/`compare`/`export`/`forecast`/`report`/`top` 已在命令面收敛中删除（见 [CLI 参考](cli.zh-CN.md)迁移章节）。
+命令组：`version`（五行详细输出）、Cobra 内置 `help`/`completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`heatmap`/`session`/`summary`，另加 `custom <name>` 与只读的 `list`）、`errors`、`watch`（定间隔刷新的 `query` 输出）、`doctor`（只读健康自检）、`daemon` 命令组（`start`/`status`/`stop`/`restart` 管理采集守护进程）、`serve` 命令组（`start`/`status`/`stop`/`restart` 管理本地仪表板——用量数据只读，唯一写路径是配置保存；裸 `serve` 只显示帮助）、`update`（自更新到最新或指定版本），以及 Hidden 内部命令 `_run`/`_serve-run`/`_update-helper`/`_update-cleanup`。根命令另带 `-v, --version` flag（单行短输出）。原顶层 `start`/`status`/`stop`/`restart` 与分析命令 `chart`/`compare`/`export`/`forecast`/`report`/`top` 已在命令面收敛中删除（见 [CLI 参考](cli.zh-CN.md)迁移章节）。
 
 直接执行 `token-usage`（不带任何参数）只会打印帮助信息，既不启动 TUI 也不启动守护进程。命令树、参数、标志、退出码与示例的完整参考见 [CLI 参考](cli.zh-CN.md)。
 
@@ -205,7 +206,7 @@ mimocode 数据源产生两个正式 client：`MiMo Code`（CLI）与 `MiMo Desk
 
 对已配置 router 且支持归因的 client，每个采集轮（ChangedFile / Incremental / CLI 日期模式）在 messages 入库后同样基于已入库的 `raw_router_logs` 行重算归因——Claude 系按 `message_id`，Codex 按 session ID 加 300s 时间窗对触达的 session 查两侧全量——router 日志先于 message 到达（router 轮的 UPDATE 落空且 cursor 已推过）或跨午夜交错时，归因仍能补上。未配置 router、或在不支持 router 的 client 上持存量 router 配置的轮既不查表也不回填；存量配置仍只写原始日志。
 
-WorkBuddy 的 SQLite 仅用于 title 查询，不建 poller。
+WorkBuddy 的 SQLite 提供逐会话元数据——标题、自定义标题、工作目录（cwd）、mode 与专家身份（`is_playground`、`expert_id`）——参与项目归属、专家客户端身份与标题判定，且是采集的强依赖（库路径未配置、文件打开或读取失败、必要列缺失时本轮整体失败）。不建 poller；由纯定时的周期全量复核提交器每个 tick 无条件提交一次 WorkBuddy 全量复核，即使 JSONL 没有变化，仅元数据变化（专家、标题、playground 标记）与源库故障恢复也会被处理。
 
 **并发保护**：CLI 的 collect 与守护进程通过 daemon lock（`<data_dir>/token-usage.lock`）互斥，避免同时写 SQLite——collect 在打开数据库前预检 daemon lock，运行中则拒绝采集；守护进程内串行化锁保证所有采集顺序执行。daemon start/daemon stop/daemon restart/config set 则通过 control lock 串行化控制操作（见下文）。
 
@@ -366,7 +367,7 @@ daemon → runmeta / fileutil / analyzer / engine / db / logger
 update → control / config / fileutil（buildinfo 版本字面量与 runtimecfg effective 配置经 seam 注入，不直接 import）
 runmeta → fileutil
 runtimecfg → config
-web → querier / charts / fmtx / ui
+web → config / configapp / control / querier / querydef / runtimecfg / service / ui
 charts → querier / ui
 querydef → ui
 fmtx → querier
@@ -502,7 +503,7 @@ max_days = 7
 
 ### 构建
 
-`make build`/`make build-all`/`make install` 三个 target 统一经 `-ldflags -X` 注入 `internal/buildinfo` 包的 `Version`/`Commit`/`BuildTime`（默认 `VERSION=dev`，当前无 Release tag）。`buildinfo.Current()` 在根命令装配处取一次快照，供 `--version`/`-v` flag 与 `version` 子命令共享。
+`make build`/`make build-all`/`make install` 三个 target 统一经 `-ldflags -X` 注入 `internal/buildinfo` 包的 `Version`/`Commit`/`BuildTime`（默认 `VERSION=dev`）。`buildinfo.Current()` 在根命令装配处取一次快照，供 `--version`/`-v` flag 与 `version` 子命令共享。
 
 未注入 ldflags 时按以下降级链解析（`debug.ReadBuildInfo`）：
 

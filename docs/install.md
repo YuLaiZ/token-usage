@@ -6,7 +6,7 @@ This document covers every installation method in detail: the recommended instal
 
 ## Layout
 
-Configuration, database, and logs always live under `~/.token-usage` (Windows: `%USERPROFILE%\.token-usage`). The script and manual binary installations also put the binary there — `~/.token-usage/bin/token-usage` (Windows: `%USERPROFILE%\.token-usage\bin\token-usage.exe`) — exposed through your user PATH, with no sudo or administrator privileges needed; `go install` and the direct development build (`go build`) place the binary elsewhere (see their sections). The methods differ in upgrade semantics:
+The configuration file always lives at `~/.token-usage/config.toml` (Windows: `%USERPROFILE%\.token-usage\config.toml`). The database follows the configured `data_dir`, and logs follow the effective `log.dir` (defaulting to `<data_dir>/logs` when `log.dir` is empty); with everything left unconfigured, both land under `~/.token-usage`. Note that the `config init` template writes an explicit `log.dir` of `~/.token-usage/logs`, so after changing only `data_dir`, logs keep going to the old directory until `log.dir` is updated as well. The script and manual binary installations also put the binary there — `~/.token-usage/bin/token-usage` (Windows: `%USERPROFILE%\.token-usage\bin\token-usage.exe`) — exposed through your user PATH, with no sudo or administrator privileges needed; `go install` and the direct development build (`go build`) place the binary elsewhere (see their sections). The methods differ in upgrade semantics:
 
 - **Official Release binary** (installed by the script below, by the AI-agent instruction, or manually): supports in-place self-update — the binary is the real file on PATH, which is exactly what the self-update source check requires.
 - **Built from source** (`make build` / `go build`): reports a dev form (`Version = dev`, or `vX.Y.Z-dev` for a plain-build pseudo-version) and cannot self-update by default; run `token-usage update --force` to switch to an official Release asset (automatic updates then work normally), or rebuild and replace the file manually.
@@ -175,7 +175,7 @@ Put the built binary into the bin directory and add it to your PATH exactly as i
 go install github.com/YuLaiZ/token-usage/cmd/token-usage@latest
 ```
 
-The binary is installed to `$GOBIN` (by default `~/go/bin`); ensure that directory is on `PATH`. Configuration and logs remain under `~/.token-usage/`. Verify the installation with `token-usage --version`. A binary installed with a Release tag (for example, `go install github.com/YuLaiZ/token-usage/cmd/token-usage@vX.Y.Z`) is not byte-identical to the official asset; run `token-usage update --force` once to replace it with an official Release asset, after which normal self-update works. The same applies when `@latest` resolves to a Release tag. If `@latest` resolves to a development version or an explicit pseudo-version, inspect `token-usage version`: `dev` and `vX.Y.Z-dev` displays are eligible for `--force`.
+The binary is installed to `$GOBIN` (by default `~/go/bin`); ensure that directory is on `PATH`. The configuration file stays at `~/.token-usage/config.toml`; the database and logs follow `data_dir` / `log.dir` as described in [Layout](#layout). Verify the installation with `token-usage --version`. A binary installed with a Release tag (for example, `go install github.com/YuLaiZ/token-usage/cmd/token-usage@vX.Y.Z`) is not byte-identical to the official asset; run `token-usage update --force` once to replace it with an official Release asset, after which normal self-update works. The same applies when `@latest` resolves to a Release tag. If `@latest` resolves to a development version or an explicit pseudo-version, inspect `token-usage version`: `dev` and `vX.Y.Z-dev` displays are eligible for `--force`.
 
 ## Build Directly with Go (for Development)
 
@@ -188,11 +188,11 @@ go build -o token-usage ./cmd/token-usage
 
 ## Uninstall and Migration
 
-Uninstalling leaves no system-wide leftovers:
+Following this checklist removes everything the tool and its installer write to your system:
 
-1. Stop the daemon if it is running: `token-usage daemon stop`.
+1. Stop the dashboard and the daemon if they are running: `token-usage serve stop`, then `token-usage daemon stop`. On Windows, a running instance holds the `.exe` open, so stop both before deleting the directory.
 2. If autostart was ever enabled, first run `token-usage config set daemon.autostart false`. This removes the autostart definition (the `~/Library/LaunchAgents/<label>.plist` file on macOS, the Registry Run entry on Windows) so it does not keep pointing at a deleted binary and fail at every login.
-3. Delete the application directory: `rm -rf ~/.token-usage` (Windows: `Remove-Item -Recurse -Force $env:USERPROFILE\.token-usage`). The current terminal may still have the deleted binary cached; run `hash -r` and confirm `token-usage` no longer resolves, or simply open a new terminal and confirm.
+3. Delete the application directory: `rm -rf ~/.token-usage` (Windows: `Remove-Item -Recurse -Force $env:USERPROFILE\.token-usage`). The current terminal may still have the deleted binary cached; run `hash -r` and confirm `token-usage` no longer resolves, or simply open a new terminal and confirm. If you configured a custom `data_dir` or `log.dir`, those directories are outside `~/.token-usage` — delete or keep them separately.
 4. Remove the PATH configuration.
 
    macOS: delete the marker block from your shell rc file:
@@ -230,6 +230,7 @@ Uninstalling leaves no system-wide leftovers:
 
    or delete the `%USERPROFILE%\.token-usage\bin` entry through the modern "Edit environment variables for your account" dialog and verify the `Path` value type is still `REG_EXPAND_SZ` (the legacy list editor has a known issue of rewriting it as `REG_SZ`). Do **not** use `setx` or `[Environment]::SetEnvironmentVariable` — the former truncates values, the latter degrades the value type. After a direct registry write, sign out and back in (or confirm through the "Edit environment variables for your account" dialog) before new terminal windows pick up the change.
 5. If you ever followed the old symlink tutorial, also remove the leftover link: `/usr/local/bin/token-usage` on macOS, `%LOCALAPPDATA%\Microsoft\WindowsApps\token-usage.exe` on Windows.
+6. Remove the shell completion the installer set up, if any: on zsh, the `_token-usage` file in the installer's completion directory (typically `~/.zsh/completions`) plus the completion marker block (the `fpath`/`compdef` lines) in the zsh startup file the installer actually wrote — usually `~/.zshrc`, or the `.zshrc` under the resolved `ZDOTDIR` startup directory when `ZDOTDIR` is set; on fish, `token-usage.fish` under `~/.config/fish/completions` (or the `XDG_CONFIG_HOME` equivalent); on PowerShell, the completion marker block in `$PROFILE` (the line invoking `token-usage completion powershell`). Bash installs no completion file.
 
 Migration notes:
 

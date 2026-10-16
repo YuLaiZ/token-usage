@@ -7,7 +7,7 @@ A local LLM usage analytics CLI. It collects token usage from the AI clients you
 ## Highlights
 
 - **Visual analytics built in.** Hourly and weekday distributions, a weekday-by-hour heat matrix, and a live watch mode, plus a local dashboard server (`token-usage serve start`) with an embedded interactive HTML dashboard — preset and custom date ranges, seven headline metrics, the four built-in dimensions with a single trailing "other" row, range-matched heat maps (hour cells, date-by-hour, 4-hour slots, and a GitHub-style calendar), custom views from `query.subqueries`, top sessions with original titles, and a Config page that edits the full user configuration through the same locked, revision-checked write chain as `config set` — bilingual (Chinese/English) with five accent palettes and light/dark themes, served over a loopback, same-origin HTTP surface whose only write path is the config save. See the [Dashboard Guide](docs/dashboard.md) for the full page and API contract.
-- **Build the report you actually want — no SQL required.** Define a named multi-dimensional view from `client`, `model`, `provider`, `project`, `day`, `month`, `hour`, or `weekday`; then compose built-in and custom views into a reusable, ordered report group. Set it as the default, discover it with `query list`, run it by name, and choose the metric columns in table-based reports and their order. Dimension grouping is case-insensitive across every view: case-only variants of a value merge into one row showing the spelling with the most requests.
+- **Build the report you actually want — no SQL required.** Define a named multi-dimensional view from `client`, `model`, `provider`, `project`, `day`, `month`, `hour`, or `weekday`; then compose built-in and custom views into a reusable, ordered report group. Set it as the default, discover it with `query list`, run it by name, and choose the metric columns in table-based reports and their order. Dimension grouping is case-insensitive across every view: case-only variants of a value merge into one row showing the spelling with the most requests (`model` rows always display upper-cased).
 - Message/API-request-level accounting, including accurate attribution across dates, models, branches, and rewinds.
 - Collectors for Claude Code/Desktop, OpenCode, Codex, WorkBuddy, ZCode, Zhipu-AutoClaw, and MiMo Code + MiMo Desktop (two clients attributed from one shared local database via session version markers).
 - CC-Switch router attribution for the Claude family and Codex, backfilling the actual provider and model from proxy logs.
@@ -148,20 +148,22 @@ token-usage query list
 | `watch [date]` | Refresh the `query` output at a fixed interval (`--once` for a single frame; view selection matches `query` — `--by` takes a built-in view or a configured view name, default view follows `query.default`). |
 | `doctor` | Run read-only health checks. |
 | `daemon start/status/stop/restart` | Manage the collection daemon: start in the background, inspect status, stop, restart. |
-| `serve start/status/stop/restart` | Manage the local read-only dashboard server in the background (`serve start --open` launches a browser; bare `serve` only prints help). |
+| `serve start/status/stop/restart` | Manage the local dashboard server in the background — usage data is read-only and the only write path is the config save (`serve start --open` launches a browser; bare `serve` only prints help). |
 | `version` / `--version` | Show detailed / one-line version information. |
 | `completion <shell>` | Print a Bash, Zsh, Fish, or PowerShell completion script. |
 | `update` | Self-update an official Release asset in place; use `update --force` once to switch an eligible re-signed, source-built, or `go install` binary. |
 
 ### Migrating from v0.1.8
 
-v0.1.9 is a deliberate breaking CLI change (details in the [CLI Reference](docs/cli.md#migrating-from-v018-breaking-changes)). The chart, compare, export, forecast, report, and top commands have been removed. The visual analytics (SVG charts, usage forecasts, period comparisons, top-session rankings) live on in the `serve` dashboard over its read-only HTTP data surface, and `query` / `watch` remain the terminal reports. The machine-readable CLI export contract and the offline HTML report bundle were removed intentionally and have no full replacement. The top-level `start`/`status`/`stop`/`restart` commands have moved into the `daemon` group, and bare `serve` no longer runs a foreground server.
+v0.1.9 is a deliberate breaking CLI change (details in the [CLI Reference](docs/cli.md#migrating-from-v018-breaking-changes)). The chart, compare, export, forecast, report, and top commands have been removed. Terminal reports stay on `query` / `watch`; on the dashboard, the session table carries the top-session ranking forward, while the SVG chart endpoints, usage forecasts, and period comparisons were removed with the v0.2.0 redesign and have no replacement entry point (see the [Dashboard Guide](docs/dashboard.md)). The machine-readable CLI export contract and the offline HTML report bundle were removed intentionally and have no full replacement. The top-level `start`/`status`/`stop`/`restart` commands have moved into the `daemon` group, and bare `serve` no longer runs a foreground server.
 
 | v0.1.8 | now |
 |---|---|
 | `token-usage start` / `status` / `stop` / `restart` | `token-usage daemon start` / `daemon status` / `daemon stop` / `daemon restart` |
 | `token-usage serve` (foreground) | `token-usage serve start` (background) |
-| `token-usage chart` / `forecast` / `compare` / `top` | `token-usage serve start`, then open the dashboard |
+| `token-usage top` | `token-usage serve start` — the dashboard's session table (top 20, original titles) |
+| `token-usage chart` | `token-usage serve start` — the dashboard's trend chart and heat map cover the visual breakdowns; the per-chart SVG export is gone |
+| `token-usage forecast` / `compare` | Removed with the v0.2.0 dashboard redesign — the forecast and period-comparison panels have no replacement entry point |
 | `token-usage export` / `report` | Terminal queries stay on `query` / `watch`. The dashboard's early CSV export was removed with the v0.2.0 redesign; the machine-readable CLI export and the offline report bundle are gone without a full replacement. |
 
 Run `token-usage --help` for a command overview, or read the [CLI Reference](docs/cli.md) for flags, exit codes, side-effect boundaries, configuration behavior, and both service lifecycles.
@@ -186,7 +188,7 @@ The official installer script sets all of this up automatically (on zsh it asks 
 |---|---|
 | [Installation Guide](docs/install.md) | All installation methods, self-update, uninstall, migration, PATH, and platform notes. |
 | [CLI Reference](docs/cli.md) | Command tree, arguments, flags, examples, configuration, and daemon behavior. |
-| [Dashboard Guide](docs/dashboard.md) | The embedded dashboard: page behavior, the Config page, and the HTTP API. |
+| [Dashboard Guide](docs/dashboard.md) | The embedded dashboard: page behavior, the Config page, privacy masking and screenshot sharing, and the HTTP API. |
 | [Architecture](docs/architecture.md) | Data flow, storage, process control, update design, and extension points. |
 | [Contributing Guide](CONTRIBUTING.md) | Development setup, tests, documentation, commits, and pull requests. |
 

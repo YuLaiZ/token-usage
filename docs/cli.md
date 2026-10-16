@@ -65,7 +65,7 @@ Design points:
 
 The command surface was deliberately consolidated; scripts written against v0.1.8 must be updated:
 
-- The six analysis commands `chart`, `compare`, `export`, `forecast`, `report`, and `top` were **removed** (no compatibility aliases). The visual analytics — SVG charts, usage forecasts, period comparisons, top-session rankings — live on in the `serve` dashboard over its read-only HTTP data surface; terminal reports remain `query` and `watch`. The machine-readable CLI export contract and the offline HTML report bundle were removed intentionally and have no full replacement.
+- The six analysis commands `chart`, `compare`, `export`, `forecast`, `report`, and `top` were **removed** (no compatibility aliases). Terminal reports remain `query` and `watch`. On the dashboard side, the session table carries the top-session ranking forward, while the SVG chart endpoints, the forecast panel, and the period-comparison panel were removed with the v0.2.0 redesign and have no replacement entry point (see the [Dashboard Guide](dashboard.md)). The machine-readable CLI export contract and the offline HTML report bundle were removed intentionally and have no full replacement.
 - The top-level lifecycle commands moved into the `daemon` group: `token-usage start` → `token-usage daemon start`, likewise `status`, `stop`, and `restart`.
 - `token-usage serve` no longer runs a foreground server: bare `serve` only prints the command-group help, and the dashboard is started with `serve start` (`serve restart` only replaces an instance that is already running).
 
@@ -73,7 +73,9 @@ The command surface was deliberately consolidated; scripts written against v0.1.
 |---|---|
 | `token-usage start` / `status` / `stop` / `restart` | `token-usage daemon start` / `daemon status` / `daemon stop` / `daemon restart` |
 | `token-usage serve` (foreground) | `token-usage serve start` (background) |
-| `token-usage chart` / `forecast` / `compare` / `top` | `token-usage serve start`, then open the dashboard |
+| `token-usage top` | `token-usage serve start` — the dashboard's session table (top 20, original titles) |
+| `token-usage chart` | `token-usage serve start` — the dashboard's trend chart and heat map cover the visual breakdowns; the per-chart SVG export is gone |
+| `token-usage forecast` / `compare` | Removed with the v0.2.0 dashboard redesign — the forecast and period-comparison panels have no replacement entry point |
 | `token-usage export` / `report` | Terminal queries stay on `query` / `watch`. The dashboard's early CSV export was removed with the v0.2.0 redesign; the machine-readable CLI export and the offline report bundle are gone without a full replacement. |
 
 ## General Conventions
@@ -271,7 +273,7 @@ The default date is today. If the queried date range has unresolved entries in `
 
 Every grouped view (the nine built-in views and every custom multi-dimensional table) ends with a `Total / 总计` row computed from the same date range as the table; session details and the summary do not have this row.
 
-Dimension grouping is case-insensitive in every grouped view (Unicode simple case folding — the same equivalence `strings.EqualFold` uses). Values that differ only by case merge into one row; the merged row shows the spelling with the most requests in the queried range (ties break to the smallest spelling by byte order), and its aggregates are the sums of the variants. This covers the text dimensions (`client`, `model`, `provider`, `project`) as well as the time dimensions (whose grouping values never differ by case, so their behavior is unchanged) in built-in views, custom views, and the serve dashboard alike; `messages` source data is never rewritten.
+Dimension grouping is case-insensitive in every grouped view (Unicode simple case folding — the same equivalence `strings.EqualFold` uses). Values that differ only by case merge into one row; the merged row shows the spelling with the most requests in the queried range (ties break to the smallest spelling by byte order), and its aggregates are the sums of the variants — with one display exception: `model` rows are always shown upper-cased (the display key goes through `strings.ToUpper`; stored values and raw keys keep their original case, and case folding still merges variants). This covers the text dimensions (`client`, `model`, `provider`, `project`) as well as the time dimensions (whose grouping values never differ by case, so their behavior is unchanged) in built-in views, custom views, and the serve dashboard alike; `messages` source data is never rewritten.
 
 `query day`, `query month`, `query hour`, `query weekday`, and every view containing the `day`, `month`, `hour`, or `weekday` dimension present a time-ordered timeline: rows are ordered by the time dimension ascending (`YYYY-MM-DD` days, `YYYY-MM` months, `00:00`..`23:00` hourly ticks, or weekday names in ISO week order, not by total; when several time dimensions coexist, the first declared one is the sort axis), and a `Trend / 趋势` bar column compares each row's total against the busiest row in the range. The pure `day` and `month` views insert a zero-value row for each day or month without data within the requested range, whereas the pure `hour` view always presents the fixed 24 hourly ticks of the day and the pure `weekday` view always presents the fixed 7 weekday ticks in ISO week order (Monday first), each with zero-value rows for hours or weekdays without data, independent of the requested date range (hours and weekdays are folded from message timestamps to local time, the same timezone semantics as the date column), so the timeline has no gaps.
 
@@ -444,7 +446,7 @@ token-usage config init                # initialize the configuration file and d
 
 ### config (TUI)
 
-With no arguments, opens the interactive configuration TUI (`bubbletea`). If no configuration file exists, it first writes the default template, then opens the UI. You can edit clients, routers, daemon settings, logs, query settings (the `v` Query page groups view definitions, the output column layout, and provider aliases), and the two query refresh intervals (the **Refresh** page: dashboard auto refresh and CLI watch, seconds, `0` = default 30s — independent of `daemon.poll_interval` and never restarting the daemon); `data_dir` is read-only in the TUI. Saving always goes through `ApplyConfig` (see [config set](#config-set)). Clients outside the router-capable family (currently every client except Claude) show no router field; an existing non-empty router value on such a client is still displayed so it can be cleared, and saving rejects a non-empty value (see the router guard under [config set](#config-set)).
+With no arguments, opens the interactive configuration TUI (`bubbletea`). If no configuration file exists, it first writes the default template, then opens the UI. You can edit clients, routers, daemon settings, logs, query settings (the `v` Query page groups view definitions, the output column layout, and provider aliases), and the two query refresh intervals (the **Refresh** page: dashboard auto refresh and CLI watch, seconds, `0` = default 30s — independent of `daemon.poll_interval` and never restarting the daemon); `data_dir` is read-only in the TUI. Saving always goes through `ApplyConfig` (see [config set](#config-set)). Clients outside the router-capable family (currently every client other than Claude and Codex) show no router field; an existing non-empty router value on such a client is still displayed so it can be cleared, and saving rejects a non-empty value (see the router guard under [config set](#config-set)).
 
 ### config show
 
@@ -509,7 +511,7 @@ token-usage config set <key> <value> --confirm-migrate   # only when migrating d
 
 Supported clients are `claude`, `opencode`, `codex`, `mimocode`, `workbuddy`, `zcode`, and `autoclaw`. Their path keys are: Claude `projects_dir`; OpenCode `db`; Codex `state_dir`/`sessions_dir`; `mimocode` `db` (one database shared by Xiaomi MiMo Desktop and MiMo Code CLI); WorkBuddy `db`/`projects_dir`; ZCode `db`; AutoClaw `sessions_dir`.
 
-`provider_aliases` changes labels and grouping only in `query provider`; it does not alter collected or router-backfilled data, and takes effect on the next query. When a name contains `.`, use a quoted segment, for example:
+`provider_aliases` changes labels and grouping in every view that contains the provider dimension — `query provider`, custom views, the corresponding `watch` frames, and the serve dashboard alike; it does not alter collected or router-backfilled data, and takes effect on the next query. When a name contains `.`, use a quoted segment, for example:
 
 ```bash
 token-usage config set 'provider_aliases."Zhipu AI Coding Plan"' 'Zhipu GLM'

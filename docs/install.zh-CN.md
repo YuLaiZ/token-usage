@@ -6,7 +6,7 @@
 
 ## 安装布局
 
-配置、数据库与日志始终位于 `~/.token-usage`（Windows 为 `%USERPROFILE%\.token-usage`）。脚本安装与手动二进制安装还把二进制也放在这里——`~/.token-usage/bin/token-usage`（Windows 为 `%USERPROFILE%\.token-usage\bin\token-usage.exe`）——经用户 PATH 暴露命令，无需 sudo（Windows 无需管理员权限）；`go install` 与开发用直接构建（`go build`）的二进制位置见各自小节。各方式在升级语义上不同：
+配置文件固定在 `~/.token-usage/config.toml`（Windows 为 `%USERPROFILE%\.token-usage\config.toml`）。数据库位置跟随配置的 `data_dir`，日志跟随生效的 `log.dir`（`log.dir` 为空时默认 `<data_dir>/logs`）；全部保持缺省时二者都落在 `~/.token-usage`。注意 `config init` 模板会显式写入 `log.dir = "~/.token-usage/logs"`——只改 `data_dir` 时，日志会继续写在原目录，直到一并修改 `log.dir`。脚本安装与手动二进制安装还把二进制也放在 `~/.token-usage` 下——`~/.token-usage/bin/token-usage`（Windows 为 `%USERPROFILE%\.token-usage\bin\token-usage.exe`）——经用户 PATH 暴露命令，无需 sudo（Windows 无需管理员权限）；`go install` 与开发用直接构建（`go build`）的二进制位置见各自小节。各方式在升级语义上不同：
 
 - **官方 Release 二进制**（经下方脚本、AI Agent 指令或手动安装）：支持原地自更新——二进制是 PATH 上的真实文件，正是自更新来源校验所要求的形态。
 - **源码构建**（`make build` / `go build`）：dev 形态（`Version = dev`，或直接构建伪版本归一显示的 `vX.Y.Z-dev`），默认不能自更新；运行 `token-usage update --force` 可切换为官方 Release 资产（此后自动更新恢复正常），或重新构建后手动替换文件。
@@ -173,7 +173,7 @@ make build   # 产出 ./token-usage（make build-all 产 dist/token-usage-window
 go install github.com/YuLaiZ/token-usage/cmd/token-usage@latest
 ```
 
-二进制装到 `$GOBIN`（默认 `~/go/bin`），需自行确保该目录在 PATH 中。配置和日志仍在 `~/.token-usage/`。安装后可用 `token-usage --version` 验证。通过正式 Release tag 安装的产物（如 `go install github.com/YuLaiZ/token-usage/cmd/token-usage@vX.Y.Z`）与官方资产并非字节完全一致；先运行一次 `token-usage update --force`，将其替换为一个官方 Release 资产，之后即可正常自更新。`@latest` 解析到正式 Release tag 时同样适用。若 `@latest` 解析到开发版本，请先查看 `token-usage version`：`dev` 与 `vX.Y.Z-dev` 显示的产物均可用 `--force`。
+二进制装到 `$GOBIN`（默认 `~/go/bin`），需自行确保该目录在 PATH 中。配置文件仍在 `~/.token-usage/config.toml`；数据库与日志按[安装布局](#安装布局)所述跟随 `data_dir` 与 `log.dir`。安装后可用 `token-usage --version` 验证。通过正式 Release tag 安装的产物（如 `go install github.com/YuLaiZ/token-usage/cmd/token-usage@vX.Y.Z`）与官方资产并非字节完全一致；先运行一次 `token-usage update --force`，将其替换为一个官方 Release 资产，之后即可正常自更新。`@latest` 解析到正式 Release tag 时同样适用。若 `@latest` 解析到开发版本，请先查看 `token-usage version`：`dev` 与 `vX.Y.Z-dev` 显示的产物均可用 `--force`。
 
 ## 直接 go build（开发用）
 
@@ -186,11 +186,11 @@ go build -o token-usage ./cmd/token-usage
 
 ## 卸载与迁移
 
-卸载后无系统级残留：
+按本清单逐项执行可清除本工具与安装器写入系统的全部内容：
 
-1. 若守护进程正在运行，先停止：`token-usage daemon stop`。
+1. 若仪表板与守护进程正在运行，先停止：`token-usage serve stop`，再 `token-usage daemon stop`。Windows 上运行中的实例会占用 `.exe` 文件，删除目录前须两个都停止。
 2. 若开启过开机自启，先执行 `token-usage config set daemon.autostart false`：移除自启定义（macOS 的 `~/Library/LaunchAgents/<label>.plist` 文件、Windows 的注册表 Run 值），避免删除目录后定义继续指向已不存在的二进制、每次登录触发启动失败。
-3. 删除应用目录：`rm -rf ~/.token-usage`（Windows 为 `Remove-Item -Recurse -Force $env:USERPROFILE\.token-usage`）。当前终端的命令缓存可能仍指向已删二进制，执行 `hash -r` 后确认 `token-usage` 已不可用，或直接新开终端确认。
+3. 删除应用目录：`rm -rf ~/.token-usage`（Windows 为 `Remove-Item -Recurse -Force $env:USERPROFILE\.token-usage`）。当前终端的命令缓存可能仍指向已删二进制，执行 `hash -r` 后确认 `token-usage` 已不可用，或直接新开终端确认。若配置过自定义 `data_dir` 或 `log.dir`，这些目录在 `~/.token-usage` 之外——请自行决定删除或保留。
 4. 移除 PATH 配置。
 
    macOS：删除 shell rc 文件中的 marker 块：
@@ -228,6 +228,7 @@ go build -o token-usage ./cmd/token-usage
 
    或经现代「编辑用户环境变量」对话框删除 `%USERPROFILE%\.token-usage\bin` 条目，并在使用 UI 后核对 Path 值类型仍为 `REG_EXPAND_SZ`（旧式列表编辑器存在写回 `REG_SZ` 的已知问题）。**不得**使用 `setx` 或 `[Environment]::SetEnvironmentVariable`（前者截断、后者类型退化）。注册表直写后需注销重登（或经「编辑用户环境变量」对话框确定），新终端窗口方能生效。
 5. 曾按旧软链教程安装的，一并删除残留软链：macOS 的 `/usr/local/bin/token-usage`、Windows 的 `%LOCALAPPDATA%\Microsoft\WindowsApps\token-usage.exe`。
+6. 移除安装器配置的 Shell 补全（如有）：zsh 为安装器补全目录（通常是 `~/.zsh/completions`）下的 `_token-usage` 文件与安装器实际写入的 zsh 启动配置文件中的补全 marker 块（`fpath`/`compdef` 行）——通常为 `~/.zshrc`，设置 `ZDOTDIR` 时为相应启动目录下的 `.zshrc`；fish 为 `~/.config/fish/completions`（或 `XDG_CONFIG_HOME` 对应路径）下的 `token-usage.fish`；PowerShell 为 `$PROFILE` 中的补全 marker 块（调用 `token-usage completion powershell` 的行）。bash 不安装补全文件。
 
 迁移提示：
 
