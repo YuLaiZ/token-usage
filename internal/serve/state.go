@@ -1,7 +1,7 @@
 // internal/serve/state.go
 package serve
 
-// state.go 实现 serve.json 运行状态文件：记录当前仪表板服务进程的 PID、监听
+// state.go 实现 serve.json 运行状态文件：记录当前用量服务进程的 PID、监听
 // 地址与启动时间，供 serve start/status/stop、后台服务主体与 update 的运行态
 // 探测共用（服务主体写/删同一状态文件，status 与 update 据此判定）。
 // 本文件同时定义状态迁移锁的获取/释放 helper 与条件删除原语 RemoveStateIfSame。
@@ -195,7 +195,7 @@ var RemoveStateIfSame = func(dataDir string, judged *ServeState) (removed bool, 
 	return false, cur, nil
 }
 
-// MetaAlive 探活仪表板 /api/meta：HTTP 2xx 视为存活，连接失败、超时或
+// MetaAlive 探活用量服务 /api/meta：HTTP 2xx 视为存活，连接失败、超时或
 // 其他状态码均视为不存活。baseURL 形如 "http://127.0.0.1:8619"。
 func MetaAlive(baseURL string, timeout time.Duration) bool {
 	client := &http.Client{Timeout: timeout}
@@ -208,6 +208,6 @@ func MetaAlive(baseURL string, timeout time.Duration) bool {
 }
 
 // StaleProbeTimeout 是判定已记录实例是否仍存活的单次探活超时，单实例守卫
-// （LifecycleGuard）、serve start 的已运行预检、doctor 的仪表板检查与 update
+// （LifecycleGuard）、serve start 的已运行预检、doctor 的用量服务检查与 update
 // 的更新前探测共用。
 var StaleProbeTimeout = 1500 * time.Millisecond

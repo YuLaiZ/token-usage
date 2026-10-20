@@ -1,4 +1,4 @@
-// Package web 提供 serve 命令的本地 HTTP 服务:为仪表板提供 JSON
+// Package web 提供 serve 命令的本地 HTTP 服务:为用量统计页提供 JSON
 // (/api/meta、/api/dashboard、/api/config)与静态资产(/ 与 /assets/)。
 // 数据接口中 meta/dashboard 只读;config 接口经 ConfigStore 走 configapp
 // 的锁内原子写回。本地仅涉及生命周期文件 serve.json/serve.log(由 cli 层
@@ -40,13 +40,13 @@ func WithConfigStore(store ConfigStore) ServerOption {
 	return func(s *server) { s.configStore = store }
 }
 
-// NewServer 构造本地仪表板服务的 HTTP Handler。路由:
+// NewServer 构造本地用量服务的 HTTP Handler。路由:
 //
 //	GET /api/meta       服务版本与数据边界
 //	GET /api/dashboard  区间汇总 + 四维度行 + 日期×小时热力 + 自定义视图 + Top sessions
 //	GET /api/config     配置编辑模型与 revision
 //	PUT /api/config     应用配置草稿(revision 冲突 409/校验失败 400)
-//	GET /               内嵌仪表板首页
+//	GET /               内嵌用量统计页首页
 //	GET /assets/        内嵌静态资产
 func NewServer(q *querier.Querier, version string, opts ...ServerOption) http.Handler {
 	s := &server{q: q, version: version}
@@ -80,7 +80,7 @@ func noStore(next http.Handler) http.Handler {
 	})
 }
 
-// handleIndex 返回内嵌仪表板首页 index.html。
+// handleIndex 返回内嵌用量统计页首页 index.html。
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(indexHTML)

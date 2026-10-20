@@ -218,7 +218,7 @@ func formatDurationMS(ms int64) string {
 }
 
 // OutputColumnIDs 返回当前布局的指标 ID 序列（独立副本，ID 与 ui.Metric*
-// 常量一致），供 web 仪表板把指标条对齐 query 的可见输出列。
+// 常量一致），供 web 用量统计页把指标条对齐 query 的可见输出列。
 func (q *Querier) OutputColumnIDs() []string {
 	columns := q.outputColumns
 	if len(columns) == 0 {
@@ -1698,7 +1698,7 @@ func FormatDuration(ms int64) string {
 // SortTopRows 返回按会话排行口径排序的行独立副本:TotalTokens 降序,同值按
 // Client 升序、再 Title 升序;前三键全并列时按会话首条消息时间戳 FirstTS 升序
 // 决序(确定性全序,不依赖 SessionRows 的 SQL 排序,消除同名同量会话的行序
-// 残余)。cli 的 top/report 与 web 仪表板的会话排行共用本实现,防止多入口
+// 残余)。cli 的 top/report 与 web 用量统计页的会话排行共用本实现,防止多入口
 // 排序口径漂移。
 func SortTopRows(rows []SessionRow) []SessionRow {
 	sorted := make([]SessionRow, len(rows))

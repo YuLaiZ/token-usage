@@ -83,7 +83,7 @@ func TestRefreshPage_RawValuesShown(t *testing.T) {
 func TestRefreshPage_KeyboardCycleCommit(t *testing.T) {
 	a := newRefreshAppForTest(&config.Config{}, &config.Config{Refresh: config.RefreshConfig{DashboardInterval: 30, WatchInterval: 30}})
 	p := newRefreshPage(a)
-	// 仪表盘项从「30 (默认)」出发:空格 → 60 → 空格 → 其他… → 空格 → 10。
+	// 用量统计页项从「30 (默认)」出发:空格 → 60 → 空格 → 其他… → 空格 → 10。
 	keyName(p, " ")
 	if p.dashSel != 3 {
 		t.Fatalf("30 后一个空格应到 60,实际 sel=%d label=%q", p.dashSel, selLabel(p.dashSel))
@@ -226,7 +226,7 @@ func TestRefreshPage_CursorMoves(t *testing.T) {
 	if p.cursor != 0 {
 		t.Fatalf("up 后 cursor 应为 0")
 	}
-	// 光标在仪表盘项时空格只影响该项。
+	// 光标在用量统计页项时空格只影响该项。
 	keyName(p, " ")
 	if p.dashTouched != true || p.watchTouched != false {
 		t.Errorf("空格应只触碰当前项:dash=%v watch=%v", p.dashTouched, p.watchTouched)
@@ -241,8 +241,8 @@ func TestRefreshPage_SummaryInMainMenu(t *testing.T) {
 	)
 	m := newMainMenu(a)
 	view := m.View()
-	if !strings.Contains(view, "dash 20s") {
-		t.Errorf("摘要应含 dash 20s, got:\n%s", view)
+	if !strings.Contains(view, "usage 20s") {
+		t.Errorf("摘要应含 usage 20s, got:\n%s", view)
 	}
 	// watch 草稿为 0 → 取有效层 30 并带 (default) 标注。
 	if !strings.Contains(view, "watch 30s (default)") {
@@ -255,7 +255,7 @@ func TestRefreshPage_ViewShowsPresetsAndHelp(t *testing.T) {
 	a := newRefreshAppForTest(&config.Config{}, &config.Config{Refresh: config.RefreshConfig{DashboardInterval: 30, WatchInterval: 30}})
 	p := newRefreshPage(a)
 	view := p.View()
-	for _, want := range []string{"仪表盘自动刷新", "CLI watch 刷新", "10 / 20 / 30 / 60 / 其他", "poll_interval"} {
+	for _, want := range []string{"用量统计页自动刷新", "CLI watch 刷新", "10 / 20 / 30 / 60 / 其他", "poll_interval"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("View 应含 %q, got:\n%s", want, view)
 		}

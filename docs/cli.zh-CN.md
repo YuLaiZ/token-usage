@@ -36,11 +36,11 @@ token-usage
 │   ├── status                            # 查看守护进程运行状态与配置摘要
 │   ├── stop                              # 停止守护进程
 │   └── restart                           # 在单把进程控制锁内停旧起新
-├── serve                                 # 管理本地仪表板 HTTP 服务（裸执行只显示帮助）
-│   ├── start                             # 后台运行仪表板（nginx 风格；日志写入 serve.log）
-│   ├── status                            # 查看后台仪表板运行状态
-│   ├── stop                              # 停止后台仪表板
-│   └── restart                           # 停止运行中的仪表板并拉起全新后台实例
+├── serve                                 # 管理本地用量服务（裸执行只显示帮助）
+│   ├── start                             # 后台运行用量服务（nginx 风格；日志写入 serve.log）
+│   ├── status                            # 查看后台用量服务运行状态
+│   ├── stop                              # 停止后台用量服务
+│   └── restart                           # 停止运行中的用量服务并拉起全新后台实例
 ├── config                                # 无参数：打开交互式配置 TUI
 │   ├── show                              # 输出完整 effective TOML（只读、纯 TOML）
 │   ├── get <key>
@@ -48,7 +48,7 @@ token-usage
 │   └── init
 ├── update                                # 从官方 GitHub Release 自更新（--check / --version / --force）
 ├── _run                                  # Hidden，由 daemon start/launchd/注册表拉起，勿直接调用
-└── _serve-run                            # Hidden，serve start 拉起的后台仪表板服务主体，勿直接调用
+└── _serve-run                            # Hidden，serve start 拉起的后台用量服务主体，勿直接调用
 ```
 
 设计要点：
@@ -65,18 +65,18 @@ token-usage
 
 本次命令面做了有意的收敛，面向 v0.1.8 编写的脚本需要更新：
 
-- 六个分析命令 `chart`、`compare`、`export`、`forecast`、`report`、`top` 已**删除**（无兼容别名）。终端查询继续由 `query` 与 `watch` 承担。仪表板一侧：最重会话排行由会话表延续；SVG 图表接口、用量预测面板与两期对比面板已随 v0.2.0 重做移除，无替代入口（见[仪表板指南](dashboard.zh-CN.md)）。机器可读的 CLI export 合同与离线 HTML 报告包已有意移除，没有完整直接替代。
+- 六个分析命令 `chart`、`compare`、`export`、`forecast`、`report`、`top` 已**删除**（无兼容别名）。终端查询继续由 `query` 与 `watch` 承担。用量服务一侧：最重会话排行由会话表延续；SVG 图表接口、用量预测面板与两期对比面板已随 v0.2.0 重做移除，无替代入口（见[用量服务指南](dashboard.zh-CN.md)）。机器可读的 CLI export 合同与离线 HTML 报告包已有意移除，没有完整直接替代。
 - 顶层生命周期命令已移入 `daemon` 命令组：`token-usage start` → `token-usage daemon start`，`status`、`stop`、`restart` 同理。
-- `token-usage serve` 不再前台启动服务：裸 `serve` 只打印命令组帮助，仪表板用 `serve start` 启动（`serve restart` 只接管已在运行的实例）。
+- `token-usage serve` 不再前台启动服务：裸 `serve` 只打印命令组帮助，用量服务用 `serve start` 启动（`serve restart` 只接管已在运行的实例）。
 
 | v0.1.8 | 现在 |
 |---|---|
 | `token-usage start` / `status` / `stop` / `restart` | `token-usage daemon start` / `daemon status` / `daemon stop` / `daemon restart` |
 | `token-usage serve`（前台） | `token-usage serve start`（后台） |
-| `token-usage top` | `token-usage serve start`——仪表板的会话排行（前 20 条、原始标题） |
-| `token-usage chart` | `token-usage serve start`——仪表板的趋势图与热力图覆盖可视化分析；逐图 SVG 导出已移除 |
-| `token-usage forecast` / `compare` | 已随 v0.2.0 仪表板重做移除——预测面板与两期对比面板无替代入口 |
-| `token-usage export` / `report` | 终端查询继续用 `query` / `watch`。仪表板的早期 CSV 导出已随 v0.2.0 重做移除；机器可读 CLI export 与离线报告包已移除，无完整直接替代 |
+| `token-usage top` | `token-usage serve start`——用量统计页的会话排行（前 20 条、原始标题） |
+| `token-usage chart` | `token-usage serve start`——用量统计页的趋势图与热力图覆盖可视化分析；逐图 SVG 导出已移除 |
+| `token-usage forecast` / `compare` | 已随 v0.2.0 用量服务重做移除——预测面板与两期对比面板无替代入口 |
+| `token-usage export` / `report` | 终端查询继续用 `query` / `watch`。用量统计页的早期 CSV 导出已随 v0.2.0 重做移除；机器可读 CLI export 与离线报告包已移除，无完整直接替代 |
 
 ## 通用约定
 
@@ -273,7 +273,7 @@ Last successful collection / 最近成功采集: 2026-07-22 08:15:03
 
 所有分组视图（九个内置视图与全部自定义多维表）末行显示 `Total / 总计`，总计与表格使用同一日期范围独立聚合；会话明细与总览摘要不追加该行。
 
-所有分组视图的维度分组不区分大小写（Unicode 简单折叠，与 `strings.EqualFold` 同一等价语义）：仅大小写不同的值合并为一行，行内显示该查询范围内请求数最多的拼写（平手取字节序最小拼写），聚合值为各变体之和——显示上的唯一例外是 `model` 维度：其行恒以大写显示（显示键经 `strings.ToUpper` 归一；库内原始值与 rawKeys 保持原大小写，大小写折叠合并仍然生效）。该语义覆盖文本维度（`client`、`model`、`provider`、`project`）与时间维度（分组值不存在仅大小写不同的变体，行为不变），内置视图、自定义视图与 serve 仪表板一致；`messages` 源数据不改写。
+所有分组视图的维度分组不区分大小写（Unicode 简单折叠，与 `strings.EqualFold` 同一等价语义）：仅大小写不同的值合并为一行，行内显示该查询范围内请求数最多的拼写（平手取字节序最小拼写），聚合值为各变体之和——显示上的唯一例外是 `model` 维度：其行恒以大写显示（显示键经 `strings.ToUpper` 归一；库内原始值与 rawKeys 保持原大小写，大小写折叠合并仍然生效）。该语义覆盖文本维度（`client`、`model`、`provider`、`project`）与时间维度（分组值不存在仅大小写不同的变体，行为不变），内置视图、自定义视图与 serve 用量服务一致；`messages` 源数据不改写。
 
 `query day`、`query month`、`query hour`、`query weekday` 及任何含 `day`、`month`、`hour` 或 `weekday` 时间维度的视图按时间升序呈现时间轴：行按时间维度升序排列（日 `YYYY-MM-DD`、月 `YYYY-MM`、小时 `00:00`..`23:00` 或 ISO 周序的星期名，而非按总量降序；多个时间维度并存时按声明首个为排序主轴），`Trend / 趋势` 条形列以区间内最繁忙的行为基准对比各行总量。纯 `day` 与 `month` 视图为请求区间内无数据的日期/月份插入零值行；纯 `hour` 与 `weekday` 视图按本机时区折算小时/星期（与 date 列同一时区语义），任一请求区间都呈现整日 24 小时固定刻度与 ISO 周序（周一在首）的整周 7 天固定刻度，为无数据小时/星期补零值行，时间轴不留缺口。
 
@@ -416,9 +416,9 @@ token-usage doctor --format json
 | `Unresolved errors / 未解决异常` | 无 | 数量，并提示 `token-usage errors` 与 `token-usage collect retry` | 查询失败 |
 | `Query definitions / 查询视图` | 已配置的子查询/组合查询/默认行为语义合法（未配置时同样 OK） | 问题计数、首个诊断路径并指向 `token-usage query list`；仅警告——坏视图定义不会阻断采集与静态表格命令 | 配置加载失败 |
 | `Daemon / 守护进程` | 纯提示：指向 `token-usage daemon status`;doctor 绝不探测或操作守护进程（探测会创建锁文件/配置目录） | | |
-| `Dashboard / 仪表板` | `serve.json` 存在且 `/api/meta` 有响应；显示记录的 URL 与 PID | 状态损坏或陈旧（`serve.json` 无法读取，或记录实例不再应答）；建议 `token-usage serve status` 清理 | — |
+| `Usage server / 用量服务` | `serve.json` 存在且 `/api/meta` 有响应；显示记录的 URL 与 PID | 状态损坏或陈旧（`serve.json` 无法读取，或记录实例不再应答）；建议 `token-usage serve status` 清理 | — |
 
-`Dashboard / 仪表板` 探测按构造只读：读 `serve.json`，文件存在时发一次 `GET /api/meta`（不存在时不发任何请求）。与守护进程检查不同，它可以安全探测——读状态文件与 HTTP GET 不创建锁或文件——但 doctor 绝不自行删除陈旧或损坏的状态文件；WARN 指向 `token-usage serve status`，其陈旧/损坏清理会在状态锁内删除残留。
+`Usage server / 用量服务` 探测按构造只读：读 `serve.json`，文件存在时发一次 `GET /api/meta`（不存在时不发任何请求）。与守护进程检查不同，它可以安全探测——读状态文件与 HTTP GET 不创建锁或文件——但 doctor 绝不自行删除陈旧或损坏的状态文件；WARN 指向 `token-usage serve status`，其陈旧/损坏清理会在状态锁内删除残留。
 
 - 因上游检查失败而无法执行的检查项输出 `SKIPPED / 跳过`，不重复计数（上游 FAIL 已计数）：配置失败跳过全部依赖配置的检查项；数据库缺失或损坏跳过采集、数据新鲜度、日期一致性与异常四项；最近采集查询失败时数据新鲜度以「无法获取」跳过（最近采集一项已失败）；完全无采集记录时数据新鲜度跳过（最近采集一项已告警）。
 - 汇总行（`Result / 结果`）为 `OK / 一切正常`、`N warnings / N 项警告` 或 `N problems / N 项失败`（FAIL 优先于 WARN）。
@@ -446,7 +446,7 @@ token-usage config init                # 初始化配置文件与数据库
 
 ### config（TUI）
 
-无参数时打开交互式配置 TUI（`bubbletea`）。配置文件不存在时先写默认模板再打开；可编辑客户端、路由、守护进程、日志、查询配置（`v` 进入的 Query 页归拢视图定义、输出列布局与 provider aliases），以及两个查询刷新间隔（**查询刷新**页：仪表盘自动刷新与 CLI watch，单位秒，`0` 表示默认 30 秒——与 `daemon.poll_interval` 互相独立，修改不会重启守护进程），`data_dir` 在 TUI 中只读。保存统一走 `ApplyConfig`（见下文「config set」）。非 router 支持客户端（当前为除 Claude 与 Codex 外的其他客户端）不展示「绑定路由」字段；此类客户端上存量非空 router 仍会显示（便于清回「无」），保存校验拒绝非空值（见下文「config set」的 router 拦截）。
+无参数时打开交互式配置 TUI（`bubbletea`）。配置文件不存在时先写默认模板再打开；可编辑客户端、路由、守护进程、日志、查询配置（`v` 进入的 Query 页归拢视图定义、输出列布局与 provider aliases），以及两个查询刷新间隔（**查询刷新**页：用量统计页自动刷新与 CLI watch，单位秒，`0` 表示默认 30 秒——与 `daemon.poll_interval` 互相独立，修改不会重启守护进程），`data_dir` 在 TUI 中只读。保存统一走 `ApplyConfig`（见下文「config set」）。非 router 支持客户端（当前为除 Claude 与 Codex 外的其他客户端）不展示「绑定路由」字段；此类客户端上存量非空 router 仍会显示（便于清回「无」），保存校验拒绝非空值（见下文「config set」的 router 拦截）。
 
 ### config show
 
@@ -511,7 +511,7 @@ token-usage config set <key> <value> --confirm-migrate   # 仅迁移 data_dir �
 
 受支持 client 为 `claude`、`opencode`、`codex`、`mimocode`、`workbuddy`、`zcode`、`autoclaw`、`dsh`。path key 分别为：Claude `projects_dir`；OpenCode `db`；Codex `state_dir`/`sessions_dir`；`mimocode` `db`（Xiaomi MiMo Desktop 与 MiMo Code CLI 共用同一库）；WorkBuddy `db`/`projects_dir`；ZCode `db`；AutoClaw `sessions_dir`；DSH `sessions_dir`。
 
-`provider_aliases` 改变所有含 provider 维度视图中的标签与分组——`query provider`、自定义视图、对应的 `watch` 帧与 serve 仪表板一致生效；不修改采集或路由回填的数据，下一次查询立即生效。名称含 `.` 时使用引号段，例如：
+`provider_aliases` 改变所有含 provider 维度视图中的标签与分组——`query provider`、自定义视图、对应的 `watch` 帧与 serve 用量统计页一致生效；不修改采集或路由回填的数据，下一次查询立即生效。名称含 `.` 时使用引号段，例如：
 
 ```bash
 token-usage config set 'provider_aliases."Zhipu AI Coding Plan"' 'Zhipu GLM'
@@ -546,7 +546,7 @@ token-usage config set clients.zcode.enabled true
 
 ## daemon
 
-`daemon` 命令组管理**采集/分析守护进程**——后台监控各 AI 客户端会话日志、持续保持用量数据更新的进程。它的四个动作只管控**当前运行的守护进程**，与**开机自启定义**（下次登录/开机是否自动启动）彻底解耦。仪表板服务是另一个独立程序实例，由 [serve](#serve) 命令组单独管理；两者不共享 PID、锁、状态文件、日志与端口，停止或重启其中一个绝不影响另一个。裸执行 `token-usage daemon` 只打印命令组帮助：不启动任何进程，也不创建状态文件。
+`daemon` 命令组管理**采集/分析守护进程**——后台监控各 AI 客户端会话日志、持续保持用量数据更新的进程。它的四个动作只管控**当前运行的守护进程**，与**开机自启定义**（下次登录/开机是否自动启动）彻底解耦。用量服务是另一个独立程序实例，由 [serve](#serve) 命令组单独管理；两者不共享 PID、锁、状态文件、日志与端口，停止或重启其中一个绝不影响另一个。裸执行 `token-usage daemon` 只打印命令组帮助：不启动任何进程，也不创建状态文件。
 
 | 命令 | 作用 | 是否触碰 autostart 定义 |
 |------|------|--------------------------|
@@ -645,19 +645,19 @@ token-usage watch --once               # 只渲染一帧后退出（对管道友
 
 ## serve
 
-管理提供内嵌仪表板的本地 HTTP 服务：内嵌 HTML 页面包含两个页面——**仪表盘**与**配置**——由 JSON 接口（`/api/meta`、`/api/dashboard`、`/api/config`）供数。两个页面的行为与背后的 HTTP 接口见[仪表板指南](dashboard.zh-CN.md)。仪表板**始终以后台方式运行**：`serve start` 拉起 detached 服务进程后返回，`serve status` / `serve stop` 查看与停止，`serve restart` 以全新后台实例接管运行中的实例。裸执行 `token-usage serve` 只打印命令组帮助——不监听端口、不启动进程、不创建状态文件。采集守护进程是另一个独立程序实例，由 [daemon](#daemon) 命令组单独管理；两者不共享 PID、锁、状态文件、日志与端口。
+管理提供内嵌用量统计页的本地 HTTP 服务：内嵌 HTML 页面包含两个页面——**用量统计页**与**配置**——由 JSON 接口（`/api/meta`、`/api/dashboard`、`/api/config`）供数。两个页面的行为与背后的 HTTP 接口见[用量服务指南](dashboard.zh-CN.md)。用量服务**始终以后台方式运行**：`serve start` 拉起 detached 服务进程后返回，`serve status` / `serve stop` 查看与停止，`serve restart` 以全新后台实例接管运行中的实例。裸执行 `token-usage serve` 只打印命令组帮助——不监听端口、不启动进程、不创建状态文件。采集守护进程是另一个独立程序实例，由 [daemon](#daemon) 命令组单独管理；两者不共享 PID、锁、状态文件、日志与端口。
 
 HTTP 面按回环与同源使用（不设 CORS 头）、无鉴权：数据接口（`/api/meta`、`/api/dashboard`）与页面本身严格只读；`PUT /api/config` 经 `configapp` 的进程控制锁、期望 revision 校验、原子整替与自启同步写回用户配置——与 CLI 配置命令同一安全链路；任何配置变更都不触碰数据库。`serve.json` 是共用的生命周期状态，`serve.log` 用于后台日志，`serve.lock`、`serve-state.lock` 与 `serve-start.lock` 负责生命周期协调。
 
 - `--addr` 修改监听地址（默认 `127.0.0.1:8619`），作用于 `serve start` / `serve restart` 新启动的实例。绑定 `0.0.0.0` 等公网地址**会把用量数据与本地配置编辑暴露给局域网**——服务无鉴权——请保持回环绑定。
-- `--open` 在 `serve start` / `serve restart` 确认后台服务就绪后用默认浏览器打开仪表板；打开浏览器失败只是警告，服务继续运行。
+- `--open` 在 `serve start` / `serve restart` 确认后台服务就绪后用默认浏览器打开用量统计页；打开浏览器失败只是警告，服务继续运行。
 - 启动时写 `serve.json` 状态文件失败（如数据目录只读）服务即报错退出，不做无状态运行。
 - 同一请求的全部数据查询共享一个读快照，并发采集写入下 totals、维度行、自定义视图行与会话行相互一致。
 - 持久状态为 `serve.json`，后台输出写入 `serve.log`，`serve.lock`、`serve-state.lock` 与 `serve-start.lock` 负责生命周期迁移协调。
 
 ### serve start / serve status / serve stop / serve restart（后台，nginx 风格）
 
-`serve start` 拉起一个 detached 子进程并在其报告就绪后返回，`serve status` 查看状态，`serve stop` 停止——这是运行仪表板的唯一方式。
+`serve start` 拉起一个 detached 子进程并在其报告就绪后返回，`serve status` 查看状态，`serve stop` 停止——这是运行用量服务的唯一方式。
 
 ```bash
 token-usage serve start
@@ -675,7 +675,7 @@ token-usage serve restart
 - `serve status --format json` 把同一判定输出为机器可读文档（两空格缩进 + 尾随换行，与 `doctor --format json`、`daemon status --format json` 同一约定）：`state` 取封闭值域——`running`、`not_running`、`not_running_stale_removed`、`not_running_corrupt_removed`；`running` 是 state 对应的布尔值；`pid`/`addr`/`url`/`started_at`（RFC3339，serve.json 原值）仅在运行中出现；`data_dir` 为配置的数据目录。非法 `--format` 值报错并列出允许值，与 `daemon status` 同型。
 - `serve stop` 在 Unix 上发送 SIGTERM 并给 3s 优雅窗口，超时以 SIGKILL 兜底；在 Windows 上使用 `taskkill /F`——Windows 控制台进程没有跨进程的优雅停止通道，对这种本地、无鉴权、唯一写路径是锁内 revision 校验配置保存的服务可接受。是否停止成功仅以 `/api/meta` 不再响应为准（记录的 PID 可能已被无关进程复用，探活的结论优先于信号发送结果——信号投递失败也不会短路探活等待）。只有探活确认下线（或信号发送前就无响应——陈旧/损坏状态被清理）才会删除状态文件。若强杀兜底后服务仍在响应（无论强杀本身是否报错），命令以非零退出码报错并列出记录的 URL 与 PID，保留 `serve.json` 供人工检查进程/端口。若停止进行期间有新实例接管（旧实例下线后状态文件被改写），命令会如实说明并转而停止新实例，而不是报告旧实例已停止。对已停止的服务重复执行是幂等空操作，退出码仍为 0。
 - `serve restart` 以与 `serve stop` 完全相同的编排停止运行中的实例（以探活为判据），随后以与 `serve start` 完全相同的编排拉起全新后台实例（`--addr`/`--open` 作用于新实例，报错路径上无效果）。只有运行中的实例才能重启：当前没有实例在运行时命令以非零错误退出并提示使用 `serve start`——与 `daemon restart` 对齐；陈旧或损坏的状态文件会先被清理，随后同样报错。若运行中的实例在 SIGKILL 兜底后仍在响应，重启以非零错误中止——旧实例继续服务，此类场景请用 `serve stop` 排查。
-- 单实例契约：任意时刻至多一个仪表板实例在运行。第二个 `serve start`——无论请求哪个地址——都会在监听之前被单实例守卫拒绝：打印运行中实例的 URL 与 PID 并以退出码 0 幂等返回（要重启请用 `token-usage serve restart`，或先 `token-usage serve stop` 停止）；若撞上另一实例正在启动的窗口，守卫报错并提示稍后重试。服务主体在其整个生命周期持有数据目录下的 `serve.lock` 生命周期锁。由于守卫先于监听执行，与运行中实例的同端口冲突不会再表现为监听失败——监听失败只剩「请求的端口被一个没有留下 `serve.json` 记录的无关进程占用」这一种场景。因此 `serve status` / `serve stop` 始终管理唯一实例。
+- 单实例契约：任意时刻至多一个用量服务实例在运行。第二个 `serve start`——无论请求哪个地址——都会在监听之前被单实例守卫拒绝：打印运行中实例的 URL 与 PID 并以退出码 0 幂等返回（要重启请用 `token-usage serve restart`，或先 `token-usage serve stop` 停止）；若撞上另一实例正在启动的窗口，守卫报错并提示稍后重试。服务主体在其整个生命周期持有数据目录下的 `serve.lock` 生命周期锁。由于守卫先于监听执行，与运行中实例的同端口冲突不会再表现为监听失败——监听失败只剩「请求的端口被一个没有留下 `serve.json` 记录的无关进程占用」这一种场景。因此 `serve status` / `serve stop` 始终管理唯一实例。
 - `--open` 由 `serve start` 与 `serve restart` 支持：仅在确认后台服务就绪后打开浏览器（打开失败只是警告）。
 
 ## update
@@ -754,6 +754,6 @@ Windows 上替换运行中的 `.exe` 受限，自更新把替换交给后台 hel
 
 ## 配置文件
 
-路径固定 `~/.token-usage/config.toml`（TOML，可手工添加注释）。所有客户端默认关闭：用 `clients.<name>.enabled = true` 开启需要的客户端，数据源路径由程序按各工具默认位置自动填充。用 dotted key 同段写法覆盖默认。`config set`、TUI 与网页仪表板的配置页（`serve start` 后打开仪表板）都经同一锁内 revision 校验原子写入链路保存并完整重写配置，故不保留原有注释和 map 键书写顺序；完整字段与默认值见 `token-usage config init` 生成的模板。
+路径固定 `~/.token-usage/config.toml`（TOML，可手工添加注释）。所有客户端默认关闭：用 `clients.<name>.enabled = true` 开启需要的客户端，数据源路径由程序按各工具默认位置自动填充。用 dotted key 同段写法覆盖默认。`config set`、TUI 与网页用量统计页的配置页（`serve start` 后打开用量服务）都经同一锁内 revision 校验原子写入链路保存并完整重写配置，故不保留原有注释和 map 键书写顺序；完整字段与默认值见 `token-usage config init` 生成的模板。
 
 `data_dir` 决定数据文件位置（`usage.db`、日志、PID、runtime-state、锁）；配置文件路径不随 `data_dir` 变化。`daemon.autostart` 控制开机自启（macOS launchd / Windows 注册表）。

@@ -116,7 +116,7 @@ async function main(){
     assert(await page.locator('[data-shot="list"]').isChecked());assert(await page.locator('[data-shot="trend"]').isChecked());
     assert(!(await page.locator('[data-shot="sessions"]').isChecked()));
     assert.equal(await page.locator('[data-shot-custom]:checked').count(),0);
-    const first=await inspect('dark-default');assert.equal(first.sessions,0);assert.equal(first.custom,0);pass('first-open-defaults',first);assert.equal(first.periods,7);assert.equal(first.selected,await page.locator('#range-seg [aria-pressed="true"]').textContent());assert(first.date.includes('2026-'));assert(first.header.includes('仪表盘'));assert.equal(first.query,'数据截至 · 2026-10-15 10:00:00');pass('original-header-and-static-range-preserved');
+    const first=await inspect('dark-default');assert.equal(first.sessions,0);assert.equal(first.custom,0);pass('first-open-defaults',first);assert.equal(first.periods,7);assert.equal(first.selected,await page.locator('#range-seg [aria-pressed="true"]').textContent());assert(first.date.includes('2026-'));assert(first.header.includes('用量'));assert(!first.header.includes('仪表盘'));assert.equal(first.query,'数据截至 · 2026-10-15 10:00:00');pass('original-header-and-static-range-preserved');
     for(const k of ['compose','heat','sessions']) await change(k,true);
     await page.locator('[data-shot-all="yes"]').click();await ready();
     const all=await inspect('dark-all');

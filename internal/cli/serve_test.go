@@ -169,7 +169,7 @@ func TestServeCmd_RegisteredAndFlags(t *testing.T) {
 	if got := serveFound.Use; got != "serve" {
 		t.Errorf("Use 应为 serve,实际 %q", got)
 	}
-	for _, want := range []string{"Manage the local dashboard server", "管理本地仪表板服务"} {
+	for _, want := range []string{"Manage the local usage server", "管理本地用量服务"} {
 		if !strings.Contains(serveFound.Short, want) {
 			t.Errorf("Short 应含 %q,实际 %q", want, serveFound.Short)
 		}

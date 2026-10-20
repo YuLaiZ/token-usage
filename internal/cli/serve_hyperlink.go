@@ -1,7 +1,7 @@
 package cli
 
 // serve_hyperlink.go 为 serve 命令的启动行提供终端超链接渲染：在支持 OSC 8
-// 的交互终端（iTerm2、VS Code、Warp 等）里把仪表板 URL 渲染为可点击链接，
+// 的交互终端（iTerm2、VS Code、Warp 等）里把用量统计页 URL 渲染为可点击链接，
 // 其余场景原样输出纯文本。
 
 // hyperlinkURL 把 URL 包进 OSC 8 超链接转义序列（BEL 终止符形态）:

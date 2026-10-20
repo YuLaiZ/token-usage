@@ -521,9 +521,9 @@ func TestDoctor_DateConsistency_EpochTs(t *testing.T) {
 	}
 }
 
-// ---- Dashboard / 仪表板检查(第 11 项,只读探测) ----
+// ---- Usage server / 用量服务检查(第 11 项,只读探测) ----
 
-// doctorDashboardBaseline 构造除仪表板分支外全绿的最小 doctor 环境:
+// doctorDashboardBaseline 构造除用量服务分支外全绿的最小 doctor 环境:
 // 有效配置 + 已建库(一条当日消息 + 一条 2h 前采集记录,压掉「无采集记录」
 // 的既有 WARN),返回 dataDir。
 func doctorDashboardBaseline(t *testing.T) string {
@@ -556,7 +556,7 @@ func TestDoctor_Dashboard_NotRunning_Info(t *testing.T) {
 	dataDir := doctorDashboardBaseline(t)
 
 	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
-	if !strings.Contains(out, "Dashboard / 仪表板: INFO / 提示 ") {
+	if !strings.Contains(out, "Usage server / 用量服务: INFO / 提示 ") {
 		t.Errorf("无 serve.json 时应输出 INFO 提示行:\n%s", out)
 	}
 	if !strings.Contains(out, "serve start") {
@@ -572,8 +572,8 @@ func TestDoctor_Dashboard_ConfigFailed_Skipped(t *testing.T) {
 	out := runDoctorForTest(t, func() (*config.Config, error) {
 		return nil, errors.New("boom")
 	}, db.Open)
-	if !strings.Contains(out, "Dashboard / 仪表板: SKIPPED / 跳过 config failed / 配置加载失败") {
-		t.Errorf("配置失败时仪表板检查应 SKIPPED:\n%s", out)
+	if !strings.Contains(out, "Usage server / 用量服务: SKIPPED / 跳过 config failed / 配置加载失败") {
+		t.Errorf("配置失败时用量服务检查应 SKIPPED:\n%s", out)
 	}
 }
 
@@ -583,7 +583,7 @@ func TestDoctor_Dashboard_CorruptState_Warn(t *testing.T) {
 	writeServeStateFixture(t, dataDir, "{not-json")
 
 	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
-	if !strings.Contains(out, "Dashboard / 仪表板: WARN / 警告 ") {
+	if !strings.Contains(out, "Usage server / 用量服务: WARN / 警告 ") {
 		t.Errorf("损坏状态应 WARN:\n%s", out)
 	}
 	if !strings.Contains(out, "serve status") {
@@ -602,7 +602,7 @@ func TestDoctor_Dashboard_StaleState_Warn(t *testing.T) {
 		`{"pid": 999999, "addr": "127.0.0.1:1", "started_at": "2026-01-01T00:00:00Z"}`)
 
 	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
-	if !strings.Contains(out, "Dashboard / 仪表板: WARN / 警告 ") {
+	if !strings.Contains(out, "Usage server / 用量服务: WARN / 警告 ") {
 		t.Errorf("陈旧状态应 WARN:\n%s", out)
 	}
 	if !strings.Contains(out, "http://127.0.0.1:1") || !strings.Contains(out, "999999") {
@@ -625,7 +625,7 @@ func TestDoctor_Dashboard_Running_Ok(t *testing.T) {
 		`{"pid": 4321, "addr": "`+addr+`", "started_at": "2026-01-01T00:00:00Z"}`)
 
 	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
-	if !strings.Contains(out, "Dashboard / 仪表板: OK / 正常 ") || !strings.Contains(out, "running at http://"+addr) {
+	if !strings.Contains(out, "Usage server / 用量服务: OK / 正常 ") || !strings.Contains(out, "running at http://"+addr) {
 		t.Errorf("运行中应 OK 且含 URL:\n%s", out)
 	}
 	if !strings.Contains(out, "4321") {
@@ -645,7 +645,7 @@ func TestDoctor_Dashboard_ReadFailure_Warn(t *testing.T) {
 	}
 
 	out := runDoctorForTest(t, doctorLoad(dataDir, map[string]bool{"claude": true}), db.Open)
-	if !strings.Contains(out, "Dashboard / 仪表板: WARN / 警告 ") {
+	if !strings.Contains(out, "Usage server / 用量服务: WARN / 警告 ") {
 		t.Errorf("读失败应 WARN:\n%s", out)
 	}
 	if !strings.Contains(out, "failed to read serve state") || !strings.Contains(out, "读取服务状态失败") {
@@ -776,7 +776,7 @@ func TestDoctor_FormatJSON_MatchesTableStatuses(t *testing.T) {
 		"last_collection": "Last collection / 最近采集", "data_freshness": "Data freshness / 数据新鲜度",
 		"date_consistency": "Date consistency / 日期一致性", "unresolved_errors": "Unresolved errors / 未解决异常",
 		"query_definitions": "Query definitions / 查询视图", "daemon": "Daemon / 守护进程",
-		"dashboard": "Dashboard / 仪表板",
+		"dashboard": "Usage server / 用量服务",
 	}
 	idWant := map[string]string{
 		"config": "ok", "data_directory": "ok", "database": "ok",

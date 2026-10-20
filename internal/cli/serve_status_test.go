@@ -35,7 +35,7 @@ func TestServeStatusCmd_NotRunning(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("无状态文件应幂等成功,实际错误: %v", err)
 	}
-	for _, want := range []string{"serve is not running", "仪表板未在后台运行"} {
+	for _, want := range []string{"serve is not running", "用量服务未在后台运行"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("输出应含 %q,实际: %q", want, buf.String())
 		}
@@ -67,7 +67,7 @@ func TestServeStatusCmd_Running(t *testing.T) {
 		"serve is running",
 		"http://" + addr,
 		"4242",
-		"仪表板正在后台运行",
+		"用量服务正在后台运行",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("输出应含 %q,实际: %q", want, got)
@@ -152,7 +152,7 @@ func TestServeStatusCmd_ReportsNewInstanceWhenStateReplaced(t *testing.T) {
 		t.Fatalf("按新实例报告应成功,实际错误: %v", err)
 	}
 	got := buf.String()
-	for _, want := range []string{"serve is running", "http://" + liveAddr, "5555", "仪表板正在后台运行"} {
+	for _, want := range []string{"serve is running", "http://" + liveAddr, "5555", "用量服务正在后台运行"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("输出应含 %q,实际: %q", want, got)
 		}

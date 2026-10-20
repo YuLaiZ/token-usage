@@ -75,7 +75,7 @@ func TestCommandSurface_RootHelp(t *testing.T) {
 }
 
 // TestCommandSurface_GroupHelps daemon --help 与 serve --help 均展示相同的
-// 四个动作；daemon 描述采集守护进程、serve 描述仪表板服务。
+// 四个动作；daemon 描述采集守护进程、serve 描述用量服务服务。
 func TestCommandSurface_GroupHelps(t *testing.T) {
 	err, out, _ := executeRoot(t, "daemon", "--help")
 	if err != nil {
@@ -99,8 +99,8 @@ func TestCommandSurface_GroupHelps(t *testing.T) {
 			t.Errorf("serve --help 应展示动作 %q:\n%s", want, out)
 		}
 	}
-	if !strings.Contains(out, "dashboard") && !strings.Contains(out, "仪表板") {
-		t.Errorf("serve --help 应说明管理对象是仪表板服务:\n%s", out)
+	if !strings.Contains(out, "dashboard") && !strings.Contains(out, "用量服务") {
+		t.Errorf("serve --help 应说明管理对象是用量服务服务:\n%s", out)
 	}
 }
 
@@ -217,7 +217,7 @@ func TestCommandSurface_CompletionExcludesRemovedAndInternal(t *testing.T) {
 
 // TestCommandSurface_WebDoesNotImportCli HTTP 数据面对 CLI 的依赖边界：
 // internal/web 的全部源文件不得 import internal/cli。web 只依赖
-// charts/querier 等无 UI 内部能力；若此边界被打破，仪表板将反向依赖
+// charts/querier 等无 UI 内部能力；若此边界被打破，用量服务将反向依赖
 // Cobra/进程语义。
 func TestCommandSurface_WebDoesNotImportCli(t *testing.T) {
 	dir := filepath.Join("..", "web")
@@ -276,7 +276,7 @@ poll_interval = 30
 }
 
 // TestCommandSurface_ServeStopLeavesDaemonStateAlone 两个服务生命周期互不影响
-// （serve → daemon 方向）：`serve stop` 只作用于仪表板状态，对守护进程的
+// （serve → daemon 方向）：`serve stop` 只作用于用量服务状态，对守护进程的
 // daemon lock 文件（token-usage.lock）不创建不改写。
 func TestCommandSurface_ServeStopLeavesDaemonStateAlone(t *testing.T) {
 	dataDir := t.TempDir()
@@ -294,7 +294,7 @@ poll_interval = 30
 	if err != nil {
 		t.Fatalf("serve stop（无运行实例）应幂等成功: %v", err)
 	}
-	if strings.Contains(out, ui.Bi("dashboard stopped", "仪表板已停止")) {
+	if strings.Contains(out, ui.Bi("usage server stopped", "用量服务已停止")) {
 		t.Errorf("无实例时 serve stop 不应报告已停止: %q", out)
 	}
 	got, err := os.ReadFile(daemonLock)

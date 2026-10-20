@@ -1,12 +1,12 @@
-# Dashboard Guide
+# Usage Guide
 
 > [简体中文](dashboard.zh-CN.md) | English
 
-This document covers the embedded dashboard served by `token-usage serve`: how to start it, what the Dashboard and Config pages do, privacy masking and screenshot sharing, and the HTTP API behind them. Source-code behavior takes precedence over this document.
+This document covers the embedded pages served by `token-usage serve`: how to start the server, what the Usage and Config pages do, privacy masking and screenshot sharing, and the HTTP API behind them. Source-code behavior takes precedence over this document.
 
-## Starting the Dashboard
+## Starting the Usage Server
 
-The dashboard always runs in the background, managed by the `serve` command group:
+The server always runs in the background, managed by the `serve` command group:
 
 ```bash
 token-usage serve start --open
@@ -18,9 +18,9 @@ The server listens on `127.0.0.1:8619` by default (`--addr` changes it), and `--
 
 The HTTP surface is loopback-first, same-origin only (no CORS headers), and unauthenticated. The data endpoints and the page itself are strictly read-only; the only write path is `PUT /api/config`, which saves the user configuration through the same locked, revision-checked, atomic write chain as the CLI config commands, and configuration changes never touch the database. Binding a public address such as `0.0.0.0` exposes your usage data and local configuration editing to the local network — keep the server on the loopback interface (see [`--addr`](cli.md#serve)).
 
-## The Dashboard Page
+## The Usage Page
 
-The embedded page is bilingual (Chinese/English, remembered per browser) with five accent palettes and light/dark themes (remembered per browser, dark follows the system by default; neither affects config dirty state). The Dashboard page renders everything client-side from the numeric rows: seven headline metrics that are independent of the output-column layout, the four built-in dimensions as two-column tables with per-card totals and a single trailing "other (N items)" row (plus a donut composition mode), a heat map that follows the selected range — one day as 24 hour cells, 2–7 days as date × hour, 8–31 days as date × 4-hour slots, 32+ days as a GitHub-style per-day calendar, with cells after today shown as blank ("not yet") rather than zero — a usage trend chart, custom-view tables derived from `query.subqueries` with a conservation-guaranteed "other combinations" row, and top sessions with full original titles (an info button opens the complete title).
+The embedded page is bilingual (Chinese/English, remembered per browser) with five accent palettes and light/dark themes (remembered per browser, dark follows the system by default; neither affects config dirty state). The Usage page renders everything client-side from the numeric rows: seven headline metrics that are independent of the output-column layout, the four built-in dimensions as two-column tables with per-card totals and a single trailing "other (N items)" row (plus a donut composition mode), a heat map that follows the selected range — one day as 24 hour cells, 2–7 days as date × hour, 8–31 days as date × 4-hour slots, 32+ days as a GitHub-style per-day calendar, with cells after today shown as blank ("not yet") rather than zero — a usage trend chart, custom-view tables derived from `query.subqueries` with a conservation-guaranteed "other combinations" row, and top sessions with full original titles (an info button opens the complete title).
 
 Auto refresh, manual refresh, and range changes share one request entry and one loading/success/failure state (stale responses never overwrite the current range; a failed refresh clears stale stats into a full-page error), the interval coming from `[refresh].dashboard_interval`. Preset ranges plus a boundary-free custom calendar (future dates submit and show real empty results; the selection is remembered across same-tab reloads).
 
@@ -30,7 +30,7 @@ The Config page edits the full user configuration with live dirty-state diffing 
 
 ## Privacy Masking and Screenshot Sharing
 
-The Dashboard page has a privacy-mask toggle in the control bar. When masking is on, project names and session titles are displayed as `***` everywhere they appear — dimension rows, composition views, custom-view tables, and the session table. The aggregated "other" rows and the "(uncategorized)" placeholder are never masked, and the client, model, and provider dimensions are not masked. Masking is a display-layer treatment: the HTTP API responses and the raw data held in the browser remain plaintext, and nothing is rewritten in the database.
+The Usage page has a privacy-mask toggle in the control bar. When masking is on, project names and session titles are displayed as `***` everywhere they appear — dimension rows, composition views, custom-view tables, and the session table. The aggregated "other" rows and the "(uncategorized)" placeholder are never masked, and the client, model, and provider dimensions are not masked. Masking is a display-layer treatment: the HTTP API responses and the raw data held in the browser remain plaintext, and nothing is rewritten in the database.
 
 The mask state follows three rules:
 

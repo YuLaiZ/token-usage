@@ -184,7 +184,7 @@ func AnalyzeConfigEffects(previous, current *config.Config) ConfigEffects {
 
 // runtimeAffectingChange 判定运行中 daemon 是否需要重载/重启。
 // 「仅 autostart 变化」不算 runtime changed（只影响下次登录/开机的定义）。
-// refresh 两个查询刷新间隔同样不算:它们只被网页仪表盘与 CLI watch 消费,
+// refresh 两个查询刷新间隔同样不算:它们只被用量统计页与 CLI watch 消费,
 // 与采集 daemon 无关,改查询刷新不触发 daemon 重启。
 func runtimeAffectingChange(prev, curr normalizedCfg, hasFull, hasRouter bool, hasMigration bool) bool {
 	if prev.DataDir != curr.DataDir {

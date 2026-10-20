@@ -73,10 +73,10 @@ type serveStatusReport struct {
 func newServeStatusCmd(load func() (*config.Config, error)) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: ui.Bi("Show whether the dashboard server is running in the background", "查看仪表板后台服务运行状态"),
+		Short: ui.Bi("Show whether the usage server is running in the background", "查看用量服务运行状态"),
 		Long: ui.Bi(
-			"Show whether the dashboard server is running in the background. The check reads serve.json under the data directory (~/.token-usage/serve.json by default) and probes the recorded address on /api/meta: a response reports running with URL, PID and start time; no response means the state is stale (left by a crash or SIGKILL) and the file is removed before reporting not running, and a corrupt state file is removed the same way. Every state outcome exits 0; only unexpected I/O failures exit non-zero. With `--format json` the same outcome is emitted as a machine-readable document: `state` is a closed vocabulary (`running`, `not_running`, `not_running_stale_removed`, `not_running_corrupt_removed`), `running` is the boolean the state derives from, and `pid`, `addr`, `url` and `started_at` (RFC3339, verbatim from serve.json) appear only while running.\n\nExamples:\n  token-usage serve status\n  token-usage serve status --format json",
-			"查看仪表板服务是否在后台运行。检查方式为读取数据目录下的 serve.json（默认 ~/.token-usage/serve.json）并对记录地址的 /api/meta 探活：有响应则报告运行中（含 URL、PID 与启动时间）；无响应说明是崩溃或 SIGKILL 遗留的陈旧状态，会在报告未运行前删除该文件；损坏的状态文件同样删除后再报告。所有状态结论均以退出码 0 返回；只有意外的 I/O 失败才非零。`--format json` 把同一判定输出为机器可读文档：`state` 取封闭值域（`running`、`not_running`、`not_running_stale_removed`、`not_running_corrupt_removed`），`running` 是 state 对应的布尔值，`pid`、`addr`、`url` 与 `started_at`（RFC3339，serve.json 原值）仅在运行中出现。\n\n示例：\n  token-usage serve status\n  token-usage serve status --format json",
+			"Show whether the usage server is running in the background. The check reads serve.json under the data directory (~/.token-usage/serve.json by default) and probes the recorded address on /api/meta: a response reports running with URL, PID and start time; no response means the state is stale (left by a crash or SIGKILL) and the file is removed before reporting not running, and a corrupt state file is removed the same way. Every state outcome exits 0; only unexpected I/O failures exit non-zero. With `--format json` the same outcome is emitted as a machine-readable document: `state` is a closed vocabulary (`running`, `not_running`, `not_running_stale_removed`, `not_running_corrupt_removed`), `running` is the boolean the state derives from, and `pid`, `addr`, `url` and `started_at` (RFC3339, verbatim from serve.json) appear only while running.\n\nExamples:\n  token-usage serve status\n  token-usage serve status --format json",
+			"查看用量服务是否在后台运行。检查方式为读取数据目录下的 serve.json（默认 ~/.token-usage/serve.json）并对记录地址的 /api/meta 探活：有响应则报告运行中（含 URL、PID 与启动时间）；无响应说明是崩溃或 SIGKILL 遗留的陈旧状态，会在报告未运行前删除该文件；损坏的状态文件同样删除后再报告。所有状态结论均以退出码 0 返回；只有意外的 I/O 失败才非零。`--format json` 把同一判定输出为机器可读文档：`state` 取封闭值域（`running`、`not_running`、`not_running_stale_removed`、`not_running_corrupt_removed`），`running` 是 state 对应的布尔值，`pid`、`addr`、`url` 与 `started_at`（RFC3339，serve.json 原值）仅在运行中出现。\n\n示例：\n  token-usage serve status\n  token-usage serve status --format json",
 		),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -178,16 +178,16 @@ func runningOutcome(st *serve.ServeState) serveStatusOutcome {
 func renderServeStatusTable(out io.Writer, o serveStatusOutcome) {
 	switch {
 	case o.State == serveStatusNotRunningCorruptRemoved:
-		fmt.Fprintln(out, ui.Bi("serve is not running (corrupt state removed)", "仪表板未在后台运行（已清理损坏的状态文件）"))
+		fmt.Fprintln(out, ui.Bi("serve is not running (corrupt state removed)", "用量服务未在后台运行（已清理损坏的状态文件）"))
 	case o.State == serveStatusNotRunning:
-		fmt.Fprintln(out, ui.Bi("serve is not running", "仪表板未在后台运行"))
+		fmt.Fprintln(out, ui.Bi("serve is not running", "用量服务未在后台运行"))
 	case o.Running:
 		fmt.Fprintf(out, "%s\n", ui.Bi(
 			fmt.Sprintf("serve is running: %s (pid %d, since %s)", o.URL, o.PID, serveLocalTime(o.StartedAt)),
-			fmt.Sprintf("仪表板正在后台运行：%s（PID %d，自 %s 起）", o.URL, o.PID, serveLocalTime(o.StartedAt)),
+			fmt.Sprintf("用量服务正在后台运行：%s（PID %d，自 %s 起）", o.URL, o.PID, serveLocalTime(o.StartedAt)),
 		))
 	default: // not_running_stale_removed
-		fmt.Fprintln(out, ui.Bi("serve is not running (stale state removed)", "仪表板未在后台运行（已清理陈旧状态）"))
+		fmt.Fprintln(out, ui.Bi("serve is not running (stale state removed)", "用量服务未在后台运行（已清理陈旧状态）"))
 	}
 }
 

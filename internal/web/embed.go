@@ -5,7 +5,7 @@ import (
 	"io/fs"
 )
 
-// 静态仪表板资产经 go:embed 编入二进制:单文件交付、零外部资源
+// 静态用量统计页资产经 go:embed 编入二进制:单文件交付、零外部资源
 // (无 CDN/字体/图片),目录内容由 index.html/app.css/app.js 组成。
 //
 //go:embed all:static

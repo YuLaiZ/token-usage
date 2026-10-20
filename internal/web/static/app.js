@@ -1,4 +1,4 @@
-/* token-usage 仪表板生产脚本（配合 index.html + app.css）。
+/* token-usage 用量统计页生产脚本（配合 index.html + app.css）。
    数据全部来自本地服务真实接口：GET /api/meta（版本与数据边界）、
    GET /api/dashboard（区间汇总/维度行/热力/自定义视图/会话）、
    GET|PUT /api/config（配置草稿读写）。
@@ -18,12 +18,12 @@ function clone(v){ return v==null ? v : JSON.parse(JSON.stringify(v)); }
 var LOCALE = root.getAttribute('data-locale')==='en' ? 'en' : 'zh-CN';
 function ui(zh, en){ return LOCALE==='en' ? en : zh; }
 var UI_TEXT = {
-  '页面导航':'Page navigation','仪表盘':'Dashboard','配置':'Config',
+  '页面导航':'Page navigation','用量统计':'Usage','配置':'Config',
   '在 GitHub 查看 Token Usage':'View Token Usage on GitHub',
   '收起侧边栏':'Collapse sidebar','展开侧边栏':'Expand sidebar',
   '语言与外观':'Language and appearance','界面语言':'Interface language','切换主题':'Switch theme','选择主题配色':'Choose color palette',
   '主题配色':'Color palette','配色方案候选':'Color palette options',
-  '用量概览':'Usage overview','按客户端、供应商、模型和项目查看用量':'Explore usage by client, provider, model, and project','查看数值单位说明':'View value unit definitions','数值单位':'Value units','十进制':'Decimal','一千':'thousand','一百万':'million','十亿':'billion',
+  '按客户端、供应商、模型和项目查看消耗':'Break down usage by client, provider, model, and project','查看数值单位说明':'View value unit definitions','数值单位':'Value units','十进制':'Decimal','一千':'thousand','一百万':'million','十亿':'billion',
   '隐私遮蔽':'Privacy masking','切换隐私遮蔽':'Toggle privacy masking','切换本次图片的隐私遮蔽':'Toggle privacy masking for this image',
   '隐藏项目名和会话标题':'Hide project names and session titles','隐藏本次图片中的项目名和会话标题':'Hide project names and session titles in this image',
   '截图分享':'Screenshot','选择截图内容':'Choose screenshot content','复制图片':'Copy image','重新生成':'Retry preview','截图预览':'Screenshot preview',
@@ -34,7 +34,7 @@ var UI_TEXT = {
   '按维度查看':'Explore by dimension','维度切换':'Dimension switcher','客户端':'Client','供应商':'Provider','模型':'Model','项目':'Project',
   '分组视图':'Group view','列表':'List','构成':'Composition','时间序列图表':'Time-series chart',
   '用量与缓存命中率趋势':'Token and Cache Hit trend','图表类型':'Chart type','趋势':'Trend','热力':'Heatmap',
-  '用量趋势':'Usage trend','用量':'Tokens','峰值 ':'Peak ','按小时':'Hourly','按周':'Weekly','按日':'Daily',
+  '用量趋势':'Usage trend','Token':'Tokens','峰值 ':'Peak ','按小时':'Hourly','按周':'Weekly','按日':'Daily',
   '空白为尚未发生':'Blank = not yet','低':'Low','高':'High',
   '用量最高的会话':'Highest-usage sessions','跟随当前时间范围':'Uses the current date range',
   '会话':'Session','时长':'Duration','查看完整会话标题':'View full session title','完整会话标题':'Full session title','关闭':'Close',
@@ -49,7 +49,7 @@ var UI_TEXT = {
   '保留天数 max_days':'Retention days · max_days','超期日志自动清理，默认 7':'Automatically remove expired logs; default 7','日志保留天数':'Log retention days',
   '目录 dir':'Directory · dir','日志输出目录':'Log output directory',
   '查询与展示':'Queries and display','设置默认视图、输出列、自定义视图和组合查询':'Configure the default view, output columns, custom views, and groups',
-  '默认视图':'Default view','选择打开仪表盘时首先展示的视图':'Choose the view shown when the dashboard opens',
+  '默认视图':'Default view','选择打开用量统计页时首先展示的视图':'Choose the view shown when the usage page opens',
   '默认打开':'Open by default','可选择内置视图、自定义视图或组合查询':'Choose a built-in view, custom view, or group',
   '恢复为 client':'Restore to client','将启动视图恢复为内置 client':'Restore the startup view to the built-in client view',
   '输出列':'Output columns','统一控制内置表格与自定义视图的指标列及顺序，不影响顶部概览':'Controls metric columns and order for built-in tables and custom views; does not affect the overview',
@@ -84,10 +84,10 @@ var UI_TEXT = {
   '刷新':'Refresh','刷新当前区间':'Refresh current range','自动刷新已开启':'Auto refresh is on','最近查询 · —':'Last query · —',
   '正在自动刷新':'Auto refreshing','正在手动刷新':'Refreshing','正在查询':'Querying','目标 ':'Target ',' · 下方暂为上次结果':' · Previous result shown below',
   '已更新':'Updated','最近查询 ':'Last query ','自动刷新 · 每 ':'Auto refresh · every ',' 秒':' sec',
-  '查询刷新':'Query refresh','仪表盘与终端 watch 分别设置；守护进程的采集轮询在上方单独配置':'Set dashboard and terminal watch separately; daemon collection polling is configured above',
-  '仪表盘自动刷新':'Dashboard auto refresh','保存后按所选间隔自动查询；手动刷新和切换区间共用同一等待状态':'Auto query at the saved interval; manual refresh and range changes share the same loading state',
+  '查询刷新':'Query refresh','用量统计页与终端 watch 分别设置；守护进程的采集轮询在上方单独配置':'Set usage page and terminal watch separately; daemon collection polling is configured above',
+  '用量统计页自动刷新':'Usage page auto refresh','保存后按所选间隔自动查询；手动刷新和切换区间共用同一等待状态':'Auto query at the saved interval; manual refresh and range changes share the same loading state',
   'CLI watch 刷新':'CLI watch refresh','终端执行 watch 时的默认间隔；命令行 --interval 可覆盖本次运行':'Default interval for terminal watch; --interval overrides it for one run',
-  '仪表盘自动刷新间隔':'Dashboard auto refresh interval','仪表盘自定义刷新秒数':'Custom dashboard interval in seconds',
+  '用量统计页自动刷新间隔':'Usage page auto refresh interval','用量统计页自定义刷新秒数':'Custom usage page interval in seconds',
   'CLI watch 刷新间隔':'CLI watch refresh interval','CLI watch 自定义刷新秒数':'Custom CLI watch interval in seconds',
   '请输入 1 到 3600 的整数秒数':'Enter a whole number from 1 to 3600 seconds',
   '设置默认视图、输出列、自定义视图、组合查询和刷新间隔':'Configure the default view, output columns, custom views, groups, and refresh intervals',
@@ -1128,7 +1128,7 @@ function drawTrend(target){
   if(!target) decorateChartTargets();
   chartEl('chart-title-h').textContent = ui('用量趋势','Usage trend');
   var grain = cur.granularity==='hour' ? ui('按小时','Hourly') : (cur.granularity==='week' ? ui('按周','Weekly') : ui('按日','Daily'));
-  chartEl('chart-sub').innerHTML = ui('峰值 ','Peak ')+s.labels[peakI]+' '+fmtTok(s.t[peakI])+' · '+rangeName(state.range)+' · '+rangeDateText()+' · '+grain+' · <i class="key-dot"></i>'+ui('用量','Tokens');
+  chartEl('chart-sub').innerHTML = ui('峰值 ','Peak ')+s.labels[peakI]+' '+fmtTok(s.t[peakI])+' · '+rangeName(state.range)+' · '+rangeDateText()+' · '+grain+' · <i class="key-dot"></i>'+ui('Token','Tokens');
 }
 function drawHeat(target){
   var chartSVG = target ? target.svg : svg, chartFrame = target ? target.frame : frame;
@@ -1360,7 +1360,7 @@ function renderMeta(){
   /* 在线状态只来自「本页已成功取得 /api/meta」这一事实;请求失败一律
      显示离线态,不保留任何写死的在线字样。 */
   var online = !!state.meta;
-  /* 首次可用 meta；取得仪表板后只用同一统计快照的时间，null 不回退旧值。 */
+  /* 首次可用 meta；取得用量统计页后只用同一统计快照的时间，null 不回退旧值。 */
   var freshness = state.data || m;
   var last = freshness.last_collection||'', through = freshness.data_through||'';
   var dot = document.querySelector('.asof .dot');
@@ -1405,7 +1405,7 @@ function setDashLoading(){
   el('chart-sub').textContent = ui('加载中','Loading')+' · '+ymd(b.s)+' ~ '+ymd(b.e);
 }
 function showDashError(msg){
-  /* 失败态覆盖整块仪表板:清掉旧区间数据,避免「新区间标签+旧区间统计」
+  /* 失败态覆盖整块用量统计页:清掉旧区间数据,避免「新区间标签+旧区间统计」
      的误读;首次失败也不停留在「加载中」。恢复只需重新切换区间或刷新。 */
   state.data = null;
   state.heat = [];
@@ -1449,7 +1449,7 @@ function endRefreshing(){
   el('dash-results').setAttribute('aria-busy','false');
 }
 /* 自动刷新排程:从最近一次请求完成后计时;页面隐藏或配置页激活时跳过
-   并顺延,回到仪表盘且已逾期时由 catchUpRefresh 补一次。 */
+   并顺延,回到用量统计页且已逾期时由 catchUpRefresh 补一次。 */
 function scheduleAutoRefresh(){
   clearTimeout(REFRESH.autoTimer);
   REFRESH.autoTimer = setTimeout(function(){
@@ -1681,7 +1681,7 @@ el('cviews').addEventListener('keydown', function(e){
   }
 });
 
-/* ---------- 仪表板整体渲染 ---------- */
+/* ---------- 用量统计页整体渲染 ---------- */
 function renderAll(){
   syncRangeSeg();
   syncModeSeg();
@@ -1796,7 +1796,7 @@ function markDirty(){
 }
 /* 拉取配置并填充 CFG 状态(不渲染配置页控件)。返回 Promise:
    成功 resolve(true);配置接口未启用(501)或网络失败 resolve(false)——
-   仪表板明细列回退默认七列,不视为错误。 */
+   用量统计页明细列回退默认七列,不视为错误。 */
 function fetchConfigState(){
   if(CFG.loaded) return Promise.resolve(true);
   if(CFG.loading) return CFG.pending || Promise.resolve(false);
@@ -1837,7 +1837,7 @@ function loadConfig(){
     }
     renderAllConfig();
     recomputeDirty();
-    /* 输出列可能随配置变化：刷新仪表板明细表 */
+    /* 输出列可能随配置变化：刷新用量统计页明细表 */
     if(state.data){
       if(state.view==='list') renderGroups();
       renderCustomViews();
@@ -2412,7 +2412,7 @@ function saveConfig(){
       }else{
         toast(ui('配置未变化','No changes'));
       }
-      /* 保存会即时改变 provider 别名、自定义视图定义与刷新间隔：重拉仪表板并按新间隔重排自动计时 */
+      /* 保存会即时改变 provider 别名、自定义视图定义与刷新间隔：重拉用量统计页并按新间隔重排自动计时 */
       REFRESH.intervalSec = refreshIntervalOf(r.body.config && r.body.config.refresh && r.body.config.refresh.dashboard_interval);
       requestRefresh('manual');
       scheduleAutoRefresh();
@@ -2484,7 +2484,7 @@ resetModal.addEventListener('keydown',function(e){
 function syncLocaleUI(){
   root.lang=LOCALE;
   root.setAttribute('data-locale',LOCALE);
-  document.title=LOCALE==='en' ? 'Token Usage Dashboard' : 'Token Usage 仪表盘';
+  document.title=LOCALE==='en' ? 'Usage · Token Usage' : '用量统计 · Token Usage';
   el('appearance-control').setAttribute('aria-label',ui('语言与外观','Language and appearance'));
   el('locale-switch').setAttribute('aria-label',ui('界面语言','Interface language'));
   el('locale-switch').querySelectorAll('button').forEach(function(b){
@@ -2958,7 +2958,7 @@ if (typeof window.__TU_TEST_HOOKS__!=='undefined' && window.__TU_TEST_HOOKS__){
   window.__tuTest = { snapshotRewriteCSS: snapshotRewriteCSS, snapshotTiers: snapshotTiers, snapshotAllCSS: snapshotAllCSS, shotOptions: shotOptions, snapshotExport: snapshotExport, snapshotCopy: snapshotCopy, snapshotCollapseOverlays: snapshotCollapseOverlays };
 }
 
-/* ---------- 初始引导：恢复选区 → 日历预选 → 静态本地化 → 拉取 meta 与仪表板 ---------- */
+/* ---------- 初始引导：恢复选区 → 日历预选 → 静态本地化 → 拉取 meta 与用量统计页 ---------- */
 restoreSavedRange();
 CAL.view = (function(){ var t=startToday(); return new Date(t.getFullYear(), t.getMonth(), 1); })();
 var b0 = rangeBounds();
@@ -2966,7 +2966,7 @@ setCalSel(ymd(b0.s), ymd(b0.e));
 syncLocaleUI();
 renderCal();
 fetchMeta().then(function(){
-  /* 配置预加载(输出列首开生效);失败不阻塞仪表板数据 */
+  /* 配置预加载(输出列首开生效);失败不阻塞用量统计页数据 */
   return fetchConfigState();
 }, function(){
   return fetchConfigState();

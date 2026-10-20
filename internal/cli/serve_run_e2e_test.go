@@ -76,7 +76,7 @@ func TestServeRunCmd_BackgroundLifecycle(t *testing.T) {
 
 	// 启动行落入输出(非 TTY buffer → 纯文本,无 OSC 转义)。
 	startup := out.String()
-	if !strings.Contains(startup, "dashboard served at http://"+st.Addr) {
+	if !strings.Contains(startup, "usage server serving at http://"+st.Addr) {
 		t.Errorf("输出应含启动行与实际 URL,实际 %q", startup)
 	}
 	if strings.Contains(startup, "\x1b]") {
@@ -98,7 +98,7 @@ func TestServeRunCmd_BackgroundLifecycle(t *testing.T) {
 	if _, err := os.Stat(serve.StatePath(dir)); !os.IsNotExist(err) {
 		t.Errorf("退出后 serve.json 应被自清理,stat err = %v", err)
 	}
-	if !strings.Contains(out.String(), "dashboard stopped") {
+	if !strings.Contains(out.String(), "usage server stopped") {
 		t.Errorf("退出前应输出停止行,实际 %q", out.String())
 	}
 }

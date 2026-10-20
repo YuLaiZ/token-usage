@@ -123,7 +123,7 @@ func TestRootCommand_HiddenInternalRun(t *testing.T) {
 	}
 }
 
-// TestRootCommand_HiddenServeRun _serve-run 是 serve start 拉起的后台仪表板
+// TestRootCommand_HiddenServeRun _serve-run 是 serve start 拉起的后台用量服务
 // 子进程入口，必须 Hidden（用户侧 CLI 表面无 serve run），与 _run 的先例一致。
 func TestRootCommand_HiddenServeRun(t *testing.T) {
 	root := NewRootCmd()

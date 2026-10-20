@@ -264,7 +264,7 @@ func dimRowsFor(count int) []any {
 }
 
 /*
-richDashboardBody 是载荷 v4 形态的仪表板数据:12 行维度(9+尾行)、
+richDashboardBody 是载荷 v4 形态的用量统计页数据:12 行维度(9+尾行)、
 
 	逐日趋势桶、day_block 热力与前 20 会话。total 标记 marker 供 KPI 断言。
 */
@@ -1499,7 +1499,7 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				if r.Locale.Saved == nil || *r.Locale.Saved != "en" {
 					t.Errorf("tu-locale = %v, want en persisted", r.Locale.Saved)
 				}
-				if r.Title != "Token Usage Dashboard" {
+				if r.Title != "Usage · Token Usage" {
 					t.Errorf("document.title = %q, want EN title", r.Title)
 				}
 				if r.Locale.EnPressed != "true" || r.Locale.ZhPressed != "false" {
@@ -1677,7 +1677,7 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 
 			case "meta network failure shows offline":
 				/* 区分度:meta 请求失败必须显示离线态——若 renderMeta 退回写死
-				   「在线」或漏加 offline class,两个断言分别失败;同时仪表板拉取
+				   「在线」或漏加 offline class,两个断言分别失败;同时用量统计页拉取
 				   不得被 meta 失败阻断 */
 				if !strings.Contains(r.AsofTitle, "离线 · 无法连接本地服务") {
 					t.Errorf("asof text = %q, want offline message", r.AsofTitle)

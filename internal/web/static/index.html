@@ -53,7 +53,7 @@ d.lang=l;d.setAttribute('data-locale',l);})();
       </div>
     </div>
     <nav class="nav" aria-label="页面导航">
-      <button class="nav-button" data-page="dash" aria-current="page" aria-label="仪表盘"><span class="slot"><svg class="ic"><use href="#i-grid"/></svg></span><span class="nav-txt">仪表盘</span></button>
+      <button class="nav-button" data-page="dash" aria-current="page" aria-label="用量统计"><span class="slot"><svg class="ic"><use href="#i-grid"/></svg></span><span class="nav-txt">用量统计</span></button>
       <button class="nav-button" data-page="config" aria-label="配置"><span class="slot"><svg class="ic"><use href="#i-sliders"/></svg></span><span class="nav-txt">配置</span></button>
     </nav>
   </aside>
@@ -82,14 +82,13 @@ d.lang=l;d.setAttribute('data-locale',l);})();
       </div>
       </div>
     </div>
-    <!-- 仪表盘 -->
+    <!-- 用量 -->
     <section class="page" id="page-dash" data-active="true" aria-hidden="false">
       <div class="page-head">
         <div>
-          <p class="crumb">用量概览</p>
-          <h2>仪表盘</h2>
+          <h2>用量统计</h2>
           <div class="page-note-row">
-            <p class="page-note">按客户端、供应商、模型和项目查看用量</p>
+            <p class="page-note">按客户端、供应商、模型和项目查看消耗</p>
             <div class="unit-help">
               <button type="button" class="unit-trigger" id="unit-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="unit-pop" aria-label="查看数值单位说明"><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg><span>数值单位</span></button>
               <div class="unit-pop" id="unit-pop" role="dialog" aria-labelledby="unit-pop-title" hidden>
@@ -202,7 +201,6 @@ d.lang=l;d.setAttribute('data-locale',l);})();
     <section class="page" id="page-config" aria-hidden="true" hidden>
       <div class="page-head">
         <div>
-          <p class="crumb">本地设置</p>
           <h2>配置</h2>
           <p class="page-note">管理本机采集、查询与显示设置</p>
         </div>
@@ -258,7 +256,7 @@ d.lang=l;d.setAttribute('data-locale',l);})();
         <div class="sec-title"><h3 id="config-query-title">查询与展示</h3><p>设置默认视图、输出列、自定义视图、组合查询和刷新间隔</p><div class="rule"></div></div>
 
         <section class="config-card span2 default-view-card">
-          <div class="card-head"><div><h3>默认视图</h3><p>选择打开仪表盘时首先展示的视图</p></div><span class="toml-tag">query.default</span></div>
+          <div class="card-head"><div><h3>默认视图</h3><p>选择打开用量统计页时首先展示的视图</p></div><span class="toml-tag">query.default</span></div>
           <div class="crow">
             <div class="od-field crow-label"><b>默认打开</b><small>可选择内置视图、自定义视图或组合查询</small></div>
             <div class="selwrap">
@@ -273,10 +271,10 @@ d.lang=l;d.setAttribute('data-locale',l);})();
         </section>
 
         <section class="config-card span2 refresh-config-card">
-          <div class="card-head"><div><h3>查询刷新</h3><p>仪表盘与终端 watch 分别设置；守护进程的采集轮询在上方单独配置</p></div><span class="toml-tag">[refresh]</span></div>
+          <div class="card-head"><div><h3>查询刷新</h3><p>用量统计页与终端 watch 分别设置；守护进程的采集轮询在上方单独配置</p></div><span class="toml-tag">[refresh]</span></div>
           <div class="crow">
-            <div class="od-field crow-label"><b>仪表盘自动刷新</b><small>保存后按所选间隔自动查询；手动刷新和切换区间共用同一等待状态</small></div>
-            <div class="refresh-setting"><select class="ti" id="cfg-dashboard-refresh" aria-label="仪表盘自动刷新间隔"><option value="10">10 秒</option><option value="20">20 秒</option><option value="30">30 秒（默认）</option><option value="60">60 秒</option><option value="custom">其他…</option></select><input class="ti" id="cfg-dashboard-refresh-custom" type="number" min="1" max="3600" step="1" value="30" aria-label="仪表盘自定义刷新秒数" hidden><span class="refresh-unit" id="cfg-dashboard-refresh-unit" hidden>秒</span></div>
+            <div class="od-field crow-label"><b>用量统计页自动刷新</b><small>保存后按所选间隔自动查询；手动刷新和切换区间共用同一等待状态</small></div>
+            <div class="refresh-setting"><select class="ti" id="cfg-dashboard-refresh" aria-label="用量统计页自动刷新间隔"><option value="10">10 秒</option><option value="20">20 秒</option><option value="30">30 秒（默认）</option><option value="60">60 秒</option><option value="custom">其他…</option></select><input class="ti" id="cfg-dashboard-refresh-custom" type="number" min="1" max="3600" step="1" value="30" aria-label="用量统计页自定义刷新秒数" hidden><span class="refresh-unit" id="cfg-dashboard-refresh-unit" hidden>秒</span></div>
           </div>
           <div class="crow">
             <div class="od-field crow-label"><b>CLI watch 刷新</b><small>终端执行 watch 时的默认间隔；命令行 --interval 可覆盖本次运行</small></div>

@@ -60,7 +60,7 @@ type DaemonConfig struct {
 }
 
 // RefreshConfig 是查询刷新间隔配置:与 [daemon] 的采集轮询完全独立。
-// DashboardInterval 驱动网页仪表盘的自动刷新,WatchInterval 是 CLI watch
+// DashboardInterval 驱动用量统计页的自动刷新,WatchInterval 是 CLI watch
 // 无 --interval 时的缺省间隔;单位均为秒,0 表示使用默认值(30 秒,由
 // 运行时层 applyCoreDefaults 补齐)。两字段全零时 TOML 序列化整体省略
 // [refresh] 段(struct omitempty),旧配置缺段不产生任何写盘差异。
@@ -71,7 +71,7 @@ type RefreshConfig struct {
 
 const (
 	// DefaultRefreshInterval 是刷新间隔的缺省有效值(用户层 0 时补齐):
-	// 产品决定从 2026-09-24 起仪表盘与 watch 的无配置缺省均为 30 秒。
+	// 产品决定从 2026-09-24 起用量统计页与 watch 的无配置缺省均为 30 秒。
 	DefaultRefreshInterval = 30
 	// MaxRefreshInterval 是刷新间隔的写入口径上限(网页下拉「其他…」与
 	// TUI/config set 同一口径):1~3600 秒。读取链不设上限。

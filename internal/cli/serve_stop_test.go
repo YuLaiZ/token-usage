@@ -63,7 +63,7 @@ func TestServeStopCmd_NotRunningIdempotent(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("无状态文件应幂等成功,实际错误: %v", err)
 	}
-	for _, want := range []string{"serve is not running", "仪表板未在后台运行"} {
+	for _, want := range []string{"serve is not running", "用量服务未在后台运行"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("输出应含 %q,实际: %q", want, buf.String())
 		}
@@ -125,7 +125,7 @@ func TestServeStopCmd_SignalThenProbeDown(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("正常停止应成功,实际错误: %v", err)
 	}
-	for _, want := range []string{"dashboard stopped", "仪表板已停止"} {
+	for _, want := range []string{"usage server stopped", "用量服务已停止"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("输出应含 %q,实际: %q", want, buf.String())
 		}
@@ -163,7 +163,7 @@ func TestServeStopCmd_KillFallbackWhenStillAlive(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("强杀兜底路径应成功,实际错误: %v", err)
 	}
-	for _, want := range []string{"dashboard stopped", "仪表板已停止"} {
+	for _, want := range []string{"usage server stopped", "用量服务已停止"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("输出应含 %q,实际: %q", want, buf.String())
 		}
@@ -201,7 +201,7 @@ func TestServeStopCmd_SignalErrorButServerGoneStops(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("信号失败但服务已死应正常停止,实际错误: %v", err)
 	}
-	for _, want := range []string{"dashboard stopped", "仪表板已停止"} {
+	for _, want := range []string{"usage server stopped", "用量服务已停止"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("输出应含 %q,实际: %q", want, buf.String())
 		}
@@ -256,7 +256,7 @@ func TestServeStopCmd_SignalAndKillErrorsStillResponding(t *testing.T) {
 	if len(*sigCalls) != 1 || len(*killCalls) != 1 {
 		t.Errorf("信号与强杀应各恰一次,sig=%v kill=%v", *sigCalls, *killCalls)
 	}
-	if out := buf.String(); strings.Contains(out, "dashboard stopped") || strings.Contains(out, "仪表板已停止") {
+	if out := buf.String(); strings.Contains(out, "usage server stopped") || strings.Contains(out, "用量服务已停止") {
 		t.Errorf("不得输出停止成功文案,实际: %q", out)
 	}
 	if _, err := os.Stat(serve.StatePath(dir)); err != nil {
@@ -305,7 +305,7 @@ func TestServeStopCmd_KillIneffectiveStillResponding(t *testing.T) {
 	if len(*killCalls) != 1 || (*killCalls)[0] != 4242 {
 		t.Errorf("宽限超时应恰强杀一次,实际 %v", *killCalls)
 	}
-	if out := buf.String(); strings.Contains(out, "dashboard stopped") || strings.Contains(out, "仪表板已停止") {
+	if out := buf.String(); strings.Contains(out, "usage server stopped") || strings.Contains(out, "用量服务已停止") {
 		t.Errorf("不得输出停止成功文案,实际: %q", out)
 	}
 	if _, err := os.Stat(serve.StatePath(dir)); err != nil {
@@ -388,7 +388,7 @@ func TestServeStopCmd_ReroutesToNewInstanceWhenStateReplaced(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("重路由停止新实例应成功,实际错误: %v", err)
 	}
-	for _, want := range []string{"dashboard stopped", "仪表板已停止"} {
+	for _, want := range []string{"usage server stopped", "用量服务已停止"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("输出应含 %q,实际: %q", want, buf.String())
 		}
@@ -482,7 +482,7 @@ func TestServeStopCmd_FinalizeReroutesWhenStateReplaced(t *testing.T) {
 	}
 	for _, want := range []string{
 		"已被新实例接管", "has been replaced by a new one",
-		"dashboard stopped", "仪表板已停止",
+		"usage server stopped", "用量服务已停止",
 	} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("输出应含 %q,实际: %q", want, buf.String())

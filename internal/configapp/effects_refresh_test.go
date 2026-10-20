@@ -17,7 +17,7 @@ func refreshBase() *config.Config {
 
 // TestAnalyzeConfigEffects_RefreshIsWriteOnly:只改查询刷新间隔 → Changed 视角
 // 的有效配置已变(effectiveEqual 感知),但不触发 daemon 重启(RuntimeChanged
-// false)、不触发采集、不产生迁移/警告——刷新值只被网页仪表盘与 watch 消费。
+// false)、不触发采集、不产生迁移/警告——刷新值只被用量统计页与 watch 消费。
 func TestAnalyzeConfigEffects_RefreshIsWriteOnly(t *testing.T) {
 	prev := refreshBase()
 	curr := refreshBase()

@@ -5,7 +5,7 @@ package cli
 // 后台生命周期（start/status/stop/restart）。daemon 本身只是命令组，
 // 不含 RunE：裸执行只显示命令组帮助，不产生进程、端口或状态文件副作用。
 // 守护进程本体由 Hidden 的 _run 承载（经 control.Manager spawn 或
-// launchd/注册表自启定义拉起），与仪表板服务（serve 命令组）完全独立。
+// launchd/注册表自启定义拉起），与用量服务（serve 命令组）完全独立。
 
 import (
 	"context"
@@ -33,7 +33,7 @@ func newDaemonCmd() *cobra.Command {
 		Use:   "daemon",
 		Short: "Manage the collection daemon (start/status/stop/restart) / 管理采集守护进程（start/status/stop/restart）",
 		Long: ui.Bi("Manage the collection/analysis daemon that watches AI client session logs and keeps usage data up to date. The daemon runs in the background: use start/status/stop/restart to control the current process. Bare `token-usage daemon` only prints this help and starts nothing; the dashboard service is managed separately by the `serve` command group. The autostart definition (whether the daemon starts on next login/reboot) is configured via daemon.autostart in config and is never modified by these commands.",
-			"管理采集/分析守护进程：它后台监控各 AI 客户端会话日志，保持用量数据持续更新。守护进程以后台方式运行：用 start/status/stop/restart 管理当前进程。裸执行 `token-usage daemon` 只显示本帮助，不启动任何进程；仪表板服务由 `serve` 命令组单独管理。开机自启定义（下次登录/重启是否自动启动）由 config 的 daemon.autostart 决定，这些命令不修改它。"),
+			"管理采集/分析守护进程：它后台监控各 AI 客户端会话日志，保持用量数据持续更新。守护进程以后台方式运行：用 start/status/stop/restart 管理当前进程。裸执行 `token-usage daemon` 只显示本帮助，不启动任何进程；用量服务由 `serve` 命令组单独管理。开机自启定义（下次登录/重启是否自动启动）由 config 的 daemon.autostart 决定，这些命令不修改它。"),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()

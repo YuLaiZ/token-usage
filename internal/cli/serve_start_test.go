@@ -126,12 +126,12 @@ func TestServeStartCmd_StaleStateRemovedBeforeSpawn(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		"dashboard started in background",
+		"usage server started in background",
 		"http://" + liveAddr,
 		"4242",
 		serve.LogPath(filepath.Join(dir, "logs")),
 		"token-usage serve stop",
-		"仪表板已后台启动",
+		"用量服务已后台启动",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("输出应含 %q,实际: %q", want, got)
@@ -345,7 +345,7 @@ func TestServeStartCmd_StartLockSerializes(t *testing.T) {
 		t.Error("锁释放后应执行 spawn")
 	}
 	got := out.String()
-	for _, want := range []string{"dashboard started in background", "仪表板已后台启动"} {
+	for _, want := range []string{"usage server started in background", "用量服务已后台启动"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("输出应含 %q,实际: %q", want, got)
 		}

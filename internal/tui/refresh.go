@@ -11,7 +11,7 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
 
-// refreshPage 查询刷新页:仪表盘自动刷新与 CLI watch 两个独立间隔。
+// refreshPage 查询刷新页:用量统计页自动刷新与 CLI watch 两个独立间隔。
 // 两者都是查询侧配置,与守护进程页的采集轮询(poll_interval)互不影响。
 // 交互与网页配置页的下拉合同一致(交接 2026-09-24):每项提供
 // 10/20/30/60 秒及「其他…」五个选项,空格循环切换(logPage level 五态
@@ -33,7 +33,7 @@ type refreshPage struct {
 	dashOriginal, watchOriginal int
 	// dashTouched/watchTouched 标记用户是否显式操作过该项。
 	dashTouched, watchTouched bool
-	cursor                    int // 0 = 仪表盘间隔,1 = watch 间隔
+	cursor                    int // 0 = 用量统计页间隔,1 = watch 间隔
 	feedback                  string
 }
 
@@ -306,7 +306,7 @@ func (p *refreshPage) View() string {
 		watchMark = "▸ "
 	}
 	s := ui.Bi("Refresh", "查询刷新") + "\n\n"
-	s += dashMark + ui.Bi("Dashboard auto refresh (s): ", "仪表盘自动刷新(秒): ") + dashVal + "\n"
+	s += dashMark + ui.Bi("Usage page auto refresh (s): ", "用量统计页自动刷新(秒): ") + dashVal + "\n"
 	s += watchMark + ui.Bi("CLI watch refresh (s): ", "CLI watch 刷新(秒): ") + watchVal + "\n"
 	s += "\n  " + ui.Bi(
 		"space cycles 10 / 20 / 30 / 60 / other; \"other\" takes 1-3600 seconds (0 means the default 30s)",

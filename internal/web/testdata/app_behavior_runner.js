@@ -1,6 +1,6 @@
 "use strict";
 
-/* 仪表板前端行为回归执行器,由 internal/web 的 Go 测试驱动:
+/* 用量统计页前端行为回归执行器,由 internal/web 的 Go 测试驱动:
      node app_behavior_runner.js <app.js 路径> <场景 JSON 路径>
    在 vm 沙箱里用最小 DOM 桩加载生产 app.js(配合 index.html 的静态结构):
    - 元素注册表:预置 index.html 里 app.js 依赖的 id/class/data-* 骨架,
@@ -306,7 +306,7 @@ function makeSandbox(opts) {
   const nav = makeElement({ tag: "nav", classes: ["nav"] });
   sidebar.appendChild(nav);
   const navButtons = [
-    makeElement({ tag: "button", classes: ["nav-button"], attrs: { "data-page": "dash", "aria-current": "page", "aria-label": "仪表盘" } }),
+    makeElement({ tag: "button", classes: ["nav-button"], attrs: { "data-page": "dash", "aria-current": "page", "aria-label": "用量" } }),
     makeElement({ tag: "button", classes: ["nav-button"], attrs: { "data-page": "config", "aria-label": "配置" } })
   ];
   navButtons.forEach((b) => nav.appendChild(b));

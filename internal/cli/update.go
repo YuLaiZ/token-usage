@@ -187,7 +187,7 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 			"While running, update prints step-by-step progress (check, versions, download, verify, install, daemon and dashboard switch) and, on a terminal, a live download indicator with percentage and average speed.\n"+
 			"Dashboard preservation details: only a dashboard that answers on /api/meta before the update counts as running (missing, corrupt, or stale serve.json state is treated as not running and left untouched); the update aborts without replacing the binary if the running dashboard cannot be stopped; on any failure the update rolls back to the old binary and the pre-update daemon/dashboard state; --check never reads, stops, starts, or cleans up daemon or dashboard runtime state; the automatic restore never opens a browser.",
 			"检查并更新 token-usage 自身到最新稳定版或指定版本。\n\n"+
-				"  token-usage update            更新到最新稳定版（来源校验通过后替换二进制；daemon 原本运行则自动重启，原本停止则保持停止；本地仪表板同理——运行中的 dashboard 会被停止以完成替换，随后以原监听地址、用新二进制后台恢复，原本停止则不会启动）\n"+
+				"  token-usage update            更新到最新稳定版（来源校验通过后替换二进制；daemon 原本运行则自动重启，原本停止则保持停止；本地用量服务同理——运行中的用量统计页会被停止以完成替换，随后以原监听地址、用新二进制后台恢复，原本停止则不会启动）\n"+
 				"  token-usage update --check    只检查是否有新版本，不做任何修改\n"+
 				"  token-usage update --version vX.Y.Z   更新到指定版本\n"+
 				"  token-usage update --check --version vX.Y.Z-rc.N   只检查指定候选版\n"+

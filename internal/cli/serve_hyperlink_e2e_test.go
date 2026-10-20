@@ -2,7 +2,7 @@
 
 package cli
 
-// serve_hyperlink_e2e_test.go 在类 Unix 平台验证后台仪表板服务主体
+// serve_hyperlink_e2e_test.go 在类 Unix 平台验证后台用量服务服务主体
 // （serveDashboard，由 _serve-run 调用）启动行的超链接降级合同：测试输出
 // buffer 不是终端，默认 writerIsTerminal 判定非 TTY，启动行必须是纯文本
 // （不含 OSC 转义序列）。serveDashboard 阻塞等待信号，因此用自进程 SIGINT
@@ -69,7 +69,7 @@ func TestServeDashboard_StartupLinePlainTextWhenNotTTY(t *testing.T) {
 
 	// 轮询等待启动行出现;启动行打印前服务已注册信号监听,此后发信号必达。
 	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(out.String(), "dashboard served at") {
+	for !strings.Contains(out.String(), "usage server serving at") {
 		if time.Now().After(deadline) {
 			t.Fatalf("10s 内未出现启动行,输出: %q", out.String())
 		}
@@ -95,7 +95,7 @@ func TestServeDashboard_StartupLinePlainTextWhenNotTTY(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("服务未在超时内退出")
 	}
-	if !strings.Contains(out.String(), "dashboard stopped") {
+	if !strings.Contains(out.String(), "usage server stopped") {
 		t.Errorf("停止后应输出停止行,实际 %q", out.String())
 	}
 }

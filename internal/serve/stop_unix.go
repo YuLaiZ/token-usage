@@ -4,7 +4,7 @@ package serve
 
 import "syscall"
 
-// signalProcPlatform 向后台仪表板进程发送 SIGTERM：后台服务主体内已
+// signalProcPlatform 向后台用量服务进程发送 SIGTERM：后台服务主体内已
 // 注册 SIGINT/SIGTERM 处理，进程会走 3s Shutdown 宽限的优雅关停并自清理
 // serve.json。
 func signalProcPlatform(pid int) error {

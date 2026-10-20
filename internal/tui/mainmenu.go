@@ -152,8 +152,8 @@ func (m *mainMenu) View() string {
 		),
 		queryMenuSummary(m.app.draft),
 		ui.Bi(
-			"dash "+strconv.Itoa(rd)+"s"+defTagEn(rdDef)+" · watch "+strconv.Itoa(rw)+"s"+defTagEn(rwDef),
-			"仪表盘 "+strconv.Itoa(rd)+"s"+defTagZh(rdDef)+" · watch "+strconv.Itoa(rw)+"s"+defTagZh(rwDef),
+			"usage "+strconv.Itoa(rd)+"s"+defTagEn(rdDef)+" · watch "+strconv.Itoa(rw)+"s"+defTagEn(rwDef),
+			"用量统计页 "+strconv.Itoa(rd)+"s"+defTagZh(rdDef)+" · watch "+strconv.Itoa(rw)+"s"+defTagZh(rwDef),
 		),
 		m.app.display.DataDir + " [" + ui.Bi("read-only", "只读") + "]",
 	}

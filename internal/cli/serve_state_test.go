@@ -71,7 +71,7 @@ func TestServeStartCmd_CorruptStateRemovedBeforeSpawn(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("损坏状态清理后 start 应成功,实际错误: %v", err)
 	}
-	if got := out.String(); !strings.Contains(got, "dashboard started in background") {
+	if got := out.String(); !strings.Contains(got, "usage server started in background") {
 		t.Errorf("损坏清理后应走正常启动分支,实际: %q", got)
 	}
 }

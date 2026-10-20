@@ -15,7 +15,7 @@ import (
 // dashboard.go 输出 GET /api/dashboard 的载荷(v5):区间汇总、四个内置
 // 维度的最终行(前 9 独立项+至多一行"其他")、与范围形态匹配的趋势桶与
 // 热力展示桶、按 query.subqueries 配置生成的自定义视图最终行(前 19 组合
-// +至多一行"其他组合")与前 20 会话。compare/forecast 区块已随仪表板重做
+// +至多一行"其他组合")与前 20 会话。compare/forecast 区块已随用量统计页重做
 // 移除(定稿页面无此两区);图表全部由前端消费数值行自绘,服务端不产 SVG。
 // 全部查询在同一读事务内完成(同一 WAL 快照),totals、各维度行、自定义
 // 视图、sessions、趋势与热力互相一致;截断、尾行汇总与桶整理都在响应
@@ -25,7 +25,7 @@ import (
 // 366 天上限同口径(恰好容纳一个闰年)。
 const rangeDaysLimit = 366
 
-// dashboardSessionLimit 是仪表板 Top sessions 的返回行数(2026-09-24 起
+// dashboardSessionLimit 是用量统计页 Top sessions 的返回行数(2026-09-24 起
 // 从 10 提到 20;会话榜不生成"其他"尾行)。
 const dashboardSessionLimit = 20
 
@@ -46,7 +46,7 @@ const (
 	heatmapBlockMaxDays = 31
 )
 
-// dashboardDimensions 是仪表板固定聚合的四个业务维度:JSON 键名与维度名
+// dashboardDimensions 是用量统计页固定聚合的四个业务维度:JSON 键名与维度名
 // 一致(键序无关,前端按名取用)。
 var dashboardDimensions = []string{"client", "model", "provider", "project"}
 
@@ -59,7 +59,7 @@ type metaResponse struct {
 	LastCollection *string `json:"last_collection"`
 }
 
-// rangeJSON 是仪表板的统计区间(闭区间,YYYY-MM-DD)。
+// rangeJSON 是用量统计页的统计区间(闭区间,YYYY-MM-DD)。
 type rangeJSON struct {
 	From string `json:"from"`
 	To   string `json:"to"`
@@ -368,7 +368,7 @@ func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return err
 	})
 	if err != nil {
-		writeInternal(w, "dashboard query failed", "仪表板查询失败", err)
+		writeInternal(w, "dashboard query failed", "用量查询失败", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -400,9 +400,9 @@ func toCustomViewRows(rows []querier.DimensionRow) []customViewRowJSON {
 
 // outputColumnsFor 从当前配置解析输出列布局,与 cli 侧
 // staticTableOutputLayout 同语义:query 顶层问题态回退默认布局,query.output
-// 自身解析失败也回退默认(仪表板是只读展示,诊断由 /api/config 下发)。
+// 自身解析失败也回退默认(用量统计页是只读展示,诊断由 /api/config 下发)。
 // 每请求调用——列布局不再依赖服务启动时的 Querier 状态,网页保存新列后
-// 下一次仪表板请求即生效。
+// 下一次用量统计页请求即生效。
 func outputColumnsFor(cfg *config.Config) []string {
 	if cfg == nil || len(cfg.RawQueryTopLevelIssues) > 0 {
 		return ui.DefaultOutputColumns()
@@ -431,7 +431,7 @@ type customViewDef struct {
 }
 
 // customViewDefs 从配置解析 query.subqueries;解析失败(配置损坏)时返回
-// 空列表——仪表板是只读展示,损坏配置的诊断由 /api/config 下发,不在
+// 空列表——用量统计页是只读展示,损坏配置的诊断由 /api/config 下发,不在
 // 数据接口报错。
 func customViewDefs(cfg *config.Config) []customViewDef {
 	if cfg == nil {
