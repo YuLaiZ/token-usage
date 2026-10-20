@@ -20,7 +20,7 @@ var registry = struct {
 	clientPaths map[string][]string
 	routerPaths map[string][]string
 }{
-	clients:   []string{"claude", "codex", "opencode", "workbuddy", "zcode", "autoclaw", "mimocode"},
+	clients:   []string{"claude", "codex", "opencode", "workbuddy", "zcode", "autoclaw", "mimocode", "dsh"},
 	routers:   []string{"cc_switch"},
 	logLevels: []string{"default", "info", "debug", "warn", "error"},
 	clientPaths: map[string][]string{
@@ -31,6 +31,7 @@ var registry = struct {
 		"zcode":     {"db"},
 		"autoclaw":  {"sessions_dir"},
 		"mimocode":  {"db"},
+		"dsh":       {"sessions_dir"},
 	},
 	routerPaths: map[string][]string{
 		"cc_switch": {"db_path"},
@@ -197,6 +198,10 @@ func (standardDefaultPaths) ApplyDefaults(cfg *config.Config, home, goos string)
 			if c.Paths["db"] == "" {
 				c.Paths["db"] = defaultMimoCodeDB(home)
 			}
+		case "dsh":
+			if c.Paths["sessions_dir"] == "" {
+				c.Paths["sessions_dir"] = defaultDSHSessionsDir(home)
+			}
 		}
 		cfg.Clients[name] = c // map value 不可寻址，需回写
 	}
@@ -271,6 +276,10 @@ func defaultZCodeDB(home string) string {
 // defaultAutoClawSessionsDir 返回 AutoClaw 的 sessions 根目录 agents/（collector 从 agents/*/sessions/ 递归发现）。
 func defaultAutoClawSessionsDir(home string) string {
 	return filepath.Join(home, ".openclaw-autoclaw", "agents")
+}
+
+func defaultDSHSessionsDir(home string) string {
+	return filepath.Join(home, ".dsh", "sessions")
 }
 
 // defaultMimoCodeDB 返回 Xiaomi MiMo Desktop / MiMo-Code CLI 共用的 SQLite 库路径。

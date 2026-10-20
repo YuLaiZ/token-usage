@@ -20,6 +20,9 @@ const (
 	// client 名：仅当 session.version 严格匹配 ^desktop-[0-9a-f]+$ 时归属
 	// （MiMoSessionClient 单一判别来源）。
 	ClientMiMoDesktop = "MiMo Desktop"
+	// ClientDSH 是 DeepSeek Harness 的正式 client 名（配置 key 为 "dsh"）。
+	// 落库时 messages.client/sessions.client 使用该显示名，不用配置 key。
+	ClientDSH = "DeepSeek Harness"
 )
 
 // LegacyClientXiaomiMiMoCode 是 v0.1.10 及之前版本写入 messages/sessions 的
@@ -111,6 +114,7 @@ var ClientToDisplayNames = map[string][]string{
 	// MiMoSessionClient 判别归属 MiMo Code 或 MiMo Desktop（严格 desktop-<hash>
 	// 才归 Desktop，其余默认 MiMo Code）。
 	"mimocode": {ClientMiMoCode, ClientMiMoDesktop},
+	"dsh":      {ClientDSH},
 }
 
 type Message struct {

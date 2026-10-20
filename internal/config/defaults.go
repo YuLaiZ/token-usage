@@ -67,6 +67,12 @@ enabled = false
 # Xiaomi MiMo Desktop and MiMo Code CLI share this database.
 db = "~/.local/share/mimocode/mimocode.db"
 
+[clients.dsh]
+enabled = false
+
+[clients.dsh.paths]
+sessions_dir = "~/.dsh/sessions"
+
 # 路由中间件配置（支持多个）
 [routers.cc_switch]
 db_path = "~/.cc-switch/cc-switch.db"

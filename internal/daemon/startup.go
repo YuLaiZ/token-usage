@@ -71,7 +71,7 @@ func catchUpRequestsFor(client string) []collector.CollectRequest {
 	switch client {
 	case "opencode", "zcode", "mimocode":
 		return []collector.CollectRequest{{Source: collector.CollectSourceClient, Incremental: true}}
-	case "claude", "workbuddy", "autoclaw":
+	case "claude", "workbuddy", "autoclaw", "dsh":
 		// 无日期扫描现存 JSONL：Dates 空、Incremental=false、ChangedFile 空。
 		// ScanExistingJSONL 使「catch-up 全扫」成为显式合同而非 Source 字段的巧合差异。
 		return []collector.CollectRequest{{Source: collector.CollectSourceClient, ScanExistingJSONL: true}}

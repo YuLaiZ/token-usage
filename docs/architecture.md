@@ -62,6 +62,7 @@
 | ZCode | SQLite | `~/.zcode/cli/db/db.sqlite` |
 | Zhipu-AutoClaw | JSONL (full scan by file) | `~/.openclaw-autoclaw/agents` |
 | MiMo Code + MiMo Desktop (one shared database) | SQLite; sessions are attributed per product via `session.version` (strict `desktop-<hash>` → MiMo Desktop, everything else → MiMo Code) | `~/.local/share/mimocode/mimocode.db` |
+| DeepSeek Harness (DSH) | JSONL with concatenated zstd frames (full scan by file); the session header carries cwd/parentSession/isSeeded, assistant records carry four-bucket usage | `~/.dsh/sessions` |
 
 > **OpenCode 2.x status**: the V2 read path is verified against synthetic test data plus a source-level audit of OpenCode 2.0.28 (`session_v2` columns, migration behavior, event usage, and the token schema). OpenCode 2's `TokenUsage` has no `total` field, so a terminal V2 message whose `tokens.total` key is missing or `null` gets its total derived from the upstream aggregation formula (input + output + reasoning + cache read + cache write); when the key is present the reported value is taken as-is (a reported 0 is booked as 0). Boundary behavior: date-less incremental collection performs a full sweep with a message-cursor rebuild whenever it detects a layout transition; explicit-date collection keeps its date range and never writes the layout marker or advances cursors.
 
@@ -313,7 +314,7 @@ This contract covers PID files, runtime-state, and `config.toml` (written by `Ap
 1. Wait for every analyzer monitor to be ready (the ready barrier); if the context is canceled, write no state and perform no catch-up.
 2. Write ready state (`monitor_ready=true, catch_up=pending`); a failure is fatal, and the daemon immediately cancels the analyzer.
 3. Write running state (`catch_up=running`); on failure, log the failure, keep the daemon running, and continue with catch-up.
-4. Submit catch-up work in order through the analyzer serialization lock, following enabled client names in ascending order. For each client, send the client-source request first (opencode/zcode/mimocode use incremental cursors; claude/workbuddy/autoclaw scan existing JSONL with no date; Codex does state increment first then a full rollout scan), then the client's router incremental request if configured. Any failure is counted once for that request and does not skip later work.
+4. Submit catch-up work in order through the analyzer serialization lock, following enabled client names in ascending order. For each client, send the client-source request first (opencode/zcode/mimocode use incremental cursors; claude/workbuddy/autoclaw/dsh scan existing JSONL with no date; Codex does state increment first then a full rollout scan), then the client's router incremental request if configured. Any failure is counted once for that request and does not skip later work.
 5. Write final state: zero failures means `succeeded`; otherwise `failed` plus the exact failure count. Failures do not stop the daemon.
 
 Catch-up covers the window from the last manual collection until monitoring is ready. As long as the daemon starts successfully and finishes catch-up, incremental data created in that window is collected. Partial catch-up failure appears in `daemon status` (`catch_up=failed`) and `errors`.
@@ -436,6 +437,9 @@ enabled = true
 enabled = true
 
 [clients.mimocode]
+enabled = true
+
+[clients.dsh]
 enabled = true
 
 # Router middleware: its table name is the implementation type. For a future router,

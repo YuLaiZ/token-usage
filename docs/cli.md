@@ -195,7 +195,7 @@ token-usage collect retry
 
 Flags:
 
-- `--client <name>`: limits work to one client. The client must exist in configuration and have `enabled=true`; an unknown client and a disabled client each produce a distinct error. Valid values are the configured client-section names: `claude`, `opencode`, `codex`, `mimocode`, `workbuddy`, `zcode`, and `autoclaw`.
+- `--client <name>`: limits work to one client. The client must exist in configuration and have `enabled=true`; an unknown client and a disabled client each produce a distinct error. Valid values are the configured client-section names: `claude`, `opencode`, `codex`, `mimocode`, `workbuddy`, `zcode`, `autoclaw`, and `dsh`.
 - `--force` (only on `collect [date]` itself): forces recollection and ignores `collection_log` deduplication. Subcommands do not accept this flag.
 
 Key points:
@@ -365,7 +365,7 @@ The date argument accepts the same forms as `collect`/`query`: a single `YYYYMMD
 
 Flags:
 
-- `--source <name>`: filters by data source (`claude`, `opencode`, `codex`, `mimocode`, `workbuddy`, `zcode`, or `autoclaw`).
+- `--source <name>`: filters by data source (`claude`, `opencode`, `codex`, `mimocode`, `workbuddy`, `zcode`, `autoclaw`, or `dsh`).
 - `--unresolved`: shows unresolved errors only.
 - `--format <fmt>`: output format, `table` (default, the framed table with the retry hint) or `json`. Invalid values are rejected before the database opens.
 
@@ -509,7 +509,7 @@ token-usage config set <key> <value> --confirm-migrate   # only when migrating d
 
 `log.dir` ignores leading and trailing whitespace before expanding `~`; whitespace-only values use `<data_dir>/logs`. Spaces inside a directory name are preserved. This rule is shared by runtime logging, autostart definitions, and daemon fallback output; the raw configuration value is preserved.
 
-Supported clients are `claude`, `opencode`, `codex`, `mimocode`, `workbuddy`, `zcode`, and `autoclaw`. Their path keys are: Claude `projects_dir`; OpenCode `db`; Codex `state_dir`/`sessions_dir`; `mimocode` `db` (one database shared by Xiaomi MiMo Desktop and MiMo Code CLI); WorkBuddy `db`/`projects_dir`; ZCode `db`; AutoClaw `sessions_dir`.
+Supported clients are `claude`, `opencode`, `codex`, `mimocode`, `workbuddy`, `zcode`, `autoclaw`, and `dsh`. Their path keys are: Claude `projects_dir`; OpenCode `db`; Codex `state_dir`/`sessions_dir`; `mimocode` `db` (one database shared by Xiaomi MiMo Desktop and MiMo Code CLI); WorkBuddy `db`/`projects_dir`; ZCode `db`; AutoClaw `sessions_dir`; DSH `sessions_dir`.
 
 `provider_aliases` changes labels and grouping in every view that contains the provider dimension — `query provider`, custom views, the corresponding `watch` frames, and the serve dashboard alike; it does not alter collected or router-backfilled data, and takes effect on the next query. When a name contains `.`, use a quoted segment, for example:
 
@@ -614,7 +614,7 @@ Ordering contract (`daemon.startupCoordinator`):
 1. Wait for every analyzer monitor to be ready (ready barrier); if the context is canceled, write no state and perform no catch-up.
 2. Write ready state (`monitor_ready=true, catch_up=pending`).
 3. Write running state (`catch_up=running`); if the write fails, log it and continue without stopping the daemon.
-4. Submit catch-up requests in order: enabled client names ascend; each client first gets a client-source request (opencode/zcode/mimocode use incremental cursors; claude/workbuddy/autoclaw scan existing JSONL without a date; Codex does state incremental collection first and then a full rollout scan), then receives its router incremental request if configured.
+4. Submit catch-up requests in order: enabled client names ascend; each client first gets a client-source request (opencode/zcode/mimocode use incremental cursors; claude/workbuddy/autoclaw/dsh scan existing JSONL without a date; Codex does state incremental collection first and then a full rollout scan), then receives its router incremental request if configured.
 5. Write final state: zero failures means `succeeded`; otherwise `failed` with the exact failure count.
 
 Catch-up is submitted through the analyzer serialization lock (the same path as real-time triggers, guaranteeing ordering and mutual exclusion). Therefore, if the daemon starts successfully and completes catch-up, incremental data generated between daemon stop → collect → daemon start is collected and is not missed because monitoring was not ready. Partial catch-up failures appear in `daemon status` and `errors`.

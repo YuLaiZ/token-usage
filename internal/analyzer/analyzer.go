@@ -278,6 +278,14 @@ func workbuddyPeriodicConfigured(cfg *config.Config) bool {
 	return ok && clientCfg.Enabled
 }
 
+// dshPeriodicConfigured 判定 DSH 周期全量提交器是否装配：只看配置存在且启用。
+// DSH 会话日志是只追加的 zstd 帧，JSONLWatcher 只认 .jsonl，因此走纯定时
+// 全量提交；路径为空时采集端返回空结果，不阻止定时器构造与就绪。
+func dshPeriodicConfigured(cfg *config.Config) bool {
+	clientCfg, ok := cfg.ClientConfig("dsh")
+	return ok && clientCfg.Enabled
+}
+
 // routerTargetConfigured 判定 client 是否启用、绑定了 router 且 router 配置
 // 有非空 db_path（SQLite 型 router poller 的装配条件）。
 func routerTargetConfigured(cfg *config.Config, clientCfg config.Client) bool {
@@ -309,6 +317,9 @@ func HasMonitorTargets(cfg *config.Config) bool {
 		}
 	}
 	if workbuddyPeriodicConfigured(cfg) {
+		return true
+	}
+	if dshPeriodicConfigured(cfg) {
 		return true
 	}
 	for _, clientCfg := range cfg.Clients {
@@ -369,6 +380,14 @@ func (a *Analyzer) setupFromConfig(cfg *config.Config, debounceDuration time.Dur
 	if workbuddyPeriodicConfigured(cfg) {
 		reviewReq := collector.CollectRequest{Source: collector.CollectSourceClient}
 		a.addPeriodicSubmitter("workbuddy", reviewReq, interval)
+	}
+
+	// DSH 周期全量提交器：会话日志是只追加的 zstd 帧，watcher 只认 .jsonl，
+	// 因此每个 tick 无条件提交无日期、非 Incremental 的全量请求；缓存按文件
+	// 指纹跳过未变会话，命中时仍返回结果供引擎幂等落库。
+	if dshPeriodicConfigured(cfg) {
+		dshReq := collector.CollectRequest{Source: collector.CollectSourceClient}
+		a.addPeriodicSubmitter("dsh", dshReq, interval)
 	}
 
 	// client 源 SQLite poller 固定 Incremental 请求（OpenCode/ZCode/MiMoCode/Codex state DB）。

@@ -62,6 +62,7 @@
 | ZCode | SQLite | `~/.zcode/cli/db/db.sqlite` |
 | Zhipu-AutoClaw | JSONL（全量按文件扫描） | `~/.openclaw-autoclaw/agents` |
 | MiMo Code + MiMo Desktop（共用同一数据库） | SQLite；按 `session.version` 区分产品归属（严格 `desktop-<hash>` → MiMo Desktop，其余全部 → MiMo Code） | `~/.local/share/mimocode/mimocode.db` |
+| DeepSeek Harness (DSH) | 拼接 zstd 帧的 JSONL（全量按文件扫描）；会话 header 带 cwd/parentSession/isSeeded，assistant 记录带四桶 usage | `~/.dsh/sessions` |
 
 > **OpenCode 2.x 状态**：V2 读取路径经合成测试数据验证，并对照 OpenCode 2.0.28 源码核实了 `session_v2` 列结构、迁移行为、event 用法与 token 结构。OpenCode 2 的 `TokenUsage` 无 `total` 字段，因此 `tokens.total` 键缺失或为 `null` 的终态 V2 消息按上游聚合公式回退 total（input + output + reasoning + cache read + cache write）；键存在时直取源报值（源报 0 按 0 入账）。边界行为：无日期的增量采集在发现布局转换时执行全量兜底并重建 message 游标；显式日期采集保持其日期范围，从不写布局标记、不推进游标。
 
@@ -313,7 +314,7 @@ daemon lock 是存活唯一真相源，PID/runtime-state 是**可降级**的定�
 1. 等待 analyzer 所有 monitor 就绪（ready barrier）；ctx 取消则不写 state、不 catch-up。
 2. 写 ready state（`monitor_ready=true, catch_up=pending`）；失败回传 fatal，daemon 立即取消 analyzer。
 3. 写 running state（`catch_up=running`）；失败时记录日志，不停 daemon，并继续 catch-up。
-4. 顺序 Submit catch-up（经 analyzer 串行化锁，与实时触发同一路径）：按已启用 client 名升序，每个 client 先发 client-source 请求（opencode/zcode/mimocode 增量 cursor；claude/workbuddy/autoclaw 无日期扫现存 JSONL；codex 先 state 增量再 rollout 全扫），再发该 client 的 router 增量请求（若配置）。任一失败只累计该请求一次，不跳过后续。
+4. 顺序 Submit catch-up（经 analyzer 串行化锁，与实时触发同一路径）：按已启用 client 名升序，每个 client 先发 client-source 请求（opencode/zcode/mimocode 增量 cursor；claude/workbuddy/autoclaw/dsh 无日期扫现存 JSONL；codex 先 state 增量再 rollout 全扫），再发该 client 的 router 增量请求（若配置）。任一失败只累计该请求一次，不跳过后续。
 5. 写 final state：0 失败 = `succeeded`，否则 = `failed` + 准确失败数；失败不停 daemon。
 
 catch-up 覆盖「最后一次手工 collect 到监听 ready」的窗口，因此只要 daemon 成功启动并完成 catch-up，期间产生的增量会被补采。catch-up 部分失败会在 `daemon status`（`catch_up=failed`）与 `errors` 中体现。
@@ -436,6 +437,9 @@ enabled = true
 enabled = true
 
 [clients.mimocode]
+enabled = true
+
+[clients.dsh]
 enabled = true
 
 # 路由中间件（表名即实现类型，未来加新路由约定表名并在装配 switch 增 case）

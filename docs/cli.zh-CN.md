@@ -195,7 +195,7 @@ token-usage collect retry
 
 标志：
 
-- `--client <name>`：限定单客户端（必须是配置中存在且 `enabled=true` 的；不存在报「未知客户端」，已禁用报「已禁用」）。有效值即配置中的 client 段名（`claude`/`opencode`/`codex`/`mimocode`/`workbuddy`/`zcode`/`autoclaw`）。
+- `--client <name>`：限定单客户端（必须是配置中存在且 `enabled=true` 的；不存在报「未知客户端」，已禁用报「已禁用」）。有效值即配置中的 client 段名（`claude`/`opencode`/`codex`/`mimocode`/`workbuddy`/`zcode`/`autoclaw`/`dsh`）。
 - `--force`（仅 `collect [日期]` 本身）：强制重新采集，忽略 `collection_log` 去重。子命令不接受此标志。
 
 要点：
@@ -365,7 +365,7 @@ token-usage errors [DATE|DATE-DATE]
 
 标志：
 
-- `--source <name>`：按数据源过滤（`claude`/`opencode`/`codex`/`mimocode`/`workbuddy`/`zcode`/`autoclaw`）。
+- `--source <name>`：按数据源过滤（`claude`/`opencode`/`codex`/`mimocode`/`workbuddy`/`zcode`/`autoclaw`/`dsh`）。
 - `--unresolved`：只看未解决。
 - `--format <fmt>`：输出格式，`table`（默认，框线表加重试提示）或 `json`；非法值在打开数据库之前即被拒绝。
 
@@ -509,7 +509,7 @@ token-usage config set <key> <value> --confirm-migrate   # 仅迁移 data_dir �
 
 `log.dir` 先忽略前后空白再展开 `~`；纯空白值使用 `<data_dir>/logs`。目录名内部的空格保留。运行时日志、自启定义和 daemon 兜底输出遵守相同规则，原始配置值保持不变。
 
-受支持 client 为 `claude`、`opencode`、`codex`、`mimocode`、`workbuddy`、`zcode`、`autoclaw`。path key 分别为：Claude `projects_dir`；OpenCode `db`；Codex `state_dir`/`sessions_dir`；`mimocode` `db`（Xiaomi MiMo Desktop 与 MiMo Code CLI 共用同一库）；WorkBuddy `db`/`projects_dir`；ZCode `db`；AutoClaw `sessions_dir`。
+受支持 client 为 `claude`、`opencode`、`codex`、`mimocode`、`workbuddy`、`zcode`、`autoclaw`、`dsh`。path key 分别为：Claude `projects_dir`；OpenCode `db`；Codex `state_dir`/`sessions_dir`；`mimocode` `db`（Xiaomi MiMo Desktop 与 MiMo Code CLI 共用同一库）；WorkBuddy `db`/`projects_dir`；ZCode `db`；AutoClaw `sessions_dir`；DSH `sessions_dir`。
 
 `provider_aliases` 改变所有含 provider 维度视图中的标签与分组——`query provider`、自定义视图、对应的 `watch` 帧与 serve 仪表板一致生效；不修改采集或路由回填的数据，下一次查询立即生效。名称含 `.` 时使用引号段，例如：
 
@@ -614,7 +614,7 @@ autostart 只表达「下次登录/重启是否自动启动」，与当前 daemo
 1. 等待 analyzer 所有 monitor 就绪（ready barrier）；ctx 取消则不写 state、不 catch-up。
 2. 写 ready state（`monitor_ready=true, catch_up=pending`）。
 3. 写 running state（`catch_up=running`）；写入失败时记录日志并继续，不停止 daemon。
-4. 顺序 Submit catch-up 请求：按已启用 client 名升序，每个 client 先发 client-source 请求（opencode/zcode/mimocode 走增量 cursor；claude/workbuddy/autoclaw 无日期扫现存 JSONL；codex 先 state 增量再 rollout 全扫），再发该 client 的 router 增量请求（若配置）。
+4. 顺序 Submit catch-up 请求：按已启用 client 名升序，每个 client 先发 client-source 请求（opencode/zcode/mimocode 走增量 cursor；claude/workbuddy/autoclaw/dsh 无日期扫现存 JSONL；codex 先 state 增量再 rollout 全扫），再发该 client 的 router 增量请求（若配置）。
 5. 写 final state：0 失败 = `succeeded`，否则 = `failed` + 准确失败数。
 
 catch-up 经 analyzer 的串行化锁 Submit（与实时触发同一路径，保证顺序与互斥）。因此只要 daemon 成功启动并完成 catch-up，daemon stop→collect→daemon start 之间产生的增量数据会被补采，不会因「监听未就绪」而遗漏。catch-up 部分失败会在 `daemon status` 与 `errors` 中体现。

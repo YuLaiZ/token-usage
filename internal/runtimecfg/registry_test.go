@@ -7,11 +7,11 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/config"
 )
 
-// TestRegisteredClients_FixedContent registry 固定包含 7 个 client。
+// TestRegisteredClients_FixedContent registry 固定包含 8 个 client。
 // 顺序无关，只校验集合一致。
 func TestRegisteredClients_FixedContent(t *testing.T) {
 	got := RegisteredClients()
-	want := map[string]bool{"claude": true, "codex": true, "opencode": true, "workbuddy": true, "zcode": true, "autoclaw": true, "mimocode": true}
+	want := map[string]bool{"claude": true, "codex": true, "opencode": true, "workbuddy": true, "zcode": true, "autoclaw": true, "mimocode": true, "dsh": true}
 	if len(got) != len(want) {
 		t.Fatalf("RegisteredClients 返回 %d 个，want %d 个 (%v)", len(got), len(want), got)
 	}

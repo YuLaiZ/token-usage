@@ -355,6 +355,9 @@ func persistClientBatch(
 		return fmt.Errorf("%s%w", workBuddyRekeyErrPrefix, err)
 	}
 
+	if err := applyDSHPersistPlan(ctx, tx, collected.DSHObsolete, req.Dates, log); err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("apply dsh obsolete plan", "应用 dsh 撤销计划"), err)
+	}
 	if len(collected.Messages) > 0 {
 		if _, err := db.UpsertMessages(ctx, tx, collected.Messages); err != nil {
 			return fmt.Errorf("%s: %w", ui.Bi("save messages", "保存 messages"), err)

@@ -124,6 +124,18 @@ type CollectResult struct {
 	// 原因（仅 workbuddy collector 填充）。engine 在完整无日期复核时核对它们
 	// 是否已有用量库历史行：有则本轮复核不完整，不得报告成功或清除历史错误。
 	WorkBuddyExcluded []WorkBuddyExcludedSession
+	// DSHObsolete 是 DSH 的零值撤销计划（仅 dsh collector 填充）。
+	// engine 在写事务内先按它删除历史行，再 UPSERT 本轮消息。
+	DSHObsolete []DSHObsoleteMessage
+}
+
+// DSHObsoleteMessage 是 DSH 零值撤销计划的一条：某 key 曾有非零样本，
+// 最终样本为明确的 0，应删除该行。
+type DSHObsoleteMessage struct {
+	ID        string
+	SessionID string
+	TS        int64
+	Date      string
 }
 
 // WorkBuddySessionPlan 是单个 WorkBuddy 会话本轮的目标归属计划：由源库元数据
@@ -187,6 +199,11 @@ type FileScanStatus struct {
 	// 字段表示 zstd 帧完整解码至 EOF（帧完整性），压缩产物不存在「仍在写」的
 	// 尾行语义，解码失败走文件级 Err 路径。
 	TrailingNewline bool
+	// TruncatedTail 表示压缩日志的末尾帧结构不完整（写入中断），本次只解析了
+	// 完整帧；该文件不得视为 fully parsed，也不得推进跳过门。
+	TruncatedTail bool
+	// OversizedLines 是被单行上限跳过的行数；有跳过即不完整，不写缓存。
+	OversizedLines int
 	// Err 文件级失败（打开/读取终止性错误）：该文件本次无完整产出，不推进门。
 	Err error
 }
@@ -195,7 +212,7 @@ type FileScanStatus struct {
 // 以换行终结（压缩形态下 TrailingNewline 语义为 zstd 帧完整解码，见字段注释）。
 // 被门跳过的文件本次没有读取，不视为 fully parsed。
 func (s FileScanStatus) FullyParsed() bool {
-	return !s.Skipped && s.Err == nil && s.BadLines == 0 && s.TrailingNewline
+	return !s.Skipped && s.Err == nil && s.BadLines == 0 && s.OversizedLines == 0 && s.TrailingNewline && !s.TruncatedTail
 }
 
 // parseFileOutcome 是 parse 层单文件行级解析结果的内部载体（FileScanStatus 的
