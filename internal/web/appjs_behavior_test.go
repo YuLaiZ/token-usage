@@ -61,6 +61,8 @@ type fetchCall struct {
 
 /* stepState 是每步交互后的关键 UI 快照,让"中间态"可断言(如脏→改回→复位) */
 type stepState struct {
+	Title         string `json:"title"`
+	NavLabel      string `json:"navLabel"`
 	Op            string `json:"op"`
 	PollInput     string `json:"pollInput"`
 	SaveDisabled  bool   `json:"saveDisabled"`
@@ -820,6 +822,18 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 			},
 		},
 		{
+			Name: "page titles follow navigation and locale",
+			Opts: map[string]any{"routes": cfgRoutes},
+			Steps: []stepSpec{
+				{Op: "nav", Page: "dash"},
+				{Op: "nav", Page: "config"},
+				{Op: "locale", Value: "en"},
+				{Op: "nav", Page: "dash"},
+				{Op: "locale", Value: "zh-CN"},
+				{Op: "nav", Page: "config"},
+			},
+		},
+		{
 			Name: "locale switch persists without dirtying config",
 			Opts: map[string]any{"routes": cfgRoutes},
 			Steps: []stepSpec{
@@ -1492,6 +1506,18 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 					t.Errorf("step states = %+v, want conflict toast right after save click", r.StepStates)
 				}
 
+			case "page titles follow navigation and locale":
+				wantTitles := []string{"用量统计 · Token Usage", "配置 · Token Usage", "Config · Token Usage", "Usage · Token Usage", "用量统计 · Token Usage", "配置 · Token Usage"}
+				wantLabels := []string{"用量统计", "用量统计", "Usage", "Usage", "用量统计", "用量统计"}
+				if len(r.StepStates) != len(wantTitles) {
+					t.Fatalf("steps = %d, want %d", len(r.StepStates), len(wantTitles))
+				}
+				for i, st := range r.StepStates {
+					if st.Title != wantTitles[i] || st.NavLabel != wantLabels[i] {
+						t.Errorf("step %d: title=%q nav=%q, want %q / %q", i, st.Title, st.NavLabel, wantTitles[i], wantLabels[i])
+					}
+				}
+
 			case "locale switch persists without dirtying config":
 				/* 区分度:语言切换只写 tu-locale 与 UI——若它污染配置草稿(重置 diff
 				   或覆盖 poll_interval),dirty 数/poll 值/save 状态断言失败;若没写
@@ -1499,7 +1525,7 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				if r.Locale.Saved == nil || *r.Locale.Saved != "en" {
 					t.Errorf("tu-locale = %v, want en persisted", r.Locale.Saved)
 				}
-				if r.Title != "Usage · Token Usage" {
+				if r.Title != "Config · Token Usage" {
 					t.Errorf("document.title = %q, want EN title", r.Title)
 				}
 				if r.Locale.EnPressed != "true" || r.Locale.ZhPressed != "false" {

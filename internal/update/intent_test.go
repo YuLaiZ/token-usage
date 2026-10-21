@@ -58,7 +58,7 @@ func TestApply_TamperedStageAbortsBeforeAnyStop(t *testing.T) {
 		t.Errorf("错误应明示未触碰任何服务, got %v", err)
 	}
 	if serveFake.stopCalls != 0 || serveFake.startCount() != 0 {
-		t.Errorf("dashboard 不得被触碰, stop=%d start=%d", serveFake.stopCalls, serveFake.startCount())
+		t.Errorf("Web 服务 不得被触碰, stop=%d start=%d", serveFake.stopCalls, serveFake.startCount())
 	}
 	if sess.stopCalls != 0 || sess.startCalls != 0 {
 		t.Errorf("daemon 不得被触碰, stop=%d start=%d", sess.stopCalls, sess.startCalls)
@@ -143,10 +143,10 @@ func TestApply_IntentHashMismatchRestoresFromNewBinary(t *testing.T) {
 		t.Errorf("daemon 应以新二进制恢复一次, got (%d, %v)", sess.startCalls, sess.startPaths)
 	}
 	if serveFake.startCount() != 1 {
-		t.Fatalf("dashboard 应恢复一次, got %d", serveFake.startCount())
+		t.Fatalf("Web 服务 应恢复一次, got %d", serveFake.startCount())
 	}
 	if got := serveFake.lastStart(); got.binPath != oldBinPath(t, svc) || got.addr != "127.0.0.1:8627" {
-		t.Errorf("dashboard 应以新二进制+原地址恢复, got %+v", got)
+		t.Errorf("Web 服务 应以新二进制+原地址恢复, got %+v", got)
 	}
 	if _, found, _ := findIntent(oldBinPath(t, svc)); found {
 		t.Error("消费完成的快照应被清除")
@@ -209,7 +209,7 @@ func TestUpdateIntentFieldValidation(t *testing.T) {
 	cases := map[string]updateIntent{
 		"版本未知":               {Version: 99, TargetBasename: "token-usage", OldSHA256: strings.Repeat("a", 64)},
 		"hash 非法":            {Version: 1, TargetBasename: "token-usage", OldSHA256: "short"},
-		"记录运行中dashboard但缺地址": {Version: 1, TargetBasename: "token-usage", OldSHA256: strings.Repeat("a", 64), ServeWasRunning: true},
+		"记录运行中Web 服务但缺地址": {Version: 1, TargetBasename: "token-usage", OldSHA256: strings.Repeat("a", 64), ServeWasRunning: true},
 	}
 	for name, intent := range cases {
 		if err := writeUpdateIntent(path, intent); err != nil {
@@ -280,7 +280,7 @@ func TestApply_VanishedServeIntentRewrittenOnDisk(t *testing.T) {
 			t.Fatalf("Install 时恢复意图必须仍在磁盘上, got (found=%v, err=%v)", found, err)
 		}
 		if intent.ServeWasRunning || intent.ServeAddr != "" {
-			t.Errorf("自行退出的 dashboard 必须已从磁盘快照中更正, got serve=%v addr=%q", intent.ServeWasRunning, intent.ServeAddr)
+			t.Errorf("自行退出的 Web 服务 必须已从磁盘快照中更正, got serve=%v addr=%q", intent.ServeWasRunning, intent.ServeAddr)
 		}
 		if !intent.DaemonWasRunning {
 			t.Error("daemon 运行态不得被连带改写")
@@ -293,7 +293,7 @@ func TestApply_VanishedServeIntentRewrittenOnDisk(t *testing.T) {
 	}
 	// dashboard 未运行则不得恢复（内存与磁盘一致）。
 	if serveFake.startCount() != 0 {
-		t.Errorf("自行退出的 dashboard 不得被恢复, got %d", serveFake.startCount())
+		t.Errorf("自行退出的 Web 服务 不得被恢复, got %d", serveFake.startCount())
 	}
 	if !got.Installed {
 		t.Errorf("更新应正常完成, got %+v", got)

@@ -1,4 +1,4 @@
-// Package serve 实现本地用量服务的共用生命周期层：serve.json
+// Package serve 实现本地 Web 服务的共用生命周期层：serve.json
 // 状态文件、三把文件锁、/api/meta 探活、后台停止编排与后台启动编排。
 //
 // 本包由两个消费方共用：

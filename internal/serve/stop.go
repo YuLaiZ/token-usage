@@ -102,7 +102,7 @@ func StopRun(dataDir string, out io.Writer) (StopResult, error) {
 				return StopResult{}, fmt.Errorf("%s: %w", ui.Bi("failed to remove corrupt serve state", "清理损坏的服务状态失败"), rmErr)
 			}
 			_ = ReleaseStateLock(stateLock)
-			printf(out, "%s\n", ui.Bi("serve is not running (corrupt state removed)", "用量服务未在后台运行（已清理损坏的状态文件）"))
+			printf(out, "%s\n", ui.Bi("serve is not running (corrupt state removed)", "本地 Web 服务未在后台运行（已清理损坏的状态文件）"))
 			return StopResult{}, nil
 		}
 		_ = ReleaseStateLock(stateLock)
@@ -111,7 +111,7 @@ func StopRun(dataDir string, out io.Writer) (StopResult, error) {
 	if st == nil {
 		// 无状态文件：幂等成功，退出码 0。
 		_ = ReleaseStateLock(stateLock)
-		printf(out, "%s\n", ui.Bi("serve is not running", "用量服务未在后台运行"))
+		printf(out, "%s\n", ui.Bi("serve is not running", "本地 Web 服务未在后台运行"))
 		return StopResult{}, nil
 	}
 
@@ -126,7 +126,7 @@ func StopRun(dataDir string, out io.Writer) (StopResult, error) {
 		}
 		if removed {
 			_ = ReleaseStateLock(stateLock)
-			printf(out, "%s\n", ui.Bi("serve is not running (stale state removed)", "用量服务未在后台运行（已清理陈旧状态）"))
+			printf(out, "%s\n", ui.Bi("serve is not running (stale state removed)", "本地 Web 服务未在后台运行（已清理陈旧状态）"))
 			return StopResult{}, nil
 		}
 		// 新实例已写出自己的 serve.json：对它重新探活——响应则重跑完整 stop
@@ -141,7 +141,7 @@ func StopRun(dataDir string, out io.Writer) (StopResult, error) {
 			return StopResult{}, fmt.Errorf("%s: %w", ui.Bi("failed to remove stale serve state", "清理陈旧服务状态失败"), rmErr)
 		}
 		_ = ReleaseStateLock(stateLock)
-		printf(out, "%s\n", ui.Bi("serve is not running (stale state removed)", "用量服务未在后台运行（已清理陈旧状态）"))
+		printf(out, "%s\n", ui.Bi("serve is not running (stale state removed)", "本地 Web 服务未在后台运行（已清理陈旧状态）"))
 		return StopResult{}, nil
 	}
 	// 判定段结束：信号与等待段不持 state 锁（秒级窗口不阻塞其他状态迁移）。
@@ -165,8 +165,8 @@ func StopRun(dataDir string, out io.Writer) (StopResult, error) {
 		return stopFinalize(dataDir, st, out)
 	}
 	msg := ui.Bi(
-		fmt.Sprintf("failed to stop dashboard: server still responding at %s (pid %d); check the process or port manually", url, st.PID),
-		fmt.Sprintf("停止用量服务失败：服务仍在响应 %s（PID %d），请检查该进程或端口", url, st.PID),
+		fmt.Sprintf("failed to stop web server: server still responding at %s (pid %d); check the process or port manually", url, st.PID),
+		fmt.Sprintf("停止本地 Web 服务失败：服务仍在响应 %s（PID %d），请检查该进程或端口", url, st.PID),
 	)
 	if killErr != nil {
 		msg += "\n" + ui.Bi(fmt.Sprintf("kill: %v", killErr), fmt.Sprintf("强杀失败：%v", killErr))
@@ -192,7 +192,7 @@ func stopFinalize(dataDir string, judged *ServeState, out io.Writer) (StopResult
 			return StopResult{}, fmt.Errorf("%s: %w", ui.Bi("failed to remove serve state", "删除服务状态文件失败"), err)
 		}
 		if removed || current == nil {
-			printf(out, "%s\n", ui.Bi("usage server stopped", "用量服务已停止"))
+			printf(out, "%s\n", ui.Bi("web server stopped", "本地 Web 服务已停止"))
 			return StopResult{Stopped: true, PID: judged.PID, Addr: judged.Addr}, nil
 		}
 		// 状态在停止期间被改写：current 是接管实例。仍响应 → 重路由停它；

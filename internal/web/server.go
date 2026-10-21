@@ -40,7 +40,7 @@ func WithConfigStore(store ConfigStore) ServerOption {
 	return func(s *server) { s.configStore = store }
 }
 
-// NewServer 构造本地用量服务的 HTTP Handler。路由:
+// NewServer 构造本地本地 Web 服务的 HTTP Handler。路由:
 //
 //	GET /api/meta       服务版本与数据边界
 //	GET /api/dashboard  区间汇总 + 四维度行 + 日期×小时热力 + 自定义视图 + Top sessions

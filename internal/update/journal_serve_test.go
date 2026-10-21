@@ -50,7 +50,7 @@ func TestRecoverJournal_ServeState1NewInstalled(t *testing.T) {
 		t.Errorf("快照应原样传递, got (serve=%v addr=%q)", outcome.ServeWasRunning, outcome.ServeAddr)
 	}
 	if outcome.NewBinPath != target {
-		t.Errorf("dashboard 应以落地新版本恢复, got %q", outcome.NewBinPath)
+		t.Errorf("Web 服务 应以落地新版本恢复, got %q", outcome.NewBinPath)
 	}
 }
 
@@ -95,7 +95,7 @@ func TestApply_RecoverJournalWithServeRestoresDashboard(t *testing.T) {
 		t.Fatalf("应命中遗留事务恢复, got %+v", got)
 	}
 	if got.ServeWasRunning != true || got.ServeAddr != "127.0.0.1:8621" {
-		t.Errorf("恢复结果应携带 dashboard 快照, got %+v", got)
+		t.Errorf("恢复结果应携带 Web 服务 快照, got %+v", got)
 	}
 	// daemon 已按 journal 落地二进制重启。
 	if sess.startCalls != 1 {
@@ -103,10 +103,10 @@ func TestApply_RecoverJournalWithServeRestoresDashboard(t *testing.T) {
 	}
 	// dashboard 按记录地址恢复。
 	if serveFake.startCount() != 1 {
-		t.Fatalf("应恢复 dashboard 一次, got %d", serveFake.startCount())
+		t.Fatalf("应恢复 Web 服务 一次, got %d", serveFake.startCount())
 	}
 	if got := serveFake.lastStart(); got.addr != "127.0.0.1:8621" {
-		t.Errorf("dashboard 应按 journal 记录地址恢复, got %+v", got)
+		t.Errorf("Web 服务 应按 journal 记录地址恢复, got %+v", got)
 	}
 }
 
@@ -148,7 +148,7 @@ func TestApply_RecoverJournalState2ServeOnlyRestoresAndContinues(t *testing.T) {
 	}
 	// 恢复（旧 target）+ 本轮停止 + 本轮恢复（新 target）：至少两次 Start。
 	if serveFake.startCount() < 2 {
-		t.Errorf("dashboard 应先按 journal 恢复、再按本轮原态恢复, got %d 次", serveFake.startCount())
+		t.Errorf("Web 服务 应先按 journal 恢复、再按本轮原态恢复, got %d 次", serveFake.startCount())
 	}
 	if serveFake.startCalls[0].addr != "127.0.0.1:8622" {
 		t.Errorf("首次恢复应按 journal 记录地址, got %+v", serveFake.startCalls[0])
@@ -187,7 +187,7 @@ func TestApply_RecoverJournalLegacyRecordNoServe(t *testing.T) {
 		t.Fatalf("应命中遗留事务恢复, got %+v", got)
 	}
 	if got.ServeWasRunning || serveFake.startCount() != 0 {
-		t.Errorf("旧 journal 不得触发 dashboard 恢复, got (%v, %d)", got.ServeWasRunning, serveFake.startCount())
+		t.Errorf("旧 journal 不得触发 Web 服务 恢复, got (%v, %d)", got.ServeWasRunning, serveFake.startCount())
 	}
 	if sess.startCalls != 1 {
 		t.Errorf("daemon 应照常恢复, got %d", sess.startCalls)

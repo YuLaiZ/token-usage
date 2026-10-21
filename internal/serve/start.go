@@ -166,7 +166,7 @@ func StartInBackground(opts StartOptions) (StartResult, error) {
 	pid, realAddr, err := SpawnAndWait(opts.DataDir, opts.BinPath, opts.Addr, logPath)
 	if err != nil {
 		// 失败时把 serve.log 末尾 ≤10 行附在错误里，调用方无需另开日志。
-		return StartResult{}, fmt.Errorf("%s: %w", ui.Bi("failed to start dashboard in background", "后台启动用量服务失败"),
+		return StartResult{}, fmt.Errorf("%s: %w", ui.Bi("failed to start web server in background", "后台启动本地 Web 服务失败"),
 			errors.Join(err, logTailError(logPath, StartLogTailLines)))
 	}
 	return StartResult{PID: pid, Addr: realAddr}, nil

@@ -1,12 +1,12 @@
-# Usage Guide
+# Web Interface Guide
 
 > [简体中文](dashboard.zh-CN.md) | English
 
 This document covers the embedded pages served by `token-usage serve`: how to start the server, what the Usage and Config pages do, privacy masking and screenshot sharing, and the HTTP API behind them. Source-code behavior takes precedence over this document.
 
-## Starting the Usage Server
+## Starting the Web Server
 
-The server always runs in the background, managed by the `serve` command group:
+The local web server provides the Usage and Config pages. It always runs in the background, managed by the `serve` command group:
 
 ```bash
 token-usage serve start --open
@@ -24,9 +24,13 @@ The embedded page is bilingual (Chinese/English, remembered per browser) with fi
 
 Auto refresh, manual refresh, and range changes share one request entry and one loading/success/failure state (stale responses never overwrite the current range; a failed refresh clears stale stats into a full-page error), the interval coming from `[refresh].dashboard_interval`. Preset ranges plus a boundary-free custom calendar (future dates submit and show real empty results; the selection is remembered across same-tab reloads).
 
+The browser tab title is `Usage · Token Usage` or `用量统计 · Token Usage`, according to the interface language.
+
 ## The Config Page
 
 The Config page edits the full user configuration with live dirty-state diffing against the last saved snapshot — including the two query refresh intervals (`[refresh] dashboard_interval`/`watch_interval`, dropdowns 10/20/30/60 seconds plus a custom 1–3600 value; untouched fields keep their user-layer value so an unrelated save never solidifies the implicit defaults) — with revision-conflict (409) and validation (400) reporting that never overwrite local edits, and restore-to-saved as a confirmed action.
+
+The browser tab title is `Config · Token Usage` or `配置 · Token Usage`, according to the interface language.
 
 ## Privacy Masking and Screenshot Sharing
 

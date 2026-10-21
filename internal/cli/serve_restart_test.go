@@ -43,13 +43,13 @@ func TestServeRestartCmd_NotRunningErrors(t *testing.T) {
 	}
 	for _, want := range []string{
 		"serve is not running, run token-usage serve start",
-		"用量服务未在后台运行，请使用 token-usage serve start",
+		"本地 Web 服务未在后台运行，请使用 token-usage serve start",
 	} {
 		if !strings.Contains(execErr.Error(), want) {
 			t.Errorf("错误信息应含 %q,实际: %q", want, execErr.Error())
 		}
 	}
-	for _, want := range []string{"serve is not running", "用量服务未在后台运行"} {
+	for _, want := range []string{"serve is not running", "本地 Web 服务未在后台运行"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("stdout 过程行应含 %q,实际: %q", want, out.String())
 		}
@@ -183,10 +183,10 @@ func TestServeRestartCmd_StopsRunningThenStartsNew(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		"usage server stopped",
-		"用量服务已停止",
-		"usage server started in background",
-		"用量服务已后台启动",
+		"web server stopped",
+		"本地 Web 服务已停止",
+		"web server started in background",
+		"本地 Web 服务已后台启动",
 		"http://" + newAddr,
 		"5151",
 	} {
@@ -247,7 +247,7 @@ func TestServeRestartCmd_StopFailureAborts(t *testing.T) {
 			t.Errorf("错误信息应含 %q,实际: %q", want, msg)
 		}
 	}
-	if out := out.String(); strings.Contains(out, "usage server started in background") || strings.Contains(out, "用量服务已后台启动") {
+	if out := out.String(); strings.Contains(out, "web server started in background") || strings.Contains(out, "本地 Web 服务已后台启动") {
 		t.Errorf("中止后不得输出启动成功文案,实际: %q", out)
 	}
 	if _, err := os.Stat(serve.StatePath(dir)); err != nil {

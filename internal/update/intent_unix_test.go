@@ -40,10 +40,10 @@ func TestApply_InterruptedBeforeInstallRestoresServicesFromIntent(t *testing.T) 
 	}
 	// dashboard 按快照地址恢复。
 	if serveFake.startCount() != 1 {
-		t.Fatalf("dashboard 应恢复一次, got %d", serveFake.startCount())
+		t.Fatalf("Web 服务 应恢复一次, got %d", serveFake.startCount())
 	}
 	if got := serveFake.lastStart(); got.binPath != binPath || got.addr != "127.0.0.1:8625" {
-		t.Errorf("dashboard 应以旧二进制+原地址恢复, got %+v", got)
+		t.Errorf("Web 服务 应以旧二进制+原地址恢复, got %+v", got)
 	}
 	// 快照已消费清除。
 	if _, found, err := findIntent(binPath); err != nil || found {
@@ -88,7 +88,7 @@ func TestApply_JournalRecoveryClearsIntent(t *testing.T) {
 		t.Errorf("daemon 应只被 journal 恢复路径拉起一次, got %d", sess.startCalls)
 	}
 	if serveFake.startCount() != 1 {
-		t.Errorf("dashboard 应只被恢复一次, got %d", serveFake.startCount())
+		t.Errorf("Web 服务 应只被恢复一次, got %d", serveFake.startCount())
 	}
 	if _, found, _ := findIntent(binPath); found {
 		t.Error("journal 恢复完成后快照应被清除")

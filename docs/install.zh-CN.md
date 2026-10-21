@@ -188,7 +188,7 @@ go build -o token-usage ./cmd/token-usage
 
 按本清单逐项执行可清除本工具与安装器写入系统的全部内容：
 
-1. 若用量服务与守护进程正在运行，先停止：`token-usage serve stop`，再 `token-usage daemon stop`。Windows 上运行中的实例会占用 `.exe` 文件，删除目录前须两个都停止。
+1. 若本地 Web 服务与守护进程正在运行，先停止：`token-usage serve stop`，再 `token-usage daemon stop`。Windows 上运行中的实例会占用 `.exe` 文件，删除目录前须两个都停止。
 2. 若开启过开机自启，先执行 `token-usage config set daemon.autostart false`：移除自启定义（macOS 的 `~/Library/LaunchAgents/<label>.plist` 文件、Windows 的注册表 Run 值），避免删除目录后定义继续指向已不存在的二进制、每次登录触发启动失败。
 3. 删除应用目录：`rm -rf ~/.token-usage`（Windows 为 `Remove-Item -Recurse -Force $env:USERPROFILE\.token-usage`）。当前终端的命令缓存可能仍指向已删二进制，执行 `hash -r` 后确认 `token-usage` 已不可用，或直接新开终端确认。若配置过自定义 `data_dir` 或 `log.dir`，这些目录在 `~/.token-usage` 之外——请自行决定删除或保留。
 4. 移除 PATH 配置。

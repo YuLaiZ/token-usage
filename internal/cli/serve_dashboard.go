@@ -1,7 +1,7 @@
 // internal/cli/serve_dashboard.go
 package cli
 
-// serve_dashboard.go 持有后台 `_serve-run` 的用量服务生命周期：单实例
+// serve_dashboard.go 持有后台 `_serve-run` 的本地 Web 服务生命周期：单实例
 // 守卫（serve.json + 探活拒绝、serve.lock 生命周期锁）→ 监听 → 写 serve.json
 // → 宣告启动 → Serve → 信号优雅关停 → 自清理 serve.json。本函数只由
 // _serve-run 调用（`serve start` 拉起）；serve.log 的 writer 非 TTY，
@@ -69,7 +69,7 @@ func buildWebServerOptions(o serveDashboardOptions) ([]web.ServerOption, error) 
 	return []web.ServerOption{web.WithConfigProvider(configFn), web.WithConfigStore(store)}, nil
 }
 
-// serveDashboard 完成一次后台用量服务生命周期：单实例守卫（serve.json
+// serveDashboard 完成一次后台本地 Web 服务生命周期：单实例守卫（serve.json
 // + 探活幂等拒绝第二实例；serve.lock 生命周期锁交由本函数持有至退出）→ 接收
 // 已打开的只读数据库（调用方负责打开与 Close）→ 监听 addr → 写 serve.json
 // → 宣告启动 → Serve → SIGINT/SIGTERM 优雅关停（3s Shutdown 宽限）→ 自清理
@@ -182,8 +182,8 @@ func serveDashboard(cfg *config.Config, usageDB *db.DB, version, addr string, ou
 	tty := writerIsTerminal(out)
 	linked := hyperlinkURL(url, tty)
 	fmt.Fprintf(out, "%s\n", ui.Bi(
-		fmt.Sprintf("usage server serving at %s (Ctrl+C to stop)", linked),
-		fmt.Sprintf("用量服务已启动 %s（Ctrl+C 停止）", linked),
+		fmt.Sprintf("web server serving at %s (Ctrl+C to stop)", linked),
+		fmt.Sprintf("本地 Web 服务已启动 %s（Ctrl+C 停止）", linked),
 	))
 
 	select {
@@ -192,15 +192,15 @@ func serveDashboard(cfg *config.Config, usageDB *db.DB, version, addr string, ou
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
-		return fmt.Errorf("%s: %w", ui.Bi("usage server failed", "用量服务异常退出"), err)
+		return fmt.Errorf("%s: %w", ui.Bi("web server failed", "本地 Web 服务异常退出"), err)
 	case <-sig:
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), serveShutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("%s: %w", ui.Bi("failed to shut down the usage server", "关闭用量服务失败"), err)
+		return fmt.Errorf("%s: %w", ui.Bi("failed to shut down the web server", "关闭本地 Web 服务失败"), err)
 	}
-	fmt.Fprintln(out, ui.Bi("usage server stopped", "用量服务已停止"))
+	fmt.Fprintln(out, ui.Bi("web server stopped", "本地 Web 服务已停止"))
 	return nil
 }

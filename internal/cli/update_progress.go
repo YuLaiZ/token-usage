@@ -105,7 +105,7 @@ func (p *updateProgressPrinter) Report(event update.Event) {
 		fmt.Fprintln(p.out, ui.Bi("Stopping daemon…", "正在停止 daemon…"))
 	case update.EventStopServe:
 		p.ensureFrameClosed()
-		fmt.Fprintln(p.out, ui.Bi("Stopping the dashboard…", "正在停止 dashboard…"))
+		fmt.Fprintln(p.out, ui.Bi("Stopping the web server…", "正在停止 Web 服务…"))
 	case update.EventInstall:
 		p.ensureFrameClosed()
 		fmt.Fprintln(p.out, ui.Bi("Installing the new version…", "正在安装新版本…"))
@@ -114,7 +114,7 @@ func (p *updateProgressPrinter) Report(event update.Event) {
 		fmt.Fprintln(p.out, ui.Bi("Restarting daemon…", "正在重启 daemon…"))
 	case update.EventStartServe:
 		p.ensureFrameClosed()
-		fmt.Fprintln(p.out, ui.Bi("Restoring the dashboard…", "正在恢复 dashboard…"))
+		fmt.Fprintln(p.out, ui.Bi("Restoring the web server…", "正在恢复 Web 服务…"))
 	}
 }
 

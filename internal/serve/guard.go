@@ -71,8 +71,8 @@ func LifecycleGuard(dataDir string, out io.Writer, probeTimeout time.Duration) (
 			_ = ReleaseStateLock(stateLock)
 			url := "http://" + st.Addr
 			fmt.Fprintf(out, "%s\n", ui.Bi(
-				fmt.Sprintf("dashboard is already running at %s (pid %d); stop it first with token-usage serve stop, or open that URL", url, st.PID),
-				fmt.Sprintf("用量服务已在运行（%s，PID %d）；请先用 token-usage serve stop 停止，或直接打开该地址", url, st.PID)))
+				fmt.Sprintf("web server is already running at %s (pid %d); stop it first with token-usage serve stop, or open that URL", url, st.PID),
+				fmt.Sprintf("本地 Web 服务已在运行（%s，PID %d）；请先用 token-usage serve stop 停止，或直接打开该地址", url, st.PID)))
 			return nil, false, nil
 		}
 		// 放行前条件删除陈旧状态，避免误判「已启动」；新实例已接管时不删：

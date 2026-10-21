@@ -45,7 +45,7 @@ func TestHelperRunner_ServeRunning_RestoredWithNewTarget(t *testing.T) {
 		t.Fatalf("Run err=%v", err)
 	}
 	if got := serveFake.lastStart(); got.binPath != f.paths.Target || got.addr != "127.0.0.1:8619" {
-		t.Errorf("dashboard 应以新 target + 原地址恢复, got %+v", got)
+		t.Errorf("Web 服务 应以新 target + 原地址恢复, got %+v", got)
 	}
 	if serveFake.startCount() != 1 {
 		t.Errorf("应恰好恢复一次, got %d", serveFake.startCount())
@@ -67,10 +67,10 @@ func TestHelperRunner_ServeRestoreFailure_RollsBackWholeUpdate(t *testing.T) {
 
 	err := f.runner(t).Run(context.Background(), f.paths.Helper, f.paths.Plan)
 	if err == nil {
-		t.Fatal("dashboard 恢复失败必须返回错误")
+		t.Fatal("Web 服务 恢复失败必须返回错误")
 	}
 	if serveFake.startCount() != 2 {
-		t.Fatalf("dashboard 应尝试恢复两次（新 + 回滚旧）, got %d", serveFake.startCount())
+		t.Fatalf("Web 服务 应尝试恢复两次（新 + 回滚旧）, got %d", serveFake.startCount())
 	}
 	calls := serveFake.startCalls
 	if calls[0].binPath != f.paths.Target || calls[0].addr != "127.0.0.1:8619" {
@@ -95,8 +95,8 @@ func TestHelperRunner_ServeRestoreFailure_RollsBackWholeUpdate(t *testing.T) {
 	if res.Success {
 		t.Error("应写失败 result")
 	}
-	if !strings.Contains(res.Error, "dashboard") {
-		t.Errorf("失败 result 应保留 dashboard 主失败, got %+v", res)
+	if !strings.Contains(res.Error, "web server") {
+		t.Errorf("失败 result 应保留 Web 服务 主失败, got %+v", res)
 	}
 }
 
@@ -108,10 +108,10 @@ func TestHelperRunner_ServeMissingDeps_RejectsRunningPlan(t *testing.T) {
 
 	err := f.runner(t).Run(context.Background(), f.paths.Helper, f.paths.Plan)
 	if err == nil {
-		t.Fatal("未装配 serve 依赖时不得接管 dashboard 运行态事务")
+		t.Fatal("未装配 serve 依赖时不得接管 Web 服务 运行态事务")
 	}
-	if !strings.Contains(err.Error(), "dashboard") {
-		t.Errorf("错误应指向 dashboard 生命周期支持缺失, got %v", err)
+	if !strings.Contains(err.Error(), "web server") {
+		t.Errorf("错误应指向 Web 服务 生命周期支持缺失, got %v", err)
 	}
 	// 短路发生在等待父进程与替换之前：target 仍是旧版本。
 	content, err := os.ReadFile(f.paths.Target)
@@ -144,7 +144,7 @@ func TestHelperPlan_ServeAddrRequiredWhenRunning(t *testing.T) {
 	plan.ServeWasRunning = false
 	plan.ServeAddr = ""
 	if err := validateHelperPlanFields(plan); err != nil {
-		t.Errorf("未运行 dashboard 的 plan 不需要 serve_addr, err=%v", err)
+		t.Errorf("未运行 Web 服务 的 plan 不需要 serve_addr, err=%v", err)
 	}
 }
 
@@ -170,7 +170,7 @@ func TestHelperRunner_InspectFailureRestoresServices(t *testing.T) {
 		t.Errorf("daemon 应回滚到旧 target, got %q", f.sess.startPaths[0])
 	}
 	if serveFake.startCount() != 1 || serveFake.lastStart().addr != "127.0.0.1:8619" {
-		t.Errorf("dashboard 应按原地址恢复一次, got (%d, %+v)", serveFake.startCount(), serveFake.lastStart())
+		t.Errorf("Web 服务 应按原地址恢复一次, got (%d, %+v)", serveFake.startCount(), serveFake.lastStart())
 	}
 	// target 未被替换。
 	content, rerr := os.ReadFile(f.paths.Target)
@@ -200,10 +200,10 @@ func TestHelperRunner_BackupFailureRestoresServices(t *testing.T) {
 		t.Fatal("备份失败必须返回错误")
 	}
 	if f.sess.startCalls != 1 || serveFake.startCount() != 1 {
-		t.Errorf("daemon 与 dashboard 都应恢复, daemon=%d serve=%d", f.sess.startCalls, serveFake.startCount())
+		t.Errorf("daemon 与 Web 服务 都应恢复, daemon=%d serve=%d", f.sess.startCalls, serveFake.startCount())
 	}
 	if serveFake.startCount() == 1 && serveFake.lastStart().addr != "127.0.0.1:8619" {
-		t.Errorf("dashboard 应按原地址恢复, got %+v", serveFake.lastStart())
+		t.Errorf("Web 服务 应按原地址恢复, got %+v", serveFake.lastStart())
 	}
 	res := f.readResult(t)
 	if res.Success {
@@ -227,7 +227,7 @@ func TestHelperRunner_MoveFailureRestoresServices(t *testing.T) {
 		t.Errorf("daemon 应回滚重启一次, got %d", f.sess.startCalls)
 	}
 	if serveFake.startCount() != 1 || serveFake.lastStart().addr != "127.0.0.1:8619" {
-		t.Errorf("dashboard 应按原地址恢复一次, got (%d, %+v)", serveFake.startCount(), serveFake.lastStart())
+		t.Errorf("Web 服务 应按原地址恢复一次, got (%d, %+v)", serveFake.startCount(), serveFake.lastStart())
 	}
 	content, rerr := os.ReadFile(f.paths.Target)
 	if rerr != nil || string(content) != "old-official-binary" {
@@ -262,7 +262,7 @@ func TestHelperRunner_DaemonUnexpectedlyRunningRestoresServeOnly(t *testing.T) {
 		t.Errorf("他人启动的 daemon 不得被触碰, got %d", f.sess.startCalls)
 	}
 	if serveFake.startCount() != 1 || serveFake.lastStart().addr != "127.0.0.1:8619" {
-		t.Errorf("dashboard 应回滚恢复一次, got (%d, %+v)", serveFake.startCount(), serveFake.lastStart())
+		t.Errorf("Web 服务 应回滚恢复一次, got (%d, %+v)", serveFake.startCount(), serveFake.lastStart())
 	}
 	res := f.readResult(t)
 	if res.Success {

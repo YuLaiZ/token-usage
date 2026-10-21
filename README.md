@@ -2,16 +2,16 @@
 
 > [简体中文](README.zh-CN.md) | English
 
-A local LLM usage analytics CLI. It collects token usage from the AI clients you use, keeps each model invocation as an independent record, turns the data into reusable reports without SQL, and ships a built-in local usage page for exploring it.
+A local LLM usage analytics CLI. It collects token usage from the AI clients you use, keeps each model invocation as an independent record, turns the data into reusable reports without SQL, and ships a local web interface with Usage and Config pages.
 
 ## Highlights
 
-- **Visual analytics built in.** Hourly and weekday distributions, a weekday-by-hour heat matrix, and a live watch mode, plus a local usage server (`token-usage serve start`) with an embedded interactive HTML usage page — preset and custom date ranges, seven headline metrics, the four built-in dimensions with a single trailing "other" row, range-matched heat maps (hour cells, date-by-hour, 4-hour slots, and a GitHub-style calendar), custom views from `query.subqueries`, top sessions with original titles, and a Config page that edits the full user configuration through the same locked, revision-checked write chain as `config set` — bilingual (Chinese/English) with five accent palettes and light/dark themes, served over a loopback, same-origin HTTP surface whose only write path is the config save. See the [Dashboard Guide](docs/dashboard.md) for the full page and API contract.
+- **Visual analytics built in.** Hourly and weekday distributions, a weekday-by-hour heat matrix, and a live watch mode, plus a local web server (`token-usage serve start`) with an embedded interactive Usage page — preset and custom date ranges, seven headline metrics, the four built-in dimensions with a single trailing "other" row, range-matched heat maps (hour cells, date-by-hour, 4-hour slots, and a GitHub-style calendar), custom views from `query.subqueries`, top sessions with original titles, and a Config page that edits the full user configuration through the same locked, revision-checked write chain as `config set` — bilingual (Chinese/English) with five accent palettes and light/dark themes, served over a loopback, same-origin HTTP surface whose only write path is the config save. See the [Web Interface Guide](docs/dashboard.md) for the full page and API contract.
 - **Build the report you actually want — no SQL required.** Define a named multi-dimensional view from `client`, `model`, `provider`, `project`, `day`, `month`, `hour`, or `weekday`; then compose built-in and custom views into a reusable, ordered report group. Set it as the default, discover it with `query list`, run it by name, and choose the metric columns in table-based reports and their order. Dimension grouping is case-insensitive across every view: case-only variants of a value merge into one row showing the spelling with the most requests (`model` rows always display upper-cased).
 - Message/API-request-level accounting, including accurate attribution across dates, models, branches, and rewinds.
 - Collectors for Claude Code/Desktop, OpenCode, Codex, WorkBuddy, ZCode, Zhipu-AutoClaw, MiMo Code + MiMo Desktop (two clients attributed from one shared local database via session version markers), and DeepSeek Harness (DSH).
 - CC-Switch router attribution for the Claude family and Codex, backfilling the actual provider and model from proxy logs.
-- Estimated per-request duration and output speed for Claude and Codex, available as optional metric columns in table reports and on the usage server (rows without an estimate show `—`; only requests with output ≥ 200 tokens and a 1s–1h duration take part).
+- Estimated per-request duration and output speed for Claude and Codex, available as optional metric columns in table reports and on the Usage page (rows without an estimate show `—`; only requests with output ≥ 200 tokens and a 1s–1h duration take part).
 - One-off commands or a real-time background monitoring daemon (`token-usage daemon start`), with macOS launchd and Windows Registry autostart.
 - A pure-Go, single-binary CLI for macOS and Windows.
 
@@ -72,7 +72,7 @@ token-usage update --check          # check only; makes no local changes
 token-usage update --version vX.Y.Z # a specific Release
 ```
 
-`update` prints its progress step by step — version check, current/target version, download, verify, install, daemon and usage page switch — and on an interactive terminal the download shows a live single-line indicator (percentage, transferred/total bytes, average speed); redirected output keeps only the step lines. A daemon that was running before the update is stopped and restarted automatically on the new binary; a daemon that was stopped stays stopped (the success output points to `token-usage daemon start`). The local usage page is preserved the same way: a usage page that answers on `/api/meta` before the update is stopped for the replacement and then restored in the background at its original address with the new binary (the browser is never opened automatically); a stopped one is not started. A missing, corrupt, or stale `serve.json` counts as not running and is left untouched, a usage page that cannot be stopped aborts the update before the binary is replaced, and any failure rolls the update back to the old binary and the pre-update daemon/usage page state.
+`update` prints its progress step by step — version check, current/target version, download, verify, install, daemon and web server switch — and on an interactive terminal the download shows a live single-line indicator (percentage, transferred/total bytes, average speed); redirected output keeps only the step lines. A daemon that was running before the update is stopped and restarted automatically on the new binary; a daemon that was stopped stays stopped (the success output points to `token-usage daemon start`). The local web server is preserved the same way: a web server that answers on `/api/meta` before the update is stopped for the replacement and then restored in the background at its original address with the new binary (the browser is never opened automatically); a stopped one is not started. A missing, corrupt, or stale `serve.json` counts as not running and is left untouched, a web server that cannot be stopped aborts the update before the binary is replaced, and any failure rolls the update back to the old binary and the pre-update daemon/web server state.
 
 For a re-signed official asset, a source build (`Version = dev`), or `go install` of a tagged release, run `token-usage update --force` once to replace it with an official Release asset; later updates work normally. Symlinked copies and non-official tags cannot be converted this way.
 
@@ -157,14 +157,14 @@ token-usage query list
 | `watch [date]` | Refresh the `query` output at a fixed interval (`--once` for a single frame; view selection matches `query` — `--by` takes a built-in view or a configured view name, default view follows `query.default`). |
 | `doctor` | Run read-only health checks. |
 | `daemon start/status/stop/restart` | Manage the collection daemon: start in the background, inspect status, stop, restart. |
-| `serve start/status/stop/restart` | Manage the local usage server in the background — usage data is read-only and the only write path is the config save (`serve start --open` launches a browser; bare `serve` only prints help). |
+| `serve start/status/stop/restart` | Manage the local web server in the background — usage data is read-only and the only write path is the config save (`serve start --open` launches a browser; bare `serve` only prints help). |
 | `version` / `--version` | Show detailed / one-line version information. |
 | `completion <shell>` | Print a Bash, Zsh, Fish, or PowerShell completion script. |
 | `update` | Self-update an official Release asset in place; use `update --force` once to switch an eligible re-signed, source-built, or `go install` binary. |
 
 ### Migrating from v0.1.8
 
-v0.1.9 is a deliberate breaking CLI change (details in the [CLI Reference](docs/cli.md#migrating-from-v018-breaking-changes)). The chart, compare, export, forecast, report, and top commands have been removed. Terminal reports stay on `query` / `watch`; on the usage server, the session table carries the top-session ranking forward, while the SVG chart endpoints, usage forecasts, and period comparisons were removed with the v0.2.0 redesign and have no replacement entry point (see the [Dashboard Guide](docs/dashboard.md)). The machine-readable CLI export contract and the offline HTML report bundle were removed intentionally and have no full replacement. The top-level `start`/`status`/`stop`/`restart` commands have moved into the `daemon` group, and bare `serve` no longer runs a foreground server.
+v0.1.9 is a deliberate breaking CLI change (details in the [CLI Reference](docs/cli.md#migrating-from-v018-breaking-changes)). The chart, compare, export, forecast, report, and top commands have been removed. Terminal reports stay on `query` / `watch`; on the Usage page, the session table carries the top-session ranking forward, while the SVG chart endpoints, usage forecasts, and period comparisons were removed with the v0.2.0 redesign and have no replacement entry point (see the [Web Interface Guide](docs/dashboard.md)). The machine-readable CLI export contract and the offline HTML report bundle were removed intentionally and have no full replacement. The top-level `start`/`status`/`stop`/`restart` commands have moved into the `daemon` group, and bare `serve` no longer runs a foreground server.
 
 | v0.1.8 | now |
 |---|---|
@@ -197,7 +197,7 @@ The official installer script sets all of this up automatically (on zsh it asks 
 |---|---|
 | [Installation Guide](docs/install.md) | All installation methods, self-update, uninstall, migration, PATH, and platform notes. |
 | [CLI Reference](docs/cli.md) | Command tree, arguments, flags, examples, configuration, and daemon behavior. |
-| [Dashboard Guide](docs/dashboard.md) | The embedded usage page: page behavior, the Config page, privacy masking and screenshot sharing, and the HTTP API. |
+| [Web Interface Guide](docs/dashboard.md) | The Usage and Config pages, privacy masking and screenshot sharing, and the HTTP API. |
 | [Architecture](docs/architecture.md) | Data flow, storage, process control, update design, and extension points. |
 | [Contributing Guide](CONTRIBUTING.md) | Development setup, tests, documentation, commits, and pull requests. |
 

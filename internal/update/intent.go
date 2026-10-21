@@ -126,8 +126,8 @@ func readUpdateIntent(path string) (*updateIntent, bool, error) {
 	}
 	if intent.ServeWasRunning && intent.ServeAddr == "" {
 		return nil, false, fmt.Errorf("%s", ui.Bi(
-			fmt.Sprintf("leftover update intent at %s records a running dashboard but is missing its address; files kept for manual handling", path),
-			fmt.Sprintf("遗留恢复意图 %s 记录 dashboard 原在运行但缺少监听地址，保留文件要求人工处理", path),
+			fmt.Sprintf("leftover update intent at %s records a running web server but is missing its address; files kept for manual handling", path),
+			fmt.Sprintf("遗留恢复意图 %s 记录 Web 服务 原在运行但缺少监听地址，保留文件要求人工处理", path),
 		))
 	}
 	return &intent, true, nil

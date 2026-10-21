@@ -783,12 +783,12 @@ func (s *Service) recoverIntentWithSession(ctx context.Context, sess ControlSess
 	if intent.ServeWasRunning {
 		if s.ServeLifecycle == nil {
 			return installOutcome{}, false, errors.New(ui.Bi(
-				"leftover recovery intent records a running dashboard, but no dashboard lifecycle dependency is wired",
-				"遗留恢复意图记录 dashboard 原在运行，但未装配 dashboard 生命周期依赖",
+				"leftover recovery intent records a running web server, but no web server lifecycle dependency is wired",
+				"遗留恢复意图记录 Web 服务 原在运行，但未装配 Web 服务 生命周期依赖",
 			))
 		}
 		if startErr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, target, intent.ServeAddr); startErr != nil {
-			return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard per the leftover recovery intent", "按遗留恢复意图恢复 dashboard 失败"), startErr)
+			return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to restore the web server per the leftover recovery intent", "按遗留恢复意图恢复 Web 服务 失败"), startErr)
 		}
 	}
 	if rmErr := removeUpdateIntent(target); rmErr != nil {
@@ -829,18 +829,18 @@ func (s *Service) recoverJournalWithSession(ctx context.Context, sess ControlSes
 			}
 			if s.ServeLifecycle == nil {
 				return installOutcome{}, false, errors.New(ui.Bi(
-					"leftover journal records a running dashboard, but no dashboard lifecycle dependency is wired",
-					"遗留 journal 记录 dashboard 原在运行，但未装配 dashboard 生命周期依赖",
+					"leftover journal records a running web server, but no web server lifecycle dependency is wired",
+					"遗留 journal 记录 Web 服务 原在运行，但未装配 Web 服务 生命周期依赖",
 				))
 			}
 			if startErr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, journalOutcome.NewBinPath, journalOutcome.ServeAddr); startErr != nil {
 				if cleanupErr != nil {
 					return installOutcome{}, false, errors.Join(
-						fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard per the leftover journal after the interrupted transaction", "恢复遗留事务后按 journal 记录恢复 dashboard 失败"), startErr),
+						fmt.Errorf("%s: %w", ui.Bi("failed to restore the web server per the leftover journal after the interrupted transaction", "恢复遗留事务后按 journal 记录恢复 Web 服务 失败"), startErr),
 						fmt.Errorf("%s: %w", ui.Bi("leftover transaction file cleanup pending", "遗留事务文件清理待处理"), cleanupErr),
 					)
 				}
-				return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard per the leftover journal after the interrupted transaction", "恢复遗留事务后按 journal 记录恢复 dashboard 失败"), startErr)
+				return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to restore the web server per the leftover journal after the interrupted transaction", "恢复遗留事务后按 journal 记录恢复 Web 服务 失败"), startErr)
 			}
 			return installOutcome{}, false, nil
 		}
@@ -873,18 +873,18 @@ func (s *Service) recoverJournalWithSession(ctx context.Context, sess ControlSes
 		if journalOutcome.ServeWasRunning {
 			if s.ServeLifecycle == nil {
 				return installOutcome{}, false, errors.New(ui.Bi(
-					"leftover journal records a running dashboard, but no dashboard lifecycle dependency is wired",
-					"遗留 journal 记录 dashboard 原在运行，但未装配 dashboard 生命周期依赖",
+					"leftover journal records a running web server, but no web server lifecycle dependency is wired",
+					"遗留 journal 记录 Web 服务 原在运行，但未装配 Web 服务 生命周期依赖",
 				))
 			}
 			if startErr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, journalOutcome.NewBinPath, journalOutcome.ServeAddr); startErr != nil {
 				if cleanupErr != nil {
 					return installOutcome{}, false, errors.Join(
-						fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard per the leftover journal after the interrupted transaction", "恢复遗留事务后按 journal 记录恢复 dashboard 失败"), startErr),
+						fmt.Errorf("%s: %w", ui.Bi("failed to restore the web server per the leftover journal after the interrupted transaction", "恢复遗留事务后按 journal 记录恢复 Web 服务 失败"), startErr),
 						fmt.Errorf("%s: %w", ui.Bi("leftover transaction file cleanup pending", "遗留事务文件清理待处理"), cleanupErr),
 					)
 				}
-				return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard per the leftover journal after the interrupted transaction", "恢复遗留事务后按 journal 记录恢复 dashboard 失败"), startErr)
+				return installOutcome{}, false, fmt.Errorf("%s: %w", ui.Bi("failed to restore the web server per the leftover journal after the interrupted transaction", "恢复遗留事务后按 journal 记录恢复 Web 服务 失败"), startErr)
 			}
 		}
 		if cleanupErr != nil {
@@ -1025,7 +1025,7 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 		if s.ServeLifecycle != nil {
 			running, addr, derr := s.ServeLifecycle.DetectRunning(cfg.DataDir)
 			if derr != nil {
-				return fmt.Errorf("%s: %w", ui.Bi("failed to detect the dashboard state before replacement", "替换前探测 dashboard 运行态失败"), derr)
+				return fmt.Errorf("%s: %w", ui.Bi("failed to detect the web server state before replacement", "替换前探测 Web 服务 运行态失败"), derr)
 			}
 			serveWasRunning, serveAddr = running, addr
 		}
@@ -1098,7 +1098,7 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 			s.report(Event{Kind: EventStopServe})
 			stopped, serr := s.ServeLifecycle.Stop(cfg.DataDir)
 			if serr != nil {
-				return fmt.Errorf("%s: %w", ui.Bi("failed to stop the dashboard before replacement; the update is aborted and the binary is left untouched", "替换前停止 dashboard 失败，更新已中止，二进制未被改动"), serr)
+				return fmt.Errorf("%s: %w", ui.Bi("failed to stop the web server before replacement; the update is aborted and the binary is left untouched", "替换前停止 Web 服务 失败，更新已中止，二进制未被改动"), serr)
 			}
 			if !stopped {
 				// 实例在探测与停止之间自行退出：内存修正之外必须同步重写磁盘
@@ -1107,7 +1107,7 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 				// 该实例已自行消亡，daemon 尚未停止）。
 				serveWasRunning, serveAddr = false, ""
 				if werr := persistIntent(); werr != nil {
-					return fmt.Errorf("%s: %w", ui.Bi("failed to update the recovery intent after the dashboard vanished on its own; the update is aborted and no service has been touched", "dashboard 自行退出后更新恢复意图失败，更新已中止且未触碰任何服务"), werr)
+					return fmt.Errorf("%s: %w", ui.Bi("failed to update the recovery intent after the web server vanished on its own; the update is aborted and no service has been touched", "Web 服务 自行退出后更新恢复意图失败，更新已中止且未触碰任何服务"), werr)
 				}
 			}
 		}
@@ -1121,7 +1121,7 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 				stopErr := fmt.Errorf("%s: %w", ui.Bi("failed to stop daemon before replacement", "替换前停止 daemon 失败"), serr)
 				if serveWasRunning {
 					if rerr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, oldBinPath, serveAddr); rerr != nil {
-						return errors.Join(stopErr, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard after the daemon stop failure", "daemon 停止失败后恢复 dashboard 失败"), rerr))
+						return errors.Join(stopErr, fmt.Errorf("%s: %w", ui.Bi("failed to restore the web server after the daemon stop failure", "daemon 停止失败后恢复 Web 服务 失败"), rerr))
 					}
 				}
 				return stopErr
@@ -1167,7 +1167,7 @@ func (s *Service) installUnderLockOutcome(ctx context.Context, stagePath, oldBin
 			}
 			if serveWasRunning {
 				if serveErr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, oldBinPath, serveAddr); serveErr != nil {
-					errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), serveErr))
+					errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the web server with the old binary", "用旧二进制恢复 Web 服务 失败"), serveErr))
 				}
 			}
 			return errors.Join(errs...)
@@ -1234,7 +1234,7 @@ func (s *Service) rollbackAfterDaemonStartFailure(ctx context.Context, sess Cont
 	}
 	if serveWasRunning {
 		if serr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, oldBinPath, serveAddr); serr != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), serr))
+			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the web server with the old binary", "用旧二进制恢复 Web 服务 失败"), serr))
 		}
 	}
 	if rollbackErr != nil {
@@ -1258,7 +1258,7 @@ func (s *Service) rollbackAfterDaemonStartFailure(ctx context.Context, sess Cont
 // 绝不吞掉任何一路错误。
 func (s *Service) rollbackAfterServeStartFailure(ctx context.Context, sess ControlSession, cfg *config.Config, oldBinPath string, wasRunning bool, serveAddr string, serveErr error) error {
 	var errs []error
-	errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the new binary; rolling back the update", "用新二进制恢复 dashboard 失败，正在回滚本次更新"), serveErr))
+	errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the web server with the new binary; rolling back the update", "用新二进制恢复 Web 服务 失败，正在回滚本次更新"), serveErr))
 	if th, ok := s.Installer.(TransactionHandler); ok && th != nil {
 		if rbErr := th.Rollback(); rbErr != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("rollback restore failed", "回滚恢复失败"), rbErr))
@@ -1273,7 +1273,7 @@ func (s *Service) rollbackAfterServeStartFailure(ctx context.Context, sess Contr
 		}
 	}
 	if resErr := s.ServeLifecycle.Start(cfg.DataDir, cfg.Log.Dir, oldBinPath, serveAddr); resErr != nil {
-		errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), resErr))
+		errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the web server with the old binary", "用旧二进制恢复 Web 服务 失败"), resErr))
 	}
 	return errors.Join(errs...)
 }

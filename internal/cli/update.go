@@ -175,7 +175,7 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 		Short:        "Update token-usage to the latest or a given version / 更新 token-usage 到最新或指定版本",
 		SilenceUsage: true,
 		Long: ui.Bi("Check and update token-usage itself to the latest stable or a given version.\n\n"+
-			"  token-usage update            Update to the latest stable version (replaces the binary after provenance checks pass; a running daemon restarts automatically and a stopped one stays stopped; the same applies to the local dashboard — a running dashboard is stopped for the replacement and then restored in the background at its original address with the new binary, and a stopped one is not started)\n"+
+			"  token-usage update            Update to the latest stable version (replaces the binary after provenance checks pass; a running daemon restarts automatically and a stopped one stays stopped; the same applies to the local web server — a running web server is stopped for the replacement and then restored in the background at its original address with the new binary, and a stopped one is not started)\n"+
 			"  token-usage update --check    Only check for a newer version; make no changes\n"+
 			"  token-usage update --version vX.Y.Z   Update to the given version\n"+
 			"  token-usage update --check --version vX.Y.Z-rc.N   Only check the given pre-release\n"+
@@ -184,10 +184,10 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 			"A plain update never overwrites a source that fails the official-asset checks (a re-signed binary, go install, a dev/local build, a symlinked copy, or a non-official tag); it prints manual install instructions instead.\n"+
 			"With --force the update overwrites a re-signed official asset, a `go install` of a tagged version, or a dev build, so automatic updates resume from the official channel; symlinked copies and non-official tags cannot be forced and always require manual installation.\n"+
 			"--check and --force cannot be combined.\n"+
-			"While running, update prints step-by-step progress (check, versions, download, verify, install, daemon and dashboard switch) and, on a terminal, a live download indicator with percentage and average speed.\n"+
-			"Dashboard preservation details: only a dashboard that answers on /api/meta before the update counts as running (missing, corrupt, or stale serve.json state is treated as not running and left untouched); the update aborts without replacing the binary if the running dashboard cannot be stopped; on any failure the update rolls back to the old binary and the pre-update daemon/dashboard state; --check never reads, stops, starts, or cleans up daemon or dashboard runtime state; the automatic restore never opens a browser.",
+			"While running, update prints step-by-step progress (check, versions, download, verify, install, daemon and web server switch) and, on a terminal, a live download indicator with percentage and average speed.\n"+
+			"Web service preservation details: only a web server that answers on /api/meta before the update counts as running (missing, corrupt, or stale serve.json state is treated as not running and left untouched); the update aborts without replacing the binary if the running web server cannot be stopped; on any failure the update rolls back to the old binary and the pre-update daemon/web server state; --check never reads, stops, starts, or cleans up daemon or web server runtime state; the automatic restore never opens a browser.",
 			"检查并更新 token-usage 自身到最新稳定版或指定版本。\n\n"+
-				"  token-usage update            更新到最新稳定版（来源校验通过后替换二进制；daemon 原本运行则自动重启，原本停止则保持停止；本地用量服务同理——运行中的用量统计页会被停止以完成替换，随后以原监听地址、用新二进制后台恢复，原本停止则不会启动）\n"+
+				"  token-usage update            更新到最新稳定版（来源校验通过后替换二进制；daemon 原本运行则自动重启，原本停止则保持停止；本地 Web 服务同理——运行中的 Web 服务会被停止以完成替换，随后以原监听地址、用新二进制后台恢复，原本停止则不会启动）\n"+
 				"  token-usage update --check    只检查是否有新版本，不做任何修改\n"+
 				"  token-usage update --version vX.Y.Z   更新到指定版本\n"+
 				"  token-usage update --check --version vX.Y.Z-rc.N   只检查指定候选版\n"+
@@ -196,8 +196,8 @@ func newUpdateCmd(info buildinfo.Info) *cobra.Command {
 				"默认不覆盖未通过官方资产校验的来源（已重签二进制、go install、dev 本地构建、软链副本、非官方 tag），改为输出人工安装指引。\n"+
 				"使用 --force 可强制覆盖已重签的官方资产、指定 tag 的 go install 产物或 dev 本地构建，使自动更新回归官方通道；软链副本与非官方 tag 不可被 force 覆盖，只能手动安装。\n"+
 				"--check 与 --force 不能组合。\n"+
-				"执行期间逐步输出过程（检查、版本对比、下载、校验、安装、daemon 与 dashboard 切换），终端上下载还会显示带百分比与平均速度的实时进度。\n"+
-				"dashboard 保持细节：只有更新前 /api/meta 有应答的 dashboard 才算在运行（serve.json 缺失、损坏或陈旧一律按未运行处理且不被改动）；运行中的 dashboard 无法停止时更新中止、不替换二进制；任一步骤失败时更新回滚到旧二进制与更新前的 daemon/dashboard 运行态；--check 绝不读取、停止、启动或清理 daemon/dashboard 运行态；自动恢复绝不打开浏览器。"),
+				"执行期间逐步输出过程（检查、版本对比、下载、校验、安装、daemon 与 Web 服务 切换），终端上下载还会显示带百分比与平均速度的实时进度。\n"+
+				"Web 服务 保持细节：只有更新前 /api/meta 有应答的 Web 服务 才算在运行（serve.json 缺失、损坏或陈旧一律按未运行处理且不被改动）；运行中的 Web 服务 无法停止时更新中止、不替换二进制；任一步骤失败时更新回滚到旧二进制与更新前的 daemon/Web 服务 运行态；--check 绝不读取、停止、启动或清理 daemon/Web 服务 运行态；自动恢复绝不打开浏览器。"),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUpdate(cmd, info)
@@ -422,11 +422,11 @@ func installedTitle(res update.ApplyResult, forceEn, forceZh string) string {
 	serveRestored := res.ServeWasRunning
 	switch {
 	case daemon && serveRestored:
-		return ui.Bi("Updated; daemon and dashboard restored"+forceEn, "已更新，daemon 与 dashboard 已恢复"+forceZh)
+		return ui.Bi("Updated; daemon and web server restored"+forceEn, "已更新，daemon 与 Web 服务 已恢复"+forceZh)
 	case daemon:
 		return ui.Bi("Updated and daemon restored"+forceEn, "已更新并恢复 daemon"+forceZh)
 	case serveRestored:
-		return ui.Bi("Updated; dashboard restored"+forceEn, "已更新，dashboard 已恢复"+forceZh)
+		return ui.Bi("Updated; web server restored"+forceEn, "已更新，Web 服务 已恢复"+forceZh)
 	default:
 		return ui.Bi("Updated"+forceEn, "已更新"+forceZh)
 	}
@@ -441,8 +441,8 @@ func printServeRestoredLine(out io.Writer, res update.ApplyResult) {
 		return
 	}
 	fmt.Fprintln(out, ui.Bi(
-		fmt.Sprintf("The dashboard that was running before the update has been restored in the background at http://%s (its original address; the browser was not opened).", res.ServeAddr),
-		fmt.Sprintf("更新前在运行的 dashboard 已按原监听地址后台恢复：http://%s（未打开浏览器）。", res.ServeAddr),
+		fmt.Sprintf("The web server that was running before the update has been restored in the background at http://%s (its original address; the browser was not opened).", res.ServeAddr),
+		fmt.Sprintf("更新前在运行的 Web 服务 已按原监听地址后台恢复：http://%s（未打开浏览器）。", res.ServeAddr),
 	))
 }
 
@@ -454,8 +454,8 @@ func printServeDeferredLine(out io.Writer, res update.ApplyResult) {
 		return
 	}
 	fmt.Fprintln(out, ui.Bi(
-		fmt.Sprintf("The dashboard that was running before the update has been stopped to release the old binary; the background replacement will restore it automatically at http://%s when it completes.", res.ServeAddr),
-		fmt.Sprintf("更新前在运行的 dashboard 已被停止以释放旧二进制；后台替换完成后将以原监听地址自动恢复：http://%s。", res.ServeAddr),
+		fmt.Sprintf("The web server that was running before the update has been stopped to release the old binary; the background replacement will restore it automatically at http://%s when it completes.", res.ServeAddr),
+		fmt.Sprintf("更新前在运行的 Web 服务 已被停止以释放旧二进制；后台替换完成后将以原监听地址自动恢复：http://%s。", res.ServeAddr),
 	))
 }
 

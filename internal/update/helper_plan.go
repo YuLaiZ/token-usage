@@ -356,7 +356,7 @@ func validateHelperPlanFields(plan helperPlan) error {
 	// dashboard 运行态自洽：记录在运行时监听地址必须随行——helper 恢复
 	// dashboard 只认 plan 内的原地址，缺失即无法按原地址恢复，拒绝执行。
 	if plan.ServeWasRunning && plan.ServeAddr == "" {
-		return errors.New(ui.Bi("plan records a running dashboard but is missing serve_addr", "计划记录 dashboard 原在运行但缺少 serve_addr"))
+		return errors.New(ui.Bi("plan records a running web server but is missing serve_addr", "计划记录 Web 服务 原在运行但缺少 serve_addr"))
 	}
 	// Parent 身份必须为合法非零值（防降级或缺失：helper 必须据显式身份等待精确父进程实例）。
 	if !plan.Parent.Valid() {

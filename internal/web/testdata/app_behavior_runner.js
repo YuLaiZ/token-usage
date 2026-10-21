@@ -306,7 +306,7 @@ function makeSandbox(opts) {
   const nav = makeElement({ tag: "nav", classes: ["nav"] });
   sidebar.appendChild(nav);
   const navButtons = [
-    makeElement({ tag: "button", classes: ["nav-button"], attrs: { "data-page": "dash", "aria-current": "page", "aria-label": "用量" } }),
+    makeElement({ tag: "button", classes: ["nav-button"], attrs: { "data-page": "dash", "aria-current": "page", "aria-label": "用量统计" } }),
     makeElement({ tag: "button", classes: ["nav-button"], attrs: { "data-page": "config", "aria-label": "配置" } })
   ];
   navButtons.forEach((b) => nav.appendChild(b));
@@ -1109,6 +1109,8 @@ async function runScenario(def) {
       }
       await flush();
       stepStates.push({
+        title: ctx.doc.title,
+        navLabel: ctx.navButtons[0].getAttribute("aria-label"),
         op: step.op,
         id: step.id || "",
         value: step.value || "",

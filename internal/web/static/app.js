@@ -354,6 +354,10 @@ try{
 syncPalette();
 
 /* ---------- 导航（仅处理带 data-page 的导航行） ---------- */
+function syncPageTitle(){
+  var name = el('page-config').getAttribute('data-active')==='true' ? ui('配置','Config') : ui('用量统计','Usage');
+  document.title = name+' · Token Usage';
+}
 document.querySelectorAll('.nav-button[data-page]').forEach(function(b){
   b.addEventListener('click', function(){
     setPalettePop(false);
@@ -366,6 +370,7 @@ document.querySelectorAll('.nav-button[data-page]').forEach(function(b){
     targetPage.hidden=false;
     targetPage.setAttribute('aria-hidden','false');
     targetPage.setAttribute('data-active','true');
+    syncPageTitle();
     window.scrollTo(0, 0);
     if(b.dataset.page==='dash'){ if(state.data) drawChart(); catchUpRefresh(); }
     if(b.dataset.page==='config' && !CFG.loaded && !CFG.loading) loadConfig();
@@ -2484,7 +2489,7 @@ resetModal.addEventListener('keydown',function(e){
 function syncLocaleUI(){
   root.lang=LOCALE;
   root.setAttribute('data-locale',LOCALE);
-  document.title=LOCALE==='en' ? 'Usage · Token Usage' : '用量统计 · Token Usage';
+  syncPageTitle();
   el('appearance-control').setAttribute('aria-label',ui('语言与外观','Language and appearance'));
   el('locale-switch').setAttribute('aria-label',ui('界面语言','Interface language'));
   el('locale-switch').querySelectorAll('button').forEach(function(b){

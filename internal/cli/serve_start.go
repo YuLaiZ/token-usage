@@ -28,10 +28,10 @@ var serveOpenBrowser = openBrowser
 func newServeStartCmd(load func() (*config.Config, error), version string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "start",
-		Short: ui.Bi("Start the usage server in the background", "后台启动用量服务"),
+		Short: ui.Bi("Start the web server in the background", "后台启动本地 Web 服务"),
 		Long: ui.Bi(
-			"Start the read-only dashboard server in the background (nginx-style): this command spawns a detached child that keeps running after it exits, then waits until the child reports ready. State is recorded in serve.json under the data directory (~/.token-usage/serve.json by default) and logs go to serve.log under the effective log.dir (~/.token-usage/logs/serve.log by default); a missing log directory is created before starting, and each actual start truncates the log. Changing log.dir takes effect on the next actual start. The old serve.log in the data directory is not moved or deleted automatically. If the recorded state still answers on /api/meta the command reports it and returns idempotently with exit code 0 (stop it first with `token-usage serve stop` to restart); stale state left by a crash or SIGKILL — and a corrupt state file — is removed and start proceeds. Concurrent starts are serialized by a serve-start.lock file lock in the data directory (start coordination only — a running instance is described by serve.json and held via the serve.lock lifecycle lock): a second start while another is still working fails with a retry hint. Use `token-usage serve status` to check and `token-usage serve stop` to stop. With --open the browser is opened by this command after the background server is confirmed up.\n\nExamples:\n  token-usage serve start\n  token-usage serve start --addr 127.0.0.1:9000\n  token-usage serve start --open",
-			"以后台方式（nginx 风格）启动只读用量服务：本命令拉起一个 detached 子进程并在退出后继续运行，然后等待子进程报告就绪。状态记录在数据目录下的 serve.json（默认 ~/.token-usage/serve.json），日志写入生效 log.dir 下的 serve.log（默认 ~/.token-usage/logs/serve.log）；启动前会创建缺失的日志目录，每次实际启动都会截断日志。修改 log.dir 在下一次实际启动时生效。旧数据目录下的 serve.log 不会自动搬移或删除。若已记录的状态在 /api/meta 上仍有响应则报告已在运行并以退出码 0 幂等返回（要重启请先用 `token-usage serve stop` 停止）；崩溃或 SIGKILL 遗留的陈旧状态与损坏的状态文件会被清理并照常启动。并发启动由数据目录下的 serve-start.lock 文件锁串行化（仅用于启动协调——运行中的实例由 serve.json 描述、以 serve.lock 生命周期锁持有）：另一个 serve start 尚在执行时报错并提示稍后重试。用 `token-usage serve status` 查看状态、`token-usage serve stop` 停止。带 --open 时由本命令在确认后台启动成功后打开浏览器。\n\n示例：\n  token-usage serve start\n  token-usage serve start --addr 127.0.0.1:9000\n  token-usage serve start --open",
+			"Start the read-only web server in the background (nginx-style): this command spawns a detached child that keeps running after it exits, then waits until the child reports ready. State is recorded in serve.json under the data directory (~/.token-usage/serve.json by default) and logs go to serve.log under the effective log.dir (~/.token-usage/logs/serve.log by default); a missing log directory is created before starting, and each actual start truncates the log. Changing log.dir takes effect on the next actual start. The old serve.log in the data directory is not moved or deleted automatically. If the recorded state still answers on /api/meta the command reports it and returns idempotently with exit code 0 (stop it first with `token-usage serve stop` to restart); stale state left by a crash or SIGKILL — and a corrupt state file — is removed and start proceeds. Concurrent starts are serialized by a serve-start.lock file lock in the data directory (start coordination only — a running instance is described by serve.json and held via the serve.lock lifecycle lock): a second start while another is still working fails with a retry hint. Use `token-usage serve status` to check and `token-usage serve stop` to stop. With --open the browser is opened by this command after the background server is confirmed up.\n\nExamples:\n  token-usage serve start\n  token-usage serve start --addr 127.0.0.1:9000\n  token-usage serve start --open",
+			"以后台方式（nginx 风格）启动只读本地 Web 服务：本命令拉起一个 detached 子进程并在退出后继续运行，然后等待子进程报告就绪。状态记录在数据目录下的 serve.json（默认 ~/.token-usage/serve.json），日志写入生效 log.dir 下的 serve.log（默认 ~/.token-usage/logs/serve.log）；启动前会创建缺失的日志目录，每次实际启动都会截断日志。修改 log.dir 在下一次实际启动时生效。旧数据目录下的 serve.log 不会自动搬移或删除。若已记录的状态在 /api/meta 上仍有响应则报告已在运行并以退出码 0 幂等返回（要重启请先用 `token-usage serve stop` 停止）；崩溃或 SIGKILL 遗留的陈旧状态与损坏的状态文件会被清理并照常启动。并发启动由数据目录下的 serve-start.lock 文件锁串行化（仅用于启动协调——运行中的实例由 serve.json 描述、以 serve.lock 生命周期锁持有）：另一个 serve start 尚在执行时报错并提示稍后重试。用 `token-usage serve status` 查看状态、`token-usage serve stop` 停止。带 --open 时由本命令在确认后台启动成功后打开浏览器。\n\n示例：\n  token-usage serve start\n  token-usage serve start --addr 127.0.0.1:9000\n  token-usage serve start --open",
 		),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -63,7 +63,7 @@ func serveStartRun(cfg *config.Config, addr string, autoOpen bool, out, errOut i
 	if res.AlreadyRunning {
 		fmt.Fprintf(out, "%s\n", ui.Bi(
 			fmt.Sprintf("serve is already running (pid %d, http://%s); stop it first with token-usage serve stop", res.PID, res.Addr),
-			fmt.Sprintf("用量服务已在后台运行（PID %d，http://%s）；请先用 token-usage serve stop 停止", res.PID, res.Addr)))
+			fmt.Sprintf("本地 Web 服务已在后台运行（PID %d，http://%s）；请先用 token-usage serve stop 停止", res.PID, res.Addr)))
 		return nil
 	}
 
@@ -71,8 +71,8 @@ func serveStartRun(cfg *config.Config, addr string, autoOpen bool, out, errOut i
 	// 交互终端下用 OSC 8 链接包裹 URL，支持单击打开（非 TTY 自动降级纯文本）。
 	linked := hyperlinkURL(url, writerIsTerminal(out))
 	fmt.Fprintf(out, "%s\n", ui.Bi(
-		fmt.Sprintf("usage server started in background at %s (pid %d)", linked, res.PID),
-		fmt.Sprintf("用量服务已后台启动 %s（PID %d）", linked, res.PID),
+		fmt.Sprintf("web server started in background at %s (pid %d)", linked, res.PID),
+		fmt.Sprintf("本地 Web 服务已后台启动 %s（PID %d）", linked, res.PID),
 	))
 	fmt.Fprintf(out, "%s\n", ui.Bi(
 		fmt.Sprintf("log: %s · stop: token-usage serve stop", serve.LogPath(cfg.Log.Dir)),

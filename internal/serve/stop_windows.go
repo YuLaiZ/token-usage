@@ -9,7 +9,7 @@ import (
 
 // Windows 控制台进程没有跨进程的优雅停止通道（无 POSIX 信号语义），
 // 停止编排（serve stop 命令与 update 的更新前停止共用）在 Windows 上统一用
-// taskkill /F 强杀。用量服务严格只读、无在途事务，强杀不引入数据风险；
+// taskkill /F 强杀。本地 Web 服务严格只读、无在途事务，强杀不引入数据风险；
 // 后台服务主体的状态文件 defer 自清理因此不会执行，但 serve stop/status 与
 // 更新前探测的陈旧探活清理会兜底删除 serve.json。
 func signalProcPlatform(pid int) error {

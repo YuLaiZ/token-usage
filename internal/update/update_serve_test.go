@@ -89,7 +89,7 @@ func (f *fakeServeLifecycle) assertLogDir(t *testing.T, want string) {
 	defer f.mu.Unlock()
 	for i, call := range f.startCalls {
 		if call.logDir != want {
-			t.Errorf("第 %d 次 dashboard 恢复应携带 log.dir, got %q, want %q", i+1, call.logDir, want)
+			t.Errorf("第 %d 次 Web 服务 恢复应携带 log.dir, got %q, want %q", i+1, call.logDir, want)
 		}
 	}
 }
@@ -121,7 +121,7 @@ func TestApply_ServeOrchestration_BothRunning(t *testing.T) {
 		t.Fatalf("应同步安装完成, got %+v", got)
 	}
 	if !got.DaemonWasRunning || !got.ServeWasRunning || got.ServeAddr != "127.0.0.1:8619" {
-		t.Errorf("结果应记录 daemon 与 dashboard 的原运行态, got %+v", got)
+		t.Errorf("结果应记录 daemon 与 Web 服务 的原运行态, got %+v", got)
 	}
 	if installer.calls[0].serveWasRunning != true || installer.calls[0].serveAddr != "127.0.0.1:8619" {
 		t.Errorf("Install 应收到 serve 快照, got %+v", installer.calls[0])
@@ -143,10 +143,10 @@ func TestApply_ServeOrchestration_DaemonOnly(t *testing.T) {
 		t.Fatalf("Apply err=%v", err)
 	}
 	if !got.DaemonWasRunning || got.ServeWasRunning {
-		t.Errorf("结果应记录 daemon 运行、dashboard 未运行, got %+v", got)
+		t.Errorf("结果应记录 daemon 运行、Web 服务 未运行, got %+v", got)
 	}
 	if serveFake.stopCalls != 0 || serveFake.startCount() != 0 {
-		t.Errorf("dashboard 未运行时不得停止/恢复, stop=%d start=%d", serveFake.stopCalls, serveFake.startCount())
+		t.Errorf("Web 服务 未运行时不得停止/恢复, stop=%d start=%d", serveFake.stopCalls, serveFake.startCount())
 	}
 	if sess.stopCalls != 1 {
 		t.Errorf("应停止 daemon, got %d", sess.stopCalls)
@@ -165,7 +165,7 @@ func TestApply_ServeOrchestration_ServeOnly(t *testing.T) {
 		t.Errorf("daemon 原本未运行, got %+v", got)
 	}
 	if !got.ServeWasRunning || got.ServeAddr != "127.0.0.1:9000" {
-		t.Errorf("结果应记录 dashboard 原运行态, got %+v", got)
+		t.Errorf("结果应记录 Web 服务 原运行态, got %+v", got)
 	}
 	if sess.stopCalls != 0 {
 		t.Errorf("daemon 未运行时不得停止 daemon, got %d", sess.stopCalls)
@@ -176,10 +176,10 @@ func TestApply_ServeOrchestration_ServeOnly(t *testing.T) {
 	// 恢复调用必须以替换后的目标二进制与原监听地址进行。
 	last := serveFake.lastStart()
 	if last.binPath == "" {
-		t.Errorf("dashboard 应以替换后二进制恢复, got %+v", last)
+		t.Errorf("Web 服务 应以替换后二进制恢复, got %+v", last)
 	}
 	if last.addr != "127.0.0.1:9000" {
-		t.Errorf("dashboard 应按原监听地址恢复, got %+v", last)
+		t.Errorf("Web 服务 应按原监听地址恢复, got %+v", last)
 	}
 }
 
@@ -198,7 +198,7 @@ func TestApply_ServeOrchestration_NoneRunning(t *testing.T) {
 		t.Errorf("不应触碰 daemon, stop=%d start=%d", sess.stopCalls, sess.startCalls)
 	}
 	if serveFake.stopCalls != 0 || serveFake.startCount() != 0 {
-		t.Errorf("不应触碰 dashboard, stop=%d start=%d", serveFake.stopCalls, serveFake.startCount())
+		t.Errorf("不应触碰 Web 服务, stop=%d start=%d", serveFake.stopCalls, serveFake.startCount())
 	}
 }
 
@@ -257,8 +257,8 @@ func TestApply_ServeStopFailureAbortsUpdate(t *testing.T) {
 	if err == nil {
 		t.Fatal("serve 停止失败必须中止更新并返回错误")
 	}
-	if !strings.Contains(err.Error(), "dashboard") && !strings.Contains(err.Error(), "Dashboard") {
-		t.Errorf("错误应指向 dashboard, got %v", err)
+	if !strings.Contains(err.Error(), "web server") && !strings.Contains(err.Error(), "Web service") {
+		t.Errorf("错误应指向 Web 服务, got %v", err)
 	}
 	if installer.callCount() != 0 {
 		t.Errorf("serve 停止失败时不得替换二进制, install calls=%d", installer.callCount())
@@ -291,10 +291,10 @@ func TestApply_ServeInstallFailureRollsBackBoth(t *testing.T) {
 	}
 	// dashboard 必须以旧二进制按原地址恢复（安装失败时 target 已是旧版本）。
 	if serveFake.startCount() != 1 {
-		t.Fatalf("应恢复 dashboard 一次, got %d", serveFake.startCount())
+		t.Fatalf("应恢复 Web 服务 一次, got %d", serveFake.startCount())
 	}
 	if got := serveFake.lastStart(); got.binPath != oldBinPath(t, svc) || got.addr != "127.0.0.1:8619" {
-		t.Errorf("dashboard 应回滚恢复（旧二进制 + 原地址）, got %+v", got)
+		t.Errorf("Web 服务 应回滚恢复（旧二进制 + 原地址）, got %+v", got)
 	}
 	// dashboard 回滚成功时错误只保留主失败（安装失败）；恢复失败的信息只在
 	// 回滚自身也失败时聚合出现（见 ServeStartFailure 用例）。
@@ -316,10 +316,10 @@ func TestApply_ServeDaemonStartFailureRollsBackServe(t *testing.T) {
 	}
 	// dashboard 原在运行：daemon 启动失败回滚后必须以旧二进制恢复。
 	if serveFake.startCount() != 1 {
-		t.Fatalf("应恢复 dashboard 一次, got %d", serveFake.startCount())
+		t.Fatalf("应恢复 Web 服务 一次, got %d", serveFake.startCount())
 	}
 	if got := serveFake.lastStart(); got.binPath != oldBinPath(t, svc) || got.addr != "127.0.0.1:8619" {
-		t.Errorf("dashboard 应回滚恢复（旧二进制 + 原地址）, got %+v", got)
+		t.Errorf("Web 服务 应回滚恢复（旧二进制 + 原地址）, got %+v", got)
 	}
 }
 
@@ -334,7 +334,7 @@ func TestApply_ServeStartFailureRollsBackWholeUpdate(t *testing.T) {
 
 	_, err := svc.Apply(context.Background(), ApplyOptions{})
 	if err == nil {
-		t.Fatal("dashboard 恢复失败必须返回错误")
+		t.Fatal("Web 服务 恢复失败必须返回错误")
 	}
 	if tx.rollbackCalls != 1 {
 		t.Errorf("必须回滚二进制事务, rollback calls=%d", tx.rollbackCalls)
@@ -351,13 +351,13 @@ func TestApply_ServeStartFailureRollsBackWholeUpdate(t *testing.T) {
 	}
 	// dashboard 共两次 Start：新二进制（失败）+ 旧二进制（回滚重试）。
 	if serveFake.startCount() != 2 {
-		t.Fatalf("dashboard 应共尝试恢复两次, got %d", serveFake.startCount())
+		t.Fatalf("Web 服务 应共尝试恢复两次, got %d", serveFake.startCount())
 	}
 	if got := serveFake.lastStart(); got.binPath != oldBinPath(t, svc) || got.addr != "127.0.0.1:8619" {
 		t.Errorf("回滚重试必须用旧二进制与原地址, got %+v", got)
 	}
-	if !strings.Contains(err.Error(), "dashboard") {
-		t.Errorf("主失败（dashboard 恢复失败）必须保留, got %v", err)
+	if !strings.Contains(err.Error(), "web server") {
+		t.Errorf("主失败（Web 服务 恢复失败）必须保留, got %v", err)
 	}
 }
 
@@ -376,7 +376,7 @@ func TestApply_ServeInspectFailureAbortsBeforeAnyStop(t *testing.T) {
 		t.Fatal("Inspect 失败必须返回错误")
 	}
 	if serveFake.stopCalls != 0 || serveFake.startCount() != 0 {
-		t.Errorf("Inspect 失败时 dashboard 不得被触碰, stop=%d start=%d", serveFake.stopCalls, serveFake.startCount())
+		t.Errorf("Inspect 失败时 Web 服务 不得被触碰, stop=%d start=%d", serveFake.stopCalls, serveFake.startCount())
 	}
 	if sess.stopCalls != 0 {
 		t.Errorf("Inspect 失败时 daemon 不得被停止, got %d", sess.stopCalls)

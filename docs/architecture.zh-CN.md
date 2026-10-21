@@ -43,11 +43,11 @@
 | `internal/engine/` | 采集编排（依赖装配、主循环、事务化写入、重试、结果校验） |
 | `internal/analyzer/` | 守护进程实时监控（JSONL watcher、SQLite poller、debounce、串行化锁） |
 | `internal/querier/` | 查询引擎（从 messages 实时聚合） |
-| `internal/web/` | 本地用量服务 HTTP 服务——用量数据只读、唯一写路径是配置保存；含内嵌静态资源与 JSON 接口，图表由前端按数值行自绘 |
-| `internal/serve/` | 用量服务共用生命周期层：`serve.json` 状态文件、三把生命周期文件锁、`/api/meta` 探活与后台停止/启动编排；供 `serve` 命令族与 `update` 共用 |
-| `internal/charts/` | 遗留 SVG 图表包；用量服务图表改为前端自绘后已无 Go 代码引用 |
-| `internal/fmtx/` | dashboard 变化值共用的显示格式化 |
-| `internal/ui/` | 双语输出助手（`Bi`）、按显示宽度对齐的框线表格，以及 `query`/`watch`/用量服务共用的查询输出列注册表 |
+| `internal/web/` | 本地 Web 服务——用量数据只读、唯一写路径是配置保存；含内嵌静态资源与 JSON 接口，图表由前端按数值行自绘 |
+| `internal/serve/` | 本地 Web 服务共用生命周期层：`serve.json` 状态文件、三把生命周期文件锁、`/api/meta` 探活与后台停止/启动编排；供 `serve` 命令族与 `update` 共用 |
+| `internal/charts/` | 遗留 SVG 图表包；本地 Web 服务图表改为前端自绘后已无 Go 代码引用 |
+| `internal/fmtx/` | 用量统计页变化值共用的显示格式化 |
+| `internal/ui/` | 双语输出助手（`Bi`）、按显示宽度对齐的框线表格，以及 `query`/`watch`/本地 Web 服务共用的查询输出列注册表 |
 | `internal/tui/` | 配置交互编辑 TUI（bubbletea；保存经 `ApplyConfig`） |
 | `internal/logger/` | 基于 log/slog，按天轮转，自动清理 |
 
@@ -144,7 +144,7 @@ mimocode 数据源产生两个正式 client：`MiMo Code`（CLI）与 `MiMo Desk
 | 模块 | 职责 | 关键接口 |
 |------|------|----------|
 | `buildinfo/` | 规范化版本与构建元数据：注入变量 → `debug.BuildInfo`/VCS 降级 → `dev`/`unknown`；供 version 子命令与 `--version` flag 复用 | `Current()`, `Info.Short()`, `Info.Detail()` |
-| `cli/` | Cobra 命令组装配（含 version/config show）；`daemon` 组经 `control.Manager`，`serve` 组管理用量服务生命周期，config set/TUI 经 `configapp.Application` | `NewRootCmd()` |
+| `cli/` | Cobra 命令组装配（含 version/config show）；`daemon` 组经 `control.Manager`，`serve` 组管理本地 Web 服务生命周期，config set/TUI 经 `configapp.Application` | `NewRootCmd()` |
 | `configapp/` | 配置应用层：`ApplyConfig` 锁内原子编排（revision 保护、写盘、自启同步、stale 清理、动作建议）；`AnalyzeConfigEffects` 影响矩阵 | `Application.ApplyConfig()`, `AnalyzeConfigEffects()`, `Revision()` |
 | `runtimecfg/` | 配置解析边界：effective 解析、校验、registry 默认路径、用户层 snapshot | `LoadEffectiveConfig()`, `ResolveEffectiveConfig()`, `ValidateUserConfig()`, `ConfigPath()` |
 | `control/` | 进程控制层：固定 control lock + Start/Stop/Restart/Inspect + 父子 lease | `Manager.Start/Stop/Restart/Inspect()`, `WithLock()`, `ParseParentLease()` |
@@ -160,7 +160,7 @@ mimocode 数据源产生两个正式 client：`MiMo Code`（CLI）与 `MiMo Desk
 | `engine/` | 采集编排：依赖装配、主循环、事务化写入、重试、结果校验 | `NewDeps()`, `RunCollect()`, `RunRetryWithDeps()`, `RunRouterBackfill()`, `ValidateResult()` |
 | `analyzer/` | 守护进程监控：ChangedFile/Incremental/router source 触发采集，debounce 合并，串行化锁 | `NewFromConfig()`, `JSONLWatcher`, `SQLitePoller` |
 | `querier/` | 从 messages 实时聚合查询，格式化输出 | `ByClient()`, `ByModel()`, `ByProject()`, `ByHour()`, `ByWeekday()`, `Heatmap()`, `HeatmapMatrix()`, `RunDimensionView()`, `Sessions()`, `Summary()`, `StatsBetween()` |
-| `web/` | serve 命令组的本地用量服务——用量数据只读、唯一写路径是配置保存：go:embed 内嵌 HTML 页面（图表由前端按数值行自绘）、JSON 接口（`/api/meta`、`/api/dashboard`、`/api/config`）。单请求全部查询在同一读事务快照完成；`/api/dashboard` 在响应前完成整理，浏览器不再截断或重聚合（完整载荷合同见[用量服务指南](dashboard.zh-CN.md)） | `NewServer()` |
+| `web/` | serve 命令组的本地 Web 服务——用量数据只读、唯一写路径是配置保存：go:embed 内嵌 HTML 页面（图表由前端按数值行自绘）、JSON 接口（`/api/meta`、`/api/dashboard`、`/api/config`）。单请求全部查询在同一读事务快照完成；`/api/dashboard` 在响应前完成整理，浏览器不再截断或重聚合（完整载荷合同见[Web 界面指南](dashboard.zh-CN.md)） | `NewServer()` |
 | `charts/` | 遗留 SVG 图表包（柱状、折线、饼图、星期×小时热力矩阵），当前无调用方，保留待裁决 | — |
 | `querydef/` | query 视图词表：内置维度常量、内置视图名与保留名清单，由 cli 的 query/watch 视图名解析共用 | `BuiltinDimensionNames()`, `IsReservedName()` |
 | `fmtx/` | 跨命令共享的显示格式化助手：千分位、带符号 K/M/B、差值着色 class 与变化百分比 | `Thousands()`, `SignedTokens()`, `CountChange()`, `ChangeClass()`, `ChangePercent()` |
@@ -175,7 +175,7 @@ mimocode 数据源产生两个正式 client：`MiMo Code`（CLI）与 `MiMo Desk
 用户执行命令 → 加载配置 → 执行采集/查询/配置编辑 → 输出结果 → 退出
 ```
 
-命令组：`version`（五行详细输出）、Cobra 内置 `help`/`completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`heatmap`/`session`/`summary`，另加 `custom <name>` 与只读的 `list`）、`errors`、`watch`（定间隔刷新的 `query` 输出）、`doctor`（只读健康自检）、`daemon` 命令组（`start`/`status`/`stop`/`restart` 管理采集守护进程）、`serve` 命令组（`start`/`status`/`stop`/`restart` 管理本地用量服务——用量数据只读，唯一写路径是配置保存；裸 `serve` 只显示帮助）、`update`（自更新到最新或指定版本），以及 Hidden 内部命令 `_run`/`_serve-run`/`_update-helper`/`_update-cleanup`。根命令另带 `-v, --version` flag（单行短输出）。原顶层 `start`/`status`/`stop`/`restart` 与分析命令 `chart`/`compare`/`export`/`forecast`/`report`/`top` 已在命令面收敛中删除（见 [CLI 参考](cli.zh-CN.md)迁移章节）。
+命令组：`version`（五行详细输出）、Cobra 内置 `help`/`completion`、`config`（交互式 TUI，子命令 `show`/`init`/`get`/`set`）、`collect`（子命令 `all`/`router`/`retry`）、`query`（子命令 `client`/`model`/`provider`/`project`/`day`/`month`/`hour`/`weekday`/`heatmap`/`session`/`summary`，另加 `custom <name>` 与只读的 `list`）、`errors`、`watch`（定间隔刷新的 `query` 输出）、`doctor`（只读健康自检）、`daemon` 命令组（`start`/`status`/`stop`/`restart` 管理采集守护进程）、`serve` 命令组（`start`/`status`/`stop`/`restart` 管理本地 Web 服务——用量数据只读，唯一写路径是配置保存；裸 `serve` 只显示帮助）、`update`（自更新到最新或指定版本），以及 Hidden 内部命令 `_run`/`_serve-run`/`_update-helper`/`_update-cleanup`。根命令另带 `-v, --version` flag（单行短输出）。原顶层 `start`/`status`/`stop`/`restart` 与分析命令 `chart`/`compare`/`export`/`forecast`/`report`/`top` 已在命令面收敛中删除（见 [CLI 参考](cli.zh-CN.md)迁移章节）。
 
 直接执行 `token-usage`（不带任何参数）只会打印帮助信息，既不启动 TUI 也不启动守护进程。命令树、参数、标志、退出码与示例的完整参考见 [CLI 参考](cli.zh-CN.md)。
 

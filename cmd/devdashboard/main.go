@@ -1,4 +1,4 @@
-// cmd/devdashboard 本地调试专用的用量服务：绕开 `serve` 的单实例守卫与
+// cmd/devdashboard 本地调试专用的本地 Web 服务：绕开 `serve` 的单实例守卫与
 // serve.json 生命周期，把用量统计页直接架在指定的 SQLite 库上，供开发期在
 // 不干扰正式实例（默认 127.0.0.1:8619）的前提下随时起停。
 //

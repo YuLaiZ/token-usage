@@ -165,7 +165,7 @@ func TestStartInBackground_FailureIncludesLogTail(t *testing.T) {
 		t.Fatal("spawn 失败应报错")
 	}
 	msg := err.Error()
-	for _, want := range []string{"failed to start dashboard in background", "not ready", "log tail:", "监听失败详情"} {
+	for _, want := range []string{"failed to start web server in background", "not ready", "log tail:", "监听失败详情"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("错误信息应含 %q,实际: %q", want, msg)
 		}

@@ -190,7 +190,7 @@ go build -o token-usage ./cmd/token-usage
 
 Following this checklist removes everything the tool and its installer write to your system:
 
-1. Stop the dashboard and the daemon if they are running: `token-usage serve stop`, then `token-usage daemon stop`. On Windows, a running instance holds the `.exe` open, so stop both before deleting the directory.
+1. Stop the local web server and the daemon if they are running: `token-usage serve stop`, then `token-usage daemon stop`. On Windows, a running instance holds the `.exe` open, so stop both before deleting the directory.
 2. If autostart was ever enabled, first run `token-usage config set daemon.autostart false`. This removes the autostart definition (the `~/Library/LaunchAgents/<label>.plist` file on macOS, the Registry Run entry on Windows) so it does not keep pointing at a deleted binary and fail at every login.
 3. Delete the application directory: `rm -rf ~/.token-usage` (Windows: `Remove-Item -Recurse -Force $env:USERPROFILE\.token-usage`). The current terminal may still have the deleted binary cached; run `hash -r` and confirm `token-usage` no longer resolves, or simply open a new terminal and confirm. If you configured a custom `data_dir` or `log.dir`, those directories are outside `~/.token-usage` — delete or keep them separately.
 4. Remove the PATH configuration.

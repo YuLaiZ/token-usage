@@ -39,8 +39,10 @@ async function main(){
   const report={browser:browser.version(),cases:[]};
   const pass=(name,evidence={})=>{report.cases.push({name,...evidence});console.log('PASS '+name);};
   try{
-    const context=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:2});
+    const context=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:2,locale:'zh-CN'});
     const page=await context.newPage();
+    // 同日时间格式的断言与固定样本日期一致，避免运行日期改变测试结果。
+    await page.clock.setFixedTime(new Date('2026-10-15T12:00:00+08:00'));
     const errors=[];page.on('pageerror',e=>errors.push(String(e)));
     await page.addInitScript(()=>{
       localStorage.setItem('tu-theme','dark');
@@ -71,6 +73,24 @@ async function main(){
     });
     await page.goto(origin);
     await page.waitForSelector('#sessions-body .session-row');
+    async function pageName(heading,title,nav){
+      assert.equal(await page.title(),title+' · Token Usage');
+      const active=page.locator('.page[data-active="true"]');
+      assert.equal(await active.locator('h2').textContent(),heading);
+      const usageNav=page.locator('.nav-button[data-page="dash"]');
+      assert.equal(await usageNav.getAttribute('aria-label'),nav);
+      assert.equal(await usageNav.locator('.nav-txt').textContent(),nav);
+    }
+    await pageName('用量统计','用量统计','用量统计');
+    await page.locator('.nav-button[data-page="config"]').click();
+    await pageName('配置','配置','用量统计');
+    await page.locator('#locale-switch button[data-locale="en"]').click();
+    await pageName('Config','Config','Usage');
+    await page.locator('.nav-button[data-page="dash"]').click();
+    await pageName('Usage','Usage','Usage');
+    await page.locator('#locale-switch button[data-locale="zh-CN"]').click();
+    await pageName('用量统计','用量统计','用量统计');
+    pass('page-titles-headings-and-navigation-follow-locale');
     await page.locator('#range-seg button[data-v="6"]').click();
     await page.waitForFunction(()=>document.querySelector('#page-dash').getAttribute('data-refreshing')!=='true');
     const viewBefore=await page.locator('#chart').innerHTML();

@@ -29,11 +29,11 @@ func TestInstalledTitleServeCombinations(t *testing.T) {
 		forceEn string
 		forceZh string
 	}{
-		{"both restored", update.ApplyResult{DaemonWasRunning: true, ServeWasRunning: true}, "Updated; daemon and dashboard restored", nil, "", ""},
-		{"daemon only", update.ApplyResult{DaemonWasRunning: true}, "Updated and daemon restored", []string{"dashboard"}, "", ""},
-		{"serve only", update.ApplyResult{ServeWasRunning: true}, "Updated; dashboard restored", []string{"daemon"}, "", ""},
+		{"both restored", update.ApplyResult{DaemonWasRunning: true, ServeWasRunning: true}, "Updated; daemon and web server restored", nil, "", ""},
+		{"daemon only", update.ApplyResult{DaemonWasRunning: true}, "Updated and daemon restored", []string{"web server"}, "", ""},
+		{"serve only", update.ApplyResult{ServeWasRunning: true}, "Updated; web server restored", []string{"daemon"}, "", ""},
 		{"none", update.ApplyResult{}, "Updated", []string{"restored", "恢复"}, "", ""},
-		{"both with force", update.ApplyResult{DaemonWasRunning: true, ServeWasRunning: true}, "Updated; daemon and dashboard restored (--force overwrite)", nil, " (--force overwrite)", "（--force 强制覆盖）"},
+		{"both with force", update.ApplyResult{DaemonWasRunning: true, ServeWasRunning: true}, "Updated; daemon and web server restored (--force overwrite)", nil, " (--force overwrite)", "（--force 强制覆盖）"},
 	}
 	for _, tc := range cases {
 		got := installedTitle(tc.res, tc.forceEn, tc.forceZh)
@@ -64,8 +64,8 @@ func TestRenderApplyResult_ServeRestoredLine(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		"Updated; daemon and dashboard restored",
-		"已更新，daemon 与 dashboard 已恢复",
+		"Updated; daemon and web server restored",
+		"已更新，daemon 与 Web 服务 已恢复",
 		"http://127.0.0.1:8619",
 		"the browser was not opened",
 		"未打开浏览器",
@@ -88,8 +88,8 @@ func TestRenderApplyResult_ServeNotRunningNoLine(t *testing.T) {
 	if err := renderApplyResult(&out, &errOut, "darwin", res); err != nil {
 		t.Fatalf("渲染 err=%v", err)
 	}
-	if got := out.String(); strings.Contains(got, "dashboard has been restored") || strings.Contains(got, "已按原监听地址后台恢复") {
-		t.Errorf("dashboard 未运行时不得输出恢复明细行,实际:\n%s", got)
+	if got := out.String(); strings.Contains(got, "web server has been restored") || strings.Contains(got, "已按原监听地址后台恢复") {
+		t.Errorf("Web 服务 未运行时不得输出恢复明细行,实际:\n%s", got)
 	}
 }
 
@@ -130,7 +130,7 @@ func TestRenderApplyResult_ServeRecoveredLine(t *testing.T) {
 		t.Fatalf("渲染 err=%v", err)
 	}
 	if got := out.String(); !strings.Contains(got, "http://127.0.0.1:8630") {
-		t.Errorf("中断恢复成功出口应携带 dashboard 恢复地址,实际:\n%s", got)
+		t.Errorf("中断恢复成功出口应携带 Web 服务 恢复地址,实际:\n%s", got)
 	}
 }
 

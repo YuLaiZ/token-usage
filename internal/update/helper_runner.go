@@ -89,8 +89,8 @@ func (r *helperRunner) Run(ctx context.Context, selfExe, planPath string) error 
 	// 短路失败，避免无谓的父进程等待。
 	if validated.Plan.ServeWasRunning && r.serve == nil {
 		err := errors.New(ui.Bi(
-			"plan records a running dashboard, but this helper has no dashboard lifecycle support",
-			"计划记录 dashboard 原在运行，但本 helper 未装配 dashboard 生命周期支持"))
+			"plan records a running web server, but this helper has no web server lifecycle support",
+			"计划记录 Web 服务 原在运行，但本 helper 未装配 Web 服务 生命周期支持"))
 		r.fail(validated.Paths.Result, err, "")
 		return err
 	}
@@ -166,7 +166,7 @@ func (r *helperRunner) executeUnderLock(ctx context.Context, sess ControlSession
 		var serveErr error
 		if plan.ServeWasRunning {
 			if serr := r.serve.Start(cfg.DataDir, cfg.Log.Dir, paths.Target, plan.ServeAddr); serr != nil {
-				serveErr = fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), serr)
+				serveErr = fmt.Errorf("%s: %w", ui.Bi("failed to restore the web server with the old binary", "用旧二进制恢复 Web 服务 失败"), serr)
 			}
 		}
 		r.fail(paths.Result, runningErr, errToString(serveErr))
@@ -237,9 +237,9 @@ func (r *helperRunner) executeUnderLock(ctx context.Context, sess ControlSession
 	// → 用旧 target 按原地址再次尝试恢复 dashboard。主失败与各回滚失败聚合
 	// 保留，绝不谎报成功。
 	if plan.ServeWasRunning {
-		r.helperLog.step("restoring dashboard at %s", plan.ServeAddr)
+		r.helperLog.step("restoring web server at %s", plan.ServeAddr)
 		if serr := r.serve.Start(cfg.DataDir, cfg.Log.Dir, paths.Target, plan.ServeAddr); serr != nil {
-			serveErr := fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the new binary", "用新二进制恢复 dashboard 失败"), serr)
+			serveErr := fmt.Errorf("%s: %w", ui.Bi("failed to restore the web server with the new binary", "用新二进制恢复 Web 服务 失败"), serr)
 			rbErr := rollbackForHelper(paths.Target, paths.Backup, plan.OldSHA256)
 			var stopErr, restartErr, resErr error
 			if plan.WasRunning {
@@ -251,13 +251,13 @@ func (r *helperRunner) executeUnderLock(ctx context.Context, sess ControlSession
 				}
 			}
 			if e := r.serve.Start(cfg.DataDir, cfg.Log.Dir, paths.Target, plan.ServeAddr); e != nil {
-				resErr = fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), e)
+				resErr = fmt.Errorf("%s: %w", ui.Bi("failed to restore the web server with the old binary", "用旧二进制恢复 Web 服务 失败"), e)
 			}
 			r.fail(paths.Result, serveErr,
 				fmt.Sprintf("rollback=%v stop=%v restart=%v serve-restore=%v", rbErr, stopErr, restartErr, resErr))
 			return errors.Join(serveErr, rbErr, stopErr, restartErr, resErr)
 		}
-		r.helperLog.step("dashboard restored")
+		r.helperLog.step("web server restored")
 	}
 
 	// e. 成功：替换与服务恢复都已落地，清除父进程留下的恢复意图快照
@@ -286,7 +286,7 @@ func (r *helperRunner) restoreOriginalServices(ctx context.Context, sess Control
 	}
 	if plan.ServeWasRunning {
 		if err := r.serve.Start(cfg.DataDir, cfg.Log.Dir, paths.Target, plan.ServeAddr); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the dashboard with the old binary", "用旧二进制恢复 dashboard 失败"), err))
+			errs = append(errs, fmt.Errorf("%s: %w", ui.Bi("failed to restore the web server with the old binary", "用旧二进制恢复 Web 服务 失败"), err))
 		}
 	}
 	return errs

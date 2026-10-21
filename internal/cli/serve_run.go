@@ -2,7 +2,7 @@
 package cli
 
 // serve_run.go 定义 Hidden 内部命令 _serve-run：`serve start` 经
-// daemon.SpawnDetached 拉起的后台用量服务主体。用户不直接接触
+// daemon.SpawnDetached 拉起的后台本地 Web 服务主体。用户不直接接触
 // （Hidden=true，--help 不可见），与守护进程的 _run 一样遵循
 // 「内部命令以 "_" 前缀命名」的先例。
 //
@@ -29,7 +29,7 @@ var configLoaderForServeRun = loadConfig
 func newServeRunCmd(version string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "_serve-run",
-		Short:        ui.Bi("Internal command (background usage server body, spawned by serve start; do not invoke directly)", "内部命令（后台用量服务主体，由 serve start 拉起，不直接调用）"),
+		Short:        ui.Bi("Internal command (background web server body, spawned by serve start; do not invoke directly)", "内部命令（后台本地 Web 服务主体，由 serve start 拉起，不直接调用）"),
 		Hidden:       true,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true, // 失败详情写 serve.log 供 start 附带,Usage 块是噪声
