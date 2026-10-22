@@ -31,6 +31,14 @@ import (
 // serveShutdownTimeout 是收到 SIGINT/SIGTERM 后等待在途请求完成的宽限期。
 const serveShutdownTimeout = 3 * time.Second
 
+// serveReadHeaderTimeout 限制读取请求头的时间（slowloris 防护）：慢速连接
+// 未在时限内发完请求头即被关闭，避免长期占用服务；正常浏览器请求远低于该值。
+const serveReadHeaderTimeout = 10 * time.Second
+
+// serveIdleTimeout 回收 keep-alive 空闲连接，避免连接长期滞留。
+// 刻意不设 WriteTimeout：大区间聚合查询耗时不可控，写超时会截断正常响应。
+const serveIdleTimeout = 2 * time.Minute
+
 // serveDashboardOption 是 serveDashboard 的可选能力参数。
 type serveDashboardOption func(*serveDashboardOptions)
 
@@ -173,7 +181,11 @@ func serveDashboard(cfg *config.Config, usageDB *db.DB, version, addr string, ou
 		return err
 	}
 	handler := web.NewServer(q, version, webOpts...)
-	srv := &http.Server{Handler: handler}
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: serveReadHeaderTimeout,
+		IdleTimeout:       serveIdleTimeout,
+	}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
 

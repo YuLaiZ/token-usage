@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/buildinfo"
 	"github.com/YuLaiZ/token-usage/internal/config"
@@ -27,6 +28,13 @@ import (
 	"github.com/YuLaiZ/token-usage/internal/querier"
 	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
 	"github.com/YuLaiZ/token-usage/internal/web"
+)
+
+// 开发服务的连接时限：与正式 serve 同一套防护（slowloris 防护 + 空闲回收），
+// 防止本地调试实例被慢速连接长期占用。不设 WriteTimeout，理由同正式 serve。
+const (
+	devReadHeaderTimeout = 10 * time.Second
+	devIdleTimeout       = 2 * time.Minute
 )
 
 // defaultDevAddr 刻意与正式 serve 的 8619 错开，避免开发实例与正式实例抢端口。
@@ -87,7 +95,13 @@ func main() {
 
 	fmt.Printf("devdashboard 已启动 %s（db %s，版本 %s，配置目录 %s；Ctrl+C 退出）\n",
 		*addr, *dbPath, version, *cfgHome)
-	if err := http.ListenAndServe(*addr, mux); err != nil {
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           mux,
+		ReadHeaderTimeout: devReadHeaderTimeout,
+		IdleTimeout:       devIdleTimeout,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintf(os.Stderr, "devdashboard 退出: %v\n", err)
 		os.Exit(1)
 	}
