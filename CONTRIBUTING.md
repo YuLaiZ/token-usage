@@ -14,7 +14,7 @@ Thanks for helping improve `token-usage`. This guide explains how to propose cha
 
 Requirements:
 
-- Go `1.26.4` or the version declared in `go.mod`.
+- Go `1.26.10` or the version declared in `go.mod`.
 - Git and a supported development platform (macOS or Windows).
 
 ```bash

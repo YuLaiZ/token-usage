@@ -131,7 +131,7 @@ Example detailed output from a release build:
 token-usage <version>
 commit: 59a8d55a1b2c
 build_time: 2026-07-30 18:00:00
-go: go1.26.4
+go: go1.26.10
 platform: darwin/arm64
 ```
 
