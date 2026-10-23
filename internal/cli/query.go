@@ -7,6 +7,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -548,6 +549,18 @@ func newLayoutQuerier(usageDB *db.DB, columns []string) (*querier.Querier, error
 	return q, nil
 }
 
+// rangeScanObserver 仅供测试观察多视图是否进入单遍扫描；生产为 nil。
+// 用原子指针保存，避免与并行测试竞争。
+var rangeScanObserver atomic.Pointer[func()]
+
+// observeRangeScan 在进入单遍扫描前通知测试观察者，用于守护“单表不走
+// 单遍扫描”的路由契约。
+func observeRangeScan() {
+	if p := rangeScanObserver.Load(); p != nil {
+		(*p)()
+	}
+}
+
 // executeTargetQuery 把目标展开为渲染序列并逐表输出;全部表完成后统一输出一次异常警告。
 // 统一统计信息区只在全部表格前打印一次,不随表数量重复;同一布局作用于每张表。
 func executeTargetQuery(ctx context.Context, out io.Writer, usageDB *db.DB, dates []string, defs *querydef.QueryDefinitions, target querydef.Target, aliases map[string]string) error {
@@ -559,16 +572,58 @@ func executeTargetQuery(ctx context.Context, out io.Writer, usageDB *db.DB, date
 	if err != nil {
 		return err
 	}
-	if err := printQueryStatisticsHeader(ctx, out, q, dates); err != nil {
-		return err
+	for i := range views {
+		views[i].Aliases = aliases
 	}
-	for _, view := range views {
-		view.Aliases = aliases
-		result, err := q.RunDimensionView(ctx, dates, view)
+	// 展开后只有一张表时与静态子命令共用逐次查询路径：SQL GROUP BY 在单表
+	// 上快于全量单遍扫描，实测回退超过阈值。按实际视图数量选择，不按命令
+	// 入口区分——query.default 指向单维视图时与显式 `query <dim>` 走同一实现。
+	if len(views) == 1 {
+		view := views[0]
+		rows, totals, err := q.AggregateDimensionView(ctx, dates, view)
 		if err != nil {
 			return fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
 		}
-		fmt.Fprintln(out, result)
+		header, err := queryStatisticsHeaderText(ctx, q, dates)
+		if err != nil {
+			return err
+		}
+		fmt.Fprint(out, header)
+		fmt.Fprintln(out, q.RenderDimensionView(view, dates, rows, totals))
+		return showErrorWarningsContext(ctx, out, usageDB, dates)
+	}
+	// 多表：一次扫描产出全部视图，再统一渲染；聚合与 freshness 都成功后才
+	// 输出，失败不留下部分表格。
+	specs := make([]querier.AggSpec, len(views))
+	for i, view := range views {
+		specs[i] = querier.AggSpec{
+			Name:       fmt.Sprintf("view-%d", i),
+			Kind:       querier.AggDimension,
+			Dimensions: view.Dimensions,
+			Aliases:    view.Aliases,
+		}
+	}
+	observeRangeScan()
+	snap, err := q.ScanRange(ctx, dates, specs)
+	if err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
+	}
+	texts := make([]string, len(views))
+	for i, view := range views {
+		result, ok := snap.Dimension(fmt.Sprintf("view-%d", i))
+		if !ok {
+			return fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"),
+				fmt.Errorf("view %d missing from range snapshot", i))
+		}
+		texts[i] = q.RenderDimensionView(view, dates, result.Rows, result.Totals)
+	}
+	header, err := queryStatisticsHeaderText(ctx, q, dates)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(out, header)
+	for _, text := range texts {
+		fmt.Fprintln(out, text)
 	}
 	return showErrorWarningsContext(ctx, out, usageDB, dates)
 }
@@ -665,10 +720,20 @@ func executeQueryDates(ctx context.Context, out io.Writer, usageDB *db.DB, dates
 }
 
 // executeQueryDatesWithAliases 执行静态视图;layout 为 nil 时使用默认七列布局。
+//
+// 单维静态视图保留原有逐次查询路径：实测该路径（SQL GROUP BY）在单表上
+// 快于全量单遍扫描，切换会引入可复现的回退；默认/named/group 仅当展开为
+// 多张表时才走 ScanRange 单遍扫描，以摊薄扫描成本。
 func executeQueryDatesWithAliases(ctx context.Context, out io.Writer, usageDB *db.DB, dates []string, view queryView, aliases map[string]string, layout []string) error {
 	q, err := newLayoutQuerier(usageDB, layout)
 	if err != nil {
 		return err
+	}
+
+	// 会话明细实测单遍扫描快于 JOIN 聚合（约 0.25s vs 0.8-1.1s），切换到
+	// ScanRange；聚合与 freshness 都成功后才输出。
+	if view == viewSessions && len(dates) > 0 {
+		return executeSessionQuery(ctx, out, usageDB, q, dates)
 	}
 
 	if err := printQueryStatisticsHeader(ctx, out, q, dates); err != nil {
@@ -709,15 +774,46 @@ func executeQueryDatesWithAliases(ctx context.Context, out io.Writer, usageDB *d
 	return showErrorWarningsContext(ctx, out, usageDB, dates)
 }
 
+// executeSessionQuery 用一次单遍扫描取会话明细并渲染；聚合与 freshness 都
+// 成功后才输出，失败不留下部分输出。
+func executeSessionQuery(ctx context.Context, out io.Writer, usageDB *db.DB, q *querier.Querier, dates []string) error {
+	snap, err := q.ScanRange(ctx, dates, []querier.AggSpec{{Kind: querier.AggSession}})
+	if err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
+	}
+	rows, ok := snap.Sessions()
+	if !ok {
+		return fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"),
+			fmt.Errorf("sessions missing from range snapshot"))
+	}
+	header, err := queryStatisticsHeaderText(ctx, q, dates)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(out, header)
+	fmt.Fprintln(out, q.RenderSessions(rows))
+	return showErrorWarningsContext(ctx, out, usageDB, dates)
+}
+
+// queryStatisticsHeaderText 查询新鲜度指标并渲染统一信息区文本；
+// 调用方在全部聚合与 freshness 都成功后再输出，避免失败时留下部分输出。
+func queryStatisticsHeaderText(ctx context.Context, q *querier.Querier, dates []string) (string, error) {
+	fresh, err := q.Freshness(ctx, dates)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", ui.Bi("failed to query data freshness", "查询数据新鲜度失败"), err)
+	}
+	first, last := querier.DateBounds(dates)
+	return queryStatisticsHeader(first, last, fresh), nil
+}
+
 // printQueryStatisticsHeader 查询新鲜度指标并把统一信息区写到 out。
 // 每个 query 执行入口在最开头调用一次;调用方保证 dates 非空(日期解析先于 DB 打开)。
 func printQueryStatisticsHeader(ctx context.Context, out io.Writer, q *querier.Querier, dates []string) error {
-	fresh, err := q.Freshness(ctx, dates)
+	text, err := queryStatisticsHeaderText(ctx, q, dates)
 	if err != nil {
-		return fmt.Errorf("%s: %w", ui.Bi("failed to query data freshness", "查询数据新鲜度失败"), err)
+		return err
 	}
-	first, last := querier.DateBounds(dates)
-	fmt.Fprint(out, queryStatisticsHeader(first, last, fresh))
+	fmt.Fprint(out, text)
 	return nil
 }
 

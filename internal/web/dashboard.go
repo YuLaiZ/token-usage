@@ -304,63 +304,79 @@ func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		CustomViews: []customViewJSON{},
 		Sessions:    []sessionRowJSON{},
 	}
+	// 一次扫描产出 dashboard 所需的全部聚合：四个内置维度、全部自定义视图、
+	// day×hour 矩阵与会话明细；freshness 元数据仍单独查询（不属于 messages 聚合）。
+	specs := make([]querier.AggSpec, 0, len(dashboardDimensions)+len(views)+2)
+	for _, dim := range dashboardDimensions {
+		specs = append(specs, querier.AggSpec{
+			Name:       dim,
+			Kind:       querier.AggDimension,
+			Dimensions: []string{dim},
+			Aliases:    aliasesFor(dim, aliases),
+		})
+	}
+	for _, view := range views {
+		specs = append(specs, querier.AggSpec{
+			Name:       view.name,
+			Kind:       querier.AggDimension,
+			Dimensions: view.dimensions,
+			Aliases:    aliases,
+		})
+	}
+	specs = append(specs,
+		querier.AggSpec{Kind: querier.AggDayHour},
+		querier.AggSpec{Kind: querier.AggSession},
+	)
+
 	err := s.q.ReadTx(ctx, func(tq *querier.Querier) error {
-		stats, err := tq.StatsBetween(ctx, from, to)
+		snap, err := tq.ScanRange(ctx, dates, specs)
 		if err != nil {
 			return err
 		}
+		totals := snap.Totals()
 		resp.Totals = totalsJSON{
-			Requests:    stats.Total.Requests,
-			FreshInput:  stats.Total.FreshInput,
-			Output:      stats.Total.OutputTokens,
-			CacheRead:   stats.Total.CacheRead,
-			CacheCreate: stats.Total.CacheCreate,
-			Reasoning:   stats.Total.Reasoning,
-			Total:       stats.Total.TotalTokens,
-			ActiveDays:  stats.ActiveDays,
+			Requests:    totals.Requests,
+			FreshInput:  totals.FreshInput,
+			Output:      totals.OutputTokens,
+			CacheRead:   totals.CacheRead,
+			CacheCreate: totals.CacheCreate,
+			Reasoning:   totals.Reasoning,
+			Total:       totals.TotalTokens,
+			ActiveDays:  totals.ActiveDays,
 		}
 		resp.Columns = columns
 		// 业务维度循环:同一选区全量聚合后,在响应前完成排序、前 9 截取与
 		// 尾行逐指标汇总;独立行加尾行与区间 totals 逐项守恒。
 		for _, dim := range dashboardDimensions {
-			rows, _, err := tq.AggregateDimensionView(ctx, dates, querier.DimensionView{
-				Dimensions: []string{dim},
-				Aliases:    aliasesFor(dim, aliases),
-				TitleEn:    "dashboard", TitleZh: "dashboard",
-			})
-			if err != nil {
-				return err
+			result, ok := snap.Dimension(dim)
+			if !ok {
+				return fmt.Errorf("dashboard dimension %q missing from snapshot", dim)
 			}
-			resp.Dimensions[dim] = topDimensionRows(toDimensionRows(rows), dimensionTopN)
+			resp.Dimensions[dim] = topDimensionRows(toDimensionRows(result.Rows), dimensionTopN)
 		}
 		// 自定义视图:按配置维度顺序的多维组合聚合,与四维度同一选区、
 		// 同一事务;前 19 截取与尾行同样在响应前完成。
 		for _, view := range views {
-			rows, _, err := tq.AggregateDimensionView(ctx, dates, querier.DimensionView{
-				Dimensions: view.dimensions,
-				Aliases:    aliases,
-				TitleEn:    view.name, TitleZh: view.name,
-			})
-			if err != nil {
-				return err
+			result, ok := snap.Dimension(view.name)
+			if !ok {
+				return fmt.Errorf("dashboard custom view %q missing from snapshot", view.name)
 			}
 			resp.CustomViews = append(resp.CustomViews, customViewJSON{
 				Name:       view.name,
 				Dimensions: view.dimensionNames,
-				Rows:       topCustomViewRows(toCustomViewRows(rows), customViewTopN),
+				Rows:       topCustomViewRows(toCustomViewRows(result.Rows), customViewTopN),
 			})
 		}
-		sessions, err := tq.SessionRows(ctx, dates)
-		if err != nil {
-			return err
+		sessions, ok := snap.Sessions()
+		if !ok {
+			return fmt.Errorf("dashboard sessions missing from snapshot")
 		}
-		// 会话排行按总量降序返回前 20 行,不生成"其他会话"。
+		// 会话排行按总量降序返回前 20 行,不生成"其他会话";排序在副本上进行。
 		resp.Sessions = toSessionRows(querier.TruncateTopRows(querier.SortTopRows(sessions), dashboardSessionLimit))
-		// 日期×小时数据在同一事务内取数,与 totals/dimensions/sessions
-		// 同快照;趋势桶与热力展示桶由同一份数据确定性整理。
-		hm, err := tq.DayHourMatrix(ctx, dates)
-		if err != nil {
-			return err
+		// 日期×小时数据来自同一快照;趋势桶与热力展示桶由同一份数据确定性整理。
+		hm, ok := snap.DayHour()
+		if !ok {
+			return fmt.Errorf("dashboard day-hour matrix missing from snapshot")
 		}
 		resp.Trend = buildTrend(hm)
 		resp.Heatmap.Days, resp.Heatmap.Mode = buildHeatmapDays(hm, now)
