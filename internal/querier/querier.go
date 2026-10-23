@@ -663,6 +663,26 @@ func (r *DimensionRow) absorbVariant(dim int, display, raw string, requests int6
 	r.variants[dim][display] = &variantStat{count: requests, raw: raw}
 }
 
+// absorbVariantIfNeeded 在组内出现与首遇显示拼写不同的变体时才建立统计。
+// before 是本次合并前该组累计请求数，current 是本次贡献的请求数；单变体组
+// （高基数场景的绝大多数）因此不分配 variants map，显著降低内存。一旦变体
+// 统计建立，后续每一行都必须继续累加，否则代表拼写的计数会停留在建立时刻。
+func (r *DimensionRow) absorbVariantIfNeeded(dim int, display, raw string, before, current int64) {
+	if len(r.variants) > dim && r.variants[dim] != nil {
+		r.absorbVariant(dim, display, raw, current)
+		return
+	}
+	if r.Keys[dim] == display {
+		return
+	}
+	for len(r.variants) <= dim {
+		r.variants = append(r.variants, nil)
+	}
+	r.variants[dim] = make(map[string]*variantStat, 2)
+	r.absorbVariant(dim, r.Keys[dim], r.rawKeys[dim], before)
+	r.absorbVariant(dim, display, raw, current)
+}
+
 // finalizeVariantKeys 在排序前把每行各维的代表拼写回填到 Keys/rawKeys:
 // 代表 = 组内请求数最多的精确显示拼写,平手取显示键字节序小者(组内成员的
 // SQL 行序无保证,「首遇」不可依赖);rawKeys[k] 取代表拼写首次贡献的原始键。
@@ -690,6 +710,112 @@ func finalizeVariantKeys(rows []DimensionRow) {
 		}
 		row.variants = nil
 	}
+}
+
+// finalizeDimensionRows 完成维度聚合结果的收尾：纯单维时间视图缺口填充、
+// 大小写折叠合并的代表拼写回填、稳定排序。逐次查询与单遍扫描两条路径共用，
+// 保证行集合与顺序一致。
+func finalizeDimensionRows(rows []DimensionRow, dims []dimension, dates []string) []DimensionRow {
+	// 时间维度(day/month)在本次维度列表中的下标(-1 表示不含时间维度);
+	// 重复维度已在参数校验拒绝,同一维度至多出现一次,取首个命中下标。
+	temporalIdx := -1
+	for i, d := range dims {
+		if isTemporalDimension(d.name) {
+			temporalIdx = i
+			break
+		}
+	}
+
+	// 纯单维时间视图做缺口填充:请求时间轴上没有数据行的位置插入零值行,
+	// 保证时间轴连续;多维时间视图(如 day,model / month,model)不做。
+	// day 视图按日期补零(dates 为连续逐日列表);month 视图按月前缀补零:
+	// 从请求 dates 推导去重的有序 YYYY-MM 前缀序列(dates 连续逐日,按遍历
+	// 顺序去重即保序),对没有数据行的月份插入零值行;hour/weekday 的刻度集
+	// 固定(整日 24 小时 / 整周 7 天,原始键形态),与请求日期范围无关。
+	// 填充行同时携带显示键与原始键(两者一致或经同一映射),排序轴统一。
+	if len(dims) == 1 && temporalIdx == 0 {
+		fill := func(rawKey, displayKey string) {
+			rows = append(rows, DimensionRow{
+				Keys:    []string{displayKey},
+				rawKeys: []string{rawKey},
+			})
+		}
+		switch dims[0].name {
+		case "hour":
+			seenHours := make(map[string]bool, len(rows))
+			for _, r := range rows {
+				seenHours[r.rawKeys[0]] = true
+			}
+			for _, tick := range hourTicks {
+				if seenHours[tick] {
+					continue
+				}
+				seenHours[tick] = true
+				fill(tick, tick+":00")
+			}
+		case "weekday":
+			seenWeekdays := make(map[string]bool, len(rows))
+			for _, r := range rows {
+				seenWeekdays[r.rawKeys[0]] = true
+			}
+			for _, tick := range weekdayTicks {
+				if seenWeekdays[tick] {
+					continue
+				}
+				seenWeekdays[tick] = true
+				fill(tick, weekdayDisplayKey(tick))
+			}
+		default:
+			// period 把请求日期归一为当前时间维度的轴刻度:day 即日期本身,
+			// month 取 YYYY-MM 前缀(数据行键已是该形态,截取为幂等)。
+			period := func(key string) string { return key }
+			if dims[0].name == "month" {
+				period = func(key string) string { return key[:7] }
+			}
+			seenPeriods := make(map[string]bool, len(rows))
+			for _, r := range rows {
+				seenPeriods[period(r.rawKeys[0])] = true
+			}
+			for _, date := range dates {
+				p := period(date)
+				if seenPeriods[p] {
+					continue
+				}
+				seenPeriods[p] = true
+				fill(p, p)
+			}
+		}
+	}
+
+	// finalize:大小写折叠合并的行按变体统计回填各维代表拼写。必须在排序
+	// 前完成——排序第③层比较回填后的显示键元组。
+	finalizeVariantKeys(rows)
+
+	// 稳定排序:含时间维度时该维度按原始键升序优先(day/month/hour 的原始键
+	// 与显示键同序;weekday 显示名为星期名,原始键 ISO 周序 "0".."6" 才是时间
+	// 序),再按 total 降序、完整显示键元组升序(同一有效配置与语言下确定)。
+	sort.SliceStable(rows, func(i, j int) bool {
+		if temporalIdx >= 0 && rows[i].rawKeys[temporalIdx] != rows[j].rawKeys[temporalIdx] {
+			return rows[i].rawKeys[temporalIdx] < rows[j].rawKeys[temporalIdx]
+		}
+		if rows[i].Agg.TotalTokens != rows[j].Agg.TotalTokens {
+			return rows[i].Agg.TotalTokens > rows[j].Agg.TotalTokens
+		}
+		for k := range dims {
+			if rows[i].Keys[k] != rows[j].Keys[k] {
+				return rows[i].Keys[k] < rows[j].Keys[k]
+			}
+		}
+		// 可读标签相同时以存储原始键决序（如仅大小写不同的 expert 身份
+		// 显示名理论唯一，此处兜底保持任意同名标签下的确定序）。
+		for k := range dims {
+			if rows[i].rawKeys[k] != rows[j].rawKeys[k] {
+				return rows[i].rawKeys[k] < rows[j].rawKeys[k]
+			}
+		}
+		return false
+	})
+	return rows
 }
 
 // AggregateDimensionView 执行维度视图的数据聚合与排序(不含渲染):
@@ -856,9 +982,10 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 				key := strings.Join(foldBuf, "\x00")
 				if idx, ok := rowIndex[key]; ok {
 					dst := &rowOrder[idx]
+					before := dst.Agg.Requests
 					dst.Agg.add(agg)
 					for i, disp := range keys {
-						dst.absorbVariant(i, disp, rawKeys[i], agg.Requests)
+						dst.absorbVariantIfNeeded(i, disp, rawKeys[i], before, agg.Requests)
 					}
 					continue
 				}
@@ -869,9 +996,6 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 					rawKeys: append([]string(nil), rawKeys...),
 				}
 				stored.Agg = agg
-				for i, disp := range keys {
-					stored.absorbVariant(i, disp, rawKeys[i], agg.Requests)
-				}
 				rowOrder = append(rowOrder, stored)
 			}
 			if err := rows.Err(); err != nil {
@@ -905,9 +1029,10 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 				key := strings.Join(foldBuf, "\x00")
 				if idx, ok := rowIndex[key]; ok {
 					dst := &rowOrder[idx]
+					before := dst.Agg.Requests
 					dst.Agg.add(row.Agg)
 					for i, disp := range row.Keys {
-						dst.absorbVariant(i, disp, rawKeys[i], row.Agg.Requests)
+						dst.absorbVariantIfNeeded(i, disp, rawKeys[i], before, row.Agg.Requests)
 					}
 					continue
 				}
@@ -919,9 +1044,6 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 					rawKeys: append([]string(nil), rawKeys...),
 				}
 				stored.Agg = row.Agg
-				for i, disp := range row.Keys {
-					stored.absorbVariant(i, disp, rawKeys[i], row.Agg.Requests)
-				}
 				rowOrder = append(rowOrder, stored)
 			}
 			if err := rows.Err(); err != nil {
@@ -929,105 +1051,7 @@ func (q *Querier) AggregateDimensionView(ctx context.Context, dates []string, vi
 			}
 		}
 
-		// 时间维度(day/month)在本次维度列表中的下标(-1 表示不含时间维度);
-		// 重复维度已在参数校验拒绝,同一维度至多出现一次,取首个命中下标。
-		temporalIdx := -1
-		for i, d := range dims {
-			if isTemporalDimension(d.name) {
-				temporalIdx = i
-				break
-			}
-		}
-
-		// 纯单维时间视图做缺口填充:请求时间轴上没有数据行的位置插入零值行,
-		// 保证时间轴连续;多维时间视图(如 day,model / month,model)不做。
-		// day 视图按日期补零(dates 为连续逐日列表);month 视图按月前缀补零:
-		// 从请求 dates 推导去重的有序 YYYY-MM 前缀序列(dates 连续逐日,按遍历
-		// 顺序去重即保序),对没有数据行的月份插入零值行;hour/weekday 的刻度集
-		// 固定(整日 24 小时 / 整周 7 天,原始键形态),与请求日期范围无关。
-		// 填充行同时携带显示键与原始键(两者一致或经同一映射),排序轴统一。
-		if len(dims) == 1 && temporalIdx == 0 {
-			fill := func(rawKey, displayKey string) {
-				rowOrder = append(rowOrder, DimensionRow{
-					Keys:    []string{displayKey},
-					rawKeys: []string{rawKey},
-				})
-			}
-			switch dims[0].name {
-			case "hour":
-				seenHours := make(map[string]bool, len(rowOrder))
-				for _, r := range rowOrder {
-					seenHours[r.rawKeys[0]] = true
-				}
-				for _, tick := range hourTicks {
-					if seenHours[tick] {
-						continue
-					}
-					seenHours[tick] = true
-					fill(tick, tick+":00")
-				}
-			case "weekday":
-				seenWeekdays := make(map[string]bool, len(rowOrder))
-				for _, r := range rowOrder {
-					seenWeekdays[r.rawKeys[0]] = true
-				}
-				for _, tick := range weekdayTicks {
-					if seenWeekdays[tick] {
-						continue
-					}
-					seenWeekdays[tick] = true
-					fill(tick, weekdayDisplayKey(tick))
-				}
-			default:
-				// period 把请求日期归一为当前时间维度的轴刻度:day 即日期本身,
-				// month 取 YYYY-MM 前缀(数据行键已是该形态,截取为幂等)。
-				period := func(key string) string { return key }
-				if dims[0].name == "month" {
-					period = func(key string) string { return key[:7] }
-				}
-				seenPeriods := make(map[string]bool, len(rowOrder))
-				for _, r := range rowOrder {
-					seenPeriods[period(r.rawKeys[0])] = true
-				}
-				for _, date := range dates {
-					p := period(date)
-					if seenPeriods[p] {
-						continue
-					}
-					seenPeriods[p] = true
-					fill(p, p)
-				}
-			}
-		}
-
-		// finalize:大小写折叠合并的行按变体统计回填各维代表拼写。必须在排序
-		// 前完成——排序第③层比较回填后的显示键元组。
-		finalizeVariantKeys(rowOrder)
-
-		// 稳定排序:含时间维度时该维度按原始键升序优先(day/month/hour 的原始键
-		// 与显示键同序;weekday 显示名为星期名,原始键 ISO 周序 "0".."6" 才是时间
-		// 序),再按 total 降序、完整显示键元组升序(同一有效配置与语言下确定)。
-		sort.SliceStable(rowOrder, func(i, j int) bool {
-			if temporalIdx >= 0 && rowOrder[i].rawKeys[temporalIdx] != rowOrder[j].rawKeys[temporalIdx] {
-				return rowOrder[i].rawKeys[temporalIdx] < rowOrder[j].rawKeys[temporalIdx]
-			}
-			if rowOrder[i].Agg.TotalTokens != rowOrder[j].Agg.TotalTokens {
-				return rowOrder[i].Agg.TotalTokens > rowOrder[j].Agg.TotalTokens
-			}
-			for k := range dims {
-				if rowOrder[i].Keys[k] != rowOrder[j].Keys[k] {
-					return rowOrder[i].Keys[k] < rowOrder[j].Keys[k]
-				}
-			}
-			// 可读标签相同时以存储原始键决序（如仅大小写不同的 expert 身份
-			// 显示名理论唯一，此处兜底保持任意同名标签下的确定序）。
-			for k := range dims {
-				if rowOrder[i].rawKeys[k] != rowOrder[j].rawKeys[k] {
-					return rowOrder[i].rawKeys[k] < rowOrder[j].rawKeys[k]
-				}
-			}
-			return false
-		})
+		rowOrder = finalizeDimensionRows(rowOrder, dims, dates)
 
 		// 总计:同一日期范围的独立全量聚合,与分组查询同处同一读事务。
 		totals, err = rangeTotals(ctx, tq.tx, dates)
@@ -1054,16 +1078,21 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 	if err != nil {
 		return "", err
 	}
-	title := ui.Bi(view.TitleEn, view.TitleZh)
-
 	rows, totals, err := q.AggregateDimensionView(ctx, dates, view)
 	if err != nil {
 		return "", err
 	}
-	if len(dates) == 0 {
-		return ui.Bi(view.TitleEn+" - no data", view.TitleZh+" - 无数据"), nil
-	}
+	return q.RenderDimensionView(view, dates, rows, totals), nil
+}
 
+// RenderDimensionView 把已聚合的完整行与总计渲染为表格；聚合由
+// AggregateDimensionView（逐次查询）或 ScanRange（单遍扫描）提供，
+// 两条路径共用同一渲染契约。
+func (q *Querier) RenderDimensionView(view DimensionView, dates []string, rows []DimensionRow, totals GroupAggregate) string {
+	if len(dates) == 0 {
+		return ui.Bi(view.TitleEn+" - no data", view.TitleZh+" - 无数据")
+	}
+	title := ui.Bi(view.TitleEn, view.TitleZh)
 	// 维度已在聚合核内完成白名单校验,此处按声明顺序完整填充渲染表头;
 	// temporalIdx 记录首个时间维度下标(趋势列插入与行排序的轴),循环
 	// 不得提前退出——时间维度之后声明的维度同样需要表头。
@@ -1117,7 +1146,7 @@ func (q *Querier) RunDimensionView(ctx context.Context, dates []string, view Dim
 	totalCells = appendMetricCells(totalCells, metrics, totals)
 	t.Row(totalCells...)
 	sb.WriteString(t.String())
-	return sb.String(), nil
+	return sb.String()
 }
 
 // rangeTotals 返回日期范围的全量聚合(总计行数据源,独立于分组结果);
@@ -1288,12 +1317,16 @@ func (q *Querier) Sessions(ctx context.Context, dates []string) (string, error) 
 	if len(dates) == 0 {
 		return ui.Bi("Session details - no data", "会话明细 - 无数据"), nil
 	}
-
 	rows, err := q.SessionRows(ctx, dates)
 	if err != nil {
 		return "", err
 	}
+	return q.RenderSessions(rows), nil
+}
 
+// RenderSessions 把会话明细行渲染为表格；数据由 SessionRows（逐次查询）或
+// ScanRange（单遍扫描）提供，两条路径共用同一渲染契约。
+func (q *Querier) RenderSessions(rows []SessionRow) string {
 	var sb strings.Builder
 	sb.WriteString(ui.Bi("Session details", "会话明细") + "\n")
 
@@ -1324,7 +1357,7 @@ func (q *Querier) Sessions(ctx context.Context, dates []string) (string, error) 
 	}
 
 	sb.WriteString(t.String())
-	return sb.String(), nil
+	return sb.String()
 }
 
 func (q *Querier) Summary(ctx context.Context, dates []string) (string, error) {
@@ -1458,7 +1491,10 @@ func (q *Querier) StatsBetween(ctx context.Context, fromDate, toDate string) (Ra
 		       COALESCE(SUM(cache_read_tokens),0),
 		       COALESCE(SUM(cache_create_tokens),0),
 		       COALESCE(SUM(reasoning_tokens),0),
-		       COALESCE(SUM(total_tokens),0)
+		       COALESCE(SUM(total_tokens),0),
+		       COALESCE(SUM(CASE WHEN duration_ms>0 THEN duration_ms END),0),
+		       COALESCE(SUM(CASE WHEN duration_ms>0 THEN 1 END),0),
+		       COALESCE(SUM(CASE WHEN duration_ms>0 THEN output_tokens END),0)
 		FROM messages
 		WHERE date BETWEEN ? AND ?
 	`
@@ -1466,7 +1502,8 @@ func (q *Querier) StatsBetween(ctx context.Context, fromDate, toDate string) (Ra
 	err = q.queryRowContext(ctx, query, fromDate, toDate).Scan(
 		&s.ActiveDays,
 		&s.Total.Requests, &s.Total.FreshInput, &s.Total.OutputTokens,
-		&s.Total.CacheRead, &s.Total.CacheCreate, &s.Total.Reasoning, &s.Total.TotalTokens)
+		&s.Total.CacheRead, &s.Total.CacheCreate, &s.Total.Reasoning, &s.Total.TotalTokens,
+		&s.Total.DurationSumMS, &s.Total.DurationCount, &s.Total.DurationOutputSum)
 	if err != nil {
 		return RangeStats{}, fmt.Errorf("%s: %w", ui.Bi("query failed", "查询失败"), err)
 	}
