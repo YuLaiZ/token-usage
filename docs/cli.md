@@ -517,6 +517,8 @@ token-usage config set <key> <value> --confirm-migrate   # only when migrating d
 
 Supported clients are `claude`, `opencode`, `codex`, `mimocode`, `workbuddy`, `zcode`, `autoclaw`, and `dsh`. Their path keys are: Claude `projects_dir`; OpenCode `db`; Codex `state_dir`/`sessions_dir`; `mimocode` `db` (one database shared by Xiaomi MiMo Desktop and MiMo Code CLI); WorkBuddy `db`/`projects_dir`; ZCode `db`; AutoClaw `sessions_dir`; DSH `sessions_dir`.
 
+Claude's `projects_dir` remains the single configured root (its semantics are unchanged); on top of it the collector automatically scans CC Switch's per-account session directories (`~/.cc-switch/claude-accounts/*/config/projects`, where CC Switch 4.0.21+ multi-account "Open Terminal" sessions are written) — no configuration needed and silent when absent. The daemon watcher also watches the account root, so account sessions get runtime incremental collection. Other manually relocated `CLAUDE_CONFIG_DIR` locations are not covered.
+
 `provider_aliases` changes labels and grouping in every view that contains the provider dimension — `query provider`, custom views, the corresponding `watch` frames, and the serve usage page alike; it does not alter collected or router-backfilled data, and takes effect on the next query. When a name contains `.`, use a quoted segment, for example:
 
 ```bash

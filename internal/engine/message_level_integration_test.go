@@ -412,6 +412,7 @@ type codexStateThread struct {
 //   - router_provider/router_model/router_name 精确回填（不覆盖 token）
 //   - querier 两个日期均有输出
 func TestIT01_ClaudeCrossDayWithCCSwitch(t *testing.T) {
+	isolateClaudeDiscoveryHome(t)
 	tmp := t.TempDir()
 
 	// 1. projects_dir 放 message-level.jsonl
@@ -576,6 +577,7 @@ func localNoonUnix(t *testing.T, date string) int64 {
 // 期望 0 行（主键 upsert 去重）。再断言共享 ID branch-shared 取较早 ts（parent）
 // 的 date/session/directory；parent-only 与 child-only 必须存在。
 func TestIT02_ClaudeBranchDedup(t *testing.T) {
+	isolateClaudeDiscoveryHome(t)
 	tmp := t.TempDir()
 	projectsDir := filepath.Join(tmp, "claude")
 	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
@@ -989,6 +991,7 @@ func TestIT05_IT06_OpenCodeRewindAndEventReset(t *testing.T) {
 //  2. 再向 router DB 插日志并执行 Source=router；
 //  3. 前后比较所有 token/ts/date 字段完全相等，只允许 router_provider/router_model/router_name 从空变为值。
 func TestIT07_RouterLateArrival(t *testing.T) {
+	isolateClaudeDiscoveryHome(t)
 	tmp := t.TempDir()
 
 	// 1. Claude projects_dir 放一个 fixture

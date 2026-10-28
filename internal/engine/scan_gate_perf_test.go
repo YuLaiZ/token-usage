@@ -26,6 +26,7 @@ import (
 //
 // 运行：go test -tags perf ./internal/engine -run TestScanGatePerformanceSynthetic -v -timeout 20m
 func TestScanGatePerformanceSynthetic(t *testing.T) {
+	isolateClaudeDiscoveryHome(t)
 	requireGateIdentityEnv(t)
 	dir := t.TempDir()
 	// 单文件 ~1MB：1 行 10KB assistant（带 usage）× 100 行，重复 1MB / 10KB ≈ 100 块。
@@ -97,6 +98,7 @@ func max(a, b time.Duration) time.Duration {
 // 大文件路径（Scanner 缓冲增长、多消息块解析）在有门/无门两库下 messages 行集零差异。
 // 运行：go test -tags perf ./internal/engine -run TestScanGateContentConsistencyTiered -v -timeout 20m
 func TestScanGateContentConsistencyTiered(t *testing.T) {
+	isolateClaudeDiscoveryHome(t)
 	requireGateIdentityEnv(t)
 	for _, mb := range []int{12, 50} {
 		t.Run(fmt.Sprintf("%dMB", mb), func(t *testing.T) {

@@ -255,6 +255,7 @@ func TestClaudeUnknownContentFormSummarizedPerFile(t *testing.T) {
 // 合法形态。兼容解析后不再触发行解析失败汇总；user 行按既有设计不入库，
 // messages 仅来自 assistant 行，落库数据与兼容前一致。
 func TestClaudeStringContentFixtureParsesCleanly(t *testing.T) {
+	setIsolatedHome(t)
 	projectsDir, path := copyFixtureToTempDir(t, "string-content.jsonl")
 
 	handler := &testLogHandler{}
@@ -288,6 +289,7 @@ func TestClaudeStringContentFixtureParsesCleanly(t *testing.T) {
 
 // 超过 50 行时位于盲区（第 26 行）的 assistant usage 必须被采集。
 func TestClaudeCollector_FullScanIncludesMiddleMessage(t *testing.T) {
+	setIsolatedHome(t)
 	projectsDir := t.TempDir()
 	jsonlPath := filepath.Join(projectsDir, "blind.jsonl")
 	writeClaudeBlindSpotFixture(t, jsonlPath)
@@ -308,6 +310,7 @@ func TestClaudeCollector_FullScanIncludesMiddleMessage(t *testing.T) {
 
 // 同一文件跨两日，消息按各自 date 归类（不再按文件 LastTS 整体归属）。
 func TestClaudeCollector_CrossDayPerMessageFilter(t *testing.T) {
+	setIsolatedHome(t)
 	dir, _ := copyFixtureToTempDir(t, "message-level.jsonl")
 	c := newClaudeCollectorCfg(t, dir)
 
@@ -331,6 +334,7 @@ func TestClaudeCollector_CrossDayPerMessageFilter(t *testing.T) {
 
 // 每条 Message 保留自己的 model，不塌缩到文件级单一 model。
 func TestClaudeCollector_MultipleModelsRemainSeparate(t *testing.T) {
+	setIsolatedHome(t)
 	dir, _ := copyFixtureToTempDir(t, "message-level.jsonl")
 	c := newClaudeCollectorCfg(t, dir)
 	result, err := c.Collect(t.Context(), CollectRequest{Dates: []string{"2026-06-22", "2026-07-08"}}, slog.Default())
@@ -351,6 +355,7 @@ func TestClaudeCollector_MultipleModelsRemainSeparate(t *testing.T) {
 
 // 同一 message.id 的多个片段（thinking/text/tool）只产出一条 Message。
 func TestClaudeCollector_DeduplicatesRepeatedMessageFragments(t *testing.T) {
+	setIsolatedHome(t)
 	dir, _ := copyFixtureToTempDir(t, "message-level.jsonl")
 	c := newClaudeCollectorCfg(t, dir)
 	result, err := c.Collect(t.Context(), CollectRequest{Dates: []string{"2026-06-22"}}, slog.Default())
@@ -393,6 +398,7 @@ func TestClaudeCollector_ChangedFileOnly(t *testing.T) {
 
 // entrypoint=claude-desktop-3p 映射 Claude Desktop，其余映射 Claude Code。
 func TestClaudeCollector_ClientMapping(t *testing.T) {
+	setIsolatedHome(t)
 	projectsDir := t.TempDir()
 	content := `{"type":"user","sessionId":"s1","timestamp":"2026-07-08T10:00:00+08:00","entrypoint":"cli","cwd":"/tmp/p","message":{"id":"u1","role":"user"}}
 {"type":"assistant","sessionId":"s1","timestamp":"2026-07-08T10:01:00+08:00","entrypoint":"cli","cwd":"/tmp/p","message":{"id":"code-msg","role":"assistant","model":"m","usage":{"input_tokens":1,"output_tokens":1}}}
@@ -426,6 +432,7 @@ func TestClaudeCollector_ClientMapping(t *testing.T) {
 
 // branch/rewind 场景——collector 不删除任何 ID，DB 去重与最早归因由 DB 层处理。
 func TestClaudeCollector_BranchRewindKeepsAllIDs(t *testing.T) {
+	setIsolatedHome(t)
 	dir := t.TempDir()
 	for _, name := range []string{"branch-parent.jsonl", "branch-child.jsonl"} {
 		src := filepath.Join("..", "..", "testdata", "claude", name)
@@ -461,6 +468,7 @@ func TestClaudeCollector_BranchRewindKeepsAllIDs(t *testing.T) {
 
 // token 公式 fresh=input; total=input+cache_read+cache_create+output。
 func TestClaudeCollector_TokenFormula(t *testing.T) {
+	setIsolatedHome(t)
 	projectsDir := t.TempDir()
 	content := `{"type":"assistant","sessionId":"s1","timestamp":"2026-07-08T10:00:00+08:00","entrypoint":"cli","cwd":"/tmp/p","message":{"id":"formula","role":"assistant","model":"m","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":10}}}
 `
@@ -489,6 +497,7 @@ func TestClaudeCollector_TokenFormula(t *testing.T) {
 
 // 文件名作为 session ID、最后非空 title、完整文件 first/last ts。
 func TestClaudeCollector_SessionMetadata(t *testing.T) {
+	setIsolatedHome(t)
 	dir, _ := copyFixtureToTempDir(t, "message-level.jsonl")
 	c := newClaudeCollectorCfg(t, dir)
 	result, err := c.Collect(t.Context(), CollectRequest{Dates: []string{"2026-06-22"}}, slog.Default())
@@ -580,6 +589,7 @@ func TestFindClaudeJSONLFiles_RespectsCancelledContext(t *testing.T) {
 }
 
 func TestClaude_BadLineLogsDebug(t *testing.T) {
+	setIsolatedHome(t)
 	tmpDir := t.TempDir()
 	projectsDir := filepath.Join(tmpDir, "projects", "-Users-test-project")
 	os.MkdirAll(projectsDir, 0755)
@@ -605,6 +615,7 @@ invalid json line
 // 后继续，同文件及后续文件的好行照常产出。文件级 Warn 失败路径仅剩真实 IO
 // 错误可触发（真实文件读段错误无法稳定构造，不再用超限行代理）。
 func TestClaude_OversizedLineSkippedLogsBadLine(t *testing.T) {
+	setIsolatedHome(t)
 	projectsDir := t.TempDir()
 	valid := `{"type":"assistant","sessionId":"s1","timestamp":"2026-06-22T10:00:00Z",` +
 		`"entrypoint":"cli","cwd":"/tmp/project","message":{"id":"m1","role":"assistant",` +
@@ -636,6 +647,7 @@ func TestClaude_OversizedLineSkippedLogsBadLine(t *testing.T) {
 // 文件级失败（打开/读取终止性错误）路径：chmod 000 稳定触发 EACCES，坏文件
 // Warn + PartialErr，好文件照常采集（超限行已降级为坏行，不再触发本路径）。
 func TestClaude_FileParseFailureLogsWarn(t *testing.T) {
+	setIsolatedHome(t)
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("windows/root 下 chmod 000 不产生打开失败，无法触发文件级失败路径")
 	}
@@ -673,6 +685,7 @@ func TestClaude_FileParseFailureLogsWarn(t *testing.T) {
 // 标题行载荷双形态：真实数据为驼峰 customTitle（现行版本），kebab custom-title 为历史兼容。
 // 双向行序夹具：行序最后的非空值胜出，不得因实现为两遍独立扫描而顺序失真。
 func TestClaudeCustomTitleCamelForm(t *testing.T) {
+	setIsolatedHome(t)
 	t.Run("kebab 先写、驼峰后写 → 最后的驼峰胜出", func(t *testing.T) {
 		dir, _ := copyFixtureToTempDir(t, "custom-title-camel.jsonl")
 		c := newClaudeCollectorCfg(t, dir)

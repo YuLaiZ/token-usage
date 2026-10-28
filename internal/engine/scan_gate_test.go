@@ -93,6 +93,7 @@ const gateFixtureJSONL = `{"type":"user","sessionId":"s1","timestamp":"2026-07-0
 
 func newClaudeGateDeps(t *testing.T) (*Deps, *db.DB, string) {
 	t.Helper()
+	isolateClaudeDiscoveryHome(t)
 	dir := t.TempDir()
 	cfg := &config.Config{Clients: map[string]config.Client{
 		"claude": {Enabled: true, Paths: map[string]string{"projects_dir": dir}},
@@ -130,6 +131,15 @@ func runGateCollect(t *testing.T, deps *Deps, usageDB *db.DB, handler *levelCapt
 		slog.New(handler), io.Discard, "claude",
 		collector.CollectRequest{Source: collector.CollectSourceClient, ScanExistingJSONL: true},
 		false, false)
+}
+
+// isolateClaudeDiscoveryHome 把 HOME 隔离到临时目录：真实 ClaudeCollector 的
+// 自动发现分支会读真实 ~/.cc-switch，走发现分支的集成测试须与本机状态隔离。
+func isolateClaudeDiscoveryHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 }
 
 // requireGateIdentityEnv 在当前环境不提供文件实体标识时跳过测试。本文件的门
@@ -456,6 +466,7 @@ func writeWBGateMetaDB(t *testing.T, root string) string {
 // workbuddy/autoclaw 不参与门（provider 依赖 models.json 映射，映射变化不改变
 // 文件证据，故双侧均无门），该两格式退化为全读幂等基线（两次全读 vs 清表再全读）。
 func TestScanGate_ContentConsistencyFourFormats(t *testing.T) {
+	isolateClaudeDiscoveryHome(t)
 	requireGateIdentityEnv(t)
 	type formatCase struct {
 		name    string
@@ -871,6 +882,7 @@ func TestScanGate_PathFormChangeMisses(t *testing.T) {
 // 重复行块放大到 1MB 的 fixture 在有门/无门两库下 messages 行集零差异。
 // 更大分级（12MB/50MB）在 perf 构建标签下覆盖（scan_gate_perf_test.go）。
 func TestScanGate_ContentConsistency1MB(t *testing.T) {
+	isolateClaudeDiscoveryHome(t)
 	requireGateIdentityEnv(t)
 	dir := t.TempDir()
 	var b strings.Builder

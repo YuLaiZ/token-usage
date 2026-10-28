@@ -68,6 +68,8 @@
 
 > **Codex 压缩 rollout**：Codex 本地历史压缩把 7 天未动的 rollout 变为 `*.jsonl.zst` 并删除原文件，state DB 仍指向明文逻辑路径。两条发现路径都接受双形态：目录全扫按同逻辑名去重读取（双形态并存时只读 `.jsonl`——它是 Codex 正在追加的那份），state DB 的 `rollout_path` 按磁盘上实际存在的兄弟形态解析。支持范围以 Codex 0.162.0 实测的单帧 zstd 格式为准（该 feature 上游仍在开发中）；其他压缩布局不在处理范围。
 
+> **Claude 多账号会话目录**：在 `projects_dir`（唯一配置根，语义不变）之外，Claude 采集器自动发现 CC Switch 的各账号会话根 `~/.cc-switch/claude-accounts/*/config/projects`。CC Switch 4.0.21 的多账号「Open Terminal」把 `CLAUDE_CONFIG_DIR` 固定到各账号目录，这些会话的 JSONL 写在那里而非 `~/.claude/projects`。daemon 的文件 watcher 在 `projects_dir` 之外同时监视账号根（`~/.cc-switch/claude-accounts`），账号会话的追加在运行期即触发增量采集，daemon 运行中新创建的账号目录由 watcher 动态接管。账号目录随账号增删生灭；零匹配静默跳过，非目录匹配项跳过，同时被配置根与发现面覆盖的文件只读一次（路径级去重）。覆盖边界：仅覆盖 CC Switch 布局——按其他手动配置的 `CLAUDE_CONFIG_DIR` 位置写入的会话不在发现范围。
+
 **路由中间件**：
 
 - **CC Switch**（`RouterAdapter`）：查询 CC-Switch 的 `proxy_request_logs` + `providers` 表，为 messages 回填真实 provider/model。归因分两条路径：Claude 系日志（`app_type` 为 `claude`/`claude-desktop`）按 `message_id` 匹配；Codex proxy 日志（`app_type` 为 `codex`、`data_source='proxy'`）按 session ID 加 300s 时间窗匹配（CC Switch 给 Codex session ID 加 `codex_` 前缀，剥掉即 rollout 文件名 UUID；`codex_session` 同步行无路由价值、被排除）。其他客户端的原始日志仍写入 `raw_router_logs` 但不参与消息级归因。
@@ -200,10 +202,12 @@ mimocode 数据源产生两个正式 client：`MiMo Code`（CLI）与 `MiMo Desk
 
 **触发语义**（由 `CollectRequest` 字段区分）：
 
-- **ChangedFile**：JSONLWatcher 触发（fsnotify 监听 `.jsonl` 变化，debounce 合并高频写事件），只扫描变更的单个文件。覆盖 claude / codex sessions / workbuddy projects / autoclaw agents。
+- **ChangedFile**：JSONLWatcher 触发（fsnotify 监听 `.jsonl` 变化，debounce 合并高频写事件）；运行期接管目录（新建、移入或故障恢复）时，对树内已有会话文件也会补发单文件采集——这些写入早于监听注册、不产生事件。只扫描变更的单个文件。覆盖 claude / codex sessions / workbuddy projects / autoclaw agents。
 - **Incremental**：SQLitePoller 触发（定时轮询 mtime，WAL 模式取 max(db, -wal)），按 `sync_state` 游标增量读取。覆盖 opencode / zcode / mimocode / codex state DB。
 - **router source**（`Source=router`）：router DB poller 触发，只补 router 字段，不调用 client collector。按启用且声明 Router 的 client 配置装配（当前只有 `cc_switch` case）。
 - **SyncTitles**：Codex 标题索引 poller 的每 tick 无条件提交（有界周期轮询，非变化触发），把 `session_index.jsonl` 命中同步进 `sessions`（仅 UPDATE，受标题来源优先级与已应用记录时间戳保护——重建回旧快照不倒退），并为存量仍空标题的子线程会话回填稳定兜底（增量游标不会重触达旧线程、跳过门可能略过未变 rollout），不调用 collector。周期形态同时保证同步失败后的重试不依赖文件再次变化。此外每个尝试过 codex 的 RunCollect 轮在采集后追加同一同步，覆盖 CLI 手动采集与 daemon catch-up。
+
+Claude 的配置根保持原有监控失败语义；自动发现的 CC Switch 账号根作为可选监控根，注册或遍历失败时记录警告并保留主根监控。运行期接管新建、移入或恢复的目录时，会对已有会话文件补发采集；启动存量由 startup catch-up 负责。失败目录按最小子树记录，默认每 10 秒重试监听接管，成功后补采并退出重试范围，健康兄弟目录不会随故障持续而被周期性重复采集。
 
 对已配置 router 且支持归因的 client，每个采集轮（ChangedFile / Incremental / CLI 日期模式）在 messages 入库后同样基于已入库的 `raw_router_logs` 行重算归因——Claude 系按 `message_id`，Codex 按 session ID 加 300s 时间窗对触达的 session 查两侧全量——router 日志先于 message 到达（router 轮的 UPDATE 落空且 cursor 已推过）或跨午夜交错时，归因仍能补上。未配置 router、或在不支持 router 的 client 上持存量 router 配置的轮既不查表也不回填；存量配置仍只写原始日志。
 

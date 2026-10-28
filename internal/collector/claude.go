@@ -63,6 +63,12 @@ func (c *ClaudeCollector) Collect(ctx context.Context, req CollectRequest, logge
 		files = []string{req.ChangedFile}
 	} else {
 		files, scanErr = findClaudeJSONLFiles(ctx, clientCfg.Paths["projects_dir"])
+		home, _ := os.UserHomeDir()
+		if extraDirs := discoverCCSwitchClaudeProjects(home); len(extraDirs) > 0 {
+			extraFiles, extraErr := findClaudeJSONLFilesInDirs(ctx, extraDirs)
+			files = dedupeCleanedFilePaths(files, extraFiles)
+			scanErr = errors.Join(scanErr, extraErr)
+		}
 		if scanErr != nil && (errors.Is(scanErr, context.Canceled) ||
 			errors.Is(scanErr, context.DeadlineExceeded)) {
 			return CollectResult{}, scanErr
@@ -104,9 +110,8 @@ func (c *ClaudeCollector) Collect(ctx context.Context, req CollectRequest, logge
 	return result, nil
 }
 
-// findClaudeJSONLFiles 递归查找所有 .jsonl 文件（排除 /subagents/ 目录）
+// findClaudeJSONLFiles 递归查找主根（projects_dir）下所有 .jsonl 文件（排除 /subagents/ 目录）
 func findClaudeJSONLFiles(ctx context.Context, projectsDir string) ([]string, error) {
-	var files []string
 	if strings.TrimSpace(projectsDir) == "" {
 		return nil, fmt.Errorf("Claude projects_dir 未配置")
 	}
@@ -120,8 +125,64 @@ func findClaudeJSONLFiles(ctx context.Context, projectsDir string) ([]string, er
 	if !info.IsDir() {
 		return nil, fmt.Errorf("Claude projects_dir 不是目录: %s", projectsDir)
 	}
+	return walkClaudeJSONLDir(ctx, projectsDir)
+}
 
-	err = filepath.Walk(projectsDir, func(path string, info os.FileInfo, err error) error {
+// CCSwitchClaudeAccountsRoot 返回 cc-switch Claude 多账号功能的账号根目录
+// （<home>/.cc-switch/claude-accounts）。目录不存在时由各调用方容错：采集侧
+// glob 零匹配静默，watch 侧落到最近存在的祖先、待创建后由 Create 事件接管。
+func CCSwitchClaudeAccountsRoot(home string) string {
+	return filepath.Join(home, ".cc-switch", "claude-accounts")
+}
+
+// discoverCCSwitchClaudeProjects 发现 cc-switch Claude 多账号功能的各账号会话目录
+// （~/.cc-switch/claude-accounts/<id>/config/projects）。cc-switch 4.0.21 起「Open Terminal」
+// 隔离终端把 CLAUDE_CONFIG_DIR 指向各账号目录，其中的会话日志写在账号自己的 projects
+// 下而非 ~/.claude/projects。账号目录随账号增删生灭，零匹配是常态；仅接受目录形态的
+// 匹配项，非目录匹配（如同名文件）跳过。home 是动态路径、可能含 [ ] 等 Glob 元字符，
+// 故按字面 ReadDir 枚举账号层，其余各层字面拼接，不经模式解释。
+func discoverCCSwitchClaudeProjects(home string) []string {
+	if home == "" {
+		return nil
+	}
+	accountsDir := CCSwitchClaudeAccountsRoot(home)
+	entries, err := os.ReadDir(accountsDir)
+	if err != nil {
+		return nil // 账号根不存在（未用多账号）或不可读：零匹配常态
+	}
+	var dirs []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		p := filepath.Join(accountsDir, e.Name(), "config", "projects")
+		if info, err := os.Stat(p); err == nil && info.IsDir() {
+			dirs = append(dirs, p)
+		}
+	}
+	return dirs
+}
+
+// findClaudeJSONLFilesInDirs 收集多个自动发现根下的文件；单根 walk 失败仅聚合错误、
+// 不中断其余根（账号目录生灭是常态，I/O 异常经 Join 归 PartialErr 由调用方观察）。
+func findClaudeJSONLFilesInDirs(ctx context.Context, dirs []string) ([]string, error) {
+	var files []string
+	var errs error
+	for _, dir := range dirs {
+		part, err := walkClaudeJSONLDir(ctx, dir)
+		files = append(files, part...)
+		errs = errors.Join(errs, err)
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return files, errs
+}
+
+// walkClaudeJSONLDir 递归收集单个根目录下的 .jsonl 文件（排除 /subagents/ 目录）。
+func walkClaudeJSONLDir(ctx context.Context, dir string) ([]string, error) {
+	var files []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -143,6 +204,24 @@ func findClaudeJSONLFiles(ctx context.Context, projectsDir string) ([]string, er
 	})
 
 	return files, err
+}
+
+// dedupeCleanedFilePaths 按 Clean 归一后的路径去重（各组序拼接、首见保留，主根在前）。
+// 不做符号链接归一：仅防同一文件的字面重复（如 projects_dir 恰好配成自动发现目录或其祖先）。
+func dedupeCleanedFilePaths(groups ...[]string) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, group := range groups {
+		for _, p := range group {
+			key := filepath.Clean(p)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // jsonlEntry JSONL 单行结构。lineNo 记录源行号（非 JSON 字段），供坏行汇总定位。

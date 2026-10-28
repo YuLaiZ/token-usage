@@ -63,7 +63,8 @@ func TestJSONLWatcher_RegistrationSummarySingleLog(t *testing.T) {
 
 	handler := &captureLogHandler{}
 	watcher, err := NewJSONLWatcher(
-		[]string{tmpDir}, "claude", 50*time.Millisecond,
+		[]string{tmpDir}, nil,
+		"claude", 50*time.Millisecond,
 		func(string, collector.CollectRequest) {}, slog.New(handler))
 	if err != nil {
 		t.Fatalf("NewJSONLWatcher: %v", err)
@@ -105,7 +106,7 @@ func TestJSONLWatcher_DetectsNewFile(t *testing.T) {
 	var triggered int32
 	watcher, err := NewJSONLWatcher(
 		[]string{tmpDir},
-		"claude",
+		nil, "claude",
 		50*time.Millisecond, // debounce
 		func(client string, req collector.CollectRequest) {
 			atomic.AddInt32(&triggered, 1)
@@ -155,7 +156,7 @@ func TestJSONLWatcher_PassesChangedFile(t *testing.T) {
 	requests := make(chan capturedReq, 4)
 	watcher, err := NewJSONLWatcher(
 		[]string{tmpDir},
-		"claude",
+		nil, "claude",
 		50*time.Millisecond, // debounce
 		func(client string, req collector.CollectRequest) {
 			requests <- capturedReq{client: client, req: req}
@@ -211,7 +212,7 @@ func TestJSONLWatcher_DebounceTriggeredLoggedAtDebug(t *testing.T) {
 	triggered := make(chan struct{}, 4)
 	watcher, err := NewJSONLWatcher(
 		[]string{tmpDir},
-		"claude",
+		nil, "claude",
 		50*time.Millisecond, // debounce
 		func(string, collector.CollectRequest) { triggered <- struct{}{} },
 		slog.New(handler),
@@ -252,7 +253,7 @@ func TestJSONLWatcher_DetectsNewSubdir(t *testing.T) {
 	var triggered int32
 	watcher, err := NewJSONLWatcher(
 		[]string{tmpDir},
-		"claude",
+		nil, "claude",
 		50*time.Millisecond,
 		func(client string, req collector.CollectRequest) {
 			atomic.AddInt32(&triggered, 1)
@@ -307,7 +308,7 @@ func TestJSONLWatcher_DetectsFileChange(t *testing.T) {
 	var triggered int32
 	watcher, err := NewJSONLWatcher(
 		[]string{tmpDir},
-		"claude",
+		nil, "claude",
 		50*time.Millisecond,
 		func(client string, req collector.CollectRequest) {
 			atomic.AddInt32(&triggered, 1)
@@ -346,7 +347,7 @@ func TestJSONLWatcher_IgnoresNonJSONL(t *testing.T) {
 	var triggered int32
 	watcher, err := NewJSONLWatcher(
 		[]string{tmpDir},
-		"claude",
+		nil, "claude",
 		50*time.Millisecond,
 		func(client string, req collector.CollectRequest) {
 			atomic.AddInt32(&triggered, 1)
@@ -379,7 +380,7 @@ func TestJSONLWatcher_IgnoresNonJSONL(t *testing.T) {
 }
 
 func TestJSONLWatcher_StopTwice(t *testing.T) {
-	watcher, err := NewJSONLWatcher([]string{"/tmp"}, "test", time.Second, func(string, collector.CollectRequest) {}, nil)
+	watcher, err := NewJSONLWatcher([]string{"/tmp"}, nil, "test", time.Second, func(string, collector.CollectRequest) {}, nil)
 	if err != nil {
 		t.Fatalf("NewJSONLWatcher: %v", err)
 	}
@@ -403,7 +404,7 @@ func TestJSONLWatcher_FileRemoveDoesNotReregister(t *testing.T) {
 	}
 
 	handler := &captureLogHandler{}
-	watcher, err := NewJSONLWatcher([]string{tmpDir}, "codex", 50*time.Millisecond,
+	watcher, err := NewJSONLWatcher([]string{tmpDir}, nil, "codex", 50*time.Millisecond,
 		func(string, collector.CollectRequest) {}, slog.New(handler))
 	if err != nil {
 		t.Fatal(err)

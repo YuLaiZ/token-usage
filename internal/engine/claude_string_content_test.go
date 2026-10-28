@@ -82,6 +82,7 @@ func stringContentSeed(t *testing.T) (tsA, tsB int64, date string, msgs []model.
 // 若字符串行参与元数据推断，client 翻转会在 (client,id) 主键下插入新行
 // （行数 2→4）、sessions 分行且 first_ts 前移，测试即失败。
 func TestRunCollect_StringContentRowsInertOnExistingDB(t *testing.T) {
+	isolateClaudeDiscoveryHome(t)
 	projectsDir := copyStringContentFixture(t)
 
 	usageDB, err := db.Open(":memory:")

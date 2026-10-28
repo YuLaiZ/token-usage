@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -244,6 +245,17 @@ var jsonlMonitorClients = []struct {
 	{"autoclaw", "sessions_dir"},
 }
 
+// claudeWatchRoots 返回 claude watcher 的强根与可选根：强根为 projects_dir，
+// 可选根为 cc-switch 多账号根（注册失败降级锚定，不拖停强根监控）。home 取不到
+// 时只有强根；路径的 Abs/Clean 去重由 NewJSONLWatcher 统一处理。
+func claudeWatchRoots(dir, home string) (strong, optional []string) {
+	strong = []string{dir}
+	if home == "" {
+		return strong, nil
+	}
+	return strong, []string{collector.CCSwitchClaudeAccountsRoot(home)}
+}
+
 // sqliteMonitorClients 是 client 源 SQLite poller 监控的客户端与其路径键。
 // opencode/zcode/mimocode 监控单个 db 文件；codex 为 state_dir 目录 glob 轮询。
 // 四者同属「路径键非空即装配」的静态判定；db 指纹统一取 max(db, -wal) mtime
@@ -349,8 +361,17 @@ func (a *Analyzer) setupFromConfig(cfg *config.Config, debounceDuration time.Dur
 		clientCfg, _ := cfg.ClientConfig(jc.name)
 		dir := clientCfg.Paths[jc.pathKey]
 
+		watcherDirs, optionalDirs := []string{dir}, []string(nil)
+		if jc.name == "claude" {
+			// cc-switch 多账号的账号目录不在 projects_dir 树内，追加为可选
+			// 监控根（注册失败降级锚定不拖停主根；动态接管与补采见 jsonl_watcher.go；
+			// 未装 cc-switch 时该目录无事件，无副作用）。
+			home, _ := os.UserHomeDir()
+			watcherDirs, optionalDirs = claudeWatchRoots(dir, home)
+		}
+
 		watcher, err := NewJSONLWatcher(
-			[]string{dir},
+			watcherDirs, optionalDirs,
 			jc.name,          // 使用真实的客户端名
 			debounceDuration, // 防抖间隔（生产 5s，测试可调短）
 			submit,

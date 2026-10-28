@@ -38,7 +38,7 @@ func newReadyTestAnalyzer(t *testing.T) *Analyzer {
 // 并通过 a.addWatcher 挂载（设置 signalReady + readyWg.Add(1)）。
 func makeTestJSONLWatcher(t *testing.T, a *Analyzer, dir string, client string) *JSONLWatcher {
 	t.Helper()
-	w, err := NewJSONLWatcher([]string{dir}, client, 50*time.Millisecond, a.monitorSubmit, nil)
+	w, err := NewJSONLWatcher([]string{dir}, nil, client, 50*time.Millisecond, a.monitorSubmit, nil)
 	if err != nil {
 		t.Fatalf("NewJSONLWatcher: %v", err)
 	}

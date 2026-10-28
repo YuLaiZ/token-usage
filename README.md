@@ -11,6 +11,7 @@ A local LLM usage analytics CLI. It collects token usage from the AI clients you
 - Message/API-request-level accounting, including accurate attribution across dates, models, branches, and rewinds.
 - Collectors for Claude Code/Desktop, OpenCode, Codex, WorkBuddy, ZCode, Zhipu-AutoClaw, MiMo Code + MiMo Desktop (two clients attributed from one shared local database via session version markers), and DeepSeek Harness (DSH).
 - CC-Switch router attribution for the Claude family and Codex, backfilling the actual provider and model from proxy logs.
+- Auto-discovery of CC Switch's Claude multi-account session directories, no configuration needed; see the [architecture doc](docs/architecture.md) for the coverage scope.
 - Estimated per-request duration and output speed for Claude and Codex, available as optional metric columns in table reports and on the Usage page (rows without an estimate show `—`; only requests with output ≥ 200 tokens and a 1s–1h duration take part).
 - One-off commands or a real-time background monitoring daemon (`token-usage daemon start`), with macOS launchd and Windows Registry autostart.
 - A pure-Go, single-binary CLI for macOS and Windows.

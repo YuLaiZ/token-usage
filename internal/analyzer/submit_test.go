@@ -331,7 +331,7 @@ func TestSubmit_MonitorCallbackGoesThroughGateAndMutex(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 挂一个 JSONL watcher（通过 addWatcher 安装 monitorSubmit + ready signal）
-	w, err := NewJSONLWatcher([]string{tmpDir}, "claude", 50*time.Millisecond, a.monitorSubmit, nil)
+	w, err := NewJSONLWatcher([]string{tmpDir}, nil, "claude", 50*time.Millisecond, a.monitorSubmit, nil)
 	if err != nil {
 		t.Fatalf("NewJSONLWatcher: %v", err)
 	}

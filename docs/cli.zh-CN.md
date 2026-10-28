@@ -517,6 +517,8 @@ token-usage config set <key> <value> --confirm-migrate   # 仅迁移 data_dir �
 
 受支持 client 为 `claude`、`opencode`、`codex`、`mimocode`、`workbuddy`、`zcode`、`autoclaw`、`dsh`。path key 分别为：Claude `projects_dir`；OpenCode `db`；Codex `state_dir`/`sessions_dir`；`mimocode` `db`（Xiaomi MiMo Desktop 与 MiMo Code CLI 共用同一库）；WorkBuddy `db`/`projects_dir`；ZCode `db`；AutoClaw `sessions_dir`；DSH `sessions_dir`。
 
+Claude 的 `projects_dir` 仍是唯一配置根（语义不变）；在此基础上采集器自动扫描 CC Switch 的各账号会话目录（`~/.cc-switch/claude-accounts/*/config/projects`，CC Switch 4.0.21+ 多账号「Open Terminal」的会话写在彼处）——无需配置，目录不存在时静默跳过。daemon 的 watcher 同样监视账号根，账号会话在运行期即有增量采集。其他手动迁移的 `CLAUDE_CONFIG_DIR` 位置不在覆盖范围。
+
 `provider_aliases` 改变所有含 provider 维度视图中的标签与分组——`query provider`、自定义视图、对应的 `watch` 帧与 serve 用量统计页一致生效；不修改采集或路由回填的数据，下一次查询立即生效。名称含 `.` 时使用引号段，例如：
 
 ```bash

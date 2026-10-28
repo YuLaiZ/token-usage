@@ -51,6 +51,7 @@ func claudeTimingAttachment(uuid, parent, ts string) string {
 
 func claudeDurationByID(t *testing.T, path string) map[string]int64 {
 	t.Helper()
+	setIsolatedHome(t)
 	cfg := &config.Config{Clients: map[string]config.Client{
 		"claude": {Enabled: true, Paths: map[string]string{"projects_dir": filepath.Dir(path)}},
 	}}
@@ -88,6 +89,7 @@ func TestClaudeDuration_SingleBlock(t *testing.T) {
 // T2：同 message.id 多 block——token 取首块非零 usage（去重合同不变）+ 计时
 // 取全 block max ts、起点用首块父链。
 func TestClaudeDuration_MultiBlock(t *testing.T) {
+	setIsolatedHome(t)
 	start, startMS := claudeTimingMS(10, 1, 0)
 	mid, midMS := claudeTimingMS(10, 1, 10)
 	end, endMS := claudeTimingMS(10, 1, 40)
@@ -262,6 +264,7 @@ func TestEstimateDurationUpperBound(t *testing.T) {
 // 字符串 content 形态 user 行：不参与元数据与消息产出（既有合同），但其
 // 链节点仍参与起点推导（直接父级为该类行的回合可估时长）。
 func TestClaudeDuration_StringFormUserInChain(t *testing.T) {
+	setIsolatedHome(t)
 	start, startMS := claudeTimingMS(10, 7, 0)
 	end, endMS := claudeTimingMS(10, 7, 30)
 	strUser := `{"type":"user","uuid":"su","parentUuid":"","timestamp":"` + start + `","cwd":"/hidden","message":{"id":"u-su","role":"user","content":"plain text"}}`

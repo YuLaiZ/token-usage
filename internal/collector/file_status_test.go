@@ -101,6 +101,7 @@ func TestClaudeParseFileStatus_NoTrailingNewline(t *testing.T) {
 }
 
 func TestClaudeCollectFileStatuses_Snapshots(t *testing.T) {
+	setIsolatedHome(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "s1.jsonl"), []byte(claudeNormalFixture), 0o600); err != nil {
 		t.Fatal(err)

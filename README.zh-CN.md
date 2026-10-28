@@ -11,6 +11,7 @@
 - 按消息/API 请求统计，准确处理跨日、多模型、分支与 rewind 的归因。
 - 支持 Claude Code/Desktop、OpenCode、Codex、WorkBuddy、ZCode、Zhipu-AutoClaw、MiMo Code + MiMo Desktop（按会话版本标记从共用本地数据库区分两个客户端）与 DeepSeek Harness（DSH）。
 - 支持 Claude 系列与 Codex 的 CC-Switch router 归因：通过代理日志回填实际 provider/model。
+- 自动发现 CC Switch 的 Claude 多账号会话目录，无需额外配置；支持范围见[架构文档](docs/architecture.zh-CN.md)。
 - Claude / Codex 的每请求估算时长与输出速度：作为表格报表与用量统计页中可选的指标列展示（无估算值的行显示 `—`；仅 output ≥ 200 token 且时长 1s–1h 的请求参与统计）。
 - 可单次执行，也可使用实时后台监控守护进程（`token-usage daemon start`）；支持 macOS launchd 与 Windows 注册表自启。
 - 纯 Go 单二进制 CLI，支持 macOS 和 Windows。
