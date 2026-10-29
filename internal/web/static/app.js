@@ -29,7 +29,7 @@ var UI_TEXT = {
   '截图分享':'Screenshot','选择截图内容':'Choose screenshot content','复制图片':'Copy image','重新生成':'Retry preview','截图预览':'Screenshot preview',
   '已复制到剪贴板':'Copied to clipboard','截图失败：':'Screenshot failed: ','剪贴板不可用':'clipboard unavailable',
   'SVG 图像加载失败':'SVG image load failed','画布导出失败':'canvas export failed',
-  '统计区间':'Date range','自定义统计区间':'Custom date range','今日':'Today','本周':'This week','本月':'This month','本年':'This year','近 7 天':'Last 7 days','近 30 天':'Last 30 days','近 1 年':'Last 12 months',
+  '统计区间':'Date range','自定义统计区间':'Custom date range','今日':'Today','本周':'This week','本月':'This month','本年':'This year','近 7 天':'Last 7 days','近 30 天':'Last 30 days','近 1 年':'Last 12 months','昨日':'Yesterday','上周':'Last week','上月':'Last month','去年':'Last year',
   '上一月':'Previous month','下一月':'Next month','请选择开始与结束日期':'Select a start and end date','查询':'Apply',
   '按维度查看':'Explore by dimension','维度切换':'Dimension switcher','客户端':'Client','供应商':'Provider','模型':'Model','项目':'Project',
   '分组视图':'Group view','列表':'List','构成':'Composition','时间序列图表':'Time-series chart',
@@ -121,7 +121,15 @@ function applyStaticLocale(scope){
     attrValues.set(node,stored);
   });
 }
-function rangeName(i){ return ui(['今日','本周','本月','本年','近 7 天','近 30 天','近 1 年','自定义'][i],['Today','This week','This month','This year','Last 7 days','Last 30 days','Last 12 months','Custom'][i]); }
+/* 预设标识合同:0~7 沿用既有含义(7=自定义,参与存储/日历/选中判定),
+   8~11 为历史周期(上一完整自然日/周/月/年),显示顺序由 HTML 布局表达。 */
+var RANGE_LABELS = [
+  ['今日','Today'],['本周','This week'],['本月','This month'],['本年','This year'],
+  ['近 7 天','Last 7 days'],['近 30 天','Last 30 days'],['近 1 年','Last 12 months'],
+  ['自定义','Custom'],
+  ['昨日','Yesterday'],['上周','Last week'],['上月','Last month'],['去年','Last year']
+];
+function rangeName(i){ var p = RANGE_LABELS[i]; return p ? ui(p[0],p[1]) : ui(RANGE_LABELS[0][0],RANGE_LABELS[0][1]); }
 var DIM_LABELS_EN = { model:'Model', provider:'Provider', client:'Client', project:'Project', day:'Date', month:'Month', hour:'Hour', weekday:'Weekday' };
 var DIM_LABELS_ZH = { model:'模型', provider:'供应商', client:'客户端', project:'项目', day:'日期', month:'月份', hour:'小时', weekday:'星期' };
 function dimLabel(d){ return (LOCALE==='en'?DIM_LABELS_EN:DIM_LABELS_ZH)[d]||d; }
@@ -223,8 +231,12 @@ var RANGE_KEY = 'tu-range';
 var REFRESH = { seq:0, source:null, state:'idle', lastAt:null, loadedRange:null, targetText:'',
   intervalSec:30, autoTimer:null, doneTimer:null };
 function refreshIntervalOf(v){ v=+v||0; return v>0?v:30; }
+/* 相对区间每次计算都重新取本地今天;历史周期取上一完整自然周期。
+   历史分支只用年月日构造与 setDate 推移日历日(不加减 86400000 毫秒,
+   避开 DST 落钟/拨钟导致的错日);未知标识安全回退今日,不发 NaN 日期。 */
 function rangeBoundsFor(i){
   var t = startToday();
+  if(i!==+i || i<0 || i>11) i = 0;
   if(i===7 && CUSTOM){
     var cs=dateOf(CUSTOM.s), ce=dateOf(CUSTOM.e);
     if(cs>ce){ var ct=cs; cs=ce; ce=ct; }
@@ -233,6 +245,24 @@ function rangeBoundsFor(i){
   if(i===1){ var ws=new Date(t); ws.setDate(ws.getDate()-((ws.getDay()+6)%7)); return { s:ws, e:t }; }
   if(i===2) return { s:new Date(t.getFullYear(), t.getMonth(), 1), e:t };
   if(i===3) return { s:new Date(t.getFullYear(), 0, 1), e:t };
+  if(i===8){
+    var yd=new Date(t); yd.setDate(yd.getDate()-1);
+    return { s:yd, e:new Date(yd) };
+  }
+  if(i===9){
+    var mon=new Date(t); mon.setDate(mon.getDate()-((mon.getDay()+6)%7));
+    var ls=new Date(mon); ls.setDate(ls.getDate()-7);
+    var le=new Date(mon); le.setDate(le.getDate()-1);
+    return { s:ls, e:le };
+  }
+  if(i===10){
+    var y=t.getFullYear(), m=t.getMonth();
+    return { s:new Date(y, m-1, 1), e:new Date(y, m, 0) };
+  }
+  if(i===11){
+    var py=t.getFullYear()-1;
+    return { s:new Date(py, 0, 1), e:new Date(py, 11, 31) };
+  }
   var back=[0,0,0,0,6,29,364][i];
   var s=new Date(t); s.setDate(s.getDate()-back);
   return { s:s, e:t };
@@ -1528,6 +1558,36 @@ function requestRefresh(source){
 el('dash-refresh').addEventListener('click', function(){ requestRefresh('manual'); });
 document.addEventListener('visibilitychange', function(){ if(!document.hidden) catchUpRefresh(); });
 
+/* 组间分隔线由 ::after 绝对定位,不占布局宽度。按几何位置给每行末位的
+   按钮对标记 row-last,隐藏行尾竖线;容器尺寸或字体变化(语言切换)时重算。
+   vm 行为沙箱无 ResizeObserver,守卫跳过。 */
+function layoutRangeDividers(){
+  var seg=el('range-seg');
+  if(!seg) return;
+  var pairs=seg.querySelectorAll('.rp');
+  for(var round=0;round<4;round++){
+    var ends=[], lastTop=null;
+    pairs.forEach(function(p,i){
+      var top=p.getBoundingClientRect().top;
+      if(lastTop!==null && Math.abs(top-lastTop)>2) ends.push(i-1);
+      lastTop=top;
+    });
+    var changed=false;
+    pairs.forEach(function(p,i){
+      var want=ends.indexOf(i)!==-1;
+      if(p.classList.contains('row-last')!==want){
+        p.classList.toggle('row-last',want);
+        changed=true;
+      }
+    });
+    if(!changed) break;
+  }
+}
+if(typeof ResizeObserver!=='undefined'){
+  new ResizeObserver(function(){ layoutRangeDividers(); }).observe(el('range-seg'));
+  if(document.fonts && document.fonts.ready) document.fonts.ready.then(function(){ layoutRangeDividers(); });
+}
+
 /* ---------- 用量最高的会话：真实区间会话，直接渲染 ---------- */
 function sessionsHTML(rows, masked){
   if(!rows.length) return '<tr class="session-row"><td colspan="6" class="tl">'+ui('该区间暂无会话','No sessions in this range')+'</td></tr>';
@@ -2632,16 +2692,6 @@ function shotChart(mode){
   if(mode==='trend') drawTrend(target); else drawHeat(target);
   return card.outerHTML;
 }
-/* 日期栏复用原控件的外观，转为静态 span，不携带查询入口或日历弹层。
-   显式复制已解析字体各分项，避免 CSSOM 简写空声明问题。 */
-function shotStaticControl(source){
-  var span=document.createElement('span'), cs=window.getComputedStyle(source);
-  span.className='share-static-control'; span.innerHTML=source.innerHTML;
-  ['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','padding','border','borderRadius','background','boxShadow','color','minHeight'].forEach(function(k){span.style[k]=cs[k];});
-  span.style.display='inline-flex';span.style.alignItems='center';span.style.justifyContent='center';span.style.whiteSpace='nowrap';
-  if(source.getAttribute('aria-pressed')==='true') span.setAttribute('data-selected','true');
-  return span;
-}
 function shotIcon(id){
   var symbol=el(id);
   return '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">'+(symbol ? symbol.innerHTML : '')+'</svg>';
@@ -2655,17 +2705,12 @@ function shotCapture(){
   var brand=document.querySelector('.brand .mark').outerHTML;
   var version=el('version-badge').textContent || ui('版本未知','Version unavailable');
   var pageHead=document.querySelector('#page-dash .page-head').cloneNode(true);
-  pageHead.querySelectorAll('.unit-help,.privacy-trigger,.shot-trigger').forEach(function(n){n.parentNode.removeChild(n);});
-  var periods=document.createElement('div');periods.className='seg share-range-seg';
-  el('range-seg').querySelectorAll('button').forEach(function(button){
-    var choice=shotStaticControl(button);
-    ['background','box-shadow','color','font-weight'].forEach(function(k){choice.style.removeProperty(k);});
-    periods.appendChild(choice);
-  });
-  var date=shotStaticControl(el('range-custom'));
-  date.classList.add('share-date-box');
-  date.innerHTML=shotIcon('i-calendar')+'<span>'+esc(ymd(bounds.s)+(ymd(bounds.s)===ymd(bounds.e)?'':' ~ '+ymd(bounds.e)))+'</span>';
-  var header='<header class="share-head"><div class="share-topline">'+pageHead.outerHTML+'<div class="share-brand">'+brand+'<div><strong>Token Usage</strong><span class="version-badge">'+esc(version)+'</span></div></div></div><div class="toolbar share-toolbar">'+periods.outerHTML+date.outerHTML+'<span class="share-query-time">'+ui('数据截至','Data through')+' · '+esc(state.data.data_through||'—')+'</span></div></header>';
+  pageHead.querySelectorAll('.unit-help,.privacy-trigger,.shot-trigger,.refresh-state').forEach(function(n){n.parentNode.removeChild(n);});
+  /* 分享头区间为静态文本行:当前区间名 + 完整实际日期(单日一个日期,
+     多日两端完整日期),不复制预设按钮、日历、刷新或自动刷新状态 */
+  var rangeFrom=ymd(bounds.s), rangeTo=ymd(bounds.e);
+  var rangeLine=rangeName(state.range)+' · '+rangeFrom+(rangeFrom===rangeTo?'':' '+ui('～','~')+' '+rangeTo);
+  var header='<header class="share-head"><div class="share-topline">'+pageHead.outerHTML+'<div class="share-brand">'+brand+'<div><strong>Token Usage</strong><span class="version-badge">'+esc(version)+'</span></div></div></div><p class="share-range-line">'+esc(rangeLine)+'</p><p class="share-query-time">'+ui('数据截至','Data through')+' · '+esc(state.data.data_through||'—')+'</p></header>';
   var custom=(state.data.custom_views||[]).map(function(v){return {name:v.name,label:(v.dimensions||[]).map(dimLabel).join(' × ')+' ('+v.name+')'};});
   var variants=[false,true].map(function(masked){
     var cards=DIMS.map(function(id){

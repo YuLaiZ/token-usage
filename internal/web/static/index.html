@@ -86,7 +86,10 @@ d.lang=l;d.setAttribute('data-locale',l);})();
     <section class="page" id="page-dash" data-active="true" aria-hidden="false">
       <div class="page-head">
         <div>
-          <h2>用量统计</h2>
+          <div class="h2-row">
+            <h2>用量统计</h2>
+            <div class="refresh-state" id="refresh-state" data-state="idle" role="status" aria-live="polite" aria-atomic="true"><i class="refresh-mark" aria-hidden="true"></i><strong id="refresh-label">自动刷新已开启</strong><small id="refresh-detail">最近查询 · —</small></div>
+          </div>
           <div class="page-note-row">
             <p class="page-note">按客户端、供应商、模型和项目查看消耗</p>
             <div class="unit-help">
@@ -107,16 +110,16 @@ d.lang=l;d.setAttribute('data-locale',l);})();
       </div>
 
       <div class="toolbar">
-        <div class="tb-left">
-          <div class="seg" role="group" aria-label="统计区间" id="range-seg">
-            <button aria-pressed="true" data-v="0">今日</button>
-            <button aria-pressed="false" data-v="1">本周</button>
-            <button aria-pressed="false" data-v="2">本月</button>
-            <button aria-pressed="false" data-v="3">本年</button>
-            <button aria-pressed="false" data-v="4">近 7 天</button>
-            <button aria-pressed="false" data-v="5">近 30 天</button>
-            <button aria-pressed="false" data-v="6">近 1 年</button>
-          </div>
+        <div class="seg seg-ranges" role="group" aria-label="统计区间" id="range-seg">
+          <span class="rp"><button aria-pressed="true" data-v="0">今日</button><button aria-pressed="false" data-v="8">昨日</button></span>
+          <span class="rp"><button aria-pressed="false" data-v="1">本周</button><button aria-pressed="false" data-v="9">上周</button></span>
+          <span class="rp"><button aria-pressed="false" data-v="2">本月</button><button aria-pressed="false" data-v="10">上月</button></span>
+          <span class="rp"><button aria-pressed="false" data-v="3">本年</button><button aria-pressed="false" data-v="11">去年</button></span>
+          <span class="rp"><button aria-pressed="false" data-v="4">近 7 天</button></span>
+          <span class="rp"><button aria-pressed="false" data-v="5">近 30 天</button></span>
+          <span class="rp"><button aria-pressed="false" data-v="6">近 1 年</button></span>
+        </div>
+        <div class="tb-actions">
           <div class="calwrap">
             <button class="button range-custom" id="range-custom" aria-haspopup="true" aria-expanded="false" aria-pressed="false" title="" aria-label=""><svg class="ic" aria-hidden="true"><use href="#i-calendar"/></svg><span class="rt-full" id="range-custom-txt"></span><span class="rt-short" id="range-custom-short" aria-hidden="true"></span></button>
             <div class="calpop" id="calpop" role="dialog" aria-label="自定义统计区间" hidden>
@@ -133,9 +136,8 @@ d.lang=l;d.setAttribute('data-locale',l);})();
               </div>
             </div>
           </div>
+          <button type="button" class="button dash-refresh" id="dash-refresh" aria-label="刷新当前区间" title="刷新当前区间"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.2-5.5M20 4v5h-5"/></svg><span>刷新</span></button>
         </div>
-        <button type="button" class="button dash-refresh" id="dash-refresh" aria-label="刷新当前区间" title="刷新当前区间"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.2-5.5M20 4v5h-5"/></svg><span>刷新</span></button>
-        <div class="refresh-state" id="refresh-state" data-state="idle" role="status" aria-live="polite" aria-atomic="true"><i class="refresh-mark" aria-hidden="true"></i><strong id="refresh-label">自动刷新已开启</strong><small id="refresh-detail">最近查询 · —</small></div>
       </div>
 
       <div class="dash-results" id="dash-results" aria-busy="false">

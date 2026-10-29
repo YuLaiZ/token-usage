@@ -576,6 +576,30 @@ func dashboardURL(t *testing.T, r appJSReport) string {
 	return firstFetch(t, r, "GET", "/api/dashboard").URL
 }
 
+/* dashboard GET 的全部 URL 按请求顺序返回(初始加载与每次区间切换)。 */
+func dashURLSequence(r appJSReport) []string {
+	out := []string{}
+	for _, c := range r.FetchCalls {
+		if c.Method == "GET" && strings.HasPrefix(c.URL, "/api/dashboard") {
+			out = append(out, c.URL)
+		}
+	}
+	return out
+}
+
+func assertDashURLSequence(t *testing.T, r appJSReport, want []string) {
+	t.Helper()
+	got := dashURLSequence(r)
+	if len(got) != len(want) {
+		t.Fatalf("dashboard urls = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("dashboard url #%d = %q, want %q", i+1, got[i], want[i])
+		}
+	}
+}
+
 func putCalls(r appJSReport) []fetchCall {
 	out := []fetchCall{}
 	for _, c := range r.FetchCalls {
@@ -1195,6 +1219,105 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 		},
 	}
 
+	/* 历史区间预设(上一完整自然日/周/月/年):固定沙箱日期(opts.now 锚本地
+	   正午,跨时区运行同日历日),表驱动断言每个历史预设点击后的 dashboard
+	   URL。初始请求恒为「今日」(from=to=锚定日),随后每个 seg 步一条 URL,
+	   顺序对应。 */
+	historySteps := func(vals ...string) []stepSpec {
+		out := make([]stepSpec, 0, len(vals))
+		for _, v := range vals {
+			out = append(out, stepSpec{Op: "seg", ID: "range-seg", Value: v})
+		}
+		return out
+	}
+	historyCases := []struct {
+		name  string
+		now   string
+		steps []stepSpec
+		wants []string
+	}{
+		{"history mid week four presets", "2026-10-28", historySteps("8", "9", "10", "11"), []string{
+			"/api/dashboard?from=2026-10-27&to=2026-10-27",
+			"/api/dashboard?from=2026-10-19&to=2026-10-25",
+			"/api/dashboard?from=2026-09-01&to=2026-09-30",
+			"/api/dashboard?from=2025-01-01&to=2025-12-31",
+		}},
+		{"history new year day boundaries", "2026-01-01", historySteps("8", "9", "10"), []string{
+			"/api/dashboard?from=2025-12-31&to=2025-12-31",
+			"/api/dashboard?from=2025-12-22&to=2025-12-28",
+			"/api/dashboard?from=2025-12-01&to=2025-12-31",
+		}},
+		{"history last week boundary sunday", "2026-10-25", historySteps("9"), []string{
+			"/api/dashboard?from=2026-10-12&to=2026-10-18",
+		}},
+		{"history last week boundary monday", "2026-10-26", historySteps("9"), []string{
+			"/api/dashboard?from=2026-10-19&to=2026-10-25",
+		}},
+		{"history last month leap february", "2024-03-01", historySteps("10"), []string{
+			"/api/dashboard?from=2024-02-01&to=2024-02-29",
+		}},
+		{"history last month common february", "2026-03-01", historySteps("10"), []string{
+			"/api/dashboard?from=2026-02-01&to=2026-02-28",
+		}},
+		{"history last month from month end", "2026-05-31", historySteps("10"), []string{
+			"/api/dashboard?from=2026-04-01&to=2026-04-30",
+		}},
+		{"history last year leap span", "2025-01-01", historySteps("11"), []string{
+			"/api/dashboard?from=2024-01-01&to=2024-12-31",
+		}},
+	}
+	historyWants := map[string][]string{}
+	for _, hc := range historyCases {
+		anchor := hc.now[:10]
+		urls := []string{"/api/dashboard?from=" + anchor + "&to=" + anchor}
+		urls = append(urls, hc.wants...)
+		historyWants[hc.name] = urls
+	}
+	for _, hc := range historyCases {
+		steps := hc.steps
+		scenarios = append(scenarios, scenarioDef{
+			Name: hc.name,
+			Opts: map[string]any{"routes": baseRoutes(), "now": hc.now},
+			Steps: steps,
+		})
+	}
+	scenarios = append(scenarios,
+		scenarioDef{
+			Name: "history preset labels and single selection",
+			Opts: map[string]any{"routes": baseRoutes(), "now": "2026-10-28"},
+			Steps: []stepSpec{{Op: "seg", ID: "range-seg", Value: "8"}},
+		},
+		scenarioDef{
+			Name: "history preset labels in english",
+			Opts: map[string]any{"routes": baseRoutes(), "now": "2026-10-28"},
+			Steps: []stepSpec{
+				{Op: "locale", Value: "en"},
+				{Op: "seg", ID: "range-seg", Value: "9"},
+			},
+		},
+		scenarioDef{
+			Name: "history preset clears saved custom memory",
+			Opts: map[string]any{
+				"routes": baseRoutes(), "now": "2026-10-28",
+				"savedRange": map[string]string{"s": "2026-08-01", "e": "2026-08-15"},
+			},
+			Steps: []stepSpec{{Op: "seg", ID: "range-seg", Value: "10"}},
+		},
+		scenarioDef{
+			Name: "history preset advances across midnight",
+			Opts: map[string]any{"routes": baseRoutes(), "now": "2026-10-28T23:30:00", "timers": "manual"},
+			Steps: []stepSpec{
+				{Op: "seg", ID: "range-seg", Value: "8"},
+				{Op: "tick", Value: "10800000"},
+			},
+		},
+		scenarioDef{
+			Name: "rolling year keeps 365 days",
+			Opts: map[string]any{"routes": baseRoutes(), "now": "2026-10-28"},
+			Steps: []stepSpec{{Op: "seg", ID: "range-seg", Value: "6"}},
+		},
+	)
+
 	dir := t.TempDir()
 	appPath := filepath.Join(dir, "app.js")
 	if err := os.WriteFile(appPath, appSource, 0o644); err != nil {
@@ -1239,6 +1362,12 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 			}
 			if r.Fatal != "" {
 				t.Fatalf("app.js threw during scenario: %s", r.Fatal)
+			}
+			/* 历史周期表驱动场景:全部 dashboard URL 按序精确匹配
+			   (初始今日 + 每个 seg 步一条),命中后不再进入下方 switch。 */
+			if want, ok := historyWants[sc.Name]; ok {
+				assertDashURLSequence(t, r, want)
+				return
 			}
 			switch sc.Name {
 			case "manual refresh updates snapshot freshness", "auto refresh updates snapshot freshness", "null freshness does not reuse old metadata", "failed refresh keeps last successful freshness":
@@ -2460,6 +2589,78 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				if n := countFetch(r, "PUT", "/api/config"); n != 0 {
 					t.Errorf("config PUTs = %d, want 0 (defaults load must not save)", n)
 				}
+
+			case "history preset labels and single selection":
+				/* 区分度:预设名称贯穿全页(刷新状态/会话小标题/日期入口全文),
+				   且 11 个预设共享唯一选中——若 rangeName 数组缺新标识会渲染
+				   undefined,若选中态只同步一行会双选。 */
+				if got, want := r.SessionsSub, "昨日 · 10-27"; got != want {
+					t.Errorf("sessions sub = %q, want %q", got, want)
+				}
+				if got, want := r.RangeCustom.Text, "2026-10-27"; got != want {
+					t.Errorf("range custom text = %q, want %q", got, want)
+				}
+				if got, want := r.Refresh.Label, "已更新 · 昨日"; got != want {
+					t.Errorf("refresh label = %q, want %q", got, want)
+				}
+				pressed := 0
+				for _, b := range r.RangeSeg {
+					wantPressed := b.V == "8"
+					if (b.Pressed == "true") != wantPressed {
+						t.Errorf("preset v=%s pressed=%q, want %v", b.V, b.Pressed, wantPressed)
+					}
+					if b.Pressed == "true" {
+						pressed++
+					}
+				}
+				if pressed != 1 || len(r.RangeSeg) != 11 {
+					t.Errorf("range seg = %d buttons / %d pressed, want 11 buttons / exactly 1 pressed", len(r.RangeSeg), pressed)
+				}
+
+			case "history preset labels in english":
+				/* 区分度:语言切换只换文案;英文标签沿用既定 Last week 形态,
+				   日期入口保持完整 YYYY-MM-DD。 */
+				if got, want := r.SessionsSub, "Last week · 10-19 ~ 10-25"; got != want {
+					t.Errorf("sessions sub = %q, want %q", got, want)
+				}
+				if got, want := r.RangeCustom.Text, "2026-10-19 ~ 2026-10-25"; got != want {
+					t.Errorf("range custom text = %q, want %q", got, want)
+				}
+				if got, want := r.Refresh.Label, "Updated · Last week"; got != want {
+					t.Errorf("refresh label = %q, want %q", got, want)
+				}
+
+			case "history preset clears saved custom memory":
+				/* 区分度:选任意预设(含历史预设)都必须清掉 tu-range 记忆——
+				   若沿用旧 0~6 判定漏了新标识,reload 会错误恢复自定义区间。 */
+				assertDashURLSequence(t, r, []string{
+					"/api/dashboard?from=2026-08-01&to=2026-08-15",
+					"/api/dashboard?from=2026-09-01&to=2026-09-30",
+				})
+				if _, kept := r.Session["tu-range"]; kept {
+					t.Errorf("sessionStorage tu-range = %q, want removed after preset click", r.Session["tu-range"])
+				}
+
+			case "history preset advances across midnight":
+				/* 区分度:相对区间在每次查询开始时按当时日期重算——23:30 选
+				   昨日得 10-27,推进 3 小时后自动刷新落在 10-29,昨日推进为
+				   10-28;若用固定毫秒倒推或缓存范围则第三条 URL 不变。 */
+				assertDashURLSequence(t, r, []string{
+					"/api/dashboard?from=2026-10-28&to=2026-10-28",
+					"/api/dashboard?from=2026-10-27&to=2026-10-27",
+					"/api/dashboard?from=2026-10-28&to=2026-10-28",
+				})
+				if got, want := r.Refresh.Label, "已更新 · 昨日"; got != want {
+					t.Errorf("refresh label = %q, want %q", got, want)
+				}
+
+			case "rolling year keeps 365 days":
+				/* 区分度:近 1 年保持含今天 365 天(偏移 364),不得被历史预设
+				   改造波及为自然年口径。 */
+				assertDashURLSequence(t, r, []string{
+					"/api/dashboard?from=2026-10-28&to=2026-10-28",
+					"/api/dashboard?from=2025-10-29&to=2026-10-28",
+				})
 			}
 		})
 	}

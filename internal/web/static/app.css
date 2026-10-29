@@ -227,6 +227,10 @@ svg[hidden]{display:none}
 /* 页面级标题与右上角工具共用基线；Dashboard 的数据时间紧邻全局主题按钮 */
 .page-head{position:relative;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding-right:402px}
 h2{margin:0;font:750 clamp(22px,2.4vw,28px)/1.1 var(--font);letter-spacing:-.02em}
+/* 标题行:刷新状态胶囊紧随标题,以次要状态呈现;装不下时收缩省略并换行,
+   不与右侧悬浮工具组争抢页头预留区,也不挤压标题 */
+.h2-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.h2-row h2{flex:none}
 .page-note-row{display:flex;flex-wrap:wrap;align-items:center;gap:7px 10px;margin-top:7px}
 .page-note{margin:0;color:var(--muted);font-size:12.5px}
 .asof{position:absolute;top:0;right:164px;display:inline-flex;gap:7px;align-items:center;min-height:34px;padding:7px 11px;border:1px solid var(--line);border-radius:999px;background:var(--glass-lens);backdrop-filter:var(--glass-lens-blur);-webkit-backdrop-filter:var(--glass-lens-blur);color:var(--muted);font:600 11px/1 var(--mono);white-space:nowrap;box-shadow:0 1px 4px color-mix(in srgb,var(--ink) 8%,transparent)}
@@ -239,12 +243,15 @@ h2{margin:0;font:750 clamp(22px,2.4vw,28px)/1.1 var(--font);letter-spacing:-.02e
 .asof-full,.asof-short{align-items:center;gap:10px;white-space:nowrap;line-height:1}
 .asof-divider{width:1px;height:12px;background:var(--line);flex:none}
 
-.toolbar{position:sticky;top:10px;z-index:25;display:flex;width:max-content;max-width:calc(100% + 12px);flex-wrap:wrap;justify-content:flex-start;gap:10px;margin:18px -6px 0;padding:6px;border:1px solid var(--glass-rim);border-radius:14px;background:var(--glass-sheen-strong),var(--glass-strong);backdrop-filter:var(--glass-blur-strong);-webkit-backdrop-filter:var(--glass-blur-strong);box-shadow:0 8px 24px color-mix(in srgb,var(--ink) 12%,transparent),inset 0 1px 0 rgba(255,255,255,.14)}
-.tb-left,.tb-right{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+/* 时间预设沿用圆角玻璃工具条,宽度随选项扩展。空间不足时操作组整体
+   换行,预设按按钮对换行;吸顶背景复用玻璃材质而非重画页面色场。 */
+.toolbar{position:sticky;top:10px;z-index:25;display:flex;align-items:center;width:max-content;max-width:calc(100% + 12px);flex-wrap:wrap;justify-content:flex-start;gap:10px;margin:18px -6px 0;padding:6px;border:1px solid var(--glass-rim);border-radius:14px;background:var(--glass-sheen-strong),var(--glass-strong);backdrop-filter:var(--glass-blur-strong);-webkit-backdrop-filter:var(--glass-blur-strong);box-shadow:0 8px 24px color-mix(in srgb,var(--ink) 12%,transparent),inset 0 1px 0 rgba(255,255,255,.14)}
+.tb-actions{display:flex;align-items:center;gap:8px;flex:none}
 .dash-refresh{justify-content:center;min-width:34px;padding-inline:9px}
 .dash-refresh svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .dash-refresh:focus-visible{outline:0;box-shadow:var(--focus)}
-.refresh-state{display:flex;align-items:center;gap:8px;min-height:30px;width:max-content;max-width:100%;margin:0;padding:5px 10px;border:1px solid var(--line-soft);border-radius:999px;background:color-mix(in srgb,var(--glass) 70%,transparent);color:var(--muted);font:600 11px/1.3 var(--font)}
+.refresh-state{display:flex;align-items:center;gap:8px;min-height:30px;min-width:0;max-width:100%;margin:0;padding:5px 10px;border:1px solid var(--line-soft);border-radius:999px;background:color-mix(in srgb,var(--glass) 70%,transparent);color:var(--muted);font:600 11px/1.3 var(--font)}
+.h2-row .refresh-state{flex:0 1 auto}
 .refresh-state strong{color:var(--ink);font-weight:650;white-space:nowrap}
 .refresh-state small{min-width:0;color:var(--quiet);font:500 10.5px/1.3 var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .refresh-mark{display:block;flex:none;width:10px;height:10px;border-radius:50%;background:#35c889;box-shadow:0 0 0 3px color-mix(in srgb,#35c889 14%,transparent);animation:refresh-breathe 2.4s ease-in-out infinite}
@@ -261,6 +268,13 @@ h2{margin:0;font:750 clamp(22px,2.4vw,28px)/1.1 var(--font);letter-spacing:-.02e
 .seg button[aria-pressed="true"]::after,.locale-switch button[aria-pressed="true"]::after{content:"";position:absolute;left:9px;right:9px;bottom:2px;height:2px;border-radius:999px;background:var(--accent);box-shadow:0 0 7px color-mix(in srgb,var(--accent) 62%,transparent)}
 html[data-theme="light"] .seg button[aria-pressed="true"]{background:color-mix(in srgb,var(--accent) 12%,#fff);color:color-mix(in srgb,var(--accent) 82%,var(--ink));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 58%,transparent),0 2px 7px color-mix(in srgb,var(--accent) 16%,transparent),inset 0 1px 0 rgba(255,255,255,.92)}
 .seg-sm button{min-height:26px;padding:3px 10px;font-size:11.5px}
+/* 时间筛选单行布局:自然周期成对,各组间以短竖线分隔。竖线定位于
+   10px 组间距中央,不占布局宽度,隐藏行尾竖线时不会使按钮重新换行。 */
+.seg-ranges{flex-wrap:wrap;row-gap:4px;column-gap:10px}
+.seg-ranges .rp{position:relative;display:inline-flex;gap:2px}
+.seg-ranges .rp:not(:last-child)::after{content:"";position:absolute;right:-5.5px;top:50%;transform:translateY(-50%);width:1px;height:14px;background:var(--line)}
+/* 换行后行尾的分隔线由 app.js 按几何位置标记隐藏 */
+.seg-ranges .rp.row-last::after{display:none}
 /* 窄屏维度切换器：桌面隐藏 */
 .dim-seg{display:none}
 .dm-hint{display:none}
@@ -695,22 +709,20 @@ table.ctable tbody th:first-child{padding-left:14px}
   .asof-full{display:none}
   .asof-short{display:inline-flex;gap:7px}
   .global-tools .asof{font-size:10px;padding-inline:9px}
-  .page-head{flex-direction:column;padding-right:0}
+  .page-head{flex-direction:column;padding-right:0;align-items:stretch}
   .kpi-rail{gap:14px;padding:20px 18px 18px}
   .kpi-metric-total .metric-value{font-size:32px}
   .metric-value{font-size:22px}
   .kpi-support{min-width:0;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 12px;padding:2px 0}
   .kpi-support .kpi-metric{min-height:50px;padding:0}
-  .toolbar{display:grid;grid-template-columns:minmax(0,1fr) 44px;gap:6px;width:calc(100% + 4px);max-width:none;margin-inline:-2px;padding:5px}
-  .tb-right{width:100%;justify-content:space-between}
-  .toolbar .tb-left{display:grid;grid-template-columns:minmax(0,1fr) minmax(76px,max-content);width:100%;min-width:0;overflow:hidden;flex-wrap:nowrap;gap:6px}
-  .dash-refresh{grid-column:2;min-width:44px;min-height:44px}
+  /* 窄屏时间筛选:预设按按钮对换行(全部可见可达),日期与刷新操作组整行
+     跟随,两端对齐;刷新状态已在页头,不再参与工具条布局 */
+  .toolbar{display:flex;width:calc(100% + 4px);max-width:none;margin-inline:-2px;padding:5px;gap:6px;align-items:center}
+  .seg-ranges{row-gap:5px}
+  #range-seg button{min-height:38px;padding-inline:11px}
+  .tb-actions{width:100%;justify-content:space-between}
+  .dash-refresh{min-width:44px;min-height:44px}
   .dash-refresh span{display:none}
-  .refresh-state{grid-column:1/-1;width:100%;border-radius:10px}
-  .toolbar .tb-left{display:grid;grid-template-columns:minmax(0,1fr) minmax(76px,max-content);width:100%;min-width:0;overflow:hidden;flex-wrap:nowrap;gap:6px}
-  #range-seg{display:flex;width:100%;max-width:100%;min-width:0;overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-width:none}
-  #range-seg::-webkit-scrollbar{display:none}
-  #range-seg button{min-width:max-content;min-height:38px;padding-inline:11px}
   .range-custom{width:auto;min-width:76px;max-width:136px;min-height:44px;padding-inline:10px;justify-content:center;white-space:nowrap}
   .chiprow{max-width:100%;justify-content:flex-start}
   .crow{flex-wrap:wrap}
@@ -835,10 +847,10 @@ table.ctable tbody th:first-child{padding-left:14px}
 .share-head{margin-bottom:24px}
 .share-topline{display:flex;align-items:flex-start;justify-content:space-between;gap:24px}
 .share-sheet .page-head{padding:0;margin:0;min-width:0}
-.share-toolbar.toolbar{position:static;width:100%;max-width:100%;margin:18px 0 0;z-index:auto;align-items:center}
-.share-range-seg{flex:none}
-.share-static-control{gap:7px}
-.share-query-time{margin-left:auto;padding:0 10px;color:var(--quiet);font:500 11px/1.4 var(--mono);white-space:nowrap}
+/* 分享头区间为静态文本行:当前区间名 + 完整实际日期,不复制预设按钮、
+   日历或刷新控件;数据截至独立成次要一行 */
+.share-range-line{margin:16px 0 0;color:var(--ink);font:650 13px/1.5 var(--mono);white-space:nowrap}
+.share-query-time{display:block;margin:6px 0 0;padding:0;color:var(--quiet);font:500 11px/1.4 var(--mono);white-space:nowrap}
 .share-brand{display:flex;align-items:center;gap:12px}
 .share-brand strong{display:block;font:750 22px/1.3 var(--font)}
 .share-brand .version-badge{display:inline-block;margin-top:6px}
@@ -871,12 +883,5 @@ table.ctable tbody th:first-child{padding-left:14px}
   .shot-head-actions{width:100%;justify-content:flex-end}
 }
 
-.share-static-control{position:relative}
-.share-static-control[data-selected="true"]::after{content:"";position:absolute;left:9px;right:9px;bottom:2px;height:2px;border-radius:999px;background:var(--accent);box-shadow:0 0 7px color-mix(in srgb,var(--accent) 62%,transparent)}
 .share-privacy-badge{cursor:default}
 .share-privacy-badge[data-masked="true"]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 42%,var(--line));background:color-mix(in srgb,var(--accent) 10%,var(--glass-lens))}
-
-/* 日期预设按最终选中态绘制，不捕获主界面切换动画的中间颜色。 */
-.share-range-seg .share-static-control{background:transparent;color:var(--muted);font-weight:650;box-shadow:none}
-.share-range-seg .share-static-control[data-selected="true"]{background:color-mix(in srgb,var(--accent) 22%,var(--raised));color:var(--ink);font-weight:750;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 72%,transparent),0 2px 9px color-mix(in srgb,var(--accent) 22%,transparent),inset 0 1px 0 rgba(255,255,255,.22)}
-.share-sheet[data-theme="light"] .share-range-seg .share-static-control[data-selected="true"]{background:color-mix(in srgb,var(--accent) 12%,#fff);color:color-mix(in srgb,var(--accent) 82%,var(--ink));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 58%,transparent),0 2px 7px color-mix(in srgb,var(--accent) 16%,transparent),inset 0 1px 0 rgba(255,255,255,.92)}

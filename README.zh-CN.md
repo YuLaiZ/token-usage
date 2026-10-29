@@ -16,14 +16,16 @@
 - 可单次执行，也可使用实时后台监控守护进程（`token-usage daemon start`）；支持 macOS launchd 与 Windows 注册表自启。
 - 纯 Go 单二进制 CLI，支持 macOS 和 Windows。
 
-![token-usage 用量统计页](docs/images/dashboard.zh-CN.png)
+*以下截图为 v0.2.5 界面预览，使用演示数据。*
+
+![token-usage v0.2.5 用量统计页（演示数据）](docs/images/dashboard.zh-CN.png)
 
 <details>
 <summary>展开查看用量趋势、热力图与分享截图</summary>
 
 内置截图分享可将概要指标、用量趋势和热力图合成一份 PNG，同时保留所选统计区间和版本号。
 
-![用量趋势与热力图](docs/images/dashboard-sharing.zh-CN.png)
+![v0.2.5 用量趋势与热力图（演示数据）](docs/images/dashboard-sharing.zh-CN.png)
 
 </details>
 

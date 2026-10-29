@@ -121,6 +121,16 @@ function makeSandbox(opts) {
   const pendingFetches = []; /* gate 响应:被 resolve 步骤放行的挂起 fetch */
   const probes = []; /* 行为探针:donut 中心联动文本、弹窗文本等中间态取证 */
   let activeEl = null;
+  /* 固定日期锚点(opts.now):"YYYY-MM-DD" 补本地正午,完整本地时刻串原样解析,
+     数字按毫秒。manual timers 的 __tick 会同步推进锚点(跨午夜重算相对区间)。 */
+  let nowMs = null;
+  if (opts.now !== undefined && opts.now !== null) {
+    let spec = String(opts.now);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(spec)) spec += "T12:00:00";
+    nowMs = typeof opts.now === "number" ? opts.now : Date.parse(spec);
+    if (!Number.isFinite(nowMs)) throw new Error("bad opts.now: " + opts.now);
+  }
+  const nowBase = { ms: nowMs };
 
   function queryAll(scope, selector) {
     const out = [];
@@ -342,7 +352,9 @@ function makeSandbox(opts) {
   const pageConfig = makeElement({ id: "page-config", classes: ["page"], attrs: { "aria-hidden": "true" } });
   content.appendChild(pageDash);
   content.appendChild(pageConfig);
-  const rangeButtons = ["0", "1", "2", "3", "4", "5", "6"].map((v, i) =>
+  /* 预设按钮按生产视觉顺序排列:自然周期对(今/昨、周、月、年)在前,滚动区间在后;
+     桩保持扁平(bindSeg 委托与 querySelectorAll 语义不受生产布局 wrapper 影响) */
+  const rangeButtons = ["0", "8", "1", "9", "2", "10", "3", "11", "4", "5", "6"].map((v, i) =>
     makeElement({ tag: "button", attrs: { "data-v": v, "aria-pressed": i === 0 ? "true" : "false" } })
   );
   const rangeSeg = makeElement({ id: "range-seg" });
@@ -628,6 +640,7 @@ function makeSandbox(opts) {
     };
     sandbox.__tick = (ms) => {
       clockMs += ms;
+      if (nowBase.ms !== null) nowBase.ms += ms;
       runDue();
     };
   }
@@ -755,6 +768,27 @@ function makeSandbox(opts) {
 
   if (opts.savedRange) storeSession.set("tu-range", JSON.stringify(opts.savedRange));
 
+  /* 固定日期:沙箱 Date 的无参构造与 Date.now() 返回锚点(随 __tick 推进),
+     带参构造透传真实 Date,保证 ymd/setDate 等日历运算原样可用。
+     锚点用本地时区解释,与生产页面 startToday() 的本地日期语义一致。 */
+  let todayOverride = null;
+  if (nowBase.ms !== null) {
+    const RealDate = Date;
+    const FakeDate = function (a, b, c, d, e, f, g) {
+      if (!(this instanceof FakeDate)) return new RealDate(nowBase.ms).toString();
+      if (arguments.length === 0) return new RealDate(nowBase.ms);
+      if (arguments.length === 1) return new RealDate(a);
+      return new RealDate(a, b, c === undefined ? 1 : c, d || 0, e || 0, f || 0, g || 0);
+    };
+    FakeDate.now = () => nowBase.ms;
+    FakeDate.parse = RealDate.parse;
+    FakeDate.UTC = RealDate.UTC;
+    sandbox.Date = FakeDate;
+    const anchor = new RealDate(nowBase.ms);
+    const pad = (n) => (n < 10 ? "0" : "") + n;
+    todayOverride = anchor.getFullYear() + "-" + pad(anchor.getMonth() + 1) + "-" + pad(anchor.getDate());
+  }
+
   vm.createContext(sandbox);
   return {
     sandbox: sandbox,
@@ -782,6 +816,7 @@ function makeSandbox(opts) {
     asofEl: asofEl,
     root: docRoot,
     rangeCustom: rangeCustom,
+    todayOverride: todayOverride,
     shotConfig: opts.shot || {}
   };
 }
@@ -1011,7 +1046,7 @@ function buildReport(def, ctx, fatal, stepStates) {
   return {
     name: def.name,
     fatal: fatal,
-    today: todayStr(),
+    today: ctx.todayOverride || todayStr(),
     title: ctx.doc.title,
     toast: byId("toast").textContent,
     fetchCalls: ctx.fetchCalls,
