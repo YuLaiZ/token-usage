@@ -781,7 +781,7 @@ func TestLoadZCodeProviderMap_ParsesIDName(t *testing.T) {
 		{"id": "builtin:bigmodel-coding-plan", "name": "Bigmodel - Coding Plan"},
 		{"id": "9848d583-72b9-457d-b6f2-a54c487c5cc7", "name": "DeepSeek"},
 	})
-	m := loadZCodeProviderMap(tmp)
+	m := loadZCodeProviderMap(tmp, nil)
 	if len(m) != 2 {
 		t.Fatalf("期望 2 项，实际 %d: %v", len(m), m)
 	}
@@ -805,13 +805,13 @@ func TestLoadZCodeProviderMap_ConfigNameOverridesCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := loadZCodeProviderMap(cachePath)["provider-id"]; got != "OpenCode-Completions" {
+	if got := loadZCodeProviderMap(cachePath, nil)["provider-id"]; got != "OpenCode-Completions" {
 		t.Errorf("config provider name = %q, want OpenCode-Completions", got)
 	}
 }
 
 func TestLoadZCodeProviderMap_FileNotFound_EmptyMap(t *testing.T) {
-	m := loadZCodeProviderMap(filepath.Join(t.TempDir(), "no-such.json"))
+	m := loadZCodeProviderMap(filepath.Join(t.TempDir(), "no-such.json"), nil)
 	if m == nil || len(m) != 0 {
 		t.Fatalf("期望非 nil 空 map，实际 %v", m)
 	}
@@ -822,7 +822,7 @@ func TestLoadZCodeProviderMap_InvalidJSON_EmptyMap(t *testing.T) {
 	if err := os.WriteFile(tmp, []byte("{not-json"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	m := loadZCodeProviderMap(tmp)
+	m := loadZCodeProviderMap(tmp, nil)
 	if m == nil || len(m) != 0 {
 		t.Fatalf("坏 json 期望非 nil 空 map，实际 %v", m)
 	}
@@ -834,7 +834,7 @@ func TestLoadZCodeProviderMap_NoAPIKeyLeak(t *testing.T) {
 	writeZCodeCacheJSON(t, tmp, []map[string]any{
 		{"id": "p1", "name": "ProviderOne", "apiKey": secret, "options": map[string]any{"apiKey": secret}},
 	})
-	m := loadZCodeProviderMap(tmp)
+	m := loadZCodeProviderMap(tmp, nil)
 	if m["p1"] != "ProviderOne" {
 		t.Fatalf("p1 name = %q, want ProviderOne", m["p1"])
 	}
@@ -926,7 +926,7 @@ func TestLoadZCodeProviderMap_Version2WorkspaceOptions(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "bots-model-cache.v2.json")
 	writeZCodeCacheV2JSON(t, tmp)
 
-	m := loadZCodeProviderMap(tmp)
+	m := loadZCodeProviderMap(tmp, nil)
 	if len(m) != 3 {
 		t.Fatalf("期望 3 项（重复 provider 幂等），实际 %d: %v", len(m), m)
 	}
@@ -966,7 +966,7 @@ func TestLoadZCodeProviderMap_MixedSchemasMerge(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	m := loadZCodeProviderMap(tmp)
+	m := loadZCodeProviderMap(tmp, nil)
 	if len(m) != 4 {
 		t.Fatalf("期望 4 项（3 v2 + 1 v1），实际 %d: %v", len(m), m)
 	}
@@ -975,6 +975,187 @@ func TestLoadZCodeProviderMap_MixedSchemasMerge(t *testing.T) {
 	}
 	if m["builtin:bigmodel-coding-plan"] != "Bigmodel - Coding Plan" {
 		t.Errorf("v2 bigmodel name = %q", m["builtin:bigmodel-coding-plan"])
+	}
+}
+
+// provider_config.json（新建供应商真源）：providerRules 的 providerId/providerName
+// 进映射；providerName 缺失（account:* 计划型条目）跳过；apiKey 不进内存结构。
+// 结构按本机真实 provider_config.json 构造。
+func TestLoadZCodeProviderMap_ProviderConfigRules(t *testing.T) {
+	root := t.TempDir()
+	cachePath := filepath.Join(root, "v2", "bots-model-cache.v2.json")
+	writeZCodeCacheJSON(t, cachePath, nil)
+	const secret = "sk-SECRET-DO-NOT-LEAK-7654321"
+	doc := `{"schemaVersion":1,"config":{"providerConfigRules":{"providerRules":[` +
+		`{"providerId":"new-provider","providerName":"OpenCode Go Chat",` +
+		`"config":{"access":{"type":"api-key","apiKey":"` + secret + `"}}},` +
+		`{"providerId":"account:bigmodel-individual-coding-plan","config":{}}` +
+		`]}}}`
+	providerConfigPath := filepath.Join(root, "v2", "provider_config.json")
+	if err := os.WriteFile(providerConfigPath, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := loadZCodeProviderMap(cachePath, nil)
+	if got := m["new-provider"]; got != "OpenCode Go Chat" {
+		t.Errorf("new-provider name = %q, want 'OpenCode Go Chat'", got)
+	}
+	if _, ok := m["account:bigmodel-individual-coding-plan"]; ok {
+		t.Errorf("providerName 缺失的条目应跳过，实际存在: %q", m["account:bigmodel-individual-coding-plan"])
+	}
+	for k, v := range m {
+		if strings.Contains(k, secret) || strings.Contains(v, secret) {
+			t.Fatalf("apiKey 泄漏到 map: key=%q val=%q", k, v)
+		}
+	}
+}
+
+// 优先级：provider_config.json 是最新真源，同 id 覆盖 config.json 与 cache。
+func TestLoadZCodeProviderMap_ProviderConfigOverridesConfig(t *testing.T) {
+	root := t.TempDir()
+	cachePath := filepath.Join(root, "v2", "bots-model-cache.v2.json")
+	writeZCodeCacheJSON(t, cachePath, []map[string]any{{"id": "p1", "name": "Cache Name"}})
+	if err := os.WriteFile(filepath.Join(root, "v2", "config.json"),
+		[]byte(`{"provider":{"p1":{"name":"Config Name"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "v2", "provider_config.json"),
+		[]byte(`{"config":{"providerConfigRules":{"providerRules":[`+
+			`{"providerId":"p1","providerName":"ProviderConfig Name"}]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := loadZCodeProviderMap(cachePath, nil)["p1"]; got != "ProviderConfig Name" {
+		t.Errorf("p1 name = %q, want 'ProviderConfig Name'（provider_config.json 应覆盖）", got)
+	}
+}
+
+// config.json 坏 JSON 只跳过自身，不阻断 provider_config.json 的读取。
+func TestLoadZCodeProviderMap_ConfigBrokenStillReadsProviderConfig(t *testing.T) {
+	root := t.TempDir()
+	cachePath := filepath.Join(root, "v2", "bots-model-cache.v2.json")
+	writeZCodeCacheJSON(t, cachePath, nil)
+	if err := os.WriteFile(filepath.Join(root, "v2", "config.json"),
+		[]byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "v2", "provider_config.json"),
+		[]byte(`{"config":{"providerConfigRules":{"providerRules":[`+
+			`{"providerId":"new-provider","providerName":"OpenCode Go Chat"}]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := loadZCodeProviderMap(cachePath, nil)
+	if got := m["new-provider"]; got != "OpenCode Go Chat" {
+		t.Errorf("new-provider name = %q, want 'OpenCode Go Chat'（坏 config.json 不应阻断）", got)
+	}
+}
+
+// 与上一用例对称：provider_config.json 坏 JSON 只跳过自身，cache 与 config.json 仍生效。
+func TestLoadZCodeProviderMap_ProviderConfigBrokenStillReadsOthers(t *testing.T) {
+	root := t.TempDir()
+	cachePath := filepath.Join(root, "v2", "bots-model-cache.v2.json")
+	writeZCodeCacheJSON(t, cachePath, []map[string]any{{"id": "cache-p", "name": "Cache Name"}})
+	if err := os.WriteFile(filepath.Join(root, "v2", "config.json"),
+		[]byte(`{"provider":{"config-p":{"name":"Config Name"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "v2", "provider_config.json"),
+		[]byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := loadZCodeProviderMap(cachePath, nil)
+	if got := m["cache-p"]; got != "Cache Name" {
+		t.Errorf("cache-p name = %q, want 'Cache Name'（坏 provider_config.json 不应阻断 cache）", got)
+	}
+	if got := m["config-p"]; got != "Config Name" {
+		t.Errorf("config-p name = %q, want 'Config Name'（坏 provider_config.json 不应阻断 config.json）", got)
+	}
+}
+
+// warnCaptureHandler 捕获 Warn 及以上级别日志，用于断言来源级告警行为。
+type warnCaptureHandler struct {
+	records []slog.Record
+}
+
+func (h *warnCaptureHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelWarn }
+func (h *warnCaptureHandler) Handle(_ context.Context, r slog.Record) error {
+	h.records = append(h.records, r)
+	return nil
+}
+func (h *warnCaptureHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *warnCaptureHandler) WithGroup(_ string) slog.Handler      { return h }
+
+// 来源级告警：provider_config.json 存在但解析失败 Warn 一次带路径；
+// 文件不存在属常态，不打 Warn。
+func TestLoadZCodeProviderMap_UnreadableSourceWarns(t *testing.T) {
+	root := t.TempDir()
+	cachePath := filepath.Join(root, "v2", "bots-model-cache.v2.json")
+	writeZCodeCacheJSON(t, cachePath, nil)
+	providerConfigPath := filepath.Join(root, "v2", "provider_config.json")
+	if err := os.WriteFile(providerConfigPath, []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &warnCaptureHandler{}
+	m := loadZCodeProviderMap(cachePath, slog.New(h))
+	if len(m) != 0 {
+		t.Fatalf("期望空 map（唯一内容来源损坏），实际 %v", m)
+	}
+	if len(h.records) != 1 {
+		t.Fatalf("期望恰好 1 条 Warn，实际 %d: %v", len(h.records), h.records)
+	}
+	pathAttr := ""
+	h.records[0].Attrs(func(a slog.Attr) bool {
+		if a.Key == "path" {
+			pathAttr = a.Value.Resolve().String()
+			return false
+		}
+		return true
+	})
+	if !strings.HasSuffix(pathAttr, "provider_config.json") {
+		t.Errorf("Warn 应带 path=来源路径，实际 %q", pathAttr)
+	}
+
+	// 文件不存在：常态静默，无 Warn。
+	h2 := &warnCaptureHandler{}
+	loadZCodeProviderMap(filepath.Join(t.TempDir(), "v2", "bots-model-cache.v2.json"), slog.New(h2))
+	if len(h2.records) != 0 {
+		t.Fatalf("来源不存在应静默，实际 Warn %d 条: %v", len(h2.records), h2.records)
+	}
+}
+
+// cache 空文件（0 字节）与另两来源对称：属「存在但损坏」，Unmarshal 失败进 Warn，
+// 不因空文件静默（历史实现 len(data)>0 前置使其静默跳过，已对齐）。
+func TestLoadZCodeProviderMap_EmptyCacheFileWarns(t *testing.T) {
+	root := t.TempDir()
+	cachePath := filepath.Join(root, "v2", "bots-model-cache.v2.json")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &warnCaptureHandler{}
+	m := loadZCodeProviderMap(cachePath, slog.New(h))
+	if len(m) != 0 {
+		t.Fatalf("期望空 map，实际 %v", m)
+	}
+	if len(h.records) != 1 {
+		t.Fatalf("空 cache 文件期望恰好 1 条 Warn，实际 %d: %v", len(h.records), h.records)
+	}
+	pathAttr := ""
+	h.records[0].Attrs(func(a slog.Attr) bool {
+		if a.Key == "path" {
+			pathAttr = a.Value.Resolve().String()
+			return false
+		}
+		return true
+	})
+	if !strings.HasSuffix(pathAttr, "bots-model-cache.v2.json") {
+		t.Errorf("Warn 应指向 cache 路径，实际 %q", pathAttr)
 	}
 }
 

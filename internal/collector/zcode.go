@@ -92,7 +92,7 @@ func (c *ZCodeCollector) Collect(ctx context.Context, req CollectRequest, logger
 	}
 	defer db.Close()
 
-	providerMap := loadZCodeProviderMap(zcodeCachePathFromDB(c.dbPath))
+	providerMap := loadZCodeProviderMap(zcodeCachePathFromDB(c.dbPath), logger)
 	// provider 映射缺失是预期降级（历史 provider 不在缓存），聚合到 Collect 层
 	// 输出唯一一条汇总，避免逐消息刷屏；count 仍能暴露 schema 漂移面。
 	misses := &providerMissStats{}
@@ -447,66 +447,122 @@ func zcodeCachePathFromDB(dbPath string) string {
 }
 
 // loadZCodeProviderMap 读 ZCode v2 的 provider 显示名，返回 provider_id→name 映射。
-// config.json 是当前用户配置的权威来源，优先于 cache；cache 保留为历史 schema 兼容。
-// 兼容两种 schema：version 1 的顶层 providers[].id/name；version 2 起顶层 providers
+// 按真源新旧顺序合并（后读覆盖同 id）：bots-model-cache.v2.json（历史 schema 兼容）
+// → v2/config.json → v2/provider_config.json（新建供应商的显示名只落在此，最新真源）。
+// cache 兼容两种 schema：version 1 的顶层 providers[].id/name；version 2 起顶层 providers
 // 字段移除，provider 显示名挪到 workspaceConfigOptions.{workspace::tab}.configOptions[]
 // .options[].modelProviderId/modelProviderName。两路同一次 Unmarshal 合并解析。
 // 只解码需要字段（apiKey 等敏感字段不在 struct 中，json.Unmarshal 忽略未知字段）。
-// 文件不存在/解析失败返回空 map（不 fatal，Collect 时 fallback provider_id 原值）。
-func loadZCodeProviderMap(cachePath string) map[string]string {
+// 文件不存在属常态（来源尚未生成），静默跳过；文件存在但不可读或 JSON 损坏经
+// logger 告警——每次 Collect 每来源至多一条带路径（nil logger 静默）。
+// 注意告警覆盖不了字段改名/搬家型 schema 漂移（历史三次漂移均属此形态）：
+// Unmarshal 对结构合法但字段搬家的文件会成功得零条目、不触发 Warn，只能靠
+// Collect 层 provider miss 汇总（Debug）或 UI 展示发现。
+// 任一来源失败只跳过自身并返回已合并部分（不 fatal，Collect 时 fallback provider_id 原值）。
+func loadZCodeProviderMap(cachePath string, logger *slog.Logger) map[string]string {
 	m := make(map[string]string)
+	v2Dir := filepath.Dir(cachePath)
+	// 来源一：bots-model-cache.v2.json（内部 v1/v2 两 schema 同一次 Unmarshal 合并）。
 	data, err := os.ReadFile(cachePath)
-	if err != nil {
-		data = nil
-	}
-	var doc struct {
-		Providers []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"providers"`
-		WorkspaceConfigOptions map[string]struct {
-			ConfigOptions []struct {
-				Options []struct {
-					ModelProviderID   string `json:"modelProviderId"`
-					ModelProviderName string `json:"modelProviderName"`
-				} `json:"options"`
-			} `json:"configOptions"`
-		} `json:"workspaceConfigOptions"`
-	}
-	if len(data) > 0 && json.Unmarshal(data, &doc) == nil {
-		for _, p := range doc.Providers {
-			if p.ID != "" && p.Name != "" {
-				m[p.ID] = p.Name
-			}
+	switch {
+	case err != nil && !os.IsNotExist(err):
+		warnZCodeProviderMapSource(logger, cachePath, err)
+	case err == nil:
+		var doc struct {
+			Providers []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"providers"`
+			WorkspaceConfigOptions map[string]struct {
+				ConfigOptions []struct {
+					Options []struct {
+						ModelProviderID   string `json:"modelProviderId"`
+						ModelProviderName string `json:"modelProviderName"`
+					} `json:"options"`
+				} `json:"configOptions"`
+			} `json:"workspaceConfigOptions"`
 		}
-		for _, ws := range doc.WorkspaceConfigOptions {
-			for _, opt := range ws.ConfigOptions {
-				for _, model := range opt.Options {
-					if model.ModelProviderID != "" && model.ModelProviderName != "" {
-						m[model.ModelProviderID] = model.ModelProviderName
+		if uerr := json.Unmarshal(data, &doc); uerr != nil {
+			warnZCodeProviderMapSource(logger, cachePath, uerr)
+		} else {
+			for _, p := range doc.Providers {
+				if p.ID != "" && p.Name != "" {
+					m[p.ID] = p.Name
+				}
+			}
+			for _, ws := range doc.WorkspaceConfigOptions {
+				for _, opt := range ws.ConfigOptions {
+					for _, model := range opt.Options {
+						if model.ModelProviderID != "" && model.ModelProviderName != "" {
+							m[model.ModelProviderID] = model.ModelProviderName
+						}
 					}
 				}
 			}
 		}
 	}
-	// v2/config.json 形如 {"provider":{"<provider-id>":{"name":"..."}}}。
+	// 来源二：config.json 形如 {"provider":{"<provider-id>":{"name":"..."}}}。
 	// 只解码显示名，apiKey 等敏感字段不会进入内存结构。
-	configData, err := os.ReadFile(filepath.Join(filepath.Dir(cachePath), "config.json"))
-	if err != nil {
-		return m
+	configData, err := os.ReadFile(filepath.Join(v2Dir, "config.json"))
+	switch {
+	case err != nil && !os.IsNotExist(err):
+		warnZCodeProviderMapSource(logger, filepath.Join(v2Dir, "config.json"), err)
+	case err == nil:
+		var configDoc struct {
+			Provider map[string]struct {
+				Name string `json:"name"`
+			} `json:"provider"`
+		}
+		if uerr := json.Unmarshal(configData, &configDoc); uerr != nil {
+			warnZCodeProviderMapSource(logger, filepath.Join(v2Dir, "config.json"), uerr)
+		} else {
+			for id, provider := range configDoc.Provider {
+				if id != "" && provider.Name != "" {
+					m[id] = provider.Name
+				}
+			}
+		}
 	}
-	var configDoc struct {
-		Provider map[string]struct {
-			Name string `json:"name"`
-		} `json:"provider"`
-	}
-	if err := json.Unmarshal(configData, &configDoc); err != nil {
-		return m
-	}
-	for id, provider := range configDoc.Provider {
-		if id != "" && provider.Name != "" {
-			m[id] = provider.Name
+	// 来源三：provider_config.json 形如 {"config":{"providerConfigRules":{"providerRules":
+	// [{"providerId":"...","providerName":"..."}]}}}。新建供应商的显示名只落在这里
+	// （config.json 与 cache 均不含），作为最新真源最后合并、同 id 覆盖前两者；
+	// providerName 缺失（如 account:* 计划型条目）跳过。只解码显示名字段。
+	providerConfigPath := filepath.Join(v2Dir, "provider_config.json")
+	providerRulesData, err := os.ReadFile(providerConfigPath)
+	switch {
+	case err != nil && !os.IsNotExist(err):
+		warnZCodeProviderMapSource(logger, providerConfigPath, err)
+	case err == nil:
+		var providerRulesDoc struct {
+			Config struct {
+				ProviderConfigRules struct {
+					ProviderRules []struct {
+						ProviderID   string `json:"providerId"`
+						ProviderName string `json:"providerName"`
+					} `json:"providerRules"`
+				} `json:"providerConfigRules"`
+			} `json:"config"`
+		}
+		if uerr := json.Unmarshal(providerRulesData, &providerRulesDoc); uerr != nil {
+			warnZCodeProviderMapSource(logger, providerConfigPath, uerr)
+		} else {
+			for _, rule := range providerRulesDoc.Config.ProviderConfigRules.ProviderRules {
+				if rule.ProviderID != "" && rule.ProviderName != "" {
+					m[rule.ProviderID] = rule.ProviderName
+				}
+			}
 		}
 	}
 	return m
+}
+
+// warnZCodeProviderMapSource 记录单个显示名来源存在但不可读/JSON 损坏。
+// 文件不存在不走此处（属常态静默）；无去重状态，每次 Collect 每来源至多一条
+// （持续损坏时按采集周期重复）；nil logger 静默（纯函数测试场景）。
+func warnZCodeProviderMapSource(logger *slog.Logger, path string, err error) {
+	if logger == nil {
+		return
+	}
+	logger.Warn("ZCode provider map source unreadable, kept merged part",
+		"path", path, "error", err)
 }
