@@ -864,7 +864,7 @@ func TestScanGate_IdentityUnavailableDisablesGate(t *testing.T) {
 // config 路径大小写变化 → Walk 产出路径形态变化 → 门记录查不到 → miss 全读（安全方向）。
 func TestScanGate_PathFormChangeMisses(t *testing.T) {
 	records := map[string]model.FileScanLog{
-		"/data/proj/S1.jsonl": {Client: "claude", FilePath: "/data/proj/S1.jsonl", FileIdentity: "1:1", MtimeNS: 1, FileSize: 1, ParserVersion: 1},
+		"/data/proj/S1.jsonl": {Client: "claude", FilePath: "/data/proj/S1.jsonl", FileIdentity: "1:1", MtimeNS: 1, FileSize: 1, ParserVersion: int64(db.ParserVersion)},
 	}
 	gate := newScanGate(records)
 	snap := model.FileSnapshot{Identity: "1:1", MtimeNS: 1, Size: 1}

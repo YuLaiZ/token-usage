@@ -105,9 +105,14 @@ func skipGateHit(gate FileSkipGate, path string, before model.FileSnapshot) bool
 
 // CollectResult 采集结果，包含消息、会话与下次增量同步游标
 type CollectResult struct {
-	Messages    []model.Message
-	Sessions    []model.Session
-	NextCursors map[string]model.SyncCursor
+	Messages []model.Message
+	Sessions []model.Session
+	// SessionRelations 只携带「会话关系」的最小元数据（ID/Client/AgentParentID），
+	// 供无消息中间层代理补父链：engine 用专用写入仅更新 sessions.agent_parent_id，
+	// 不触碰 directory/project/parent_id/title 等完整元数据。与 Sessions 分开的
+	// 目的：避免按日期采集或历史空数据把日期外的会话完整元数据覆盖掉。
+	SessionRelations []model.Session
+	NextCursors      map[string]model.SyncCursor
 	// PartialErr 表示部分源文件读取失败，但 Messages/Sessions 中的成功部分仍应事务落库。
 	// engine 在落库后记录该错误并令本次请求返回失败，避免“丢弃好数据”和“静默成功”二选一。
 	PartialErr error

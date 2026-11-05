@@ -27,6 +27,7 @@ func refUpsertMessages(ctx context.Context, q dbtx, messages []model.Message) er
 			m.RouterProvider, m.RouterModel, m.RouterName, m.Directory, m.Project,
 			m.InputTokens, m.FreshInputTokens, m.OutputTokens, m.CacheReadTokens,
 			m.CacheCreateTokens, m.ReasoningTokens, m.TotalTokens, m.DurationMS,
+			m.AgentParentID,
 		); err != nil {
 			return fmt.Errorf("upsert message %q/%q 失败: %w", m.Client, m.ID, err)
 		}
@@ -40,10 +41,10 @@ func refUpsertSessionMeta(ctx context.Context, q dbtx, sessions []model.Session)
 		var args []interface{}
 		if isCodexDisplayClient(s.Client) {
 			stmt = upsertCodexSessionMetaSQL
-			args = []interface{}{s.ID, s.Client, s.Directory, s.Project, s.Title, s.ParentID, s.FirstTS, s.LastTS, s.TitleSource, s.TitleIndexTS}
+			args = []interface{}{s.ID, s.Client, s.Directory, s.Project, s.Title, s.ParentID, s.FirstTS, s.LastTS, s.TitleSource, s.TitleIndexTS, s.AgentParentID}
 		} else {
 			stmt = upsertSessionMetaSQL
-			args = []interface{}{s.ID, s.Client, s.Directory, s.Project, s.Title, s.ParentID, s.FirstTS, s.LastTS}
+			args = []interface{}{s.ID, s.Client, s.Directory, s.Project, s.Title, s.ParentID, s.FirstTS, s.LastTS, s.AgentParentID}
 		}
 		if _, err := q.ExecContext(ctx, stmt, args...); err != nil {
 			return fmt.Errorf("upsert session meta %q/%q 失败: %w", s.Client, s.ID, err)
@@ -307,8 +308,9 @@ func TestUpsertMessages_ContextCancelled(t *testing.T) {
 }
 
 // 分块参数上限：行×列 ≤ 999（SQLite 变量上限），具名常量与各 DAO 的
-// 推导口径（messages 20 列 / sessions 8、10 列 / raw_router_logs 15 列 /
-// backfill 7+ids）全部锁定。
+// 推导口径（messages 21 列 / sessions 9、11 列 / raw_router_logs 15 列 /
+// backfill 7+ids）全部锁定；列数随 schema 加列必须同步（v8 加
+// agent_parent_id 后 messages 21 列、sessions 9/11 列）。
 func TestUpsertChunkConstants(t *testing.T) {
 	if upsertMaxSQLParams != 999 {
 		t.Fatalf("upsertMaxSQLParams = %d, want 999", upsertMaxSQLParams)
@@ -318,9 +320,9 @@ func TestUpsertChunkConstants(t *testing.T) {
 		cols     int
 		chunkRow int
 	}{
-		{"messages", 20, upsertMessagesChunkRows},
-		{"sessions-generic", 8, upsertSessionsGenericRows},
-		{"sessions-codex", 10, upsertSessionsCodexRows},
+		{"messages", 21, upsertMessagesChunkRows},
+		{"sessions-generic", 9, upsertSessionsGenericRows},
+		{"sessions-codex", 11, upsertSessionsCodexRows},
 		{"raw_router_logs", 15, upsertRawRouterLogsChunkRow},
 	} {
 		if c.chunkRow < 1 || c.chunkRow*c.cols > upsertMaxSQLParams || (c.chunkRow+1)*c.cols <= upsertMaxSQLParams {

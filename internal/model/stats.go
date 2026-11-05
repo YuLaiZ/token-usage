@@ -46,12 +46,16 @@ type CollectionError struct {
 
 // RouterLog 路由中间件请求日志（staging 层）
 type RouterLog struct {
-	RequestID         string
-	MessageID         string // 关联键：claude 去 session: 前缀 / codex 去 session:codex:{pid}: 前缀取末段
-	RouterName        string
-	SessionID         string
-	AppType           string
-	Model             string
+	RequestID  string
+	MessageID  string // 关联键：claude 去 session: 前缀 / codex 去 session:codex:{pid}: 前缀取末段
+	RouterName string
+	SessionID  string
+	AppType    string
+	Model      string
+	// RequestModel 是客户端请求的原始模型 ID（cc-switch 的 request_model 列；
+	// 聚合模式下形如 ccs-opencode/deepseek-v4.1-flash），仅用于归因的供应商
+	// 前缀校验，区分「不同供应商的同名模型」；旧库/非聚合请求为空。
+	RequestModel      string
 	ProviderID        string
 	ProviderName      string
 	InputTokens       int64

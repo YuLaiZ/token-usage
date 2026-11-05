@@ -368,6 +368,21 @@ func persistClientBatch(
 			return fmt.Errorf("%s: %w", ui.Bi("save session metadata", "保存 session metadata"), err)
 		}
 	}
+	// 会话关系专用写入（无消息中间层代理补父链）：只更新 agent_parent_id，
+	// 不触碰完整会话元数据（按日期/空数据覆盖历史会话的防护）。
+	// 归因触发源只取「新增或变化」的关系子集：按日期采集会为所有无当日消息的
+	// 历史子代理产出 SessionRelations（跨日期父链需要），若全部触发重算，单日
+	// 采集会把所有历史家族全量重算（工作量随历史增长；旧日志无 request_model
+	// 的降级匹配还可能覆盖既有归因）。未变化关系仍幂等写入，只是不触发重算。
+	changedRelations, err := changedSessionRelations(ctx, tx, collected.SessionRelations)
+	if err != nil {
+		return fmt.Errorf("%s: %w", ui.Bi("compare session relations", "比对会话关系"), err)
+	}
+	if len(collected.SessionRelations) > 0 {
+		if _, err := db.UpsertSessionAgentParents(ctx, tx, collected.SessionRelations); err != nil {
+			return fmt.Errorf("%s: %w", ui.Bi("save session relations", "保存会话关系"), err)
+		}
+	}
 	if err := mimoRekey.finish(ctx, tx); err != nil {
 		return fmt.Errorf("%s: %w", ui.Bi("finish mimocode client re-key", "完成 mimocode client 重归属"), err)
 	}
@@ -393,10 +408,16 @@ func persistClientBatch(
 	// 映射误更新 Claude message。
 	// backfilled 推迟到事务提交成功后才用于日志记录：后续写入或 Commit 失败会连同
 	// 归因一起回滚，提前记录会留下回填成功的假轨迹。
+	// 本轮新增/变化的子代理父关系（无消息中间层代理）：即使没有新消息也要
+	// 触发受影响家族的重算——否则「孙代理消息与路由日志先到、中间代理关系后到」
+	// 的顺序会永久漏归因。未变化的历史关系不触发（避免全历史家族重算，见上方
+	// changedRelations 注释）；本轮命中消息所需的跨日期祖先由 messages 入口的
+	// 家族展开（sessions 既有关系）自然覆盖。
+	agentSessions := codexAgentSessionIDs(client, changedRelations)
 	var backfilled int
-	if router != nil && runtimecfg.ClientSupportsRouter(client) && len(collected.Messages) > 0 {
+	if router != nil && runtimecfg.ClientSupportsRouter(client) && (len(collected.Messages) > 0 || len(agentSessions) > 0) {
 		if routerAttributionBySession(client) {
-			sessionIDs := uniqueCodexSessionIDs(collected.Messages)
+			sessionIDs := appendUniqueStrings(uniqueCodexSessionIDs(collected.Messages), agentSessions)
 			if len(sessionIDs) > 0 {
 				n, err := backfillCodexSessionAttributions(ctx, tx, router.Name(), sessionIDs)
 				if err != nil {
@@ -683,23 +704,178 @@ func uniqueCodexProxySessionIDs(logs []model.RouterLog) []string {
 	return out
 }
 
-// backfillCodexSessionAttributions 执行 codex session 路径归因（三入口统一模式，
-// 调用方事务内）：session 集合 → 双侧全量查询（proxy 行 + codex messages）→
-// 时间窗最近邻匹配 → 回填。返回回填行数。
+// changedSessionRelations 返回库中不存在或父关系值发生变化的关系子集（归因
+// 重算的触发源）。与写入分离：调用方须在 UpsertSessionAgentParents 之前调用。
+func changedSessionRelations(ctx context.Context, tx *sql.Tx, relations []model.Session) ([]model.Session, error) {
+	if len(relations) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(relations))
+	seen := make(map[string]struct{}, len(relations))
+	for _, r := range relations {
+		if r.ID == "" {
+			continue
+		}
+		if _, ok := seen[r.ID]; ok {
+			continue
+		}
+		seen[r.ID] = struct{}{}
+		ids = append(ids, r.ID)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	existing, err := db.QuerySessionAgentParents(ctx, tx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.Session, 0, len(relations))
+	for _, r := range relations {
+		if r.ID == "" || r.AgentParentID == "" {
+			continue
+		}
+		if existing[r.Client+"\x00"+r.ID] != r.AgentParentID {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// codexAgentSessionIDs 返回本轮会话关系（SessionRelations：无消息中间层代理）
+// 中携带子代理父关系的 codex 会话 id（配置 key client == "codex" 时生效）。
+// 父关系仅存在于 SessionRelations（sessions 表），新增/变化时必须作为归因
+// 家族重算的触发源——否则「孙代理消息与路由日志先到、中间代理关系后到」会
+// 永久漏归因。
+func codexAgentSessionIDs(client string, relations []model.Session) []string {
+	if client != "codex" {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(relations))
+	out := make([]string, 0, len(relations))
+	for _, s := range relations {
+		if s.ID == "" || s.AgentParentID == "" {
+			continue
+		}
+		if _, ok := seen[s.ID]; ok {
+			continue
+		}
+		seen[s.ID] = struct{}{}
+		out = append(out, s.ID)
+	}
+	return out
+}
+
+// appendUniqueStrings 把 extra 中不在 base 的条目按序追加到 base。
+func appendUniqueStrings(base, extra []string) []string {
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	for _, s := range base {
+		seen[s] = struct{}{}
+	}
+	for _, s := range extra {
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		base = append(base, s)
+	}
+	return base
+}
+
+// backfillCodexSessionAttributions 执行 codex 家族路径归因（三入口统一模式，
+// 调用方事务内）：session 集合 → 家族展开（parent_thread_id 反向扩散，覆盖
+// 单层/多层子代理）→ 双侧全量查询（proxy 行按家族根查、messages 按家族全成员
+// 查）→ 时间窗最近邻 + 模型校验匹配 → 回填。返回回填行数。
 func backfillCodexSessionAttributions(ctx context.Context, tx *sql.Tx, routerName string, sessionIDs []string) (int, error) {
-	logs, err := db.QueryCodexRouterLogsBySessions(ctx, tx, routerName, sessionIDs)
+	familyIDs, roots, parents, err := expandCodexFamily(ctx, tx, sessionIDs)
 	if err != nil {
 		return 0, err
 	}
-	messages, err := db.QueryCodexMessagesBySessions(ctx, tx, sessionIDs)
+	if len(familyIDs) == 0 {
+		return 0, nil
+	}
+	// proxy 行的 session_id 恒为主会话（Codex 子代理请求继承父会话 header），
+	// 日志查询用根集合；messages 用全成员集合，让子代理消息进入匹配候选；
+	// parents 用 sessions 表提供的完整父关系（中间层无消息时父链不断裂）。
+	logs, err := db.QueryCodexRouterLogsBySessions(ctx, tx, routerName, roots)
 	if err != nil {
 		return 0, err
 	}
-	infos := db.MatchCodexRouterAttributions(logs, messages, db.CodexRouterMatchWindowSec)
+	messages, err := db.QueryCodexMessagesBySessions(ctx, tx, familyIDs)
+	if err != nil {
+		return 0, err
+	}
+	infos := db.MatchCodexRouterAttributionsWithParents(logs, messages, parents, db.CodexRouterMatchWindowSec)
 	if len(infos) == 0 {
 		return 0, nil
 	}
 	return db.BackfillRouterFields(ctx, tx, infos)
+}
+
+// expandCodexFamily 把入口 session 集合扩展到完整归因家族：反复查询
+// (session, agent_parent_id) 关系（sessions 为主、messages 兜底），把父会话与
+// 直接子代理并入集合，直到不再增长（最多 16 轮，防御异常数据链）。返回排序后的
+// 家族成员、家族根集合，以及完整 parentMap（供匹配阶段按家族根分桶）。
+//
+// 必要性：入口集合可能只含子代理会话（增量采集本轮只触达子代理 rollout），
+// 此时直接用子代理 id 查 proxy 行必然为空；而只把入口集合交给 messages 查询
+// 又会漏掉父会话与兄弟子代理——家族展开保证「任一会话触达即全家族重算」。
+func expandCodexFamily(ctx context.Context, tx *sql.Tx, seeds []string) (familyIDs, roots []string, parents map[string]string, err error) {
+	members := make(map[string]struct{}, len(seeds))
+	for _, s := range seeds {
+		if s != "" {
+			members[s] = struct{}{}
+		}
+	}
+	if len(members) == 0 {
+		return nil, nil, nil, nil
+	}
+	parents = make(map[string]string)
+	const maxRounds = 16
+	for round := 0; round < maxRounds; round++ {
+		ids := make([]string, 0, len(members))
+		for s := range members {
+			ids = append(ids, s)
+		}
+		relations, rerr := db.QueryCodexSessionParents(ctx, tx, ids)
+		if rerr != nil {
+			return nil, nil, nil, rerr
+		}
+		grew := false
+		for sid, parent := range relations {
+			if parent != "" {
+				parents[sid] = parent
+			}
+			if _, ok := members[sid]; !ok {
+				members[sid] = struct{}{}
+				grew = true
+			}
+			if parent != "" {
+				if _, ok := members[parent]; !ok {
+					members[parent] = struct{}{}
+					grew = true
+				}
+			}
+		}
+		if !grew {
+			break
+		}
+	}
+	rootSet := make(map[string]struct{}, len(members))
+	familyIDs = make([]string, 0, len(members))
+	for s := range members {
+		familyIDs = append(familyIDs, s)
+		rootSet[db.CodexFamilyRoot(s, parents)] = struct{}{}
+	}
+	sort.Strings(familyIDs)
+	roots = make([]string, 0, len(rootSet))
+	for r := range rootSet {
+		roots = append(roots, r)
+	}
+	sort.Strings(roots)
+	return familyIDs, roots, parents, nil
 }
 
 // uniqueRouterMessageIDs 从 router logs 提取去重的非空 message_id。

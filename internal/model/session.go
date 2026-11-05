@@ -118,8 +118,12 @@ var ClientToDisplayNames = map[string][]string{
 }
 
 type Message struct {
-	ID                string
-	SessionID         string
+	ID        string
+	SessionID string
+	// AgentParentID 是子代理会话的父会话 id（Codex rollout session_meta 的
+	// parent_thread_id），主会话为空。仅用于 codex 归因的家族匹配；与
+	// sessions.parent_id（fork/分页语义）相互独立，不可混用。
+	AgentParentID     string
 	Client            string
 	Date              string
 	TS                int64
@@ -162,8 +166,13 @@ type Session struct {
 	Project   string
 	Title     string
 	ParentID  string
-	FirstTS   int64
-	LastTS    int64
+	// AgentParentID 是子代理会话的父会话 id（Codex rollout session_meta 的
+	// parent_thread_id），主会话为空；与 ParentID（fork/分页语义）相互独立。
+	// sessions 表是该关系在归因侧的权威来源：即使子代理没有可入库消息，
+	// 其会话行仍携带父关系，多层家族父链不断裂。
+	AgentParentID string
+	FirstTS       int64
+	LastTS        int64
 	// TitleSource 见上方常量；仅 Codex 采集路径填写，其他 client 保持零值
 	// （对应列默认 ''，落库语句不写该列）。
 	TitleSource string

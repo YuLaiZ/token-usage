@@ -287,9 +287,9 @@ const upsertMaxSQLParams = 999
 // 各写路径多值 INSERT 的每块行数推导（行×列 ≤ upsertMaxSQLParams），
 // 提为具名常量供分块合同测试逐一锁定。
 const (
-	upsertMessagesChunkRows     = upsertMaxSQLParams / 20 // messages 20 列
-	upsertSessionsGenericRows   = upsertMaxSQLParams / 8  // sessions 通用 8 列
-	upsertSessionsCodexRows     = upsertMaxSQLParams / 10 // sessions codex 10 列
+	upsertMessagesChunkRows     = upsertMaxSQLParams / 21 // messages 21 列（含 agent_parent_id）
+	upsertSessionsGenericRows   = upsertMaxSQLParams / 9  // sessions 通用 9 列（含 agent_parent_id）
+	upsertSessionsCodexRows     = upsertMaxSQLParams / 11 // sessions codex 11 列（含 agent_parent_id）
 	upsertRawRouterLogsChunkRow = upsertMaxSQLParams / 15 // raw_router_logs 15 列
 )
 
@@ -354,7 +354,8 @@ func UpsertRawRouterLogs(ctx context.Context, q dbtx, logs []model.RouterLog) (i
 const upsertMessageCols = `id, session_id, client, date, ts, model, provider,
 	router_provider, router_model, router_name, directory, project,
 	input_tokens, fresh_input_tokens, output_tokens, cache_read_tokens,
-	cache_create_tokens, reasoning_tokens, total_tokens, duration_ms`
+	cache_create_tokens, reasoning_tokens, total_tokens, duration_ms,
+	agent_parent_id`
 
 // upsertMessageConflictClause 是消息 UPSERT 的冲突子句（单行与多值分块两种
 // 形态共用，逐列语义见 UpsertMessages 注释）。
@@ -377,12 +378,13 @@ ON CONFLICT(client, id) DO UPDATE SET
 	cache_create_tokens = excluded.cache_create_tokens,
 	reasoning_tokens = excluded.reasoning_tokens,
 	total_tokens = excluded.total_tokens,
-	duration_ms = excluded.duration_ms`
+	duration_ms = excluded.duration_ms,
+	agent_parent_id = CASE WHEN excluded.agent_parent_id != '' THEN excluded.agent_parent_id ELSE messages.agent_parent_id END`
 
 // upsertMessageSQL 是单行形态（测试参照实现使用）；生产写路径走多值分块
 // 形态（UpsertMessages），冲突键与 SET 子句与之一致。
 const upsertMessageSQL = `INSERT INTO messages (` + upsertMessageCols + `)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` + upsertMessageConflictClause
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` + upsertMessageConflictClause
 
 // UpsertMessages 批量 UPSERT 消息行（多值 INSERT 分块，行×列 ≤ 999 参数）。
 // 任何一批失败立即返回，让调用方事务回滚；同批/跨批重复键按出现顺序后者
@@ -390,7 +392,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` + upsertMes
 // 归因（session_id/date/directory/project）取较早 ts 的版本；token/model/provider 总以新值覆盖；
 // router_* 仅在 excluded 非空时覆盖（空不清除）。
 func UpsertMessages(ctx context.Context, q dbtx, messages []model.Message) (int, error) {
-	const cols = 20
+	const cols = 21
 	const chunkRows = upsertMessagesChunkRows
 	const prefix = `INSERT INTO messages (` + upsertMessageCols + `) VALUES `
 
@@ -408,6 +410,7 @@ func UpsertMessages(ctx context.Context, q dbtx, messages []model.Message) (int,
 				m.RouterProvider, m.RouterModel, m.RouterName, m.Directory, m.Project,
 				m.InputTokens, m.FreshInputTokens, m.OutputTokens, m.CacheReadTokens,
 				m.CacheCreateTokens, m.ReasoningTokens, m.TotalTokens, m.DurationMS,
+				m.AgentParentID,
 			)
 		}
 		stmt := prefix + multiValuesPlaceholders(len(chunk), cols) + upsertMessageConflictClause
@@ -420,15 +423,16 @@ func UpsertMessages(ctx context.Context, q dbtx, messages []model.Message) (int,
 	return count, nil
 }
 
-const upsertSessionMetaSQL = `INSERT INTO sessions (id,client,directory,project,title,parent_id,first_ts,last_ts)
-VALUES (?,?,?,?,?,?,?,?)
+const upsertSessionMetaSQL = `INSERT INTO sessions (id,client,directory,project,title,parent_id,first_ts,last_ts,agent_parent_id)
+VALUES (?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id,client) DO UPDATE SET
  directory=excluded.directory,
  project=excluded.project,
  title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE sessions.title END,
  parent_id=excluded.parent_id,
  first_ts=CASE WHEN sessions.first_ts=0 OR (excluded.first_ts>0 AND excluded.first_ts<sessions.first_ts) THEN excluded.first_ts ELSE sessions.first_ts END,
- last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END`
+ last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END,
+ agent_parent_id=CASE WHEN excluded.agent_parent_id<>'' THEN excluded.agent_parent_id ELSE sessions.agent_parent_id END`
 
 // upsertCodexSessionMetaSQL 是 Codex App / Codex CLI 行的会话 upsert：在通用语义
 // 之上叠加 title/title_source/title_index_ts 的来源优先级合并（index > native >
@@ -441,8 +445,8 @@ ON CONFLICT(id,client) DO UPDATE SET
 // excluded fallback → 不覆盖任何非空非兜底存量标题。title_index_ts 与 title 同
 // 取值侧（非 index 写入的 excluded ts 恒 0，且存量 index 行从不会被非 index 值
 // 覆盖，归 0 无实际变化）。
-const upsertCodexSessionMetaSQL = `INSERT INTO sessions (id,client,directory,project,title,parent_id,first_ts,last_ts,title_source,title_index_ts)
-VALUES (?,?,?,?,?,?,?,?,?,?)
+const upsertCodexSessionMetaSQL = `INSERT INTO sessions (id,client,directory,project,title,parent_id,first_ts,last_ts,title_source,title_index_ts,agent_parent_id)
+VALUES (?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id,client) DO UPDATE SET
  directory=excluded.directory,
  project=excluded.project,
@@ -466,7 +470,93 @@ ON CONFLICT(id,client) DO UPDATE SET
   ELSE 0 END,
  parent_id=excluded.parent_id,
  first_ts=CASE WHEN sessions.first_ts=0 OR (excluded.first_ts>0 AND excluded.first_ts<sessions.first_ts) THEN excluded.first_ts ELSE sessions.first_ts END,
- last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END`
+ last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END,
+ agent_parent_id=CASE WHEN excluded.agent_parent_id<>'' THEN excluded.agent_parent_id ELSE sessions.agent_parent_id END`
+
+// upsertSessionAgentParentChunkRows 是会话关系专用写入的分块行数（3 列：
+// id/client/agent_parent_id；行×列 ≤ 999）。
+const upsertSessionAgentParentChunkRows = upsertMaxSQLParams / 3
+
+// UpsertSessionAgentParents 只写会话的子代理父关系（agent_parent_id），供
+// 「无消息中间层代理」补父链：INSERT 仅带主键与父关系列（其余列取表默认值），
+// 冲突时只更新 agent_parent_id——不触碰 directory/project/parent_id/title 等
+// 完整元数据，避免按日期采集或空数据覆盖历史会话。
+func UpsertSessionAgentParents(ctx context.Context, q dbtx, sessions []model.Session) (int, error) {
+	const cols = 3
+	count := 0
+	for start := 0; start < len(sessions); start += upsertSessionAgentParentChunkRows {
+		end := start + upsertSessionAgentParentChunkRows
+		if end > len(sessions) {
+			end = len(sessions)
+		}
+		chunk := sessions[start:end]
+		args := make([]interface{}, 0, len(chunk)*cols)
+		for _, s := range chunk {
+			args = append(args, s.ID, s.Client, s.AgentParentID)
+		}
+		stmt := `INSERT INTO sessions (id,client,agent_parent_id) VALUES ` +
+			multiValuesPlaceholders(len(chunk), cols) +
+			` ON CONFLICT(id,client) DO UPDATE SET
+ agent_parent_id=CASE WHEN excluded.agent_parent_id<>'' THEN excluded.agent_parent_id ELSE sessions.agent_parent_id END`
+		if _, err := q.ExecContext(ctx, stmt, args...); err != nil {
+			return count, fmt.Errorf("upsert session agent parent 批次 %d..%d 失败（首行 %q/%q）: %w",
+				start, end-1, chunk[0].Client, chunk[0].ID, err)
+		}
+		count += len(chunk)
+	}
+	return count, nil
+}
+
+// QuerySessionAgentParents 查询给定 codex 会话 id 的现有父关系，返回
+// "client\x00id" → agent_parent_id 映射（不存在或空关系不出现）。供归因
+// 触发源判定「本轮关系是否新增/变化」：未变化的关系只做幂等写入，不触发
+// 家族重算（避免单日采集把全部历史子代理家族重算）。
+func QuerySessionAgentParents(ctx context.Context, q dbtx, ids []string) (map[string]string, error) {
+	out := make(map[string]string)
+	for start := 0; start < len(ids); start += routerLogChunkSize {
+		end := start + routerLogChunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		placeholders := make([]string, 0, len(chunk))
+		args := make([]interface{}, 0, len(chunk))
+		for _, id := range chunk {
+			if id == "" {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, id)
+		}
+		if len(placeholders) == 0 {
+			continue
+		}
+		query := `SELECT id, client, agent_parent_id FROM sessions
+			WHERE client IN ('Codex App','Codex CLI')
+			  AND id IN (` + strings.Join(placeholders, ",") + `)`
+		rows, err := q.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("查询会话父关系失败: %w", err)
+		}
+		for rows.Next() {
+			var id, client, parent string
+			if err := rows.Scan(&id, &client, &parent); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("扫描会话父关系行失败: %w", err)
+			}
+			if id == "" || parent == "" {
+				continue
+			}
+			out[client+"\x00"+id] = parent
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
+}
 
 // isCodexDisplayClient 按 sessions.client 显示名判定 Codex 行（Codex 采集的
 // 落库 client 是这两个显示名，不是配置 key "codex"，也不是字面值 "Codex"）。
@@ -482,9 +572,9 @@ func isCodexDisplayClient(client string) bool {
 // upsertCodexSessionMetaSQL）；其余 client 走通用语句、不触碰 title_source 列
 // （mimocode 兼容 trigger 的 INSERT 列清单冻结不含该列，语义不受影响）。
 func UpsertSessionMeta(ctx context.Context, q dbtx, sessions []model.Session) (int, error) {
-	// 按语句类型分两组（普通 8 列 / codex 10 列），组内保序分块批量执行；
+	// 按语句类型分两组（普通 9 列 / codex 11 列），组内保序分块批量执行；
 	// 不同 (id,client) 主键互不干扰，组间顺序无关，语义与逐行一致。
-	const genericCols, codexCols = 8, 10
+	const genericCols, codexCols = 9, 11
 	genericChunkRows := upsertSessionsGenericRows
 	codexChunkRows := upsertSessionsCodexRows
 
@@ -517,6 +607,7 @@ func UpsertSessionMeta(ctx context.Context, q dbtx, sessions []model.Session) (i
 				if group.cols == codexCols {
 					args = append(args, s.TitleSource, s.TitleIndexTS)
 				}
+				args = append(args, s.AgentParentID)
 			}
 			stmt := sessionMultiValuesPrefix(group.cols == codexCols) +
 				multiValuesPlaceholders(len(chunk), group.cols) + sessionConflictClause(group.cols == codexCols)
@@ -536,6 +627,7 @@ func sessionMultiValuesPrefix(codex bool) string {
 	if codex {
 		base += `,title_source,title_index_ts`
 	}
+	base += `,agent_parent_id`
 	return base + `) VALUES `
 }
 
@@ -566,7 +658,8 @@ ON CONFLICT(id,client) DO UPDATE SET
   ELSE 0 END,
  parent_id=excluded.parent_id,
  first_ts=CASE WHEN sessions.first_ts=0 OR (excluded.first_ts>0 AND excluded.first_ts<sessions.first_ts) THEN excluded.first_ts ELSE sessions.first_ts END,
- last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END`
+ last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END,
+ agent_parent_id=CASE WHEN excluded.agent_parent_id<>'' THEN excluded.agent_parent_id ELSE sessions.agent_parent_id END`
 	}
 	return `
 ON CONFLICT(id,client) DO UPDATE SET
@@ -575,7 +668,8 @@ ON CONFLICT(id,client) DO UPDATE SET
  title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE sessions.title END,
  parent_id=excluded.parent_id,
  first_ts=CASE WHEN sessions.first_ts=0 OR (excluded.first_ts>0 AND excluded.first_ts<sessions.first_ts) THEN excluded.first_ts ELSE sessions.first_ts END,
- last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END`
+ last_ts=CASE WHEN excluded.last_ts>sessions.last_ts THEN excluded.last_ts ELSE sessions.last_ts END,
+ agent_parent_id=CASE WHEN excluded.agent_parent_id<>'' THEN excluded.agent_parent_id ELSE sessions.agent_parent_id END`
 }
 
 // ApplyCodexIndexTitles 把标题索引命中的记录以参数化 SQL 同步进 sessions 的

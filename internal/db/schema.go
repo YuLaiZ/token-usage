@@ -13,14 +13,20 @@ import (
 // 赋予 MiMo Desktop 拆分能力（split trigger + 自动 reconciliation pending，
 // 见 migrateV5）；v6 为 sessions 加 title_source 与 title_index_ts 两列
 // （Codex 标题来源优先级合并与索引重建防倒退，见 migrateV6）；v7 为 messages
-// 加 duration_ms 列（会话日志估算的逐请求时长，0=未记录，见 migrateV7）。
+// 加 duration_ms 列（会话日志估算的逐请求时长，0=未记录，见 migrateV7）；v8
+// 为 messages 与 sessions 加 agent_parent_id 列（Codex 子代理会话的父会话 id，
+// sessions 为家族关系权威来源、messages 冗余供匹配；与 sessions.parent_id 的
+// fork 语义相互独立，见 migrateV8）。
 // v4 与 v5 同属一个 v0.1.11。
-const currentSchemaVersion = 7
+const currentSchemaVersion = 8
 
 // ParserVersion 是 JSONL 解析/映射逻辑的版本号（file_scan_log.parser_version）。
 // 任何影响 JSONL 采集产出语义的解析/映射修复都必须递增此值：跳过门按版本整表
-// 失效，升级后全部文件重读一次（幂等 upsert 安全）。
-const ParserVersion = 1
+// 失效，升级后全部文件重读一次（幂等 upsert 安全）。v2（2026-11-05）：Codex
+// 会话解析新增子代理家族标记（session_meta 的 parent_thread_id 写入
+// sessions/messages.agent_parent_id），历史 rollout 必须重读才能补齐父关系，
+// 否则家族归因对历史子代理永久缺失。
+const ParserVersion = 2
 
 func ensureSchema(db *sql.DB) error {
 	version := getUserVersion(db)
@@ -64,6 +70,12 @@ func ensureSchema(db *sql.DB) error {
 	if version < 7 {
 		if err := migrateV7(db); err != nil {
 			return fmt.Errorf("迁移到 v7 失败: %w", err)
+		}
+	}
+	version = getUserVersion(db)
+	if version < 8 {
+		if err := migrateV8(db); err != nil {
+			return fmt.Errorf("迁移到 v8 失败: %w", err)
 		}
 	}
 
@@ -701,6 +713,48 @@ func migrateV7(db *sql.DB) error {
 	}
 	if _, err := tx.Exec(`PRAGMA user_version = 7`); err != nil {
 		return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, `PRAGMA user_version = 7`)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交迁移事务失败: %w", err)
+	}
+	return nil
+}
+
+// migrateV8PostAlterHook 仅供测试注入：在 ALTER/INDEX 成功后、PRAGMA 之前执行，
+// 用于验证失败整体回滚（回滚后库保持 v7、列与索引均不存在）。
+var migrateV8PostAlterHook func() error
+
+// migrateV8 为 messages 与 sessions 加 agent_parent_id 列并建索引（Codex
+// 子代理归因家族匹配；存量行保持空串=主会话/未知，不做数据回填——重采自然
+// 补齐是既定范围选择）。sessions 侧是家族关系的权威来源：即使子代理本身没有
+// 可入库消息（如中间层代理），其会话元数据仍携带父关系，保证多层家族的父链
+// 不断裂；messages 侧冗余用于归因匹配时直接取用。v8 语句为 migration-local
+// 冻结字面量，不随运行期 DAO 演进。
+func migrateV8(db *sql.DB) error {
+	stmts := []string{
+		`ALTER TABLE messages ADD COLUMN agent_parent_id TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX idx_messages_agent_parent ON messages(agent_parent_id)`,
+		`ALTER TABLE sessions ADD COLUMN agent_parent_id TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX idx_sessions_agent_parent ON sessions(agent_parent_id)`,
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("开启迁移事务失败: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, stmt)
+		}
+	}
+	if migrateV8PostAlterHook != nil {
+		if err := migrateV8PostAlterHook(); err != nil {
+			return fmt.Errorf("迁移中段注入失败: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`PRAGMA user_version = 8`); err != nil {
+		return fmt.Errorf("执行 SQL 失败: %w\nSQL: %s", err, `PRAGMA user_version = 8`)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("提交迁移事务失败: %w", err)

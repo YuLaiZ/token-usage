@@ -183,12 +183,13 @@ func (c *CodexCollector) Collect(ctx context.Context, req CollectRequest, logger
 			}
 			result.FileStatuses = append(result.FileStatuses, fstatus)
 			result.Messages = append(result.Messages, part.Messages...)
-			// 仅在命中消息时携带 Session：parseCodexRollout 即使无命中消息也会构造
-			// Session（FirstTS/LastTS 回退到 state 字段），在 CLI Dates 模式下会用空数据
-			// 经 INSERT OR REPLACE 覆盖已有会话，故这里必须丢弃。
-			if len(part.Messages) > 0 {
-				result.Sessions = append(result.Sessions, part.Sessions...)
-			}
+			// parseCodexRolloutContext 已按两种形态产出：完整 Session 仅在有命中
+			// 消息时携带（避免 CLI Dates 空数据覆盖已有会话）；无消息但携带父关系
+			// 的中间层代理只产出 SessionRelations（engine 仅补父关系）。日期过滤
+			// 只影响「完整 Session 是否携带」，不影响关系产出——跨日期家族父链
+			// 依赖它。
+			result.Sessions = append(result.Sessions, part.Sessions...)
+			result.SessionRelations = append(result.SessionRelations, part.SessionRelations...)
 			if req.Incremental {
 				nextCur, hasNext = advanceCodexCursor(nextCur, hasNext, th)
 			}
@@ -456,6 +457,7 @@ func (c *CodexCollector) collectExistingJSONL(ctx context.Context, gate FileSkip
 		result.FileStatuses = append(result.FileStatuses, fstatus)
 		result.Messages = append(result.Messages, part.Messages...)
 		result.Sessions = append(result.Sessions, part.Sessions...)
+		result.SessionRelations = append(result.SessionRelations, part.SessionRelations...)
 	}
 	childThreads := c.backfillThreadMeta(ctx, &result, logger)
 	c.resolveSessionTitles(ctx, &result, childThreads, logger)
@@ -815,6 +817,12 @@ type sessionMetaPayload struct {
 	Source        json.RawMessage `json:"source"`
 	ModelProvider string          `json:"model_provider"`
 	ForkedFromID  string          `json:"forked_from_id"`
+	// ParentThreadID/ThreadSource 是 Codex 子代理会话的家族标记：子代理
+	// rollout 的 session_meta 声明父会话 id 与 thread_source=subagent，主会话
+	// 为空。归因家族匹配依赖该父 id（见 db.MatchCodexRouterAttributions），
+	// 与 ForkedFromID 的 resume/fork 语义相互独立。
+	ParentThreadID string `json:"parent_thread_id"`
+	ThreadSource   string `json:"thread_source"`
 }
 
 // sourceString 返回 Source 的字符串形态值；对象形态（subagent）或缺失返回空串。
@@ -827,6 +835,29 @@ func (p sessionMetaPayload) sourceString() string {
 		return ""
 	}
 	return s
+}
+
+// subagentParentThreadID 从对象形态 Source 降级提取子代理父会话 id
+// （{"subagent":{"thread_spawn":{"parent_thread_id":"..."}}}）。顶层
+// parent_thread_id 缺失时（旧版 Codex）作为降级来源；主会话/字符串形态返回空。
+func (p sessionMetaPayload) subagentParentThreadID() string {
+	if len(p.Source) == 0 {
+		return ""
+	}
+	var obj struct {
+		Subagent *struct {
+			ThreadSpawn *struct {
+				ParentThreadID string `json:"parent_thread_id"`
+			} `json:"thread_spawn"`
+		} `json:"subagent"`
+	}
+	if err := json.Unmarshal(p.Source, &obj); err != nil {
+		return ""
+	}
+	if obj.Subagent == nil || obj.Subagent.ThreadSpawn == nil {
+		return ""
+	}
+	return obj.Subagent.ThreadSpawn.ParentThreadID
 }
 
 // ===== rollout 状态机 =====
@@ -892,6 +923,17 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 		if m.ForkedFromID != "" {
 			meta.ForkedFromID = m.ForkedFromID
 		}
+		if m.ParentThreadID != "" {
+			meta.ParentThreadID = m.ParentThreadID
+		}
+		if m.ThreadSource != "" {
+			meta.ThreadSource = m.ThreadSource
+		}
+		// 保留原始 Source（对象形态的子代理父链降级提取需要它；字符串形态
+		// 仍由下方 metaSource 归一，现有 client 推断不受影响）。
+		if len(m.Source) > 0 {
+			meta.Source = m.Source
+		}
 		if s := m.sourceString(); s != "" {
 			metaSource = s
 		}
@@ -900,6 +942,15 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 	sessionID := fallback.ID
 	if sessionID == "" {
 		sessionID = meta.ID
+	}
+	// 子代理家族标记：顶层 parent_thread_id 优先，对象形态 source 降级提取。
+	// state DB threads 不提供该关系，session_meta 缺失时保持空（主会话语义）。
+	agentParentID := meta.ParentThreadID
+	if agentParentID == "" {
+		agentParentID = meta.subagentParentThreadID()
+	}
+	if agentParentID == sessionID {
+		agentParentID = "" // 防御自环（异常数据不建立自我父子关系）
 	}
 	cwd := fallback.Cwd
 	if cwd == "" {
@@ -1074,7 +1125,7 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 			durationMS := estimateDurationMS(usage.OutputTokens,
 				timer.finishRequest(ts, last))
 			message := codexMessageFromUsage(ts, lastAssistantID, index,
-				sessionID, displayClient, currentModel, cwd, usage)
+				sessionID, agentParentID, displayClient, currentModel, cwd, usage)
 			message.DurationMS = durationMS
 			// 追踪 rollout 时间范围（用于 Session FirstTS/LastTS）。
 			if firstTS == 0 || ts < firstTS {
@@ -1110,16 +1161,33 @@ func parseCodexRolloutContext(ctx context.Context, path string, fallback codexTh
 	}
 	// 合并 ParentID：fallback.ThreadSource 不影响；session_meta.forked_from_id 优先。
 	mergedParent := parentID
-	result.Sessions = []model.Session{{
-		ID:        sessionID,
-		Client:    displayClient,
-		Directory: cwd,
-		Project:   codexProjectName(cwd),
-		Title:     fallback.Title,
-		FirstTS:   sessFirst,
-		LastTS:    sessLast,
-		ParentID:  mergedParent,
-	}}
+	session := model.Session{
+		ID:            sessionID,
+		Client:        displayClient,
+		Directory:     cwd,
+		Project:       codexProjectName(cwd),
+		Title:         fallback.Title,
+		FirstTS:       sessFirst,
+		LastTS:        sessLast,
+		ParentID:      mergedParent,
+		AgentParentID: agentParentID,
+	}
+	// 会话元数据携带策略（两分）：
+	//   - 有命中消息：携带完整 Session（正常路径，标题/目录等随消息一起刷新）；
+	//   - 无命中消息但携带父关系：只进 SessionRelations（engine 用专用写入仅更新
+	//     agent_parent_id，不触碰 directory/project/parent_id/title）。
+	// 日期过滤不改变第二条判断：中间代理昨日有消息、其消息在本轮被日期过滤掉
+	// 时，今日孙代理的家族父链仍需要「mid→root」这条关系；关系专用写入不覆盖
+	// 完整元数据，保留它是安全的（否则跨日期家族在新库/未重采场景下断链）。
+	if len(result.Messages) > 0 {
+		result.Sessions = []model.Session{session}
+	} else if agentParentID != "" {
+		result.SessionRelations = []model.Session{{
+			ID:            session.ID,
+			Client:        session.Client,
+			AgentParentID: agentParentID,
+		}}
+	}
 
 	outcome.fillStatus(&status)
 	return result, status, nil
@@ -1145,18 +1213,19 @@ func parseRolloutWithStatus(ctx context.Context, path string, fallback codexThre
 // total：使用源值；源为 0 但有 input/output 时回退 input+output。
 // fresh = input - cached（cacheCreate 为 0）。
 func codexMessageFromUsage(ts int64, messageID string, index int,
-	sessionID, client, currentModel, cwd string, usage codexUsage) model.Message {
+	sessionID, agentParentID, client, currentModel, cwd string, usage codexUsage) model.Message {
 	total := usage.TotalTokens
 	if total == 0 && (usage.InputTokens != 0 || usage.OutputTokens != 0) {
 		total = usage.InputTokens + usage.OutputTokens
 	}
 	return model.Message{
-		ID:        fmt.Sprintf("%s#%d", messageID, index),
-		SessionID: sessionID,
-		Client:    client,
-		Date:      codexTsMsToDate(ts),
-		TS:        ts,
-		Model:     currentModel,
+		ID:            fmt.Sprintf("%s#%d", messageID, index),
+		SessionID:     sessionID,
+		AgentParentID: agentParentID,
+		Client:        client,
+		Date:          codexTsMsToDate(ts),
+		TS:            ts,
+		Model:         currentModel,
 		// Codex CLI/App 当前均为官方 OpenAI 渠道；rollout 未提供 provider 字段，
 		// 因而在采集时填入确定的来源归因，不能依赖用户展示别名。
 		Provider:         "OpenAI",

@@ -39,8 +39,8 @@ func messagesDurationColumn(t *testing.T, q interface {
 func TestFreshDBReachesV7(t *testing.T) {
 	d := openFreshDB(t)
 	defer d.Close()
-	if got := userVersion(t, d); got != 7 {
-		t.Fatalf("fresh DB user_version = %d, want 7", got)
+	if got := userVersion(t, d); got != currentSchemaVersion {
+		t.Fatalf("fresh DB user_version = %d, want %d", got, currentSchemaVersion)
 	}
 	exists, dflt := messagesDurationColumn(t, d)
 	if !exists {
