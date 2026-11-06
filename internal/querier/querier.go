@@ -158,6 +158,15 @@ type tableCol struct {
 	limit  int
 }
 
+const (
+	// tableTitleLimit 是会话标题列的显示宽度上限（runewidth 列）：标题是长
+	// 自由文本、无版本区分价值，按既有宽度截断保住表格总宽。
+	tableTitleLimit = 30
+	// tableProjectLimit 是 Project 自由文本列的显示宽度上限（runewidth 列）：
+	// 临时目录名、第三方 UUID 等可能极长，截断加省略号避免整表被单项拉宽。
+	tableProjectLimit = 30
+)
+
 // 全部 query 表格视图统一的前缀无关尾部指标区:布局驱动后按 Querier 当前
 // 指标序列生成,表头来自 ui 单一来源,单元格由描述符从完整聚合值计算
 // (cache_hit 始终读取含 cache_create 的完整聚合,展示开关不改统计值)。
@@ -1109,8 +1118,14 @@ func (q *Querier) RenderDimensionView(view DimensionView, dates []string, rows [
 	var sb strings.Builder
 	sb.WriteString(title + "\n")
 	defs := make([]tableCol, 0, len(dimHeaders)+len(metrics)+1)
-	for _, h := range dimHeaders {
-		defs = append(defs, tableCol{header: h, align: ui.AlignLeft, limit: 0})
+	for i, h := range dimHeaders {
+		// project 维度值可能是临时目录名或第三方 UUID，限宽避免整表被单项拉宽；
+		// 其余维度键保持自适应。
+		limit := 0
+		if view.Dimensions[i] == "project" {
+			limit = tableProjectLimit
+		}
+		defs = append(defs, tableCol{header: h, align: ui.AlignLeft, limit: limit})
 	}
 	// 含时间维度时在全部维度键列之后、指标列之前插入趋势条形列。
 	if temporalIdx >= 0 {
@@ -1333,14 +1348,16 @@ func (q *Querier) RenderSessions(rows []SessionRow) string {
 	// Date（会话首条消息日期）与 ID 不设列：单日下日期恒等于查询日无信息、
 	// 跨日需要日期归属时按日分别查询更直接；会话 ID 是内部标识，标题已足够
 	// 区分常用场景。首条消息日期仍用于 SQL 排序。尾部数值列由全局布局驱动。
-	// Title 是长自由文本（无版本区分价值），上限 30 截断保住表格总宽；
-	// 其余列（项目/客户端等分组键）自适应不截断。Duration 列由首末消息时间戳
-	// 差计算请求跨度，位于标题之后、指标列之前。
+	// Title/Project 是长自由文本（临时目录名、第三方 UUID 等可能极长）：
+	// Title 沿用 30 列上限（tableTitleLimit），Project 完整值对表格定位贡献
+	// 有限、前缀足以辨识，按 tableProjectLimit 截断，两者共同保住表格总宽；
+	// 其余列（客户端等分组键）自适应不截断。Duration 列由首末消息时间戳差
+	// 计算请求跨度，位于标题之后、指标列之前。
 	metrics := q.metricColumns()
 	defs := append([]tableCol{
 		{ui.HClient, ui.AlignLeft, 0},
-		{ui.HProject, ui.AlignLeft, 0},
-		{ui.HTitle, ui.AlignLeft, 30},
+		{ui.HProject, ui.AlignLeft, tableProjectLimit},
+		{ui.HTitle, ui.AlignLeft, tableTitleLimit},
 		{ui.HDuration, ui.AlignLeft, 0},
 	}, metricTailCols(metrics)...)
 	t := buildTable(defs)

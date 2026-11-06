@@ -1595,9 +1595,13 @@ function sessionsHTML(rows, masked){
       /* 私密遮蔽:会话名(title/可见文本/data-full 三处同源)与项目名,
          空标题经 pv 保持空串;「(未分类)」占位与客户端列不遮。 */
       var full=esc(pv(r.title||'', masked));
+      /* 项目名与会话标题同构:可见文本/title/data-full 三处同源(遮蔽后才转义),
+         超长由 syncTruncationButtons 按实际溢出决定是否露出 info 按钮。 */
+      var proj=esc(r.project ? pv(r.project, masked) : ui('(未分类)','(uncategorized)'));
       return '<tr class="session-row"><th scope="row" class="tname"><div class="session-title-wrap"><span class="session-title-text trunc-name" title="'+full+'">'+full+'</span>'+
         '<button type="button" class="session-title-detail" data-full="'+full+'" data-heading="'+ui('完整会话标题','Full session title')+'" hidden aria-label="'+ui('查看完整会话标题','View full session title')+'" title="'+ui('查看完整会话标题','View full session title')+'"><svg class="ic"><use href="#i-info"/></svg></button></div></th>' +
-        '<td class="num tl" data-label="'+dimLabel('client')+'">'+esc(r.client||'')+'</td><td class="num tl" data-label="'+dimLabel('project')+'">'+esc(r.project ? pv(r.project, masked) : ui('(未分类)','(uncategorized)'))+'</td>' +
+        '<td class="num tl" data-label="'+dimLabel('client')+'">'+esc(r.client||'')+'</td><td class="num tl" data-label="'+dimLabel('project')+'"><div class="session-title-wrap"><span class="session-title-text trunc-name" title="'+proj+'">'+proj+'</span>'+
+        '<button type="button" class="session-title-detail" data-full="'+proj+'" data-heading="'+ui('完整项目名','Full project name')+'" hidden aria-label="'+ui('查看完整项目名','View full project name')+'" title="'+ui('查看完整项目名','View full project name')+'"><svg class="ic"><use href="#i-info"/></svg></button></div></td>' +
         '<td class="num" data-label="'+ui('时长','Duration')+'">'+fmtDur(r.duration_ms)+'</td><td class="num" data-label="'+colLabel(colById('requests'))+'">'+fmtInt(r.requests)+'</td>' +
         '<td class="num tot" data-label="'+colLabel(colById('total'))+'"><span class="nv">'+fmtTok(r.total)+'</span></td></tr>';
     }).join('');

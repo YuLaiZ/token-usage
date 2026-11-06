@@ -270,13 +270,17 @@ richDashboardBody 是载荷 v4 形态的用量统计页数据:12 行维度(9+尾
 
 	逐日趋势桶、day_block 热力与前 20 会话。total 标记 marker 供 KPI 断言。
 */
-/* sessionsDashboardBody 带两条会话行：project 空串（WorkBuddy playground 等
-   未分类形态）与正常 project 各一条，供会话榜单占位渲染断言。 */
+/* sessionsDashboardBody 带三条会话行：project 空串（WorkBuddy playground 等
+   未分类形态）、正常 project、以及 ZCode 临时工作区长目录名（13 位毫秒
+   时间戳 + UUID）各一条，供会话榜单占位与项目列截断渲染断言。 */
+const longProjectValue = "1793859963949-ff02f9b3-74c7-44f5-8e52-6901002ae048"
+
 func sessionsDashboardBody() map[string]any {
 	body := dashboardBody()
 	body["sessions"] = []any{
 		map[string]any{"title": "查询当前时间", "client": "WorkBuddy", "project": "", "duration_ms": 1200, "requests": 2, "total": 300},
 		map[string]any{"title": "正常会话", "client": "Claude Code", "project": "app", "duration_ms": 3400, "requests": 5, "total": 900},
+		map[string]any{"title": "超长项目会话", "client": "ZCode", "project": longProjectValue, "duration_ms": 5400, "requests": 9, "total": 1200},
 	}
 	return body
 }
@@ -810,6 +814,10 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 		},
 		{
 			Name: "session empty project renders placeholder",
+			Opts: map[string]any{"routes": sessionsRoutes},
+		},
+		{
+			Name: "session long project renders truncation control",
 			Opts: map[string]any{"routes": sessionsRoutes},
 		},
 		{
@@ -1455,6 +1463,25 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				}
 				if !strings.Contains(r.SessionsBodyHTML, ">app<") {
 					t.Errorf("非空 project 应原样渲染 app:\n%s", r.SessionsBodyHTML)
+				}
+
+			case "session long project renders truncation control":
+				/* 区分度:项目名与会话标题同构——悬停 title 与 info 按钮的
+				   data-full 都必须是完整原值;可见文本同源,按钮默认 hidden,
+				   由布局溢出探测决定是否露出。漏 data-full 时弹窗会显示截断值;
+				   可见文本若在渲染层被再次截断,悬停与弹窗仍完整但表格已失真,
+				   故单独断言可见文本为完整原值。 */
+				if !strings.Contains(r.SessionsBodyHTML, `title="`+longProjectValue+`"`) {
+					t.Errorf("项目列应带悬停完整名:\n%s", r.SessionsBodyHTML)
+				}
+				if !strings.Contains(r.SessionsBodyHTML, `data-full="`+longProjectValue+`"`) {
+					t.Errorf("项目列 info 按钮应携带完整名:\n%s", r.SessionsBodyHTML)
+				}
+				if !strings.Contains(r.SessionsBodyHTML, ">"+longProjectValue+"<") {
+					t.Errorf("项目列可见文本应为完整值，截断交给 CSS:\n%s", r.SessionsBodyHTML)
+				}
+				if !regexp.MustCompile(`class="session-title-detail" data-full="` + longProjectValue + `"[^>]*hidden`).MatchString(r.SessionsBodyHTML) {
+					t.Errorf("info 按钮默认应 hidden，溢出探测后才显示:\n%s", r.SessionsBodyHTML)
 				}
 
 			case "dashboard 400 error message surfaces":
