@@ -322,12 +322,20 @@ const effectiveProviderExpr = `CASE
 	ELSE ''
 END`
 
+// effectiveRouterModelExpr 模型有效值:router_model 非空优先(归因配对回填的
+// 实际转发模型,cc-switch Stack 请求 id 经此还原上游模型名),其次客户端源
+// model 原值(未归因消息),不做二次修改。
+const effectiveRouterModelExpr = `CASE
+	WHEN router_model != '' THEN router_model
+	ELSE model
+END`
+
 // dimensionOrder 是内置聚合维度的有序单一来源：声明顺序即错误文案中的
 // 允许集合展示顺序。day/month 时间维度取 date 列（YYYY-MM-DD / substr 前缀
 // YYYY-MM），该列恒非空，均无空值处理。
 var dimensionOrder = []dimension{
 	{name: "client", selectExpr: "client", header: ui.HClient},
-	{name: "model", selectExpr: "model", header: ui.HModel},
+	{name: "model", selectExpr: effectiveRouterModelExpr, header: ui.HModel},
 	{
 		name:       "provider",
 		selectExpr: effectiveProviderExpr,
@@ -551,8 +559,9 @@ func dimensionFoldKey(d dimension, raw, disp string) string {
 // project 应用未分类,hour 补 ":00" 后缀表示小时起点,weekday 映射为双语星期
 // 名,client 应用 legacy 名防御兜底（mimocode 正式落库名已是 MiMo Code，
 // migrateV4 与兼容 trigger 保证库内无 legacy 名；此处仅防御异常残留的未迁移
-// 旧数据,见 model.ClientDisplayName）,model 统一大写显示(库内原始值与
-// rawKeys 不变,大小写折叠合并仍按原始键工作)。
+// 旧数据,见 model.ClientDisplayName）,model 统一大写显示(原始键已由取数层
+// (SQL selectExpr / dimensionRawValue)取 router_model 优先的分组值,客户端源
+// model 原值保留在 messages.model 列;大小写折叠合并按分组键工作)。
 func (d dimension) displayKey(raw string, aliases map[string]string) string {
 	if d.name == "client" {
 		return model.ClientDisplayName(raw)
@@ -644,7 +653,9 @@ type variantStat struct {
 }
 
 // DimensionRow 是一张维度视图聚合结果中的一行:显示键序列与该键下的聚合值。
-// rawKeys 是与 Keys 一一对应的 SQL 原始键(未做显示映射),时间维度的排序轴
+// rawKeys 是与 Keys 一一对应的 SQL 原始键(未做显示映射;model 维度即
+// selectExpr 的分组值,router_model 非空优先、客户端源 model 兜底,原始
+// 请求 id 仍可从 messages.model 列查),时间维度的排序轴
 // 消费原始键(weekday 的显示名为双语星期名,字典序不是周序,原始键 "0".."6"
 // 才是),缺口填充行同样填原始键形态保持排序统一;非导出仅供聚合核内部使用。
 // variants[k] 是第 k 维的显示拼写变体统计(大小写折叠合并的组内以精确拼写

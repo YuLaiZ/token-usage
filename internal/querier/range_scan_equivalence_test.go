@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,10 @@ import (
 
 // setupRandomFixture 构造覆盖大小写变体、provider 别名、空归因、别名与
 // 会话 client 不匹配的随机数据，用于单遍扫描与逐次查询的双路对照。
+// model 含 cc-switch Stack 形态：ccs 前缀请求 id 经 router_model 归因为
+// 裸名（与裸名 model 行折叠合并）、少数行 router_model 本身带前缀（上游
+// 失败请求兜底链形态，独立成组）、非 ccs 消息归因命中（router_model 与
+// model 一致）。
 func setupRandomFixture(t *testing.T, seed int64) *Querier {
 	t.Helper()
 	testDB, err := db.Open(":memory:")
@@ -26,7 +31,8 @@ func setupRandomFixture(t *testing.T, seed int64) *Querier {
 	rng := rand.New(rand.NewSource(seed))
 	dates := []string{"2026-07-01", "2026-07-02", "2026-07-03"}
 	clients := []string{"Claude Code", "claude code", "Codex", "OpenAI"}
-	models := []string{"gpt-5", "GPT-5", "claude-sonnet-4", "Claude-Sonnet-4"}
+	models := []string{"gpt-5", "GPT-5", "claude-sonnet-4", "Claude-Sonnet-4",
+		"deepseek-flash", "ccs-deepseek/deepseek-flash", "ccs-opencode/deepseek-v4.1-flash"}
 	providers := []string{"OpenAI", "openai", "Anthropic", ""}
 	projects := []string{"proj-A", "proj-B", ""}
 
@@ -61,15 +67,30 @@ func setupRandomFixture(t *testing.T, seed int64) *Querier {
 		if rng.Intn(3) == 0 {
 			dur = int64(rng.Intn(5000) + 1)
 		}
+		m := models[rng.Intn(len(models))]
+		routerModel := ""
+		if strings.HasPrefix(m, "ccs-") {
+			// 归因命中：router_model 为剥前缀的裸名；少数行保持带前缀
+			// （cc-switch 上游失败请求兜底链形态，原样保留不加工）。
+			if rng.Intn(8) == 0 {
+				routerModel = m
+			} else {
+				routerModel = m[strings.Index(m, "/")+1:]
+			}
+		} else if rng.Intn(6) == 0 {
+			// 非 ccs 消息的归因命中：router_model 与客户端源 model 一致。
+			routerModel = m
+		}
 		msgs = append(msgs, model.Message{
 			ID:                fmt.Sprintf("m%04d", i),
 			SessionID:         fmt.Sprintf("s%02d", rng.Intn(12)),
 			Client:            clients[rng.Intn(len(clients))],
 			Date:              date,
 			TS:                ts,
-			Model:             models[rng.Intn(len(models))],
+			Model:             m,
 			Provider:          providers[rng.Intn(len(providers))],
 			RouterProvider:    "",
+			RouterModel:       routerModel,
 			Directory:         "/d",
 			Project:           projects[rng.Intn(len(projects))],
 			FreshInputTokens:  int64(rng.Intn(1000)),
@@ -102,6 +123,10 @@ func TestScanRangeRandomizedEquivalence(t *testing.T) {
 		{Name: "month", Kind: AggDimension, Dimensions: []string{"month"}},
 		{Name: "hour", Kind: AggDimension, Dimensions: []string{"hour"}},
 		{Name: "weekday", Kind: AggDimension, Dimensions: []string{"weekday"}},
+		// hour+model 混合形态走 SQL tsBucketed 裸列分支:该分支的 SELECT
+		// 同样使用各维 selectExpr,model 维在此覆盖 router_model 优先取数
+		// 与 range scan 路径的等价。
+		{Name: "hm", Kind: AggDimension, Dimensions: []string{"hour", "model"}},
 		{Name: "combo", Kind: AggDimension, Dimensions: []string{"model", "provider", "client"}, Aliases: aliases},
 		{Kind: AggDayHour},
 		{Kind: AggSession},

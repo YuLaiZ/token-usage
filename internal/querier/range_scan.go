@@ -96,10 +96,10 @@ func (s *Snapshot) Sessions() ([]SessionRow, bool) {
 
 // scanRow 是单遍扫描从 messages 读出的一行（只含聚合所需列）。
 type scanRow struct {
-	date, client, model, provider, routerProvider, project, sessionID string
-	ts                                                                int64
-	freshInput, output, cacheRead, cacheCreate, reasoning, total      int64
-	durationMS                                                        int64
+	date, client, model, routerModel, provider, routerProvider, project, sessionID string
+	ts                                                                             int64
+	freshInput, output, cacheRead, cacheCreate, reasoning, total                   int64
+	durationMS                                                                     int64
 }
 
 // aggregateOf 把一行明细变成可加聚合：duration 仅 duration_ms>0 的行计入
@@ -170,13 +170,17 @@ func (a *dimensionAccumulator) absorb(row *scanRow, agg GroupAggregate) {
 }
 
 // dimensionRawValue 返回维度在 Go 侧与原 SQL selectExpr 等价的原始键：
-// provider 沿用 effectiveProviderExpr 的取舍，month 取 date 前 7 位，
-// hour/weekday 与裸列路径同样走 bucketKeyOf（本机时区）。
+// provider 沿用 effectiveProviderExpr 的取舍，model 沿用
+// effectiveRouterModelExpr 的取舍（router_model 非空优先），month 取
+// date 前 7 位，hour/weekday 与裸列路径同样走 bucketKeyOf（本机时区）。
 func dimensionRawValue(d dimension, row *scanRow) string {
 	switch d.name {
 	case "client":
 		return row.client
 	case "model":
+		if row.routerModel != "" {
+			return row.routerModel
+		}
 		return row.model
 	case "provider":
 		if row.routerProvider != "" {
@@ -362,7 +366,7 @@ func (q *Querier) ScanRange(ctx context.Context, dates []string, specs []AggSpec
 		}
 
 		rows, err := tq.queryContext(ctx, fmt.Sprintf(`
-			SELECT date, ts, client, model, provider, router_provider, project, session_id,
+			SELECT date, ts, client, model, router_model, provider, router_provider, project, session_id,
 			       fresh_input_tokens, output_tokens, cache_read_tokens, cache_create_tokens,
 			       reasoning_tokens, total_tokens, duration_ms
 			FROM messages WHERE date IN (%s)`, placeholdersOnly(len(dates))), dateArgs(dates)...)
@@ -379,7 +383,7 @@ func (q *Querier) ScanRange(ctx context.Context, dates []string, specs []AggSpec
 				return err
 			}
 			if err := rows.Scan(
-				&row.date, &row.ts, &row.client, &row.model, &row.provider,
+				&row.date, &row.ts, &row.client, &row.model, &row.routerModel, &row.provider,
 				&row.routerProvider, &row.project, &row.sessionID,
 				&row.freshInput, &row.output, &row.cacheRead, &row.cacheCreate,
 				&row.reasoning, &row.total, &row.durationMS,

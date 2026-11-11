@@ -163,3 +163,36 @@ func TestScanRangeOptionalKinds(t *testing.T) {
 		t.Error("model not declared but found")
 	}
 }
+
+// dimensionRawValue 的 model 分支与 SQL effectiveRouterModelExpr 逐行等价:
+// router_model 非空直取(含带前缀的异常形态,不做二次修改),空回退客户端源
+// model 原值,两者皆空保持空。
+func TestDimensionRawValue_ModelPrefersRouterModel(t *testing.T) {
+	modelDim := dimensionWhitelist["model"]
+	cases := []struct {
+		name string
+		row  scanRow
+		want string
+	}{
+		{"router model wins over prefixed source", scanRow{
+			model: "ccs-deepseek/deepseek-flash", routerModel: "deepseek-flash",
+		}, "deepseek-flash"},
+		{"router model wins over bare source", scanRow{
+			model: "gpt-5.5", routerModel: "gpt-5.5",
+		}, "gpt-5.5"},
+		{"empty router model falls back to source", scanRow{
+			model: "ccs-deepseek/deepseek-flash",
+		}, "ccs-deepseek/deepseek-flash"},
+		{"both empty stays empty", scanRow{}, ""},
+		{"prefixed router model kept as-is", scanRow{
+			model: "ccs-deepseek/deepseek-flash", routerModel: "ccs-deepseek/deepseek-flash",
+		}, "ccs-deepseek/deepseek-flash"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dimensionRawValue(modelDim, &tc.row); got != tc.want {
+				t.Errorf("dimensionRawValue(model) = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
