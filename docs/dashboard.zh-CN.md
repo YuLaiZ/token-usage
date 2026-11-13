@@ -52,11 +52,14 @@ HTTP 面按回环与同源使用（不设 CORS 头）、无鉴权：数据接口
 - 内容勾选项按浏览器记忆，与遮蔽状态相互独立。
 - 弹窗中的预览与复制到剪贴板的图片是同一份 PNG——预览所见即粘贴所得。
 
+页面在统计区间工具条与结果区之间显示一条采集状态提示，随每次自动/手动/区间查询刷新（不新增独立轮询）；采集正常时不占位。按优先级依次提示：守护进程异常停止（带观测时间与已知客户端来源）、启动补采进行中或失败、上次中断尚未经成功补采确认恢复、采集未运行、采集状态暂不可判定，以及以上都不适用时——所选区间内未解决的采集失败。守护进程级状态是全局的、切换日期不消失；只有区间失败部分跟随所选日期——切换区间时旧区间的失败摘要会立即清除。提示只携带简短的可分享摘要（不含路径、堆栈或原始日志），不进入分享截图。
+
 ## HTTP 接口
 
 | 接口 | 参数 | 返回 |
 |------|------|------|
 | `GET /api/meta` | — | 版本（由二进制按原样提供）、`min_date`/`max_date`（全库）、`data_through`、`last_collection`；后三项缺数据时为 `null` |
+| `GET /api/daemon-status` | `from`、`to`（可选；`YYYY-MM-DD` 闭区间，跨度规则与 `/api/dashboard` 一致；两者都提供时才查询区间摘要） | `collection`——与 `daemon status --format json` 相同的对象：`state`（`starting`/`running`/`stopped`/`interrupted`/`unknown`）、`catch_up` 与 `interruption`（`kind`、`occurred_at`、`detected_at`、`source`（机器可读配置键）、`source_display`（共享展示名）与安全 `summary`；无需提示时为 `null`）；`range_errors`——未请求区间或记录不可读时为 `null`，否则为所选区间内未解决采集失败（`error_type='error'`）的 `{count, latest}`，`latest` 携带 `created_at`、`source`、`source_display` 与简短摘要 |
 | `GET /api/dashboard` | `from`、`to`（`YYYY-MM-DD`；缺省为截至今天的 30 天；跨度至多 366 天；未来范围返回结构完整的全零载荷） | `data_through`（全库最新消息时间）、`last_collection`（全库最近成功采集时间），无值为 `null`，与统计结果同一读快照；统计区间、totals（整数，含 `active_days`）、`columns`（所配置输出列的指标 ID 序列——只影响明细表，不影响顶部七项）、`trend`（单日为 `hour` 粒度、2~62 天为 `day`、更长为 `week`；整数 `buckets` 携带桶边界键、`peak_index`/`peak_total`，全零区间 `empty=true`——不产生「峰值 0」）、四个固定维度数组（`client`/`model`/`provider`/`project`；至多 9 个独立行按 `total` 降序——同值按名称——加至多一行携带机器字段 `is_other`/`other_count` 的「其他」尾行，独立项＋尾行七项与 `totals` 逐项守恒）、带 `mode` 的 `heatmap` 选择展示桶形态：`day_hour`（1~7 天，每天本机时区 24 个 `hours`）、`day_block`（8~31 天，每天六个 4 小时 `blocks` 由后端求和）、`calendar`（32 天及以上，仅逐日 `total`），晚于今天的日期带 `future: true`——前端渲染为空白（「尚未发生」），已发生的零值日保持真实零格、`custom_views`（每个已配置子查询一项，按名称序：声明顺序的维度名与最终行——至多 19 个独立组合按 `total` 降序加至多一行 `is_other`「其他组合」，七项守恒）、前 20 条会话（原始标题）。全部截断、尾行合并与桶整理都在服务端于同一读快照内完成，单次刷新不可能混用快照，浏览器不再截断或重聚合 |
 | `GET /api/config` | — | 可编辑配置模型（daemon、log、含数据来源路径的 clients、routers、provider aliases，以及解析后的 query 段——有效值，磁盘 query 段无法解析时附 `diagnostics`），与磁盘文件的 `revision`（文件尚不存在时为固定 sentinel）；`data_dir` 刻意不在模型中——数据目录迁移仍是仅 CLI 的确认操作 |
 | `PUT /api/config` | 请求体 `{revision, config}`——`GET /api/config` 提供的草稿；`query` 段可省略以保持磁盘 query 段原样（页面仅在用户编辑过该段或明确恢复全部默认值时才回传，使无关区块的保存绝不改写解析失败的 query 段） | 成功返回规范化落盘草稿、新 `revision`、`changed`、`warnings`（文件已保存但自启同步等副作用失败时非空）与 `suggested_steps`；文件已被他处修改时返回 `409` 与当前 `revision`（保留本地草稿、不覆盖任何内容），校验失败（未知客户端/路径键、非法 query 定义、越界值）返回 `400`，写入失败返回 `500` |

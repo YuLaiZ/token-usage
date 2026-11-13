@@ -129,10 +129,13 @@ func IncrementRetryCountByDateSource(ctx context.Context, d *DB, date, source st
 	return result.RowsAffected()
 }
 
+// ResolveErrorsByDateSource 结案指定日期与来源的普通采集失败。
+// 只作用于 error_type='error'：监控中断事件（monitor）由独立恢复确认路径
+// 按实例结案，不得被按日成功冒充已恢复。
 func ResolveErrorsByDateSource(ctx context.Context, q dbtx, date, source string) (int64, error) {
 	result, err := q.ExecContext(ctx, `UPDATE collection_errors
 		SET resolved = 1, updated_at = datetime('now')
-		WHERE date = ? AND source = ? AND resolved = 0`, date, source)
+		WHERE date = ? AND source = ? AND error_type = 'error' AND resolved = 0`, date, source)
 	if err != nil {
 		return 0, err
 	}

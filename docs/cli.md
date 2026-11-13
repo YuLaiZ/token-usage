@@ -275,7 +275,7 @@ Last successful collection / 最近成功采集: 2026-07-22 08:15:03
 - `Data through / 数据截至` is the latest message-event timestamp (`messages.ts`) inside the queried range, displayed in local time to the second. Message event times are the temporal boundary of the statistics; the field shows `—` when the range contains no messages.
 - `Last successful collection / 最近成功采集` is the most recent successful collection completion time in the whole database (`collection_log.collected_at`, stored in UTC and displayed in local time). It does not imply that every client was collected up to that moment, and it shows `—` before any successful collection exists.
 
-The default date is today. If the queried date range has unresolved entries in `collection_errors`, the results end with a collection-error notice and list the affected entries; when several tables are output (a group), the notice appears once after all of them. Use `errors` for details and `collect retry` to retry them.
+The default date is today. If the queried date range has unresolved entries in `collection_errors`, the results end with a collection-error notice listing the affected entries — collection failures and daemon monitor interruptions in separate groups. The collection-failure group points at `errors` for details and `collect retry` to retry; monitor interruptions point at `daemon status` and the daemon log and are never retried as collection failures. When several tables are output (a group), the notice appears once after all of them.
 
 Every grouped view (the nine built-in views and every custom multi-dimensional table) ends with a `Total / 总计` row computed from the same date range as the table; session details and the summary do not have this row.
 
@@ -375,7 +375,9 @@ Flags:
 - `--unresolved`: shows unresolved errors only.
 - `--format <fmt>`: output format, `table` (default, the framed table with the retry hint) or `json`. Invalid values are rejected before the database opens.
 
-With `--format json`, stdout is pure data — a JSON array of error records with no statistics header, no "no error records" line, and no retry hint (errors still go to stderr with a nonzero exit). Each record projects exactly the fields visible in the `table` columns:
+The framed table shows ID, date, client, type, message, occurred time, retries, and status. The type column distinguishes collection failures (`error`), daemon monitoring interruptions (`monitor`), and warnings; for monitor rows the occurred column prefers the observed interruption time over the later ingestion time. Monitor interruptions are recorded for visibility only — the hint under the table points at `daemon status` and the daemon log instead of `collect retry`, which targets collection failures.
+
+With `--format json`, stdout is pure data — a JSON array of error records with no statistics header, no "no error records" line, and no retry hint (errors still go to stderr with a nonzero exit). Each record carries the existing fields plus `error_type` and `created_at`:
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -385,6 +387,8 @@ With `--format json`, stdout is pure data — a JSON array of error records with
 | `message` | string | Error message |
 | `retry_count` | number | Retry attempts so far |
 | `resolved` | boolean | Whether the error has been resolved |
+| `error_type` | string | `error` (collection failure), `monitor` (daemon interruption), or `warning` |
+| `created_at` | string | Ingestion timestamp (UTC) |
 
 Filtering and record order (latest first, same as the `table`) are identical in both formats. An empty result prints `[]`. Output uses two-space indentation with a trailing newline.
 
@@ -602,12 +606,13 @@ token-usage daemon status
 token-usage daemon status --format json
 ```
 
-With `--format json`, the same snapshot is emitted as a single machine-readable JSON document: `running`/`pid` from the daemon lock, `startup_phase` (`null` when not running; `available`, `monitor_ready`, `catch_up` — unknown runtime-state values degrade to `unknown` — and `catch_up_failures`), `data_dir`, `poll_interval_seconds`, and `autostart` (`configured`, `definition_exists`, `spec_matches`, boolean `detect_failed`, `detect_error` carrying the reason, and `status` in a closed set: `enabled`/`missing`/`drift`/`residual`/`disabled`, or `unknown` when detection is unavailable). In `startup_phase`, unavailable phase metadata (`available=false`) and unknown `catch_up` values both degrade to `catch_up: "unknown"`.
+With `--format json`, the same snapshot is emitted as a single machine-readable JSON document: `running`/`pid` from the daemon lock, `startup_phase` (`null` when not running; `available`, `monitor_ready`, `catch_up` — unknown runtime-state values degrade to `unknown` — and `catch_up_failures`), `collection` — the shared collection-status object also served by `GET /api/daemon-status`: `state` in a closed set `starting`/`running`/`stopped`/`interrupted`/`unknown`, `catch_up` (current instance, `null` when no instance applies), and `interruption` (the interruption that still needs attention, or `null`, carrying `kind` (`failed`/`interrupted_unknown`), `occurred_at`, `detected_at`, `source` (the machine-readable config key), `source_display` (the display name computed from the shared client-key mapping), and a safe user-facing `summary`) — `last_exit` (the latest exit record kept across generations: `kind` (`stopped`/`failed`/`interrupted_unknown`), `occurred_at`, `detected_at`, `source`, `summary`, and `resolved` telling whether a startup catch-up has already confirmed recovery), `data_dir`, `poll_interval_seconds`, and `autostart` (`configured`, `definition_exists`, `spec_matches`, boolean `detect_failed`, `detect_error` carrying the reason, and `status` in a closed set: `enabled`/`missing`/`drift`/`residual`/`disabled`, or `unknown` when detection is unavailable). In `startup_phase`, unavailable phase metadata (`available=false`) and unknown `catch_up` values both degrade to `catch_up: "unknown"`.
 
-Read-only: `Inspect` does not acquire the process-control lock and determines liveness only from the daemon lock. It returns a consistent snapshot containing:
+Read-only: liveness and the instance phase come from one read-only three-state lock probe shared with `GET /api/daemon-status` (it never creates lock files, modifies lock contents, or writes the database); an unreadable lock surfaces as an undeterminable state instead of a conservative "running", and the collection object is computed from the same snapshot. It returns a consistent snapshot containing:
 
-- Runtime state: running with a PID, or not running.
+- Runtime state: running with a PID, not running, or undetermined (the lock probe failed).
 - Startup phase (an extra line when running): monitor initialization / monitoring ready and catch-up in progress / partial catch-up failure with a count and a suggestion to run `token-usage errors`. A successful catch-up adds no extra line; unavailable PID metadata or phase mismatch degrades to an unknown startup phase.
+- Collection interruption (the same `collection` object served by the web page): an unexpected stop with its time and known source, an exit with unknown reason, or — while running — a previous interruption whose recovery has not been confirmed by a successful startup catch-up. Monitor interruptions are looked up via `daemon status` and the daemon log; they are never retried as collection failures.
 - Data directory and polling interval.
 - Five-state autostart drift detection: enabled / autostart on but definition missing / content differs / autostart off but definition remains / not enabled. Drift only suggests saving configuration again; it triggers no writes.
 

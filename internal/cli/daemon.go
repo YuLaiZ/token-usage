@@ -13,12 +13,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/YuLaiZ/token-usage/internal/analyzer"
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/control"
+	"github.com/YuLaiZ/token-usage/internal/daemonstatus"
+	"github.com/YuLaiZ/token-usage/internal/db"
+	"github.com/YuLaiZ/token-usage/internal/runmeta"
 	"github.com/YuLaiZ/token-usage/internal/service"
 	"github.com/YuLaiZ/token-usage/internal/ui"
 )
@@ -205,15 +210,28 @@ func runStatus(cmd *cobra.Command) error {
 		return fmt.Errorf("%s: %w", ui.Bi("failed to load config", "加载配置失败"), err)
 	}
 
-	mgr, err := controlManagerFactory()
-	if err != nil {
-		return err
+	// 一次只读三态探测同时服务判活与实例阶段快照（与 serve 读端同一实现）：
+	// ProbeDaemonLock 不创建锁文件；阶段从 PID/runtime-state 全匹配读取。不走
+	// Inspect——其布尔判活在锁错误时保守为运行中且会建锁文件，与独立探测叠加
+	// 还可能拼出互相矛盾的两次快照（实例在两次探测之间退出）。
+	probe := probeCollectionLock(cfg)
+	running := probe == daemonstatus.ProbeRunning
+	st := control.RuntimeState{Running: running}
+	if running {
+		if rst, ok := readRuntimePhase(cfg); ok {
+			st.PID = rst.PID
+			st.PhaseAvailable = true
+			st.MonitorReady = rst.MonitorReady
+			st.CatchUp = rst.CatchUp
+			st.CatchUpFailures = rst.CatchUpFailures
+		} else if pid, _, perr := runmeta.ReadPIDFile(runmeta.PIDPath(cfg.DataDir)); perr == nil && pid > 0 {
+			st.PID = pid
+		}
 	}
-	// status 只读：Inspect 不抢 control lock（仅以 daemon lock 判活），返回一致快照。
-	st, err := mgr.Inspect(cmdContext(cmd), cfg)
-	if err != nil {
-		return err
-	}
+
+	// 采集状态证据（只读）：观察文件 + 只读打开的用量库（结案证据）；库不可读
+	// 时降级为"证据不可得"，不影响状态查询本身。
+	collection, lastExit := loadDaemonCollectionStatus(cmdContext(cmd), cfg, st, probe)
 
 	if format == "json" {
 		// 结构化状态仅 json 模式构造（resolveAutostart 会做一次只读定义检测，
@@ -222,6 +240,8 @@ func runStatus(cmd *cobra.Command) error {
 			Running:             st.Running,
 			PID:                 st.PID,
 			StartupPhase:        resolveStartupPhase(st),
+			Collection:          collection,
+			LastExit:            lastExit,
 			DataDir:             cfg.DataDir,
 			PollIntervalSeconds: cfg.Daemon.PollInterval,
 			Autostart:           resolveAutostart(cfg, service.NewAutoStartManager()),
@@ -234,17 +254,23 @@ func runStatus(cmd *cobra.Command) error {
 		return jsonErr
 	}
 
-	if st.Running {
+	switch {
+	case running:
 		if st.PID > 0 {
 			fmt.Fprintf(out, "● %s（PID %d）\n", ui.Bi("daemon running", "守护进程运行中"), st.PID)
 		} else {
 			fmt.Fprintln(out, "● "+ui.Bi("daemon running", "守护进程运行中"))
 		}
-		// 启动阶段只在 daemon lock 判 Running 后解释 runtime-state，
+		// 启动阶段只在判活为运行中时解释 runtime-state，
 		// 不参与 autostart 漂移判断。catch_up=succeeded 不打印额外行（仅运行中即足）。
 		printStartupPhase(out, st)
-	} else {
+		printCollectionStatus(out, collection)
+	case probe == daemonstatus.ProbeUnknown:
+		fmt.Fprintln(out, "？ "+ui.Bi("daemon state unknown (lock probe failed)", "守护进程状态无法判定（锁探测失败）"))
+		printCollectionStatus(out, collection)
+	default:
 		fmt.Fprintln(out, "○ "+ui.Bi("daemon not running", "守护进程未运行"))
+		printCollectionStatus(out, collection)
 	}
 
 	// 配置摘要
@@ -472,14 +498,147 @@ func runRestart(cmd *cobra.Command) error {
 
 // daemonStatusReport 是 `daemon status --format json` 的结构化载荷:字段与
 // table 报告同源(同一 Inspect 快照与 autostart 漂移判定),startup_phase 仅在
-// running=true 时非 null。
+// running=true 时非 null。collection 与 Web /api/daemon-status 共用同一判定;
+// last_exit 是历史退出摘要（与当前异常提示分开）。
 type daemonStatusReport struct {
-	Running             bool                `json:"running"`
-	PID                 int                 `json:"pid"`
-	StartupPhase        *daemonStartupPhase `json:"startup_phase"`
-	DataDir             string              `json:"data_dir"`
-	PollIntervalSeconds int                 `json:"poll_interval_seconds"`
-	Autostart           daemonAutostart     `json:"autostart"`
+	Running             bool                    `json:"running"`
+	PID                 int                     `json:"pid"`
+	StartupPhase        *daemonStartupPhase     `json:"startup_phase"`
+	Collection          daemonstatus.Collection `json:"collection"`
+	LastExit            *daemonStatusLastExit   `json:"last_exit"`
+	DataDir             string                  `json:"data_dir"`
+	PollIntervalSeconds int                     `json:"poll_interval_seconds"`
+	Autostart           daemonAutostart         `json:"autostart"`
+}
+
+// daemonStatusLastExit 是最近一条退出摘要的 JSON 视图（历史退出与当前异常
+// 分开）；resolved 表示该实例是否有明确结案记录（库不可读时为 false）。
+type daemonStatusLastExit struct {
+	Kind       string  `json:"kind"`
+	OccurredAt *string `json:"occurred_at"`
+	DetectedAt *string `json:"detected_at"`
+	Source     *string `json:"source"`
+	Summary    string  `json:"summary"`
+	Resolved   bool    `json:"resolved"`
+}
+
+// loadDaemonCollectionStatus 采集只读证据并计算 collection。判活与阶段快照
+// 由调用方一次性取得（probe 与 st 同源），本函数不再探测锁；库不可读时
+// 降级为证据不可得。
+func loadDaemonCollectionStatus(ctx context.Context, cfg *config.Config, st control.RuntimeState, probe daemonstatus.Probe) (daemonstatus.Collection, *daemonStatusLastExit) {
+	snap := daemonstatus.Snapshot{
+		Probe:          probe,
+		PhaseAvailable: probe == daemonstatus.ProbeRunning && st.PhaseAvailable,
+		MonitorReady:   st.MonitorReady,
+		CatchUp:        st.CatchUp,
+	}
+	var usageDB *db.DB
+	if ro, err := db.OpenReadOnly(filepath.Join(cfg.DataDir, "usage.db")); err == nil {
+		usageDB = ro
+		defer usageDB.Close()
+	}
+	now := time.Now()
+	collection := daemonstatus.Load(ctx, cfg.DataDir, snap, usageDB, now)
+
+	var lastExit *daemonStatusLastExit
+	if obs, err := runmeta.ReadObservation(runmeta.ObservationPath(cfg.DataDir)); err == nil && obs.LastExit != nil {
+		resolved := false
+		if usageDB != nil {
+			if r, rerr := db.IsMonitorInstanceResolved(ctx, usageDB, obs.LastExit.InstanceID); rerr == nil {
+				resolved = r
+			}
+		}
+		lastExit = &daemonStatusLastExit{
+			Kind:       obs.LastExit.Kind,
+			OccurredAt: optionalStringPtr(obs.LastExit.OccurredAt),
+			DetectedAt: optionalStringPtr(obs.LastExit.DetectedAt),
+			Source:     optionalStringPtr(obs.LastExit.Source),
+			Summary:    obs.LastExit.Summary,
+			Resolved:   resolved,
+		}
+	}
+	return collection, lastExit
+}
+
+// printCollectionStatus 打印当前采集中断提示（与 state 分开：运行/补采期间
+// 上一代未确认补齐的中断也要提示）。正常停止/无中断时不加行。
+func printCollectionStatus(out io.Writer, collection daemonstatus.Collection) {
+	it := collection.Interruption
+	switch collection.State {
+	case daemonstatus.StateInterrupted:
+		if it != nil {
+			when := formatStatusTime(firstNonEmpty(it.OccurredAt, it.DetectedAt))
+			if when != "" {
+				fmt.Fprintf(out, "⚠ %s（%s）: %s\n", ui.Bi("collection interrupted", "采集已中断"), when, it.Summary)
+			} else {
+				fmt.Fprintf(out, "⚠ %s: %s\n", ui.Bi("collection interrupted", "采集已中断"), it.Summary)
+			}
+		} else {
+			fmt.Fprintln(out, "⚠ "+ui.Bi("collection interrupted, exit reason unknown", "采集已中断，退出原因未知"))
+		}
+		fmt.Fprintln(out, ui.Bi("Run `token-usage errors` and check the daemon log for details.",
+			"可运行 `token-usage errors` 与查看守护进程日志定位原因。"))
+	case daemonstatus.StateUnknown:
+		fmt.Fprintln(out, ui.Bi("Collection state: unknown (daemon liveness or phase cannot be determined)",
+			"采集状态: 无法判定（守护进程判活或阶段不可用）"))
+		// 判活不可判定不影响中断证据的展示：与 JSON/Web 的 collection.interruption 同源。
+		if it != nil {
+			when := formatStatusTime(firstNonEmpty(it.OccurredAt, it.DetectedAt))
+			if when != "" {
+				fmt.Fprintf(out, "⚠ %s（%s）: %s\n", ui.Bi("previous collection interruption not yet confirmed recovered", "上次采集中断尚未确认补齐"), when, it.Summary)
+			} else {
+				fmt.Fprintf(out, "⚠ %s: %s\n", ui.Bi("previous collection interruption not yet confirmed recovered", "上次采集中断尚未确认补齐"), it.Summary)
+			}
+		}
+	case daemonstatus.StateRunning, daemonstatus.StateStarting:
+		if it != nil {
+			when := formatStatusTime(firstNonEmpty(it.OccurredAt, it.DetectedAt))
+			if when != "" {
+				fmt.Fprintf(out, "⚠ %s（%s）: %s\n", ui.Bi("previous collection interruption not yet confirmed recovered", "上次采集中断尚未确认补齐"), when, it.Summary)
+			} else {
+				fmt.Fprintf(out, "⚠ %s: %s\n", ui.Bi("previous collection interruption not yet confirmed recovered", "上次采集中断尚未确认补齐"), it.Summary)
+			}
+		}
+	case daemonstatus.StateStopped:
+		// 最近一代正常结束，但库中仍有未结案监控事件（历史缺口）：保留提示，
+		// 不冒充本次退出原因。
+		if it != nil {
+			when := formatStatusTime(firstNonEmpty(it.OccurredAt, it.DetectedAt))
+			if when != "" {
+				fmt.Fprintf(out, "⚠ %s（%s）: %s\n", ui.Bi("historical collection interruption not yet confirmed recovered", "历史采集中断尚未确认补齐"), when, it.Summary)
+			} else {
+				fmt.Fprintf(out, "⚠ %s: %s\n", ui.Bi("historical collection interruption not yet confirmed recovered", "历史采集中断尚未确认补齐"), it.Summary)
+			}
+		}
+	}
+}
+
+// formatStatusTime 把 RFC3339 转成本地可读时刻；空值或解析失败返回原值。
+func formatStatusTime(value string) string {
+	if value == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return value
+	}
+	return t.Local().Format("2006-01-02 15:04")
+}
+
+func firstNonEmpty(values ...*string) string {
+	for _, v := range values {
+		if v != nil && *v != "" {
+			return *v
+		}
+	}
+	return ""
+}
+
+func optionalStringPtr(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 // daemonStartupPhase 归纳 runtime-state 的启动阶段:Available=false 表示阶段

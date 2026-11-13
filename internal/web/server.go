@@ -18,10 +18,11 @@ import (
 // store。configFn 与 configStore 均可缺省(测试/最小装配):无 configFn 时
 // provider 别名与自定义视图不生效;无 configStore 时 /api/config 返回 501。
 type server struct {
-	q           *querier.Querier
-	version     string
-	configFn    func() *config.Config
-	configStore ConfigStore
+	q            *querier.Querier
+	version      string
+	configFn     func() *config.Config
+	configStore  ConfigStore
+	daemonStatus DaemonStatusProvider
 }
 
 // ServerOption 是 NewServer 的可选参数。
@@ -58,6 +59,7 @@ func NewServer(q *querier.Querier, version string, opts ...ServerOption) http.Ha
 	mux.HandleFunc("GET /assets/", s.handleAssets)
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
 	mux.HandleFunc("GET /api/dashboard", s.handleDashboard)
+	mux.HandleFunc("GET /api/daemon-status", s.handleDaemonStatus)
 	mux.HandleFunc("GET /api/config", s.handleConfigGet)
 	mux.HandleFunc("PUT /api/config", s.handleConfigPut)
 	return noStore(mux)

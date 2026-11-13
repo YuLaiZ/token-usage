@@ -275,7 +275,7 @@ Last successful collection / 最近成功采集: 2026-07-22 08:15:03
 - `Data through / 数据截至` 是统计日期范围内最新的消息事件时间（`messages.ts`），按本机时区显示到秒。消息事件时间才是统计数据的时间边界；范围内没有消息时显示 `—`。
 - `Last successful collection / 最近成功采集` 是全库最近一次成功采集完成的时间（`collection_log.collected_at`，库内以 UTC 存储，展示时转换为本机时区）。它不代表每个客户端都已完整采集到该时刻；还没有任何成功采集记录时显示 `—`。
 
-缺省日期为今天。若查询的日期区间在 `collection_errors` 中存在未解决记录，结果末尾会附「采集异常」提示并列出条目（组合查询输出多张表时，全部表结束后只提示一次），建议用 `errors` 查看详情、`collect retry` 重试。
+缺省日期为今天。若查询的日期区间在 `collection_errors` 中存在未解决记录，结果末尾会附「采集异常」提示并列出条目——普通采集失败与守护进程监控中断分两组展示：普通失败组建议用 `errors` 查看详情、`collect retry` 重试；监控中断组引导查看 `daemon status` 与守护进程日志，不按采集失败重试（组合查询输出多张表时，全部表结束后只提示一次）。
 
 所有分组视图（九个内置视图与全部自定义多维表）末行显示 `Total / 总计`，总计与表格使用同一日期范围独立聚合；会话明细与总览摘要不追加该行。
 
@@ -375,7 +375,9 @@ token-usage errors [DATE|DATE-DATE]
 - `--unresolved`：只看未解决。
 - `--format <fmt>`：输出格式，`table`（默认，框线表加重试提示）或 `json`；非法值在打开数据库之前即被拒绝。
 
-`--format json` 时 stdout 为纯数据——错误记录 JSON 数组，无统计头、无「暂无异常记录」、无重试提示行（错误照常走 stderr 并返回非零）。每条记录只投影 `table` 各列可见的字段：
+框线表列为 ID、日期、客户端、类型、错误信息、发生时刻、重试次数与状态。类型列区分采集失败（`error`）、守护进程监控中断（`monitor`）与警告；监控中断行的发生时刻优先取实际观测到的中断时间，而不是事后入库时间。监控中断仅作记录展示——表格下方的提示指向 `daemon status` 与守护进程日志，而不是针对采集失败的 `collect retry`。
+
+`--format json` 时 stdout 为纯数据——错误记录 JSON 数组，无统计头、无「暂无异常记录」、无重试提示行（错误照常走 stderr 并返回非零）。每条记录保留既有字段，并追加 `error_type` 与 `created_at`：
 
 | 字段 | 类型 | 含义 |
 |---|---|---|
@@ -385,6 +387,8 @@ token-usage errors [DATE|DATE-DATE]
 | `message` | 字符串 | 错误信息 |
 | `retry_count` | 数字 | 已重试次数 |
 | `resolved` | 布尔 | 是否已解决 |
+| `error_type` | 字符串 | `error`（采集失败）、`monitor`（守护进程监控中断）或 `warning` |
+| `created_at` | 字符串 | 入库时刻（UTC） |
 
 两种格式的过滤与记录顺序（最新在前，与 `table` 一致）完全相同。空结果输出 `[]`。两空格缩进，尾随换行。
 
@@ -602,12 +606,13 @@ token-usage daemon status
 token-usage daemon status --format json
 ```
 
-`--format json` 把同一份快照输出为单个机器可读的 JSON 文档：来自 daemon lock 的 `running`/`pid`、`startup_phase`（未运行时为 `null`；含 `available`、`monitor_ready`、`catch_up`——runtime-state 的未知值降级为 `unknown`——与 `catch_up_failures`）、`data_dir`、`poll_interval_seconds`，以及 `autostart`（`configured`、`definition_exists`、`spec_matches`、布尔 `detect_failed`、携带原因的 `detect_error`，`status` 取封闭值域：`enabled`/`missing`/`drift`/`residual`/`disabled`，检测不可行时为 `unknown`）。`startup_phase` 中阶段元数据不可得（`available=false`）与未知 `catch_up` 值都会降级为 `catch_up: "unknown"`。
+`--format json` 把同一份快照输出为单个机器可读的 JSON 文档：来自 daemon lock 的 `running`/`pid`、`startup_phase`（未运行时为 `null`；含 `available`、`monitor_ready`、`catch_up`——runtime-state 的未知值降级为 `unknown`——与 `catch_up_failures`）、`collection`——与 `GET /api/daemon-status` 共用的采集状态对象：`state` 取封闭值域 `starting`/`running`/`stopped`/`interrupted`/`unknown`，`catch_up`（当前实例的补采阶段，无适用实例为 `null`），`interruption`（当前仍需提示的中断或 `null`，含 `kind`（`failed`/`interrupted_unknown`）、`occurred_at`、`detected_at`、`source`（机器可读的配置键）、`source_display`（由共享客户端映射计算的展示名）与面向用户的安全 `summary`）——`last_exit`（跨代保留的最近一条退出摘要：`kind`（`stopped`/`failed`/`interrupted_unknown`）、`occurred_at`、`detected_at`、`source`、`summary`，以及表示启动补采是否已确认恢复的 `resolved`）、`data_dir`、`poll_interval_seconds`，以及 `autostart`（`configured`、`definition_exists`、`spec_matches`、布尔 `detect_failed`、携带原因的 `detect_error`，`status` 取封闭值域：`enabled`/`missing`/`drift`/`residual`/`disabled`，检测不可行时为 `unknown`）。`startup_phase` 中阶段元数据不可得（`available=false`）与未知 `catch_up` 值都会降级为 `catch_up: "unknown"`。
 
-只读（`Inspect` 不抢进程控制锁，仅以 daemon lock 判活），返回一致快照：
+只读：判活与实例阶段来自同一次只读三态锁探测（与 `GET /api/daemon-status` 共用；不创建锁文件、不改锁内容、不写数据库）；锁探测失败显示"无法判定"而不是保守的"运行中"，collection 对象由同一份快照计算。返回一致快照：
 
-- 运行状态：`● 守护进程运行中（PID N）` 或 `○ 守护进程未运行`。
+- 运行状态：`● 守护进程运行中（PID N）`、`○ 守护进程未运行`，或锁探测失败时的「守护进程状态无法判定（锁探测失败）」。
 - 启动阶段（运行中时追加一行）：`监听初始化中` / `监听已就绪，正在补采` / `补采部分失败（N），请执行 token-usage errors`；catch-up 成功不额外打印；PID 元数据不可用或阶段不匹配时降级为「启动阶段未知」。
+- 采集中断（与网页提示条同源的 `collection` 对象）：带时间与已知来源的异常停止、退出原因未知的中断，或运行中「上次采集中断尚未确认补齐」。监控中断通过 `daemon status` 与守护进程日志排查，不按采集失败重试。
 - 数据目录、轮询间隔。
 - 开机自启漂移检测（5 态）：已启用 / autostart=开但定义缺失 / 内容不一致 / autostart=关但定义残留 / 未启用。漂移只提示「建议重新保存配置」，不触发任何写操作。
 

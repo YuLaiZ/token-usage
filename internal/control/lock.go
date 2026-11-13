@@ -151,6 +151,18 @@ type managerDependencies struct {
 	// instanceIDGen 生成一次性守护进程实例标识。生产用 GenerateInstanceID；
 	// 测试注入确定性值，便于 ready 握手用可预测的 instanceID 匹配 PID/runtime-state。
 	instanceIDGen func() string
+	// monitorEvidencePersisted 判断某实例的监控中断证据是否已持久化到库
+	// （任意 resolved 状态）。受控停止覆盖观察文件里其他代的 failed 证据前
+	// 用它区分「库已承担缺口提示」与「观察文件仍是唯一来源」；nil 或返回
+	// false 按未持久化保守处理。生产实现只读查询 usage.db：判定在观察文件
+	// 写锁外预取、锁内仅采用快照结果，实现仍应保持短耗时以控制停止收尾总时长。
+	monitorEvidencePersisted func(cfg *config.Config, instanceID string) bool
+	// monitorFailureRecord 查询某实例在库中的未结案监控故障摘要（三态）：
+	// 受控停止查到真实故障时把摘要写回 last_exit 保留本次退出归属（只清
+	// active 会让旧摘要通过秒级时间比较把故障降级为历史缺口）；查询不可用时
+	// 已有同实例摘要则保留、缺失则按已确认的受控停止落定，库恢复后读端仍会
+	// 以库中故障覆盖停止结论。库文件不存在返回 absent（安全落定停止结论）。
+	monitorFailureRecord func(cfg *config.Config, instanceID string) (monitorFailure, monitorFailureState)
 }
 
 // ---- 依赖接口（均为包内私有，生产实现由 process.go 装配）----
@@ -287,17 +299,19 @@ func NewManager(home string) (*Manager, error) {
 			newLocker: func() controlLocker { return &flockLocker{fl: flock.New(lockPath)} },
 			// 生产依赖装配在 productionDeps()（process.go），保证 lock.go 不直接 import
 			// daemon/service，便于本文件聚焦 lock 基础设施。
-			daemonLock:        productionDaemonLock{},
-			pidIO:             productionPIDIO{},
-			stateReader:       productionStateReader{},
-			spawner:           productionSpawner{},
-			processKill:       newProductionProcessSignaler(),
-			metadataCleaner:   productionMetadataCleaner{},
-			serviceMgr:        newProductionServiceMgr(),
-			startReadyTimeout: 5 * time.Second,
-			stopWaitTimeout:   5 * time.Second,
-			pollInterval:      100 * time.Millisecond,
-			instanceIDGen:     GenerateInstanceID,
+			daemonLock:               productionDaemonLock{},
+			pidIO:                    productionPIDIO{},
+			stateReader:              productionStateReader{},
+			spawner:                  productionSpawner{},
+			processKill:              newProductionProcessSignaler(),
+			metadataCleaner:          productionMetadataCleaner{},
+			serviceMgr:               newProductionServiceMgr(),
+			startReadyTimeout:        5 * time.Second,
+			stopWaitTimeout:          5 * time.Second,
+			pollInterval:             100 * time.Millisecond,
+			instanceIDGen:            GenerateInstanceID,
+			monitorEvidencePersisted: productionMonitorEvidencePersisted,
+			monitorFailureRecord:     productionMonitorFailure,
 		},
 	}, nil
 }

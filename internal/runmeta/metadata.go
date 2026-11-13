@@ -42,6 +42,9 @@ const (
 var (
 	pidTempPrefix   = fileutil.TempPrefix(pidFileName)
 	stateTempPrefix = fileutil.TempPrefix(stateFileName)
+	// observationTempPrefix 只用于清理 daemon-observation.json 的精确 temp 残留：
+	// 该文件本身跨代保留，不随 PID/runtime-state 清理。
+	observationTempPrefix = fileutil.TempPrefix(observationFileName)
 )
 
 // RuntimeState 是 runtime-state 文件的内容：监控/追赶进度的可降级状态元数据。
@@ -172,7 +175,7 @@ func CleanupStaleMetadata(dataDir string) error {
 	}
 	var cleanupErr error
 	// 精确 temp 残留（ReplaceCompleteFile 模式：.token-usage.pid.tmp-* / .token-usage.runtime.json.tmp-*）。
-	if err := fileutil.CleanupKnownTempFiles(dataDir, []string{pidTempPrefix, stateTempPrefix}); err != nil {
+	if err := fileutil.CleanupKnownTempFiles(dataDir, []string{pidTempPrefix, stateTempPrefix, observationTempPrefix}); err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
 	// runtime-state 文件。
@@ -205,7 +208,7 @@ func CleanupOwnedMetadata(dataDir string, pid int, instanceID string) error {
 	}
 	var cleanupErr error
 	// 精确 temp 残留（上一代未清理干净的，按 stale 协议一并清）。
-	if err := fileutil.CleanupKnownTempFiles(dataDir, []string{pidTempPrefix, stateTempPrefix}); err != nil {
+	if err := fileutil.CleanupKnownTempFiles(dataDir, []string{pidTempPrefix, stateTempPrefix, observationTempPrefix}); err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
 	// state 文件：仅当归属匹配时删。

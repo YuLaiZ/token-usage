@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/analyzer"
@@ -71,8 +72,11 @@ func productionOpenResources(cfg *config.Config) (RuntimeResources, error) {
 	}
 	// logger 就绪后接管 fd 1/2（unix）：panic 等直接写 stderr 的兜底输出并入
 	// 当日结构化日志文件。restore 丢弃——daemon 生命周期即进程生命周期。
+	// 测试进程不接管：fd 被接管后 go test 收不到后续测试的输出与失败详情。
 	// Windows 为 no-op（平台局限见 stdfd_windows.go）。
-	_ = logger.MirrorStdOutput()
+	if !testing.Testing() {
+		_ = logger.MirrorStdOutput()
+	}
 	cleanupLegacyFallbackLogs(cfg.DataDir)
 	usageDB, err := db.Open(filepath.Join(cfg.DataDir, "usage.db"))
 	if err != nil {
@@ -225,7 +229,15 @@ func Run(ctx context.Context, cfg *config.Config, opts RunOptions) (err error) {
 	}
 	log.Info("daemon started (background mode)", "pid", os.Getpid(), "data_dir", cfg.DataDir)
 
+	// 退出观测：拿到实例锁且资源就绪后登记本代 active（此前核对上一代残留
+	// 证据）；可捕获退出（正常取消或监控致命错误）在 Run 返回前写 last_exit
+	// 并结束 active。故意不挂 defer 清 active：panic 等不可捕获退出必须留下
+	// 本代运行证据，供下次启动推导为中断未知；正常路径由 finishDaemonExit
+	// 结束 active（写失败时残留 active 也会在下次启动被检测）。
+	registerActiveObservation(cfg, log, resources.DB, opts.InstanceID, time.Now())
+
 	err = runAnalyzer(ctx, cfg, resources.DB, log, pid, opts.InstanceID)
+	finishDaemonExit(cfg, log, resources.DB, opts.InstanceID, err, time.Now())
 	return err
 }
 
@@ -287,11 +299,12 @@ func runAnalyzer(ctx context.Context, cfg *config.Config, usageDB *db.DB, log *s
 		})
 	})
 
-	return runAnalyzerWithCoordinator(ctx, cfg, a, writeState, pid, instanceID, log)
+	return runAnalyzerWithCoordinator(ctx, cfg, a, writeState, pid, instanceID, log, usageDB)
 }
 
 // runAnalyzerWithCoordinator 串联 coordinator 与 Analyzer.Run 的阻塞/关闭协调。
 // 从 runAnalyzer 抽出，便于测试注入失败的 state writer 验证 fatal→cancel→return 路径。
+// usageDB 供启动补采收尾时结案监控中断事件（nil=不启用结案，测试路径可用）。
 //
 // 顺序：
 //  1. 为本次 Analyzer.Run 派生可取消 child context：coordinator 与 a.Run 共用它。
@@ -300,7 +313,7 @@ func runAnalyzer(ctx context.Context, cfg *config.Config, usageDB *db.DB, log *s
 //  3. 阻塞调 a.Run(childCtx)。Analyzer.Run 返回（含 0 monitor 错误）立即 cancel coordinator 的 child ctx。
 //  4. 若 coordinator 回传 fatal（ready state 发布失败），立即 cancel child ctx 使 a.Run 进入 shutdown，
 //     等其与 coordinator 收尾后以 fatal 为返回值；否则返回 a.Run 的结果。
-func runAnalyzerWithCoordinator(ctx context.Context, cfg *config.Config, a *analyzer.Analyzer, writeState stateWriterFunc, pid int, instanceID string, log *slog.Logger) error {
+func runAnalyzerWithCoordinator(ctx context.Context, cfg *config.Config, a *analyzer.Analyzer, writeState stateWriterFunc, pid int, instanceID string, log *slog.Logger, usageDB *db.DB) error {
 	// 为本次 Analyzer.Run 派生可取消 child context：coordinator 与 a.Run 共用它。
 	// Analyzer.Run 返回（含 0 monitor 错误）或 ready state 发布失败时立即 cancel，
 	// 使 coordinator 的 Submit 经 ctx.Err() 退出、ready 后的写入被 gate 关闭。
@@ -308,6 +321,16 @@ func runAnalyzerWithCoordinator(ctx context.Context, cfg *config.Config, a *anal
 	defer childCancel()
 
 	coord := newStartupCoordinator(cfg, a.Submit, writeState, pid, instanceID, log)
+	// 结案装配：上一代未解决的监控中断（库中未结案事件 + 观察文件中来源已知、
+	// 尚未结案的 failed 摘要）在「本实例就绪 + 整轮补采完成且零失败 + 故障来源
+	// 仍在本轮补采范围」时由 coordinator 收尾结案；测试路径（usageDB=nil）不
+	// 启用。结案按实例持久化补采确认（库中无记录时补记已结案行），幂等。
+	if usageDB != nil {
+		coord.pendingInterruptions = loadPendingInterruptions(usageDB, cfg.DataDir)
+		coord.resolveInterruption = func(ctx context.Context, it pendingInterruption) error {
+			return resolvePendingInterruption(ctx, usageDB, cfg.DataDir, log, it)
+		}
+	}
 
 	// 容量 1 的 fatal result channel：ready state 发布失败时 coordinator 把真实错误回传 daemon。
 	// daemon 收到后立即 cancel child ctx（不只是 defer），使阻塞的 a.Run 进入 shutdown。

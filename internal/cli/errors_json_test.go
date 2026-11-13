@@ -95,7 +95,8 @@ func TestErrorsCmd_EndToEnd_JSON(t *testing.T) {
 		}
 	}
 
-	// 键名与原始类型：retry_count 为无引号整数、resolved 为布尔。
+	// 键名与原始类型：retry_count 为无引号整数、resolved 为布尔；
+	// error_type/created_at 为既有键之后追加的兼容字段。
 	var raw []map[string]any
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		t.Fatalf("output is not a JSON array: %v\n%s", err, out)
@@ -103,7 +104,7 @@ func TestErrorsCmd_EndToEnd_JSON(t *testing.T) {
 	if len(raw) != 3 {
 		t.Fatalf("expected 3 records, got %d:\n%s", len(raw), out)
 	}
-	wantKeys := []string{"id", "date", "source", "message", "retry_count", "resolved"}
+	wantKeys := []string{"id", "date", "source", "message", "retry_count", "resolved", "error_type", "created_at"}
 	for i, rec := range raw {
 		if len(rec) != len(wantKeys) {
 			t.Errorf("record %d 键数 %d != %d: %v", i, len(rec), len(wantKeys), rec)
@@ -245,5 +246,49 @@ func TestErrorsCmd_FormatFlagDefault(t *testing.T) {
 	}
 	if want := "output format: table or json / 输出格式：table 或 json"; flag.Usage != want {
 		t.Errorf("--format usage = %q, want %q", flag.Usage, want)
+	}
+}
+
+// monitor 行在 JSON 输出中携带 error_type 与 created_at：历史查询能区分
+// 类型与时间（T3），普通失败行同时保留既有字段。
+func TestErrorsJSON_MonitorRow(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx := context.Background()
+	if err := db.RecordError(ctx, d, "2026-11-11", "claude", "claude boom", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordMonitorError(ctx, d, "2026-11-11", "claude", "Claude 目录监听失败",
+		db.MonitorErrorDetail{InstanceID: "inst-json", Kind: "failed", OccurredAt: "2026-11-11T15:35:00+08:00", Source: "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := runErrorsContext(ctx, d, &buf, db.ErrorFilter{Unresolved: true}, "json"); err != nil {
+		t.Fatal(err)
+	}
+	var records []errorsJSONRecord
+	if err := json.Unmarshal(buf.Bytes(), &records); err != nil {
+		t.Fatalf("decode: %v\n%s", err, buf.String())
+	}
+	var monitor, collection *errorsJSONRecord
+	for i := range records {
+		switch records[i].ErrorType {
+		case "monitor":
+			monitor = &records[i]
+		case "error":
+			collection = &records[i]
+		}
+	}
+	if monitor == nil || collection == nil {
+		t.Fatalf("JSON 应区分 monitor 与 error 类型: %+v", records)
+	}
+	if monitor.CreatedAt == "" {
+		t.Fatal("monitor 行 created_at 不能为空")
+	}
+	if monitor.Resolved || monitor.RetryCount != 0 {
+		t.Fatalf("monitor 行状态 = %+v", monitor)
 	}
 }

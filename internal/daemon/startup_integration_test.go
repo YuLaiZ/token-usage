@@ -241,7 +241,7 @@ func TestStartupCatchUp_AllSourceTypes_ReadyBeforeInject(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runAnalyzerWithCoordinator(ctx, cfg, a, okWrite, 4242, "inst-catchup", nil)
+		done <- runAnalyzerWithCoordinator(ctx, cfg, a, okWrite, 4242, "inst-catchup", nil, nil)
 	}()
 
 	// ready-gated：等 ready barrier 关闭（确定性同步点，不 sleep）。
@@ -349,7 +349,7 @@ func TestStartupCatchUp_RealtimeEventBeforeCatchUp(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runAnalyzerWithCoordinator(ctx, cfg, a2, okWrite, 1, "inst-race", nil)
+		done <- runAnalyzerWithCoordinator(ctx, cfg, a2, okWrite, 1, "inst-race", nil, nil)
 	}()
 
 	// 等 ready。
@@ -445,7 +445,7 @@ func TestStartupCatchUp_PartialFailureContinuesAndObservable(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runAnalyzerWithCoordinator(ctx, cfg, a, okWrite, 7, "inst-fail", nil)
+		done <- runAnalyzerWithCoordinator(ctx, cfg, a, okWrite, 7, "inst-fail", nil, nil)
 	}()
 
 	select {
@@ -510,7 +510,7 @@ func TestStartupCatchUp_RequestOrderDeterministic(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runAnalyzerWithCoordinator(ctx, cfg, a, okWrite, 1, "inst-order", nil)
+		done <- runAnalyzerWithCoordinator(ctx, cfg, a, okWrite, 1, "inst-order", nil, nil)
 	}()
 
 	select {
@@ -590,7 +590,7 @@ func TestStartupCatchUp_NoSecondSourceChangeNeeded(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runAnalyzerWithCoordinator(ctx, cfg, a, okWrite, 1, "inst-handoff", nil)
+		done <- runAnalyzerWithCoordinator(ctx, cfg, a, okWrite, 1, "inst-handoff", nil, nil)
 	}()
 
 	// 等 ready barrier 关闭（「ready 前」的注入已完成：payload 已在 ExecuteFunc 内就绪）。

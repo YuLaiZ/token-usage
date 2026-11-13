@@ -14,6 +14,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/db"
+	"github.com/YuLaiZ/token-usage/internal/model"
 	"github.com/YuLaiZ/token-usage/internal/querier"
 	"github.com/YuLaiZ/token-usage/internal/querydef"
 	"github.com/YuLaiZ/token-usage/internal/ui"
@@ -859,18 +860,38 @@ func showErrorWarningsContext(ctx context.Context, out io.Writer, usageDB *db.DB
 		return nil
 	}
 
-	fmt.Fprintf(out, "\n⚠️  %s：\n", ui.Bi(
-		fmt.Sprintf("collection errors (%d)", len(errs)),
-		fmt.Sprintf("采集异常（%d 条）", len(errs)),
-	))
+	// 普通采集失败与监控中断分开提示：监控中断是守护进程级事件，重试单条
+	// 记录无法补齐，不能引导用户去 collect retry。
+	var collections, monitors []model.CollectionError
 	for _, e := range errs {
-		msg := truncateRunes(e.Message, 50)
-		fmt.Fprintf(out, "  - %s (%s): %s", e.Source, e.Date, msg)
-		if e.RetryCount > 0 {
-			fmt.Fprintf(out, "，%s", ui.Bi(fmt.Sprintf("retried %d times", e.RetryCount), fmt.Sprintf("已重试 %d 次", e.RetryCount)))
+		if e.ErrorType == db.MonitorErrorType {
+			monitors = append(monitors, e)
+		} else {
+			collections = append(collections, e)
 		}
-		fmt.Fprintln(out)
 	}
-	fmt.Fprintln(out, ui.Bi("  Run `token-usage errors` for details, `token-usage collect retry` to retry", "  运行 `token-usage errors` 查看详情，`token-usage collect retry` 重试"))
+	printErrorWarningGroup := func(title string, items []model.CollectionError) {
+		fmt.Fprintf(out, "\n⚠️  %s：\n", title)
+		for _, e := range items {
+			msg := truncateRunes(e.Message, 50)
+			fmt.Fprintf(out, "  - %s (%s): %s", e.Source, e.Date, msg)
+			if e.RetryCount > 0 {
+				fmt.Fprintf(out, "，%s", ui.Bi(fmt.Sprintf("retried %d times", e.RetryCount), fmt.Sprintf("已重试 %d 次", e.RetryCount)))
+			}
+			fmt.Fprintln(out)
+		}
+	}
+	if len(collections) > 0 {
+		printErrorWarningGroup(ui.Bi(
+			fmt.Sprintf("collection errors (%d)", len(collections)),
+			fmt.Sprintf("采集异常（%d 条）", len(collections))), collections)
+		fmt.Fprintln(out, ui.Bi("  Run `token-usage errors` for details, `token-usage collect retry` to retry", "  运行 `token-usage errors` 查看详情，`token-usage collect retry` 重试"))
+	}
+	if len(monitors) > 0 {
+		printErrorWarningGroup(ui.Bi(
+			fmt.Sprintf("monitor interruptions (%d)", len(monitors)),
+			fmt.Sprintf("监控中断（%d 条）", len(monitors))), monitors)
+		fmt.Fprintln(out, ui.Bi("  Monitor interruptions are recorded for visibility only; check `token-usage daemon status` and the daemon log.", "  监控中断仅作记录展示，请通过 `token-usage daemon status` 与守护进程日志定位。"))
+	}
 	return nil
 }

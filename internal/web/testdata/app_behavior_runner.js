@@ -1099,6 +1099,11 @@ function buildReport(def, ctx, fatal, stepStates) {
       pageRefreshing: byId("page-dash").getAttribute("data-refreshing"),
       dashBusy: byId("dash-results").getAttribute("aria-busy")
     },
+    collectionNotice: {
+      hidden: !!byId("collection-notice").hidden,
+      level: byId("collection-notice").getAttribute("data-level"),
+      text: byId("collection-notice").textContent
+    },
     refreshCfg: {
       dashSelect: byId("cfg-dashboard-refresh").value,
       dashCustom: byId("cfg-dashboard-refresh-custom").value,
@@ -1161,7 +1166,9 @@ async function runScenario(def) {
         refreshLabel: ctx.byId("refresh-label").textContent,
         refreshDetail: ctx.byId("refresh-detail").textContent,
         pageRefreshing: ctx.byId("page-dash").getAttribute("data-refreshing"),
-        dashBusy: ctx.byId("dash-results").getAttribute("aria-busy")
+        dashBusy: ctx.byId("dash-results").getAttribute("aria-busy"),
+        collectionNoticeHidden: !!ctx.byId("collection-notice").hidden,
+        collectionNoticeText: ctx.byId("collection-notice").textContent
       });
     }
   }

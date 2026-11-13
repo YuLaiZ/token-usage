@@ -7,9 +7,18 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+// defaultBusyTimeout 与 DSN 中的 busy_timeout(5000) 保持一致（连接级默认值）。
+const defaultBusyTimeout = 5000 * time.Millisecond
+
+// monitorWriteBusyTimeout 是监控中断写入的 busy 等待上限：这类写入发生在启动
+// 补写与退出边界，历史缺口整批补写有时间预算，不能被数据库写锁逐条拖满默认
+// 的 5 秒等待；超时按"未持久化"处理，证据保留待下次补写。
+const monitorWriteBusyTimeout = 500 * time.Millisecond
 
 // DB 封装 sql.DB，使用 SQLite WAL 模式支持并发读
 // WAL 模式下多个读操作可以并发执行；写串行化靠 busy_timeout=5000（写锁等待最多 5s）
@@ -87,6 +96,45 @@ func fileURIPath(slashed string) string {
 	return slashed
 }
 
+// OpenReadOnly 以只读模式打开既有 usage.db：不建库、不迁移 schema、不执行
+// 任何写 PRAGMA，供只读状态查询（daemon status / serve 采集状态）使用。
+// 库文件不存在、不可读或损坏时返回错误，调用方据此降级为"证据不可用"，
+// 绝不写库或伪造状态。
+func OpenReadOnly(path string) (*DB, error) {
+	return OpenReadOnlyWithBusyTimeout(path, defaultBusyTimeout)
+}
+
+// OpenReadOnlyWithBusyTimeout 与 OpenReadOnly 相同，但允许指定连接级 busy
+// 等待上限：控制端在观察文件写锁内做只读判定，不能等满默认 5 秒（驱动在
+// busy 等待期间不响应 context 取消）。
+func OpenReadOnlyWithBusyTimeout(path string, busy time.Duration) (*DB, error) {
+	if path == "" {
+		return nil, fmt.Errorf("构造只读数据库 DSN 失败: 路径为空")
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("构造只读数据库 DSN 失败: %w", err)
+	}
+	values := url.Values{}
+	values.Add("mode", "ro")
+	values.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busy.Milliseconds()))
+	u := url.URL{
+		Scheme:   "file",
+		Path:     fileURIPath(filepath.ToSlash(absolute)),
+		RawQuery: values.Encode(),
+	}
+	sqldb, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		return nil, fmt.Errorf("打开只读数据库失败: %w", err)
+	}
+	// sql.Open 惰性建连：显式 Ping 以便文件缺失/不可读在此处就暴露。
+	if err := sqldb.Ping(); err != nil {
+		sqldb.Close()
+		return nil, fmt.Errorf("打开只读数据库失败: %w", err)
+	}
+	return &DB{db: sqldb}, nil
+}
+
 func (d *DB) Close() error {
 	return d.db.Close()
 }
@@ -105,6 +153,42 @@ func (d *DB) QueryRow(query string, args ...interface{}) *sql.Row {
 
 func (d *DB) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
 	return d.db.ExecContext(ctx, query, args...)
+}
+
+// execContextWithBusyTimeout 在独占连接上以指定 busy 等待上限执行一条语句，
+// 归还前恢复连接默认等待，避免污染池中后续使用者。SQLite 驱动在 busy 等待
+// 期间不响应 context 取消，因此需要该上限把写锁竞争约束在预算内。
+func (d *DB) execContextWithBusyTimeout(ctx context.Context, busy time.Duration, query string, args ...interface{}) (sql.Result, error) {
+	return d.execContextsWithBusyTimeout(ctx, busy, []string{query}, [][]interface{}{args})
+}
+
+// execContextsWithBusyTimeout 在独占连接上以同一 busy 等待上限顺序执行多条
+// 语句（如补采确认的 UPDATE+INSERT 共享一次约束），返回最后一条的结果。
+// 归还前恢复连接默认等待。
+func (d *DB) execContextsWithBusyTimeout(ctx context.Context, busy time.Duration, queries []string, argSets [][]interface{}) (sql.Result, error) {
+	conn, err := d.db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d", busy.Milliseconds())); err != nil {
+		return nil, err
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.Background(), fmt.Sprintf("PRAGMA busy_timeout=%d", defaultBusyTimeout.Milliseconds()))
+	}()
+	var last sql.Result
+	for i, query := range queries {
+		var args []interface{}
+		if i < len(argSets) {
+			args = argSets[i]
+		}
+		last, err = conn.ExecContext(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return last, nil
 }
 
 func (d *DB) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {

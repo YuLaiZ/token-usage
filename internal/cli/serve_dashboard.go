@@ -21,6 +21,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/config"
 	"github.com/YuLaiZ/token-usage/internal/daemon"
+	"github.com/YuLaiZ/token-usage/internal/daemonstatus"
 	"github.com/YuLaiZ/token-usage/internal/db"
 	"github.com/YuLaiZ/token-usage/internal/runtimecfg"
 	"github.com/YuLaiZ/token-usage/internal/serve"
@@ -180,6 +181,11 @@ func serveDashboard(cfg *config.Config, usageDB *db.DB, version, addr string, ou
 	if err != nil {
 		return err
 	}
+	// 采集状态来源：与 daemon status 共用同一判定（只读探测，不建锁文件、
+	// 不写库）；装配失败不影响用量统计页的服务能力。
+	webOpts = append(webOpts, web.WithDaemonStatusProvider(func(ctx context.Context) daemonstatus.Collection {
+		return serveCollectionStatus(ctx, cfg, usageDB)
+	}))
 	handler := web.NewServer(q, version, webOpts...)
 	srv := &http.Server{
 		Handler:           handler,

@@ -266,7 +266,9 @@ var WorkBuddyErrorResolvePatterns = []string{
 func ResolveWorkBuddyErrorsByMessagePattern(ctx context.Context, q dbtx) (int64, error) {
 	var builder strings.Builder
 	args := make([]interface{}, 0, len(WorkBuddyErrorResolvePatterns)+1)
-	builder.WriteString("UPDATE collection_errors SET resolved = 1, updated_at = datetime('now') WHERE source = 'workbuddy' AND resolved = 0 AND (")
+	// 只结案 error_type='error' 的普通采集失败：监控中断事件（monitor）即使
+	// 摘要命中同一片段也不得被按消息模式误结案。
+	builder.WriteString("UPDATE collection_errors SET resolved = 1, updated_at = datetime('now') WHERE source = 'workbuddy' AND error_type = 'error' AND resolved = 0 AND (")
 	for i, pattern := range WorkBuddyErrorResolvePatterns {
 		if i > 0 {
 			builder.WriteString(" OR ")

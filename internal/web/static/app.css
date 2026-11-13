@@ -885,3 +885,9 @@ table.ctable tbody th:first-child{padding-left:14px}
 
 .share-privacy-badge{cursor:default}
 .share-privacy-badge[data-masked="true"]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 42%,var(--line));background:color-mix(in srgb,var(--accent) 10%,var(--glass-lens))}
+
+/* 采集状态提示：统计区间工具条与结果区之间的一条低强调行内提示。
+   正常采集不占位；故障态用警示色边框与图标区分（不只靠颜色：含 ⚠ 图标与文字）。 */
+.collection-notice{display:flex;gap:8px;align-items:flex-start;margin:14px 0 0;padding:9px 14px;border:1px solid var(--line);border-radius:var(--r2);background:var(--glass-sheen),var(--glass);backdrop-filter:var(--glass-blur);-webkit-backdrop-filter:var(--glass-blur);color:var(--muted);font-size:12.5px;line-height:1.55}
+.collection-notice[hidden]{display:none}
+.collection-notice[data-level="warn"]{border-color:color-mix(in srgb,#e5655a 42%,var(--line));color:var(--ink)}

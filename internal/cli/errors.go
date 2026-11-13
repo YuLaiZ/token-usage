@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
@@ -113,12 +114,14 @@ func runErrorsContext(ctx context.Context, usageDB *db.DB, out io.Writer, filter
 		fmt.Sprintf("采集异常（%d 条）", len(errs)),
 	))
 
-	widths := []int{errColID, errColDate, errColClient, errColMessage, errColRetries, errColStatus}
+	widths := []int{errColID, errColDate, errColClient, errColType, errColMessage, errColTime, errColRetries, errColStatus}
 	header := []string{
 		"ID",
 		ui.ColDate,
 		ui.ColClient,
+		ui.Bi("Type", "类型"),
 		ui.Bi("Message", "错误信息"),
+		ui.Bi("Occurred", "发生时刻"),
 		ui.Bi("Retries", "重试次数"),
 		ui.Bi("Status", "状态"),
 	}
@@ -127,7 +130,14 @@ func runErrorsContext(ctx context.Context, usageDB *db.DB, out io.Writer, filter
 	fmt.Fprintln(out, errorsTableRow(header, widths))
 	fmt.Fprintln(out, errorsTableBorder(widths, "├", "┼", "┤"))
 
+	hasMonitor, hasCollectionError := false, false
 	for _, e := range errs {
+		switch e.ErrorType {
+		case db.MonitorErrorType:
+			hasMonitor = true
+		case "error":
+			hasCollectionError = true
+		}
 		status := ui.Bi("unresolved", "未解决")
 		if e.Resolved {
 			status = ui.Bi("resolved", "已解决")
@@ -136,7 +146,9 @@ func runErrorsContext(ctx context.Context, usageDB *db.DB, out io.Writer, filter
 			strconv.Itoa(e.ID),
 			e.Date,
 			e.Source,
+			errorTypeLabel(e.ErrorType),
 			e.Message,
+			errorOccurredAtLabel(e),
 			strconv.Itoa(e.RetryCount),
 			status,
 		}
@@ -145,17 +157,62 @@ func runErrorsContext(ctx context.Context, usageDB *db.DB, out io.Writer, filter
 
 	fmt.Fprintln(out, errorsTableBorder(widths, "└", "┴", "┘"))
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, ui.Bi(
-		"Run `token-usage collect retry` to retry all, `token-usage collect retry --client <name>` for one client.",
-		"运行 `token-usage collect retry` 重试，`token-usage collect retry --client <name>` 重试指定数据源。",
-	))
+	if hasCollectionError {
+		fmt.Fprintln(out, ui.Bi(
+			"Run `token-usage collect retry` to retry all, `token-usage collect retry --client <name>` for one client.",
+			"运行 `token-usage collect retry` 重试，`token-usage collect retry --client <name>` 重试指定数据源。",
+		))
+	}
+	if hasMonitor {
+		// 监控中断是守护进程级事件，重试单条记录无法补齐：引导到 daemon status 与日志。
+		fmt.Fprintln(out, ui.Bi(
+			"Monitor interruptions are recorded for visibility only; check `token-usage daemon status` and the daemon log instead of retrying them.",
+			"监控中断仅作记录展示，请通过 `token-usage daemon status` 与守护进程日志定位，不要重试该记录。",
+		))
+	}
 
 	return nil
 }
 
-// errorsJSONRecord 是 errors --format json 的单条记录投影，字段与 table 可见列
-// 一一对应（ID/日期/客户端/错误信息/重试次数/状态），定义顺序即 JSON 键顺序。
-// error_type/detail/created_at/updated_at 不在表格可见语义内，不导出。
+// errorTypeLabel 把 error_type 映射为表格可见的类型名（未知类型按采集失败显示）。
+// 值与既有状态列一致使用双语短词，宽度按最长值（error / 采集失败 = 16）收敛。
+func errorTypeLabel(errorType string) string {
+	switch errorType {
+	case db.MonitorErrorType:
+		return ui.Bi("monitor", "监控")
+	case "warning":
+		return ui.Bi("warning", "警告")
+	default:
+		return ui.Bi("error", "采集失败")
+	}
+}
+
+// errorOccurredAtLabel 返回可读发生时刻：监控中断优先展示实际观测的
+// occurred_at，避免把事后入库时间当成故障发生时间；其余用入库时刻（UTC→本地）。
+func errorOccurredAtLabel(e model.CollectionError) string {
+	if e.ErrorType == db.MonitorErrorType {
+		if detail, err := db.ParseMonitorErrorDetail(e.Detail); err == nil && detail.OccurredAt != "" {
+			return formatStatusTime(detail.OccurredAt)
+		}
+	}
+	return formatSQLTime(e.CreatedAt)
+}
+
+// formatSQLTime 把 SQLite datetime('now')（UTC，无时区标记）转成本地可读时刻。
+func formatSQLTime(value string) string {
+	if value == "" {
+		return ""
+	}
+	t, err := time.Parse("2006-01-02 15:04:05", value)
+	if err != nil {
+		return value
+	}
+	return t.Local().Format("2006-01-02 15:04")
+}
+
+// errorsJSONRecord 是 errors --format json 的单条记录投影。既有字段（ID/日期/
+// 客户端/错误信息/重试次数/状态）保持兼容，error_type 与 created_at 追加在
+// 既有键之后；detail/updated_at 不在导出语义内。
 type errorsJSONRecord struct {
 	ID         int    `json:"id"`
 	Date       string `json:"date"`
@@ -163,6 +220,8 @@ type errorsJSONRecord struct {
 	Message    string `json:"message"`
 	RetryCount int    `json:"retry_count"`
 	Resolved   bool   `json:"resolved"`
+	ErrorType  string `json:"error_type"`
+	CreatedAt  string `json:"created_at"`
 }
 
 // marshalExportJSON 以两空格缩进序列化并追加尾随换行。map 键由 encoding/json
@@ -189,6 +248,8 @@ func renderErrorsJSON(errs []model.CollectionError, out io.Writer) error {
 			Message:    e.Message,
 			RetryCount: e.RetryCount,
 			Resolved:   e.Resolved,
+			ErrorType:  e.ErrorType,
+			CreatedAt:  e.CreatedAt,
 		})
 	}
 	s, err := marshalExportJSON(records)
@@ -209,11 +270,15 @@ func errorsFormatError(value string) error {
 
 // errors 表格列宽（显示宽度，含双语表头与状态值），补齐与截断统一走 runewidth。
 // 中文按显示宽度占 2 列，宽度按双语表头/状态值实测重估，非 rune 计数。
+// message 保持 50：既有失败原文（如 "claude read / 读取数据源失败: ..."）在
+// 50 内完整可见，收窄会截断断言依赖的错误原因。
 const (
 	errColID      = 3  // ID
 	errColDate    = 11 // Date / 日期
 	errColClient  = 15 // Client / 客户端
-	errColMessage = 50
+	errColType    = 16 // Type / 类型（error / 采集失败 最长 16）
+	errColMessage = 50 // Message / 错误信息
+	errColTime    = 19 // Occurred / 发生时刻（2006-01-02 15:04）
 	errColRetries = 18 // Retries / 重试次数
 	errColStatus  = 19 // unresolved / 未解决
 )

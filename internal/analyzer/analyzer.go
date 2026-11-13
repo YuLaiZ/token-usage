@@ -189,6 +189,20 @@ func (a *Analyzer) reportMonitorError(err error) {
 	}
 }
 
+// MonitorFatalError 标注 monitor 级致命错误的来源客户端与发生时刻，供 daemon
+// 退出边界结构化记录（errors 事件来源、退出摘要）；Error/Unwrap 原样透传
+// 底层错误，既有错误处理与文案不受影响。来源只在这里结构化携带，不从双语
+// 错误字符串反推。
+type MonitorFatalError struct {
+	Client     string
+	OccurredAt time.Time
+	Err        error
+}
+
+func (e *MonitorFatalError) Error() string { return e.Err.Error() }
+
+func (e *MonitorFatalError) Unwrap() error { return e.Err }
+
 // NewFromConfig 从配置创建 Analyzer。
 // execute 是实际采集执行函数（daemon 提供：RunCollect+retry+ValidateResult）；
 // debounceDuration 是 JSONL watcher 的防抖间隔；生产路径传 5*time.Second，
@@ -567,7 +581,11 @@ func (a *Analyzer) Run(ctx context.Context) error {
 		go func(w *JSONLWatcher) {
 			defer a.wg.Done()
 			if err := w.Run(runCtx); err != nil {
-				a.reportMonitorError(fmt.Errorf("%s: %w", ui.Bi(w.clientName+" JSONL watcher failed", w.clientName+" JSONL watcher 失败"), err))
+				a.reportMonitorError(&MonitorFatalError{
+					Client:     w.clientName,
+					OccurredAt: time.Now(),
+					Err:        fmt.Errorf("%s: %w", ui.Bi(w.clientName+" JSONL watcher failed", w.clientName+" JSONL watcher 失败"), err),
+				})
 			}
 		}(watcher)
 	}

@@ -230,6 +230,9 @@ var RANGE_KEY = 'tu-range';
    从最近一次请求完成后起算,请求期间不并发自动查询。 */
 var REFRESH = { seq:0, source:null, state:'idle', lastAt:null, loadedRange:null, targetText:'',
   intervalSec:30, autoTimer:null, doneTimer:null };
+/* 采集状态（GET /api/daemon-status）：随用量查询刷新，独立降级。
+   status=null 表示暂不可读；loaded=false 表示本次页面尚未完成任何一次拉取。 */
+var COLLECTION = { status:null, loaded:false };
 function refreshIntervalOf(v){ v=+v||0; return v>0?v:30; }
 /* 相对区间每次计算都重新取本地今天;历史周期取上一完整自然周期。
    历史分支只用年月日构造与 setDate 推移日历日(不加减 86400000 毫秒,
@@ -1498,6 +1501,80 @@ function catchUpRefresh(){
   var due = !REFRESH.lastAt || (Date.now()-REFRESH.lastAt.getTime()) >= REFRESH.intervalSec*1000;
   if(due) requestRefresh('auto');
 }
+/* 采集状态提示:只展示一条,优先守护进程中断或补采状态;普通采集失败提示随
+   所选区间更新,守护状态是全局的、切换日期不消失。正常采集不占位。
+   文案按结构化字段(kind/source)本地化生成，不直接拼接后端的双语 summary。 */
+function fmtCollectionTime(v){
+  if(!v) return '';
+  var d = new Date(v);
+  if(isNaN(d.getTime())) return '';
+  return ui((d.getMonth()+1)+' 月 '+d.getDate()+' 日 ', (d.getMonth()+1)+'-'+d.getDate()+' ')+pad2(d.getHours())+':'+pad2(d.getMinutes());
+}
+/* sourceLabel 取后端算好的展示名（source_display，与 daemon 摘要同一映射），
+   缺失时回退机器可读的原始键——前端不维护第二份映射。 */
+function sourceLabel(obj){
+  return (obj && (obj.source_display || obj.source)) || '';
+}
+/* collectionInterruptionText 生成中断提示的单语文案：kind=interrupted_unknown
+   只表达"原因未知"；kind=failed 附已格式化的本地时间与已知客户端来源。 */
+function collectionInterruptionText(it, stopped){
+  var kind = it && it.kind;
+  var when = fmtCollectionTime(it && (it.occurred_at || it.detected_at));
+  if(kind === 'interrupted_unknown'){
+    return ui('采集已中断 · 退出原因未知。当前只显示已入库数据。','Collection interrupted · exit reason unknown. Showing ingested data only.');
+  }
+  var src = sourceLabel(it);
+  if(stopped){
+    return ui('采集已异常停止','Collection stopped unexpectedly')
+      + (when ? ' · '+when : '')
+      + (src ? ui('，',': ')+src+ui(' 目录监听失败',' monitor failed') : '')
+      + ui('。此后的用量可能未入库，已有数据仍可查看。','. Usage after that may be missing; existing data is still available.');
+  }
+  return ui('上次采集异常中断，补采尚未确认补齐','Previous collection interruption not yet confirmed recovered')
+    + (when ? ' · '+when : '')
+    + (src ? ui('，',': ')+src+ui(' 目录监听失败',' monitor failed') : '')
+    + ui('。','.');
+}
+function renderCollectionNotice(){
+  var box = el('collection-notice');
+  if(!box) return;
+  var text = '', level = 'info';
+  if(!COLLECTION.loaded){ box.hidden = true; box.textContent = ''; return; }
+  var status = COLLECTION.status;
+  if(!status){
+    text = ui('暂时无法确认采集状态。','Collection status is temporarily unavailable.');
+  }else{
+    var c = status.collection || {};
+    var it = c.interruption;
+    var rangeErrors = status.range_errors;
+    if(c.state === 'interrupted'){
+      text = collectionInterruptionText(it, true);
+      level = 'warn';
+    }else if(c.catch_up === 'pending' || c.catch_up === 'running'){
+      /* 补采进度优先于"上次中断未确认补齐"：用户关心当前正在恢复。 */
+      text = ui('正在补采 · 部分用量稍后更新。','Catching up · some usage will update shortly.');
+    }else if(c.catch_up === 'failed'){
+      text = ui('部分用量未补齐 · 查询结果可能不完整。','Some usage not fully caught up · results may be incomplete.');
+      level = 'warn';
+    }else if(it){
+      text = collectionInterruptionText(it, false);
+      level = 'warn';
+    }else if(c.state === 'stopped'){
+      text = ui('采集未运行 · 当前只显示已入库数据。','Collection not running · showing ingested data only.');
+    }else if(c.state === 'unknown'){
+      text = ui('暂时无法确认采集状态。','Collection status is temporarily unavailable.');
+    }else if(rangeErrors && rangeErrors.count > 0){
+      var src = rangeErrors.latest ? sourceLabel(rangeErrors.latest) : '';
+      text = ui('部分用量采集失败 · 所选区间的 '+(src || '部分客户端')+' 用量可能不完整。',
+        'Partial collection failures · usage for '+(src || 'some clients')+' in the selected range may be incomplete.');
+      level = 'warn';
+    }
+  }
+  if(!text){ box.hidden = true; box.textContent = ''; return; }
+  box.hidden = false;
+  box.setAttribute('data-level', level);
+  box.textContent = (level==='warn' ? '⚠ ' : 'ⓘ ') + text;
+}
 /* 统一请求入口:source ∈ auto|manual|range。请求开始即显示动画、目标区间
    与旧结果标识;新请求胜出(seq 递增使旧响应过期);失败清旧数据并整页报错,
    成功一次性更新后短暂展示 done 再回 idle。手动与区间查询都会重置自动计时
@@ -1520,6 +1597,12 @@ function requestRefresh(source){
   syncRangeSeg();
   syncCustomTxt();
   renderRefreshState();
+  /* 刷新/切区间开始即清除旧区间的失败摘要（守护全局状态保留）：避免新区间
+     结果先到时，提示仍用旧区间摘要声称"所选区间不完整"。 */
+  if(COLLECTION.status && COLLECTION.status.range_errors){
+    COLLECTION.status = {collection: COLLECTION.status.collection || null, range_errors: null};
+    renderCollectionNotice();
+  }
   setDashLoading();
   api('/api/dashboard?from='+from+'&to='+to).then(function(r){
     if(seq!==REFRESH.seq) return; /* 过期响应不得覆盖新范围 */
@@ -1553,6 +1636,19 @@ function requestRefresh(source){
     renderRefreshState();
     showDashError(ui('数据加载失败','Failed to load data'));
     scheduleAutoRefresh();
+  });
+  /* 采集状态与用量查询并行:同一次手动/自动/区间刷新触发,不新增轮询;
+     失败只降级提示条,不影响统计结果;过期响应不得覆盖最新的区间与状态。 */
+  api('/api/daemon-status?from='+from+'&to='+to).then(function(cr){
+    if(seq!==REFRESH.seq) return;
+    COLLECTION.status = (cr.ok && cr.body) ? cr.body : null;
+    COLLECTION.loaded = true;
+    renderCollectionNotice();
+  }, function(){
+    if(seq!==REFRESH.seq) return;
+    COLLECTION.status = null;
+    COLLECTION.loaded = true;
+    renderCollectionNotice();
   });
 }
 el('dash-refresh').addEventListener('click', function(){ requestRefresh('manual'); });
@@ -2571,6 +2667,7 @@ function syncLocaleUI(){
   renderMeta();
   renderRefreshState();
   renderCal();
+  renderCollectionNotice();
   buildColsEditor();
   if(CFG.draft){
     el('q-groups').querySelectorAll('.qdef-row').forEach(mountRowPick);

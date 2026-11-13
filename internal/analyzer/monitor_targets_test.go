@@ -9,6 +9,7 @@ import (
 
 	"github.com/YuLaiZ/token-usage/internal/collector"
 	"github.com/YuLaiZ/token-usage/internal/config"
+	"github.com/YuLaiZ/token-usage/internal/model"
 )
 
 // HasMonitorTargets 必须与 setupFromConfig 的实际装配一致：谓词 true ⇔
@@ -82,5 +83,16 @@ func TestHasMonitorTargetsMatchesAssembly(t *testing.T) {
 				t.Errorf("HasMonitorTargets=%v 与装配结果 watchers+pollers>0=%v 不一致（两处判定漂移）", predicate, assembled)
 			}
 		})
+	}
+}
+
+// JSONL watcher 的每个客户端都必须有展示名映射（model.ClientKeyDisplayName）：
+// 新增 watcher 客户端而漏登记映射时，监控中断摘要会退化为原始配置键——本
+// 测试从装配表驱动，遗漏即转红。
+func TestJSONLMonitorClientsHaveDisplayNames(t *testing.T) {
+	for _, jc := range jsonlMonitorClients {
+		if got := model.ClientKeyDisplayName(jc.name); got == jc.name {
+			t.Errorf("client %q 缺少展示名映射（model.clientKeyDisplayNames）", jc.name)
+		}
 	}
 }

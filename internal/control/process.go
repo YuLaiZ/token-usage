@@ -519,18 +519,52 @@ func (s *Session) stopLocked(ctx context.Context, cfg *config.Config) (StopResul
 		return StopResult{}, errPIDMetadataUnavailable
 	}
 
+	// 受控停止意图：发信号前按实例记录（读端在意图窗口内抑制中断误报）。
+	// instance_id 优先取 runtime-state（已与 PID 匹配），缺失时回退 PID 文件。
+	instanceID := st.InstanceID
+	if instanceID == "" {
+		if _, id, rerr := s.manager.deps.pidIO.read(cfg); rerr == nil {
+			instanceID = id
+		}
+	}
+	requestControlledStop(cfg, instanceID, s.manager.deps.now())
+
 	if err := s.manager.stopDaemonByPlatform(ctx, cfg, pid); err != nil {
+		clearControlledStopIntent(cfg, instanceID)
 		return StopResult{PID: pid, WasRunning: true}, err
 	}
 
 	// 以 daemon lock 释放作为成功条件；超时返回错误，不删 PID 伪装成功。
 	if err := s.manager.waitDaemonRelease(ctx, cfg); err != nil {
+		clearControlledStopIntent(cfg, instanceID)
 		return StopResult{PID: pid, WasRunning: true}, err
 	}
 	// lock 已释放后才允许清理强杀或异常退出遗留的双文件元数据。
+	// 受控停止落定前的缺口判定：其他代的 failed 证据已入库时不再阻止本次
+	// stopped 落定（缺口由库中的未结案事件继续提示）；库不可用按未持久化
+	// 保守处理。
+	evidencePersisted := func(prevInstanceID string) bool {
+		if s.manager.deps.monitorEvidencePersisted == nil {
+			return false
+		}
+		return s.manager.deps.monitorEvidencePersisted(cfg, prevInstanceID)
+	}
+	// 同实例的故障可能仅存于数据库（退出摘要写失败）：查到真实故障时写回
+	// last_exit 保留本次退出归属；查询不可用时不覆盖已有可信摘要。
+	sameInstanceFailure := func(id string) (monitorFailure, monitorFailureState) {
+		if s.manager.deps.monitorFailureRecord == nil {
+			return monitorFailure{}, monitorFailureAbsent
+		}
+		return s.manager.deps.monitorFailureRecord(cfg, id)
+	}
 	if err := s.manager.deps.metadataCleaner.cleanup(cfg.DataDir); err != nil {
+		// 停止本身已成立（daemon lock 已确认释放）：先落定正常停止结果再返回
+		// 元数据清理错误，避免残留停止意图在窗口过期后被读端误报为中断。
+		finishControlledStop(cfg, instanceID, s.manager.deps.now(), evidencePersisted, sameInstanceFailure)
 		return StopResult{PID: pid, WasRunning: true}, fmt.Errorf("%s: %w", ui.Bi("daemon stopped, but failed to clean up run metadata", "守护进程已停止，但清理运行元数据失败"), err)
 	}
+	// 落定正常停止结果：已有同实例的已知异常证据时保留（停止不掩盖真实错误）。
+	finishControlledStop(cfg, instanceID, s.manager.deps.now(), evidencePersisted, sameInstanceFailure)
 
 	return StopResult{PID: pid, WasRunning: true}, nil
 }

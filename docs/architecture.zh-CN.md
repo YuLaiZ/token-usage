@@ -32,8 +32,9 @@
 | `internal/config/` | 用户配置读写、dotted key get/set、默认模板。`[query]` 段以 raw 载体原样保留（`RawQuery` 与互斥的 `RawQueryTopLevelIssues`），全局加载链不做 query 语义校验 |
 | `internal/querydef/` | 纯函数解析器：raw query 状态 → 已校验只读定义（内置维度、子查询、组合查询、默认视图与 `[query.output]` 列布局）；提供一次完整 `Parse` 与两个互相隔离错误的局部入口（`ParseViews` 只读视图定义、`ParseOutputLayout` 只读输出布局，共享顶层问题共同前置）；错误为结构化 `ValidationError` 诊断（稳定路径 + 封闭类别集合）。不读文件不碰 DB，`internal/config` 不依赖它 |
 | `internal/control/` | 进程控制层：control lock、`Manager` 的 Start/Stop/Restart/Inspect、父子 control lease |
-| `internal/daemon/` | 守护进程主体：daemon lock、PID、detached spawn、`startupCoordinator`（monitor ready → catch-up） |
-| `internal/runmeta/` | 守护进程双文件元数据协议：PID 文件 + runtime-state JSON |
+| `internal/daemon/` | 守护进程主体：daemon lock、PID、detached spawn、`startupCoordinator`（monitor ready → catch-up → 中断结案），以及跨代保留的 `daemon-observation.json` 退出证据（active、停止意图、最近退出），在启动与退出边界写入 |
+| `internal/daemonstatus/` | 供 `daemon status` 与 `GET /api/daemon-status` 共用的读端采集状态判定：当前实例阶段、来自 observation 文件与未结案监控中断的中断证据、补采状态；纯判定，不写文件、不写数据库 |
+| `internal/runmeta/` | 守护进程元数据协议：PID 文件、runtime-state JSON 与 `daemon-observation.json`（原子替换；observation 文件不随旧代清理） |
 | `internal/fileutil/` | 跨平台「完整文件替换」`ReplaceCompleteFile` 与 temp 清理 |
 | `internal/service/` | 跨平台开机自启服务定义管理（macOS launchd / Windows 注册表），定义层与运行层解耦 |
 | `internal/update/` | 自更新核心（非 CLI）：版本解析、平台资产映射、`SHA256SUMS` 清单、GitHub Release 查询、下载、来源校验、安装编排。不依赖 `internal/cli` |

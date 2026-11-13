@@ -77,6 +77,9 @@ type stepState struct {
 	RefreshDetail string `json:"refreshDetail"`
 	Refreshing    string `json:"pageRefreshing"`
 	DashBusy      string `json:"dashBusy"`
+	// 采集状态提示条的分步取证（hidden/文案），用于断言跨区间切换时全局状态保持。
+	CollectionNoticeHidden bool   `json:"collectionNoticeHidden"`
+	CollectionNoticeText   string `json:"collectionNoticeText"`
 }
 
 type appJSReport struct {
@@ -205,6 +208,12 @@ type appJSReport struct {
 	Session    map[string]string `json:"session"`
 	Local      map[string]string `json:"local"`
 	StepStates []stepState       `json:"stepStates"`
+	// 采集状态提示条最终状态（hidden/level/文案）。
+	CollectionNotice struct {
+		Hidden bool   `json:"hidden"`
+		Level  string `json:"level"`
+		Text   string `json:"text"`
+	} `json:"collectionNotice"`
 }
 
 /*
@@ -664,6 +673,32 @@ func putTopKeys(t *testing.T, body string) map[string]json.RawMessage {
 	return top
 }
 
+// daemonStatusBody 构造 /api/daemon-status stub 载荷（与 web 后端契约一致）。
+func daemonStatusBody(state string, catchUp any, interruption any, rangeErrors any) map[string]any {
+	return map[string]any{
+		"collection": map[string]any{
+			"state":        state,
+			"catch_up":     catchUp,
+			"interruption": interruption,
+		},
+		"range_errors": rangeErrors,
+	}
+}
+
+// interruptionFixture 是当前仍需提示的监控中断摘要。时刻按本地时区构造，
+// 前端展示断言不依赖运行机器的时区。
+func interruptionFixture() map[string]any {
+	occurred := time.Date(2026, 11, 11, 15, 35, 0, 0, time.Local)
+	return map[string]any{
+		"kind":           "failed",
+		"occurred_at":    occurred.Format(time.RFC3339),
+		"detected_at":    occurred.Add(2 * time.Second).Format(time.RFC3339),
+		"source":         "claude",
+		"source_display": "Claude",
+		"summary":        "Claude 目录监听失败",
+	}
+}
+
 func TestAppJSBehaviorScenarios(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -686,9 +721,10 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 		   预载输出列:每个场景都必须提供 config stub,否则请求 500 虽被前端容错,
 		   但与生产行为不符 */
 		return map[string]any{
-			"GET /api/meta":      routeSpec{Status: 200, Body: metaBody(today)},
-			"GET /api/dashboard": routeSpec{Status: 200, Body: dashboardBody()},
-			"GET /api/config":    routeSpec{Status: 200, Body: configGetBody(30)},
+			"GET /api/meta":          routeSpec{Status: 200, Body: metaBody(today)},
+			"GET /api/dashboard":     routeSpec{Status: 200, Body: dashboardBody()},
+			"GET /api/config":        routeSpec{Status: 200, Body: configGetBody(30)},
+			"GET /api/daemon-status": routeSpec{Status: 200, Body: daemonStatusBody("running", "succeeded", nil, nil)},
 		}
 	}
 	sessionsRoutes := baseRoutes()
@@ -1284,15 +1320,15 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 	for _, hc := range historyCases {
 		steps := hc.steps
 		scenarios = append(scenarios, scenarioDef{
-			Name: hc.name,
-			Opts: map[string]any{"routes": baseRoutes(), "now": hc.now},
+			Name:  hc.name,
+			Opts:  map[string]any{"routes": baseRoutes(), "now": hc.now},
 			Steps: steps,
 		})
 	}
 	scenarios = append(scenarios,
 		scenarioDef{
-			Name: "history preset labels and single selection",
-			Opts: map[string]any{"routes": baseRoutes(), "now": "2026-10-28"},
+			Name:  "history preset labels and single selection",
+			Opts:  map[string]any{"routes": baseRoutes(), "now": "2026-10-28"},
 			Steps: []stepSpec{{Op: "seg", ID: "range-seg", Value: "8"}},
 		},
 		scenarioDef{
@@ -1320,9 +1356,154 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 			},
 		},
 		scenarioDef{
-			Name: "rolling year keeps 365 days",
-			Opts: map[string]any{"routes": baseRoutes(), "now": "2026-10-28"},
+			Name:  "rolling year keeps 365 days",
+			Opts:  map[string]any{"routes": baseRoutes(), "now": "2026-10-28"},
 			Steps: []stepSpec{{Op: "seg", ID: "range-seg", Value: "6"}},
+		},
+		scenarioDef{
+			Name: "collection notice hidden when healthy",
+			Opts: map[string]any{"routes": baseRoutes()},
+		},
+		scenarioDef{
+			Name: "collection interruption shows and survives range switch",
+			Opts: func() map[string]any {
+				routes := baseRoutes()
+				routes["GET /api/daemon-status"] = []routeSpec{
+					{Status: 200, Body: daemonStatusBody("interrupted", nil, interruptionFixture(), nil)},
+					// 切区间后的响应同时带区间失败摘要：全局中断优先展示，不得被区间失败覆盖。
+					{Status: 200, Body: daemonStatusBody("interrupted", nil, interruptionFixture(),
+						map[string]any{"count": 3, "latest": map[string]any{"created_at": "2026-11-11 08:00:00", "source": "codex", "source_display": "Codex", "summary": "采集失败"}})},
+				}
+				return map[string]any{"routes": routes, "now": "2026-11-11"}
+			}(),
+			Steps: []stepSpec{{Op: "seg", ID: "range-seg", Value: "8"}},
+		},
+		scenarioDef{
+			Name: "collection range errors shown when present",
+			Opts: func() map[string]any {
+				routes := baseRoutes()
+				routes["GET /api/daemon-status"] = routeSpec{Status: 200, Body: daemonStatusBody("running", "succeeded", nil,
+					map[string]any{"count": 2, "latest": map[string]any{"created_at": "2026-11-11 08:00:00", "source": "claude", "source_display": "Claude", "summary": "采集失败"}})}
+				return map[string]any{"routes": routes}
+			}(),
+		},
+		scenarioDef{
+			Name: "collection range errors clear after range switch",
+			Opts: func() map[string]any {
+				routes := baseRoutes()
+				routes["GET /api/daemon-status"] = []routeSpec{
+					{Status: 200, Body: daemonStatusBody("running", "succeeded", nil,
+						map[string]any{"count": 2, "latest": map[string]any{"created_at": "2026-11-11 08:00:00", "source": "claude", "source_display": "Claude", "summary": "采集失败"}})},
+					{Status: 200, Body: daemonStatusBody("running", "succeeded", nil,
+						map[string]any{"count": 0, "latest": nil})},
+				}
+				return map[string]any{"routes": routes}
+			}(),
+			Steps: []stepSpec{{Op: "seg", ID: "range-seg", Value: "8"}},
+		},
+		scenarioDef{
+			Name: "collection status unreachable degrades independently",
+			Opts: func() map[string]any {
+				routes := baseRoutes()
+				routes["GET /api/daemon-status"] = routeSpec{Status: 500, Body: map[string]any{"error": map[string]any{"message": "boom"}}}
+				return map[string]any{"routes": routes}
+			}(),
+		},
+		scenarioDef{
+			Name: "collection catch-up pending notice",
+			Opts: func() map[string]any {
+				routes := baseRoutes()
+				routes["GET /api/daemon-status"] = routeSpec{Status: 200, Body: daemonStatusBody("running", "running", nil, nil)}
+				return map[string]any{"routes": routes}
+			}(),
+		},
+		scenarioDef{
+			Name: "collection catch-up failed notice",
+			Opts: func() map[string]any {
+				routes := baseRoutes()
+				routes["GET /api/daemon-status"] = routeSpec{Status: 200, Body: daemonStatusBody("running", "failed", nil, nil)}
+				return map[string]any{"routes": routes}
+			}(),
+		},
+		scenarioDef{
+			Name: "collection stopped notice",
+			Opts: func() map[string]any {
+				routes := baseRoutes()
+				routes["GET /api/daemon-status"] = routeSpec{Status: 200, Body: daemonStatusBody("stopped", nil, nil, nil)}
+				return map[string]any{"routes": routes}
+			}(),
+		},
+		scenarioDef{
+			Name: "collection state unknown notice",
+			Opts: func() map[string]any {
+				routes := baseRoutes()
+				routes["GET /api/daemon-status"] = routeSpec{Status: 200, Body: daemonStatusBody("unknown", "unknown", nil, nil)}
+				return map[string]any{"routes": routes}
+			}(),
+		},
+		scenarioDef{
+			Name: "collection interruption unknown kind notice",
+			Opts: func() map[string]any {
+				routes := baseRoutes()
+				routes["GET /api/daemon-status"] = routeSpec{Status: 200, Body: daemonStatusBody("interrupted", nil,
+					map[string]any{"kind": "interrupted_unknown", "occurred_at": nil, "detected_at": nil, "source": nil, "summary": "collection interrupted, exit reason unknown / 采集已中断，退出原因未知"}, nil)}
+				return map[string]any{"routes": routes}
+			}(),
+		},
+		scenarioDef{
+			Name: "collection previous interruption while running",
+			Opts: func() map[string]any {
+				routes := baseRoutes()
+				routes["GET /api/daemon-status"] = routeSpec{Status: 200, Body: daemonStatusBody("running", "succeeded", interruptionFixture(), nil)}
+				return map[string]any{"routes": routes}
+			}(),
+		},
+		scenarioDef{
+			Name: "collection catch-up takes priority over previous interruption",
+			Opts: func() map[string]any {
+				routes := baseRoutes()
+				routes["GET /api/daemon-status"] = routeSpec{Status: 200, Body: daemonStatusBody("running", "failed", interruptionFixture(), nil)}
+				return map[string]any{"routes": routes}
+			}(),
+		},
+		scenarioDef{
+			Name: "collection stale range errors cleared on switch",
+			Opts: func() map[string]any {
+				routes := baseRoutes()
+				// 初始区间有 2 条失败（立即返回）；切区间后的状态响应挂起，
+				// 由 resolve 步骤放行（返回零失败）——切换瞬间不得再展示旧区间摘要。
+				routes["GET /api/daemon-status"] = []routeSpec{
+					{Status: 200, Body: daemonStatusBody("running", "succeeded", nil,
+						map[string]any{"count": 2, "latest": map[string]any{"created_at": "2026-11-11 08:00:00", "source": "claude", "source_display": "Claude", "summary": "采集失败"}})},
+					{Status: 200, Body: daemonStatusBody("running", "succeeded", nil,
+						map[string]any{"count": 0, "latest": nil}), Pending: true},
+				}
+				return map[string]any{"routes": routes}
+			}(),
+			Steps: []stepSpec{{Op: "seg", ID: "range-seg", Value: "8"}, {Op: "resolve"}},
+		},
+		scenarioDef{
+			Name: "collection notice rebuilt on locale switch",
+			Opts: func() map[string]any {
+				routes := baseRoutes()
+				routes["GET /api/daemon-status"] = routeSpec{Status: 200, Body: daemonStatusBody("interrupted", nil, interruptionFixture(), nil)}
+				return map[string]any{"routes": routes}
+			}(),
+			Steps: []stepSpec{{Op: "locale", Value: "en"}},
+		},
+		scenarioDef{
+			Name: "collection stale response cannot overwrite newer status",
+			Opts: func() map[string]any {
+				routes := baseRoutes()
+				// 第一次响应挂起（结束后才放行），第二次立即返回健康状态：
+				// 过期的中断响应不得覆盖最新状态。
+				routes["GET /api/daemon-status"] = []routeSpec{
+					{Status: 200, Body: daemonStatusBody("interrupted", nil, interruptionFixture(), nil), Pending: true},
+					{Status: 200, Body: daemonStatusBody("running", "succeeded", nil, nil)},
+				}
+				return map[string]any{"routes": routes}
+			}(),
+			Steps: []stepSpec{{Op: "seg", ID: "range-seg", Value: "8"}, {Op: "resolve"}},
 		},
 	)
 
@@ -1406,7 +1587,7 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				if r.RangeCustom.Pressed != "true" || !r.RangeCustom.On {
 					t.Errorf("range-custom pressed=%q on=%v, want pressed/on for custom range", r.RangeCustom.Pressed, r.RangeCustom.On)
 				}
-				/* init 链 = meta + config 预载 + dashboard 各一次 */
+				/* init 链 = meta + config 预载 + dashboard + daemon-status 各一次 */
 				if n := countFetch(r, "GET", "/api/meta"); n != 1 {
 					t.Errorf("meta fetches = %d, want exactly 1", n)
 				}
@@ -1416,8 +1597,11 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 				if n := countFetch(r, "GET", "/api/dashboard"); n != 1 {
 					t.Errorf("dashboard fetches = %d, want exactly 1", n)
 				}
-				if len(r.FetchCalls) != 3 {
-					t.Errorf("total fetches = %d, want exactly meta+config+dashboard", len(r.FetchCalls))
+				if n := countFetch(r, "GET", "/api/daemon-status"); n != 1 {
+					t.Errorf("daemon-status fetches = %d, want exactly 1", n)
+				}
+				if len(r.FetchCalls) != 4 {
+					t.Errorf("total fetches = %d, want exactly meta+config+dashboard+daemon-status", len(r.FetchCalls))
 				}
 				var saved struct {
 					S string `json:"s"`
@@ -2688,7 +2872,162 @@ func TestAppJSBehaviorScenarios(t *testing.T) {
 					"/api/dashboard?from=2026-10-28&to=2026-10-28",
 					"/api/dashboard?from=2025-10-29&to=2026-10-28",
 				})
+
+			case "collection notice hidden when healthy":
+				/* 区分度:正常采集不占位——若提示条无条件渲染,隐藏断言失败。 */
+				if !r.CollectionNotice.Hidden {
+					t.Errorf("健康采集不得显示提示条: %+v", r.CollectionNotice)
+				}
+
+			case "collection interruption shows and survives range switch":
+				/* 区分度:守护进程中断是全局状态——切换统计区间不得清除提示;
+				   若实现把提示绑定到单次区间查询或切换时重置,最终状态或中间态失败。 */
+				if r.CollectionNotice.Hidden {
+					t.Fatalf("中断提示不得因切换区间消失: %+v", r.CollectionNotice)
+				}
+				if !strings.Contains(r.CollectionNotice.Text, "采集已异常停止") ||
+					!strings.Contains(r.CollectionNotice.Text, "Claude 目录监听失败") {
+					t.Errorf("中断提示文案 = %q", r.CollectionNotice.Text)
+				}
+				// 发生时刻按本地可读格式展示（fixture 按本地时区构造）。
+				if !strings.Contains(r.CollectionNotice.Text, "15:35") {
+					t.Errorf("中断提示应包含发生时刻: %q", r.CollectionNotice.Text)
+				}
+				if r.CollectionNotice.Level != "warn" {
+					t.Errorf("中断提示 level = %q, want warn", r.CollectionNotice.Level)
+				}
+				if len(r.StepStates) != 1 || r.StepStates[0].CollectionNoticeHidden {
+					t.Errorf("切区间后的中间态也必须保留中断提示: %+v", r.StepStates)
+				}
+				// daemon-status 请求必须携带切换后的区间（与用量查询同源）。
+				if got := daemonStatusURLs(r); len(got) != 2 ||
+					got[0] != "/api/daemon-status?from=2026-11-11&to=2026-11-11" ||
+					got[1] != "/api/daemon-status?from=2026-11-10&to=2026-11-10" {
+					t.Errorf("daemon-status URLs = %v", got)
+				}
+
+			case "collection range errors shown when present":
+				/* 区分度:区间存在未解决普通采集失败时显示提示并带来源名。 */
+				if r.CollectionNotice.Hidden {
+					t.Fatalf("有采集失败时提示条应可见: %+v", r.CollectionNotice)
+				}
+				if !strings.Contains(r.CollectionNotice.Text, "部分用量采集失败") ||
+					!strings.Contains(r.CollectionNotice.Text, "Claude") {
+					t.Errorf("普通失败提示文案（来源应为展示名）= %q", r.CollectionNotice.Text)
+				}
+
+			case "collection range errors clear after range switch":
+				/* 区分度:普通采集失败提示随所选区间更新——切到无失败区间后隐藏。 */
+				if !r.CollectionNotice.Hidden {
+					t.Errorf("区间无失败记录后提示应隐藏: %+v", r.CollectionNotice)
+				}
+
+			case "collection status unreachable degrades independently":
+				/* 区分度:采集状态接口失败只降级提示条,用量查询仍成功渲染。 */
+				if r.CollectionNotice.Hidden {
+					t.Fatalf("状态不可读时应显示降级提示: %+v", r.CollectionNotice)
+				}
+				if !strings.Contains(r.CollectionNotice.Text, "暂时无法确认采集状态") {
+					t.Errorf("降级提示文案 = %q", r.CollectionNotice.Text)
+				}
+				if !strings.Contains(r.KpisHTML, "kpi") {
+					t.Errorf("采集状态失败不得影响用量查询渲染: kpis=%q", r.KpisHTML)
+				}
+
+			case "collection catch-up pending notice":
+				/* 区分度:补采中显示对应文案（低强调，不按故障色）。 */
+				if r.CollectionNotice.Hidden || !strings.Contains(r.CollectionNotice.Text, "正在补采") {
+					t.Errorf("补采中提示 = %+v", r.CollectionNotice)
+				}
+				if r.CollectionNotice.Level == "warn" {
+					t.Errorf("补采中不应使用故障色: %+v", r.CollectionNotice)
+				}
+
+			case "collection catch-up failed notice":
+				/* 区分度:补采失败文案与 warn 级（与"正在补采"不可同文）。 */
+				if r.CollectionNotice.Hidden || !strings.Contains(r.CollectionNotice.Text, "部分用量未补齐") {
+					t.Errorf("补采失败提示 = %+v", r.CollectionNotice)
+				}
+				if r.CollectionNotice.Level != "warn" {
+					t.Errorf("补采失败应使用 warn 级: %+v", r.CollectionNotice)
+				}
+
+			case "collection stopped notice":
+				/* 区分度:未运行低强调提示，不按故障色。 */
+				if r.CollectionNotice.Hidden || !strings.Contains(r.CollectionNotice.Text, "采集未运行") {
+					t.Errorf("未运行提示 = %+v", r.CollectionNotice)
+				}
+				if r.CollectionNotice.Level == "warn" {
+					t.Errorf("未运行不应使用故障色: %+v", r.CollectionNotice)
+				}
+
+			case "collection state unknown notice":
+				if r.CollectionNotice.Hidden || !strings.Contains(r.CollectionNotice.Text, "暂时无法确认采集状态") {
+					t.Errorf("不可判定提示 = %+v", r.CollectionNotice)
+				}
+
+			case "collection interruption unknown kind notice":
+				/* 区分度:原因未知按 kind 单独呈现——不显示时间/来源/后端双语摘要。 */
+				if r.CollectionNotice.Hidden || !strings.Contains(r.CollectionNotice.Text, "退出原因未知") {
+					t.Errorf("原因未知提示 = %+v", r.CollectionNotice)
+				}
+				if strings.Contains(r.CollectionNotice.Text, "目录监听失败") || strings.Contains(r.CollectionNotice.Text, "collection interrupted") {
+					t.Errorf("原因未知不得透出错误摘要或双语片段: %q", r.CollectionNotice.Text)
+				}
+
+			case "collection previous interruption while running":
+				/* 区分度:运行中上一代未结案中断提示（删除该分支则隐藏）。 */
+				if r.CollectionNotice.Hidden || !strings.Contains(r.CollectionNotice.Text, "上次采集异常中断") {
+					t.Errorf("运行中未结案中断提示 = %+v", r.CollectionNotice)
+				}
+				if !strings.Contains(r.CollectionNotice.Text, "Claude 目录监听失败") {
+					t.Errorf("来源展示名 = %q", r.CollectionNotice.Text)
+				}
+
+			case "collection catch-up takes priority over previous interruption":
+				/* 区分度:补采失败优先于上一代中断——显示"部分用量未补齐"而非中断提示。 */
+				if r.CollectionNotice.Hidden || !strings.Contains(r.CollectionNotice.Text, "部分用量未补齐") {
+					t.Errorf("补采失败应优先展示: %+v", r.CollectionNotice)
+				}
+				if strings.Contains(r.CollectionNotice.Text, "上次采集异常中断") {
+					t.Errorf("补采状态不得被中断提示覆盖: %q", r.CollectionNotice.Text)
+				}
+
+			case "collection stale range errors cleared on switch":
+				/* 区分度:切区间瞬间旧区间摘要必须清除（新状态响应尚未到达）；
+				   不清除则中间态仍显示"部分用量采集失败 · 所选区间…"。 */
+				if len(r.StepStates) < 1 || !r.StepStates[0].CollectionNoticeHidden {
+					t.Errorf("切区间后应立即清除旧区间摘要: %+v", r.StepStates)
+				}
+				if !r.CollectionNotice.Hidden {
+					t.Errorf("新区间无失败记录时提示应隐藏: %+v", r.CollectionNotice)
+				}
+
+			case "collection notice rebuilt on locale switch":
+				/* 区分度:切换语言后提示条立即用新语言重建（删除 syncLocaleUI 的
+				   renderCollectionNotice 调用则停留中文，断言失败）。 */
+				if r.CollectionNotice.Hidden || !strings.Contains(r.CollectionNotice.Text, "Collection stopped unexpectedly") {
+					t.Errorf("语言切换后提示条未重建: %+v", r.CollectionNotice)
+				}
+
+			case "collection stale response cannot overwrite newer status":
+				/* 区分度:过期（seq 不匹配）的中断响应不得覆盖较新的健康状态。 */
+				if !r.CollectionNotice.Hidden {
+					t.Errorf("过期响应不得覆盖最新状态: %+v", r.CollectionNotice)
+				}
 			}
 		})
 	}
+}
+
+// daemonStatusURLs 收集 GET /api/daemon-status 的完整 URL（按调用顺序），
+// 用于断言请求携带与用量查询相同的区间。
+func daemonStatusURLs(r appJSReport) []string {
+	var out []string
+	for _, c := range r.FetchCalls {
+		if c.Method == "GET" && strings.HasPrefix(c.URL, "/api/daemon-status") {
+			out = append(out, c.URL)
+		}
+	}
+	return out
 }

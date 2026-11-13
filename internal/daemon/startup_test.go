@@ -339,7 +339,10 @@ func TestCoordinator_RequestOrder_FailureDoesNotSkip(t *testing.T) {
 		failOn: map[int]error{1: errors.New("codex state incr boom")}, // call idx 0=claude,1=codex incr
 	}
 	coord := newStartupCoordinator(cfg, rec.submit, nil, 123, "inst-1", nil)
-	failures := coord.runCatchUp(context.Background())
+	failures, completed := coord.runCatchUp(context.Background())
+	if !completed {
+		t.Fatal("completed = false, want true（所有请求都被实际尝试）")
+	}
 
 	got := rec.snapshot()
 	// 期望全部 5 个请求都被执行：claude(1) + codex incr(1) + codex fullscan(1) + codex router(1) = 4
@@ -872,7 +875,7 @@ func TestRunAnalyzerWithCoordinator_ReadyStateFailure_CancelsAnalyzer(t *testing
 	done := make(chan error, 1)
 	start := time.Now()
 	go func() {
-		done <- runAnalyzerWithCoordinator(ctx, cfg, a, failWrite, 99, "inst-daemon-fatal", nil)
+		done <- runAnalyzerWithCoordinator(ctx, cfg, a, failWrite, 99, "inst-daemon-fatal", nil, nil)
 	}()
 
 	select {
@@ -917,7 +920,7 @@ func TestRunAnalyzerWithCoordinator_HappyPath(t *testing.T) {
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- runAnalyzerWithCoordinator(ctx, cfg, a, okWrite, 100, "inst-daemon-ok", nil) }()
+	go func() { done <- runAnalyzerWithCoordinator(ctx, cfg, a, okWrite, 100, "inst-daemon-ok", nil, nil) }()
 
 	// ready-gated：ready 后 coordinator 同步执行 catch-up（claude 1 个 client-source 请求）。
 	// 轮询 rec 直到记录到该请求，确认 catch-up 已执行后再 cancel——确定性同步，无裸 sleep。
