@@ -4,10 +4,14 @@ package analyzer
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/YuLaiZ/token-usage/internal/collector"
 )
 
 // skipIfRootOrNoChmod：Linux root 绕过目录读权限（chmod 000 仍可 ReadDir），
@@ -179,5 +183,101 @@ func TestJSONLWatcher_OptionalRootUnreadableSubtreeRecoversAfterChmod(t *testing
 	watcher.Stop()
 	if !rec.saw(sess) {
 		t.Fatalf("权限修复后 ticker 重试应恢复监听并采集新会话: seen=%v", rec.snapshot())
+	}
+}
+
+// T4 原生形态：运行期接管遇到真实权限错误（EACCES）不得被"目录消失"容错
+// 吞掉——同批的瞬时消失子树被跳过，权限错误按最小失败子树上抛。
+// root 或不支持权限语义的环境按现有规则跳过。
+func TestJSONLWatcher_RuntimeTakeoverKeepsPermissionErrors(t *testing.T) {
+	skipIfRootOrNoChmod(t)
+	tmpDir := t.TempDir()
+	parent := filepath.Join(tmpDir, "parent")
+	// a-ok 字典序在最前且必然注册成功：在它的 hook（父目录 ReadDir 已完成、
+	// 其余兄弟尚未接管）中删除 vanished，确定性制造"同批消失 + 权限错误"并存，
+	// 不依赖 denied 的 Add 在各平台上的结果差异。
+	aOK := filepath.Join(parent, "a-ok")
+	denied := filepath.Join(parent, "denied")
+	vanished := filepath.Join(parent, "vanished")
+	for _, d := range []string{aOK, denied, vanished} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(denied, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(denied, 0o755) })
+
+	watcher, err := NewJSONLWatcher([]string{tmpDir}, nil, "claude", 50*time.Millisecond,
+		func(string, collector.CollectRequest) {}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(watcher.Stop)
+	watcher.afterWatchHook = func(dir string) {
+		if dir == aOK {
+			if err := os.RemoveAll(vanished); err != nil {
+				t.Errorf("删除 vanished: %v", err)
+			}
+		}
+	}
+
+	_, failed, err := watcher.takeoverDir(context.Background(), parent, false, tolerateVanishedDirs)
+	if err == nil {
+		t.Fatal("EACCES 不得被消失容错吞掉")
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("权限错误不得伪装成目录消失: %v", err)
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("预期权限错误向上传播: %v", err)
+	}
+	if !equalStrings(failed, []string{denied}) {
+		t.Fatalf("失败列表只应含权限错误子树: %v", failed)
+	}
+	if _, ok := watcher.watched[vanished]; ok {
+		t.Fatalf("消失子树不得登记为已监听: watched=%v", watcher.watched)
+	}
+	if _, ok := watcher.watched[aOK]; !ok {
+		t.Fatalf("健康兄弟应正常登记监听: watched=%v", watcher.watched)
+	}
+}
+
+// Add 成功、ReadDir 遇到真实权限错误（EACCES）的分类点：容错只跳过"目录
+// 已消失"，仍存在但不可读的目录必须作为真实失败上抛（不能被 ReadDir 错误
+// 吞掉）。用 Add 替身保证本用例只考察 ReadDir 分类点（kqueue 下真实 Add
+// 对 000 目录本身就会失败，无法单独命中该分支）。
+func TestJSONLWatcher_ReadDirPermissionErrorStaysFailure(t *testing.T) {
+	skipIfRootOrNoChmod(t)
+	tmpDir := t.TempDir()
+	denied := filepath.Join(tmpDir, "denied")
+	if err := os.MkdirAll(denied, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(denied, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(denied, 0o755) })
+
+	watcher, err := NewJSONLWatcher([]string{tmpDir}, nil, "claude", 50*time.Millisecond,
+		func(string, collector.CollectRequest) {}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(watcher.Stop)
+	fake := newPathWatchFake() // Add/Remove 全成功，只让真实 ReadDir 失败
+	watcher.addPathWatch = fake.add
+	watcher.removePathWatch = fake.remove
+
+	_, failed, err := watcher.takeoverDir(context.Background(), denied, false, tolerateVanishedDirs)
+	if err == nil {
+		t.Fatal("ReadDir 权限错误不得被消失容错吞掉")
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("预期权限错误向上传播: %v", err)
+	}
+	if !equalStrings(failed, []string{denied}) {
+		t.Fatalf("失败列表 = %v, want [%s]", failed, denied)
 	}
 }
