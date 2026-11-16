@@ -192,7 +192,9 @@ func TestFindClaudeJSONLFilesInDirs_CancelledContextSurfaces(t *testing.T) {
 	}
 }
 
-func TestClaudeCollector_AccountProjectsSubagentsExcluded(t *testing.T) {
+// subagents 子树受控进入：只收 agent-*.jsonl（直下与 workflows/<runId>），
+// 其余文件（如本例的 drop.jsonl）即使位于 subagents 下也不采集。
+func TestClaudeCollector_AccountProjectsSubagentsNonAgentFilesExcluded(t *testing.T) {
 	home := setIsolatedHome(t)
 	acctDir := ccSwitchAccountProjects(t, home, "a")
 	writeClaudeMsgJSONL(t, filepath.Join(acctDir, "keep.jsonl"), "msg-keep")

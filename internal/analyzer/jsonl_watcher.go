@@ -40,14 +40,21 @@ type JSONLWatcher struct {
 	// optional 标记 dirs 中由调用方声明的可选根（Clean 后路径集合）：注册失败
 	// 降级为锚定最近存在目录祖先并 Warn，不拖停强根监控；强根失败仍使 Run 返回
 	// error。自动附加的监控面（如 cc-switch 账号根）属此类。
-	optional      map[string]struct{}
-	clientName    string
-	debounce      *Debounce
-	submit        MonitorSubmitFunc // 向 Analyzer 上报请求（不直接持有 ExecuteFunc）
-	signalReady   func()            // Analyzer 预置的就绪回调（Walk+watch 注册后调用恰好一次）
-	signalFailure func(error)       // 初始化失败回调；与 signalReady 共享一次性计数
-	logger        *slog.Logger
-	watcher       *fsnotify.Watcher
+	optional   map[string]struct{}
+	clientName string
+	// agentRoots 是 Claude 采集根集合（主根 + cc-switch 账号根），用于 .jsonl
+	// 事件与 meta 映射的受控判定（以采集根为边界，根祖先目录名不影响结果）。
+	// 未设置时全部 .jsonl 放行且 meta 映射不做受控判定（仅供直接构造 watcher
+	// 的测试使用；生产装配总会设置）。运行期动态接管新目录后经 agentRootsRefresh
+	// 刷新（如新增 cc-switch 账号）。
+	agentRoots        []string
+	agentRootsRefresh func() []string
+	debounce          *Debounce
+	submit            MonitorSubmitFunc // 向 Analyzer 上报请求（不直接持有 ExecuteFunc）
+	signalReady       func()            // Analyzer 预置的就绪回调（Walk+watch 注册后调用恰好一次）
+	signalFailure     func(error)       // 初始化失败回调；与 signalReady 共享一次性计数
+	logger            *slog.Logger
+	watcher           *fsnotify.Watcher
 	// errCh 是 watcher 级致命错误的来源通道：构造时绑定后端真实 Errors；测试可在
 	// Run 前替换为只读注入通道，从 Run 入口验证错误传播与退出路径，不写入真实后端。
 	errCh   <-chan error
@@ -273,15 +280,25 @@ func (w *JSONLWatcher) Run(ctx context.Context) error {
 			if event.Op&(fsnotify.Create|fsnotify.Write) == 0 {
 				continue
 			}
-			// 只处理 .jsonl 文件
-			if filepath.Ext(event.Name) != ".jsonl" {
+			// 只处理 .jsonl 文件；Claude 子代理的 agent-<id>.meta.json 事件映射
+			// 到同目录对应 JSONL（meta 晚于 JSONL 落盘时据此补采标题）。
+			target := event.Name
+			if filepath.Ext(target) != ".jsonl" {
+				if w.clientName != "claude" {
+					continue
+				}
+				target = w.claudeAgentMetaJSONL(target)
+				if target == "" {
+					continue
+				}
+			} else if !w.collectableJSONLPath(target) {
 				continue
 			}
-			if !w.isWithinTarget(event.Name) {
+			if !w.isWithinTarget(target) {
 				continue
 			}
-			w.logger.Debug("file event", "op", event.Op, "file", event.Name)
-			w.debounce.Trigger(event.Name)
+			w.logger.Debug("file event", "op", event.Op, "event_file", event.Name, "target", target)
+			w.debounce.Trigger(target)
 		case err, ok := <-w.errCh:
 			if !ok {
 				if w.stopping(ctx) {
@@ -300,6 +317,61 @@ func (w *JSONLWatcher) signalReadyOnce() {
 			w.signalReady()
 		}
 	})
+}
+
+// SetClaudeAgentRoots 设置 Claude 采集根集合与刷新函数：受控判定以采集根为
+// 边界；refresh 在动态接管新目录（如运行期新增 cc-switch 账号）后调用以更新
+// 根集合，为 nil 时只在启动时快照。仅对 claude watcher 有意义；须在 Run 前调用。
+// 未设置时全部 .jsonl 放行且 meta 映射不做受控判定（仅供测试直接构造）。
+func (w *JSONLWatcher) SetClaudeAgentRoots(roots []string, refresh func() []string) {
+	w.agentRoots = roots
+	w.agentRootsRefresh = refresh
+}
+
+// refreshAgentRoots 在动态接管新目录后刷新受控判定根集合，保持 watcher 判定
+// 与采集根发现一致（如运行期新增 cc-switch 账号）。仅 Run goroutine 调用。
+func (w *JSONLWatcher) refreshAgentRoots() {
+	if w.agentRootsRefresh == nil {
+		return
+	}
+	w.agentRoots = w.agentRootsRefresh()
+}
+
+// collectableJSONLPath 报告 .jsonl 事件路径是否属于该 client 的采集范围。
+// 非 claude client 维持原有「根范围内全部 .jsonl」语义；claude 的 subagents
+// 子树只放行受控布局下的 agent transcript（与全扫和 ChangedFile 的
+// collector.IsClaudeAgentTranscriptInRoots 同口径），journal.jsonl 等非受控
+// 文件不再触发增量采集；主 transcript（采集根内非 subagents 子树）恒放行。
+func (w *JSONLWatcher) collectableJSONLPath(path string) bool {
+	if w.clientName != "claude" || len(w.agentRoots) == 0 {
+		return true
+	}
+	if !collector.ClaudePathInAgentSubtree(w.agentRoots, path) {
+		return true
+	}
+	return collector.IsClaudeAgentTranscriptInRoots(w.agentRoots, path)
+}
+
+// claudeAgentMetaJSONL 把 agent-<id>.meta.json 事件的路径映射到同目录对应的
+// agent-<id>.jsonl。非受控 Claude 子代理 meta 形态（subagents 直下或
+// workflows/<runId> 下的 agent-*.meta.json 之外的路径）、或目标 JSONL 尚不存在时
+// 返回空串——JSONL 自身的创建/写入事件会独立触发采集，不依赖本映射，也避免
+// 提交不存在的文件形成采集失败记录。设置了采集根时复用
+// collector.IsClaudeAgentTranscriptInRoots，与全扫和 ChangedFile 保持同一范围口径。
+func (w *JSONLWatcher) claudeAgentMetaJSONL(metaPath string) string {
+	const metaSuffix = ".meta.json"
+	if !strings.HasSuffix(metaPath, metaSuffix) {
+		return ""
+	}
+	jsonlPath := strings.TrimSuffix(metaPath, metaSuffix) + ".jsonl"
+	if len(w.agentRoots) > 0 && !collector.IsClaudeAgentTranscriptInRoots(w.agentRoots, jsonlPath) {
+		return ""
+	}
+	info, err := os.Stat(jsonlPath)
+	if err != nil || info.IsDir() {
+		return ""
+	}
+	return jsonlPath
 }
 
 func (w *JSONLWatcher) registerRoots(ctx context.Context, collectExisting bool, tolerance vanishPolicy) error {
@@ -595,6 +667,8 @@ func (w *JSONLWatcher) retryDeferred(ctx context.Context) {
 			continue
 		}
 		w.logger.Info("deferred watch subtree recovered", "root", d)
+		// 延迟接管成功同样可能引入新采集根（如账号目录首次创建失败后恢复）。
+		w.refreshAgentRoots()
 	}
 }
 
@@ -688,7 +762,7 @@ func (w *JSONLWatcher) takeoverDir(ctx context.Context, dir string, collectExist
 			errs = errors.Join(errs, err)
 			continue
 		}
-		if collectExisting && filepath.Ext(path) == ".jsonl" && w.isWithinTarget(path) {
+		if collectExisting && filepath.Ext(path) == ".jsonl" && w.isWithinTarget(path) && w.collectableJSONLPath(path) {
 			existing = append(existing, path)
 		}
 	}
@@ -830,6 +904,9 @@ func (w *JSONLWatcher) registerCreatedDir(ctx context.Context, path string) erro
 			// 重试范围，R8）。tolerate：接管遍历期间兄弟目录被删除是常态
 			// 竞态，跳过而不是把整个 watcher 拖停。
 			existing, failed, err := w.takeoverDir(ctx, path, true, tolerateVanishedDirs)
+			// 动态接管可能带来新的采集根（如运行期新增 cc-switch 账号）：
+			// 刷新受控判定根集合，后续 meta 映射与 .jsonl 事件按新根判定。
+			w.refreshAgentRoots()
 			for _, f := range existing {
 				w.debounce.Trigger(f)
 			}

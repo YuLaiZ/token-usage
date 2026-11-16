@@ -25,8 +25,13 @@ const currentSchemaVersion = 8
 // 失效，升级后全部文件重读一次（幂等 upsert 安全）。v2（2026-11-05）：Codex
 // 会话解析新增子代理家族标记（session_meta 的 parent_thread_id 写入
 // sessions/messages.agent_parent_id），历史 rollout 必须重读才能补齐父关系，
-// 否则家族归因对历史子代理永久缺失。
-const ParserVersion = 2
+// 否则家族归因对历史子代理永久缺失。v3（2026-11-16）：Claude 子代理会话转为
+// 显式采集——agent transcript（subagents 直下与 workflows/<runId>）写入父会话
+// 归属与 meta.json description 标题；agent 文件绕过启动跳过门（标题证据不在门
+// 指纹内，每次启动 catch-up 重读），其历史文件由全扫范围扩展直接补齐；主
+// transcript 解析未变，但本次改变了 JSONL 采集产出语义，按契约递增使存量门
+// 记录整体失效、全部文件重读一次。
+const ParserVersion = 3
 
 func ensureSchema(db *sql.DB) error {
 	version := getUserVersion(db)

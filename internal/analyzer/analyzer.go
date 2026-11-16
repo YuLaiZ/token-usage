@@ -397,6 +397,14 @@ func (a *Analyzer) setupFromConfig(cfg *config.Config, debounceDuration time.Dur
 			a.logger.Error("failed to create JSONL watcher", "client", jc.name, "error", err)
 			continue
 		}
+		if jc.name == "claude" {
+			// 受控 agent 判定根：与全扫、ChangedFile、启动跳过门共用同一集合
+			// （主根 + cc-switch 账号根，含符号链接解析形态）；动态接管新目录
+			// （如运行期新增账号）后经刷新函数更新。
+			watcher.SetClaudeAgentRoots(collector.ClaudeProjectsRoots(cfg), func() []string {
+				return collector.ClaudeProjectsRoots(cfg)
+			})
+		}
 		a.addWatcher(watcher)
 	}
 

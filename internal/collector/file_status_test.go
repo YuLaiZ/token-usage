@@ -41,7 +41,7 @@ const claudeNormalFixture = `{"type":"user","sessionId":"s1","timestamp":"2026-0
 
 func TestClaudeParseFileStatus_Normal(t *testing.T) {
 	path := writeFileStatusFixture(t, claudeNormalFixture)
-	_, status, err := parseClaudeMessageFile(path, nil, discardingLogger())
+	_, status, err := parseClaudeMessageFile(path, nil, nil, discardingLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestClaudeParseFileStatus_BadLines(t *testing.T) {
 not-json-line-2
 {broken line 3
 `)
-	_, status, err := parseClaudeMessageFile(path, nil, discardingLogger())
+	_, status, err := parseClaudeMessageFile(path, nil, nil, discardingLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ not-json-line-2
 
 func TestClaudeParseFileStatus_NoTrailingNewline(t *testing.T) {
 	path := writeFileStatusFixture(t, strings.TrimSuffix(claudeNormalFixture, "\n"))
-	_, status, err := parseClaudeMessageFile(path, nil, discardingLogger())
+	_, status, err := parseClaudeMessageFile(path, nil, nil, discardingLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

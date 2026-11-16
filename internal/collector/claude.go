@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -60,7 +62,12 @@ func (c *ClaudeCollector) Collect(ctx context.Context, req CollectRequest, logge
 	files := []string(nil)
 	var scanErr error
 	if req.ChangedFile != "" {
-		files = []string{req.ChangedFile}
+		// 与全扫、watcher 事件统一为绝对 Clean 形态（受控判定根为绝对路径）。
+		changed := req.ChangedFile
+		if abs, aerr := filepath.Abs(changed); aerr == nil {
+			changed = filepath.Clean(abs)
+		}
+		files = []string{changed}
 	} else {
 		files, scanErr = findClaudeJSONLFiles(ctx, clientCfg.Paths["projects_dir"])
 		home, _ := os.UserHomeDir()
@@ -84,6 +91,9 @@ func (c *ClaudeCollector) Collect(ctx context.Context, req CollectRequest, logge
 	if scanErr != nil {
 		result.PartialErr = fmt.Errorf("查找 Claude JSONL 文件失败: %w", scanErr)
 	}
+	// 受控 agent 判定根：主根 + cc-switch 账号根（含符号链接解析形态），
+	// ChangedFile 与全扫共用同一集合。
+	agentRoots := ClaudeProjectsRoots(c.cfg)
 	for _, file := range files {
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -93,7 +103,7 @@ func (c *ClaudeCollector) Collect(ctx context.Context, req CollectRequest, logge
 			result.FileStatuses = append(result.FileStatuses, FileScanStatus{Path: file, Skipped: true, Before: before})
 			continue
 		}
-		part, status, err := parseClaudeMessageFile(file, dateSet, logger)
+		part, status, err := parseClaudeMessageFile(file, agentRoots, dateSet, logger)
 		status.Before = before
 		status.After = fsident.SnapshotOfFile(file)
 		if err != nil {
@@ -110,10 +120,16 @@ func (c *ClaudeCollector) Collect(ctx context.Context, req CollectRequest, logge
 	return result, nil
 }
 
-// findClaudeJSONLFiles 递归查找主根（projects_dir）下所有 .jsonl 文件（排除 /subagents/ 目录）
+// findClaudeJSONLFiles 递归查找主根（projects_dir）下所有 .jsonl 文件；
+// subagents 子树受控进入（agent transcript，见 walkClaudeJSONLDir）。
 func findClaudeJSONLFiles(ctx context.Context, projectsDir string) ([]string, error) {
 	if strings.TrimSpace(projectsDir) == "" {
 		return nil, fmt.Errorf("Claude projects_dir 未配置")
+	}
+	// 统一为绝对 Clean 形态：watcher 事件与受控判定根均为绝对路径，相对配置
+	// 必须在此规范化，否则两条入口的路径形态不一致（agent 判定与门记录分叉）。
+	if abs, err := filepath.Abs(projectsDir); err == nil {
+		projectsDir = filepath.Clean(abs)
 	}
 	info, err := os.Stat(projectsDir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -169,6 +185,14 @@ func findClaudeJSONLFilesInDirs(ctx context.Context, dirs []string) ([]string, e
 	var files []string
 	var errs error
 	for _, dir := range dirs {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		// 与主根和 ChangedFile 入口一致：统一为绝对 Clean 形态，避免相对目录
+		// 让受控判定根与收集路径的形态分叉。
+		if abs, err := filepath.Abs(dir); err == nil {
+			dir = filepath.Clean(abs)
+		}
 		part, err := walkClaudeJSONLDir(ctx, dir)
 		files = append(files, part...)
 		errs = errors.Join(errs, err)
@@ -179,31 +203,304 @@ func findClaudeJSONLFilesInDirs(ctx context.Context, dirs []string) ([]string, e
 	return files, errs
 }
 
-// walkClaudeJSONLDir 递归收集单个根目录下的 .jsonl 文件（排除 /subagents/ 目录）。
+// walkClaudeJSONLDir 收集单个根目录下的 .jsonl 文件。主 transcript 保持全树发现
+// （含根级文件与任意深度目录），仅 subagents 子树受控进入：只收本层
+// agent-*.jsonl 与 workflows/<runId>/ 下的 agent-*.jsonl，不深入其他子目录，
+// journal.jsonl 等其他文件忽略；收集结果按采集根经
+// claudeAgentSubagentsDirInRoot 复核，与 IsClaudeAgentTranscriptInRoots 同口径。
+//
+// 根为符号链接时先解析到真实目录（filepath.Walk 对根用 Lstat 不跟随符号链接，
+// 不解析会让全扫静默返回零文件）。子目录读取失败（如不可读的 workflow 目录）
+// 记入返回错误并跳过该子树、继续扫描健康兄弟，不终止整棵根；遍历期间被清理的
+// 目录（ENOENT）属正常竞态，静默跳过不记错误；仅根自身的遍历失败作为错误返回。
+// ctx 取消立即中止遍历（守护进程关闭时尽快退出，避免长采集阻塞关闭路径）。
 func walkClaudeJSONLDir(ctx context.Context, dir string) ([]string, error) {
-	var files []string
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	// 根本身是符号链接时解析到真实目录：filepath.Walk 对根用 Lstat 不跟随
+	// 符号链接，不解析会让全扫静默返回零文件（预检 os.Stat 跟随会通过）。
+	// 普通目录不解析，保持调用方传入的路径形态（门记录键与既有语义不变）。
+	if fi, lerr := os.Lstat(dir); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil {
+			dir = resolved
 		}
-
-		// ctx 取消：中止遍历，返回已找到的文件（守护进程关闭时尽快退出，避免长采集阻塞关闭路径）
+	}
+	var files []string
+	var errs error
+	walkErr := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-
-		if info.IsDir() && info.Name() == "subagents" {
-			return filepath.SkipDir
+		if err != nil {
+			if path == dir {
+				return err
+			}
+			// 子项不可访问：目录树在遍历期间被清理（ENOENT）属正常竞态，静默
+			// 跳过；其他错误记为部分失败并跳过该子树，继续兄弟——一棵坏子树
+			// 不得拖累同根主会话与其他 agent transcript 的采集。
+			if !errors.Is(err, fs.ErrNotExist) {
+				errs = errors.Join(errs, err)
+			}
+			return nil
 		}
 
-		if !info.IsDir() && strings.HasSuffix(path, ".jsonl") {
+		if info.IsDir() {
+			if info.Name() == "subagents" {
+				agentFiles, cerr := collectClaudeAgentFiles(ctx, path, &errs)
+				// 受控复核：只收采集根下相对布局合法的 agent transcript（与
+				// IsClaudeAgentTranscriptInRoots 同口径，防遍历结构与谓词漂移）。
+				for _, f := range agentFiles {
+					if claudeAgentSubagentsDirInRoot(dir, f) != "" {
+						files = append(files, f)
+					}
+				}
+				if cerr != nil {
+					return cerr // ctx 取消：中止整棵遍历
+				}
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if strings.HasSuffix(path, ".jsonl") {
 			files = append(files, path)
 		}
 
 		return nil
 	})
 
-	return files, err
+	return files, errors.Join(walkErr, errs)
+}
+
+// maxClaudeAgentMetaSize 是 agent meta.json 的读取上限：文件只含描述等短字段，
+// 上限防御异常损坏文件造成的内存尖峰；超限按不可解析处理（标题留空）。
+const maxClaudeAgentMetaSize = 1 << 20
+
+// isClaudeAgentJSONLName 报告文件名是否为 agent-<id>.jsonl（subagents 下的
+// agent transcript 命名）。
+func isClaudeAgentJSONLName(name string) bool {
+	return strings.HasPrefix(name, "agent-") && strings.HasSuffix(name, ".jsonl") &&
+		len(name) > len("agent-")+len(".jsonl")
+}
+
+// claudeAgentSubagentsDirInRoot 判定 path 是否位于采集根 root 下的受控 agent
+// 布局，返回其 subagents 目录：
+//
+//	<root>/<编码cwd>/<父sessionId>/subagents/agent-*.jsonl
+//	<root>/<编码cwd>/<父sessionId>/subagents/workflows/<runId>/agent-*.jsonl
+//
+// 判定以采集根为边界（只检查相对根的路径段）：根自身或其祖先目录名与受控段
+// 同名（如 projects_dir 位于名为 subagents 的目录下）不会误判；相对路径中多出
+// 的层级（subagents/x/subagents/ 等嵌套形态）同样不匹配。返回空串表示不属于
+// 受控 agent transcript。
+func claudeAgentSubagentsDirInRoot(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return ""
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return ""
+	}
+	parts := strings.Split(rel, "/")
+	if len(parts) != 4 && len(parts) != 6 {
+		return ""
+	}
+	if parts[2] != "subagents" || !isClaudeAgentJSONLName(parts[len(parts)-1]) {
+		return ""
+	}
+	if len(parts) == 6 && parts[3] != "workflows" {
+		return ""
+	}
+	return filepath.Join(root, filepath.FromSlash(strings.Join(parts[:3], "/")))
+}
+
+// claudeAgentSubagentsDirInRoots 在多个采集根（主根 + cc-switch 账号根）上
+// 依次尝试，返回首个命中的受控 subagents 目录。
+func claudeAgentSubagentsDirInRoots(roots []string, path string) string {
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		if sub := claudeAgentSubagentsDirInRoot(root, path); sub != "" {
+			return sub
+		}
+	}
+	return ""
+}
+
+// IsClaudeAgentTranscriptInRoots 报告路径是否为采集根下的受控 agent transcript。
+// 全扫的受控入口、ChangedFile、watcher 事件判定与启动跳过门绕过共用本判定，
+// 保证各入口对「哪些文件是 agent transcript」口径一致。
+func IsClaudeAgentTranscriptInRoots(roots []string, path string) bool {
+	return claudeAgentSubagentsDirInRoots(roots, path) != ""
+}
+
+// claudeRootWithResolved 追加根的绝对 Clean 形态；根本身是符号链接时同时追加
+// 解析后的真实路径（全扫 walk 用解析后路径收集文件，watcher 事件用注册时的
+// 绝对路径，两种形态都要能匹配采集根）。相对路径配置在此统一为绝对路径，
+// 与 watcher 监控根的规范化保持一致。
+func claudeRootWithResolved(roots []string, root string) []string {
+	if root == "" {
+		return roots
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		abs = root
+	}
+	abs = filepath.Clean(abs)
+	roots = append(roots, abs)
+	if fi, lerr := os.Lstat(abs); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if resolved, rerr := filepath.EvalSymlinks(abs); rerr == nil && resolved != abs {
+			roots = append(roots, resolved)
+		}
+	}
+	return roots
+}
+
+// ClaudeProjectsRoots 返回 Claude 采集的全部 projects 根（主根 + cc-switch
+// 账号根，含符号链接根的解析形态），供全扫之外的入口（ChangedFile、watcher、
+// 启动跳过门）复用同一根集合做受控判定。projects_dir 必须配置为 projects
+// 目录本身（默认 ~/.claude/projects）；配成其祖先目录时 agent transcript 的
+// 相对层级不再是受控布局，将不被采集。
+func ClaudeProjectsRoots(cfg *config.Config) []string {
+	clientCfg, ok := cfg.ClientConfig("claude")
+	if !ok || clientCfg.Paths == nil {
+		return nil
+	}
+	var roots []string
+	roots = claudeRootWithResolved(roots, clientCfg.Paths["projects_dir"])
+	home, _ := os.UserHomeDir()
+	for _, dir := range discoverCCSwitchClaudeProjects(home) {
+		roots = claudeRootWithResolved(roots, dir)
+	}
+	return roots
+}
+
+// ClaudePathInAgentSubtree 报告路径是否位于采集根的 subagents 子树内（相对根
+// 的路径段含 subagents）。watcher 用它区分主 transcript 事件与 subagents 子树
+// 事件：主 transcript 恒放行，subagents 子树才要求受控判定。
+func ClaudePathInAgentSubtree(roots []string, path string) bool {
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+			continue
+		}
+		for _, seg := range strings.Split(rel, "/") {
+			if seg == "subagents" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// claudeAgentParentInRoots 从 agent transcript 路径推导父会话 id：受控布局中
+// subagents 目录的父目录名（行内 sessionId 缺失时的兜底）。非受控路径返回空串。
+func claudeAgentParentInRoots(roots []string, path string) string {
+	subagentsDir := claudeAgentSubagentsDirInRoots(roots, path)
+	if subagentsDir == "" {
+		return ""
+	}
+	return filepath.Base(filepath.Dir(subagentsDir))
+}
+
+// collectClaudeAgentFiles 受控枚举一个 subagents 目录：只收本层 agent-*.jsonl
+// 与 workflows/<runId>/ 下的 agent-*.jsonl，不深入其他子目录。目录在枚举期间被
+// 清理（ENOENT）属正常竞态、静默跳过；其他读取失败记入 errs 并跳过该子树继续。
+// 返回的非 nil 错误仅表示 ctx 取消（调用方须立即中止整棵遍历）。
+func collectClaudeAgentFiles(ctx context.Context, subagentsDir string, errs *error) ([]string, error) {
+	entries, err := os.ReadDir(subagentsDir)
+	if err != nil {
+		// os.ReadDir 的错误是含路径的 *PathError，直接聚合即可定位；ENOENT 是
+		// 目录树被清理的正常竞态，不记部分失败。
+		if !errors.Is(err, fs.ErrNotExist) {
+			*errs = errors.Join(*errs, err)
+		}
+		return nil, nil
+	}
+	var files []string
+	for _, e := range entries {
+		if ctx.Err() != nil {
+			return files, ctx.Err()
+		}
+		if !e.IsDir() {
+			if isClaudeAgentJSONLName(e.Name()) {
+				files = append(files, filepath.Join(subagentsDir, e.Name()))
+			}
+			continue
+		}
+		if e.Name() != "workflows" {
+			continue
+		}
+		workflowsDir := filepath.Join(subagentsDir, "workflows")
+		runs, err := os.ReadDir(workflowsDir)
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				*errs = errors.Join(*errs, err)
+			}
+			continue
+		}
+		for _, run := range runs {
+			if ctx.Err() != nil {
+				return files, ctx.Err()
+			}
+			if !run.IsDir() {
+				continue
+			}
+			runDir := filepath.Join(workflowsDir, run.Name())
+			runEntries, err := os.ReadDir(runDir)
+			if err != nil {
+				if !errors.Is(err, fs.ErrNotExist) {
+					*errs = errors.Join(*errs, err)
+				}
+				continue
+			}
+			for _, f := range runEntries {
+				if ctx.Err() != nil {
+					return files, ctx.Err()
+				}
+				if !f.IsDir() && isClaudeAgentJSONLName(f.Name()) {
+					files = append(files, filepath.Join(runDir, f.Name()))
+				}
+			}
+		}
+	}
+	// 谓词复核由调用方（walk 回调）按采集根完成：遍历结构与
+	// IsClaudeAgentTranscriptInRoots 必须同口径，防止两套实现随布局演进漂移。
+	return files, nil
+}
+
+// readClaudeAgentDescription 读取 agent transcript 同目录 meta.json 的
+// description 原文作为会话标题。meta 缺失、超限或不可解析时返回空串（标题
+// 留空，非致命）；每次解析 agent 文件都重读，保证 meta 晚于 JSONL 落盘后经
+// 重启补采或 watcher meta 事件补齐。
+func readClaudeAgentDescription(jsonlPath string) string {
+	metaPath := strings.TrimSuffix(jsonlPath, ".jsonl") + ".meta.json"
+	f, err := os.Open(metaPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxClaudeAgentMetaSize))
+	if err != nil {
+		return ""
+	}
+	var meta struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return ""
+	}
+	if strings.TrimSpace(meta.Description) == "" {
+		return ""
+	}
+	return meta.Description
 }
 
 // dedupeCleanedFilePaths 按 Clean 归一后的路径去重（各组序拼接、首见保留，主根在前）。
@@ -392,14 +689,23 @@ func claudeDurationMS(timing *claudeMessageTiming, chain map[string]claudeChainN
 // parseClaudeMessageFile 单次全量扫描 JSONL 文件，产出消息级结果。
 // dates 非空时只保留命中日期的 Message；Session 的 first/last 始终来自完整文件，
 // 但仅当存在命中消息时才返回 Session。
+// agent transcript（subagents 下的 agent-*.jsonl）按行序首个有效非空 sessionId
+// 解析父会话（空或等于文件名 agent id 的行跳过；缺失时以路径兜底），并重读同目录
+// meta.json 的 description 作标题。
 // 返回的 FileScanStatus 已填 Path/BadLines/FirstBad*/TrailingNewline（Before/After
 // 快照与 Err 由 Collect 层补充）。
-func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *slog.Logger) (CollectResult, FileScanStatus, error) {
+func parseClaudeMessageFile(filePath string, agentRoots []string, dates map[string]struct{}, logger *slog.Logger) (CollectResult, FileScanStatus, error) {
 	var status FileScanStatus
 	status.Path = filePath
 	if logger == nil {
 		logger = slog.Default()
 	}
+	agent := IsClaudeAgentTranscriptInRoots(agentRoots, filePath)
+	agentID := ""
+	if agent {
+		agentID = strings.TrimSuffix(strings.TrimPrefix(filepath.Base(filePath), "agent-"), ".jsonl")
+	}
+	rowParentID := ""
 	file, err := os.Open(filePath)
 	if err != nil {
 		return CollectResult{}, status, err
@@ -430,6 +736,12 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 		if err := json.Unmarshal(raw, &entry); err != nil {
 			outcome.addBad(it.LineNo(), err)
 			continue
+		}
+		// agent transcript 父归属：行序首个有效非空 sessionId（空值或等于文件名
+		// agent id 的行跳过继续找）。放在 content 归一之前，字符串 content 行也
+		// 参与父归属判定（其 sessionId 为顶层字段，与 content 形态无关）。
+		if agent && rowParentID == "" && entry.SessionID != "" && entry.SessionID != agentID {
+			rowParentID = entry.SessionID
 		}
 		// content 双形态归一校验：数字、对象等未知形态与行 Unmarshal 失败同等
 		// 对待，维持按文件汇总的兜底路径。字符串形态行此前整体 Unmarshal 失败、
@@ -501,6 +813,23 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 	fileSessionID := strings.TrimSuffix(filepath.Base(filePath), ".jsonl")
 	project := inferProject(cwd)
 
+	// agent transcript 的父会话与标题：行内 sessionId 优先、路径兜底（两者不一致
+	// 说明是跨父目录复制副本，以行内为准并记 Warn）；标题取同目录 meta.json 的
+	// description 原文，meta 缺失时留空（不覆盖库中已有非空标题）。
+	agentParentID := ""
+	agentTitle := ""
+	if agent {
+		pathParent := claudeAgentParentInRoots(agentRoots, filePath)
+		agentParentID = rowParentID
+		if agentParentID == "" {
+			agentParentID = pathParent
+		} else if pathParent != "" && pathParent != agentParentID {
+			logger.Warn("Claude agent transcript parent mismatch, using row sessionId",
+				"file", filePath, "row_session_id", agentParentID, "path_parent", pathParent)
+		}
+		agentTitle = readClaudeAgentDescription(filePath)
+	}
+
 	// 按首条非零 usage 记录去重 assistant 消息（同一 message.id 的 thinking/text/tool 片段合并）。
 	// 请求时长估算：链缓存 + 逐回复计时聚合（与下方 token 去重循环并行）。
 	// 字符串 content 行只贡献链节点。
@@ -540,10 +869,12 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 		messages = append(messages, model.Message{
 			ID:        entry.Message.ID,
 			SessionID: fileSessionID,
-			Client:    model.RawClientToClient[client],
-			Date:      date,
-			TS:        ts,
-			Model:     entry.Message.Model,
+			// agent transcript 的每条消息携带父会话 id（主 transcript 恒空）。
+			AgentParentID: agentParentID,
+			Client:        model.RawClientToClient[client],
+			Date:          date,
+			TS:            ts,
+			Model:         entry.Message.Model,
 			// Claude Code/Desktop 的本地会话不记录 provider；其官方来源可确定。
 			Provider:          "Anthropic",
 			Directory:         cwd,
@@ -562,14 +893,19 @@ func parseClaudeMessageFile(filePath string, dates map[string]struct{}, logger *
 	result.Messages = messages
 	// 仅当存在命中消息时返回 Session（避免无消息的空会话污染结果）。
 	if len(messages) > 0 {
+		title := customTitle
+		if agentTitle != "" {
+			title = agentTitle
+		}
 		result.Sessions = append(result.Sessions, model.Session{
-			ID:        fileSessionID,
-			Client:    model.RawClientToClient[client],
-			Directory: cwd,
-			Project:   project,
-			Title:     customTitle,
-			FirstTS:   firstTS,
-			LastTS:    lastTS,
+			ID:            fileSessionID,
+			Client:        model.RawClientToClient[client],
+			Directory:     cwd,
+			Project:       project,
+			Title:         title,
+			AgentParentID: agentParentID,
+			FirstTS:       firstTS,
+			LastTS:        lastTS,
 		})
 	}
 	// 坏行汇总在两个解析循环之后打（行解析与消息产出都可能计入坏行）。

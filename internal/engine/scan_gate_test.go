@@ -373,7 +373,7 @@ func TestScanGateRowsFor_OnlyConsistentFullyParsed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			st := base
 			tc.mut(&st)
-			rows := scanGateRowsFor("claude", []collector.FileScanStatus{st})
+			rows := scanGateRowsFor("claude", nil, []collector.FileScanStatus{st})
 			if tc.want && len(rows) != 1 {
 				t.Fatalf("应产生门记录, got %d", len(rows))
 			}
@@ -866,7 +866,7 @@ func TestScanGate_PathFormChangeMisses(t *testing.T) {
 	records := map[string]model.FileScanLog{
 		"/data/proj/S1.jsonl": {Client: "claude", FilePath: "/data/proj/S1.jsonl", FileIdentity: "1:1", MtimeNS: 1, FileSize: 1, ParserVersion: int64(db.ParserVersion)},
 	}
-	gate := newScanGate(records)
+	gate := newScanGate("claude", nil, records)
 	snap := model.FileSnapshot{Identity: "1:1", MtimeNS: 1, Size: 1}
 	if !gate("/data/proj/S1.jsonl", snap) {
 		t.Fatal("同形态路径应命中（前置校验）")

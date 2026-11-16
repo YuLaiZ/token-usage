@@ -77,7 +77,7 @@ not-json-line-2
 	}
 
 	handler := &testLogHandler{}
-	if _, _, err := parseClaudeMessageFile(path, nil, slog.New(handler)); err != nil {
+	if _, _, err := parseClaudeMessageFile(path, nil, nil, slog.New(handler)); err != nil {
 		t.Fatalf("parseClaudeMessageFile 失败: %v", err)
 	}
 
@@ -117,7 +117,7 @@ func TestClaudeParseNoFailuresNoSummary(t *testing.T) {
 	}
 
 	handler := &testLogHandler{}
-	if _, _, err := parseClaudeMessageFile(path, nil, slog.New(handler)); err != nil {
+	if _, _, err := parseClaudeMessageFile(path, nil, nil, slog.New(handler)); err != nil {
 		t.Fatalf("parseClaudeMessageFile 失败: %v", err)
 	}
 	if handler.HasMessage("line parse failed") {
@@ -174,7 +174,7 @@ func TestClaudeStringContentRowsStayInert(t *testing.T) {
 	_, path := copyFixtureToTempDir(t, "string-content.jsonl")
 
 	handler := &testLogHandler{}
-	result, _, err := parseClaudeMessageFile(path, nil, slog.New(handler))
+	result, _, err := parseClaudeMessageFile(path, nil, nil, slog.New(handler))
 	if err != nil {
 		t.Fatalf("parseClaudeMessageFile 失败: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestClaudeUnknownContentFormSummarizedPerFile(t *testing.T) {
 	}
 
 	handler := &testLogHandler{}
-	if _, _, err := parseClaudeMessageFile(path, nil, slog.New(handler)); err != nil {
+	if _, _, err := parseClaudeMessageFile(path, nil, nil, slog.New(handler)); err != nil {
 		t.Fatalf("parseClaudeMessageFile 失败: %v", err)
 	}
 	var summary *slog.Record
@@ -259,7 +259,7 @@ func TestClaudeStringContentFixtureParsesCleanly(t *testing.T) {
 	projectsDir, path := copyFixtureToTempDir(t, "string-content.jsonl")
 
 	handler := &testLogHandler{}
-	result, _, err := parseClaudeMessageFile(path, nil, slog.New(handler))
+	result, _, err := parseClaudeMessageFile(path, nil, nil, slog.New(handler))
 	if err != nil {
 		t.Fatalf("parseClaudeMessageFile 失败: %v", err)
 	}

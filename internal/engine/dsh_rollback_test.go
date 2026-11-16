@@ -36,7 +36,7 @@ func TestPersistClientBatchDSHRollbackOnFailure(t *testing.T) {
 		DSHObsolete: []collector.DSHObsoleteMessage{{ID: "a", SessionID: "s", TS: 1, Date: "2026-10-19"}},
 	}
 	err = persistClientBatch(ctx, usageDB, "dsh", collector.CollectRequest{}, collected,
-		false, collector.RouterCollectResult{}, nil, slog.Default())
+		false, collector.RouterCollectResult{}, nil, nil, slog.Default())
 	if err == nil {
 		t.Fatalf("expected upsert failure")
 	}
@@ -56,7 +56,7 @@ func TestPersistClientBatchDSHRollbackOnFailure(t *testing.T) {
 	}
 
 	if err := persistClientBatch(ctx, usageDB, "dsh", collector.CollectRequest{}, collected,
-		false, collector.RouterCollectResult{}, nil, slog.Default()); err != nil {
+		false, collector.RouterCollectResult{}, nil, nil, slog.Default()); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	remaining, err = db.FindMessageIDsByClient(ctx, usageDB, model.ClientDSH, []string{"a", "b"})

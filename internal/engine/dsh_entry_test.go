@@ -28,7 +28,7 @@ func TestPersistClientBatchDSHObsoleteUsesDisplayClient(t *testing.T) {
 		DSHObsolete: []collector.DSHObsoleteMessage{{ID: "a", SessionID: "s", TS: 1, Date: "2026-10-19"}},
 	}
 	if err := persistClientBatch(ctx, usageDB, "dsh", collector.CollectRequest{}, collected,
-		false, collector.RouterCollectResult{}, nil, slog.Default()); err != nil {
+		false, collector.RouterCollectResult{}, nil, nil, slog.Default()); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
 	remaining, err := db.FindMessageIDsByClient(ctx, usageDB, model.ClientDSH, []string{"a"})

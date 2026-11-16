@@ -70,7 +70,7 @@ func TestF34CollectorCacheAfterPersistFailure(t *testing.T) {
 		t.Fatalf("trigger: %v", err)
 	}
 	if err := persistClientBatch(ctx, usageDB, "dsh", collector.CollectRequest{}, first,
-		false, collector.RouterCollectResult{}, nil, slog.Default()); err == nil {
+		false, collector.RouterCollectResult{}, nil, nil, slog.Default()); err == nil {
 		t.Fatalf("expected persist failure")
 	}
 	if _, err := usageDB.Exec(`DROP TRIGGER fail_e2e`); err != nil {
@@ -82,7 +82,7 @@ func TestF34CollectorCacheAfterPersistFailure(t *testing.T) {
 		t.Fatalf("cached collect: %v / %d", err, len(second.Messages))
 	}
 	if err := persistClientBatch(ctx, usageDB, "dsh", collector.CollectRequest{}, second,
-		false, collector.RouterCollectResult{}, nil, slog.Default()); err != nil {
+		false, collector.RouterCollectResult{}, nil, nil, slog.Default()); err != nil {
 		t.Fatalf("retry persist: %v", err)
 	}
 	rows, err := db.FindMessageIDsByClient(ctx, usageDB, model.ClientDSH, []string{"session-e2e:1:1:0"})

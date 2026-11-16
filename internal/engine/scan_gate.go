@@ -25,9 +25,24 @@ func scanGateSupported(client string) bool {
 	return client == "claude" || client == "codex"
 }
 
+// scanGateBypassed 报告该 client 的该路径是否绕过 startup 跳过门。目前仅
+// Claude 的 agent transcript：其标题来自同目录 meta.json（不在门指纹内），
+// 需要每次启动 catch-up 重读以补齐 meta 晚到的标题；file_scan_log 继续只
+// 记录主 transcript。判定复用 collector 的统一受控判定（以采集根为边界），
+// 与全扫/ChangedFile/watcher 的范围口径一致。
+func scanGateBypassed(client string, agentRoots []string, path string) bool {
+	return client == "claude" && collector.IsClaudeAgentTranscriptInRoots(agentRoots, path)
+}
+
 // newScanGate 构造门命中判定（records 为开启采集前的门表预取快照，只读）。
-func newScanGate(records map[string]model.FileScanLog) collector.FileSkipGate {
+// agentRoots 是 claude 的采集根集合（其他 client 传 nil）。
+func newScanGate(client string, agentRoots []string, records map[string]model.FileScanLog) collector.FileSkipGate {
 	return func(path string, before model.FileSnapshot) bool {
+		if scanGateBypassed(client, agentRoots, path) {
+			// agent transcript 恒不命中：即使存在历史门记录（旧版本可能经
+			// ChangedFile 外的路径写入）也必须全读。
+			return false
+		}
 		rec, ok := records[path]
 		if !ok {
 			return false
@@ -47,9 +62,14 @@ func newScanGate(records map[string]model.FileScanLog) collector.FileSkipGate {
 // scanGateRowsFor 从逐文件采集状态生成门记录：只对「本次实际读取、fullyParsed、
 // 读前读后快照一致且 identity 有效」的文件产出记录（门推进条件的文件级实现）。
 // 门命中跳过的文件（Skipped）不产出——其记录已存在且仍一致，无需重写。
-func scanGateRowsFor(client string, statuses []collector.FileScanStatus) []model.FileScanLog {
+// agent transcript 不产出记录（见 scanGateBypassed），file_scan_log 只记录主
+// transcript。
+func scanGateRowsFor(client string, agentRoots []string, statuses []collector.FileScanStatus) []model.FileScanLog {
 	var rows []model.FileScanLog
 	for _, st := range statuses {
+		if scanGateBypassed(client, agentRoots, st.Path) {
+			continue
+		}
 		if !st.FullyParsed() {
 			continue // 文件级错误 / 坏行 / 尾行未终结 / 被跳过
 		}

@@ -139,6 +139,9 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 		if c.Name() == "codex" {
 			codexAttempted = true
 		}
+		// 受控 agent 判定根：同一轮采集内复用，避免 gate 构造与门记录写入
+		// 两次独立发现之间的瞬时窗口。
+		agentRoots := claudeAgentRootsFor(deps, c.Name())
 
 		// 按本 collector 装配独立请求（不共享可变 Cursors map），完成去重/游标加载。
 		creq, allCollected, err := requestForCollector(ctx, usageDB, c, req, skipCollected)
@@ -167,7 +170,7 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 			if gerr != nil {
 				log.Warn("scan gate prefetch failed, collecting without gate", "client", c.Name(), "error", gerr)
 			} else {
-				creq.SkipGate = newScanGate(records)
+				creq.SkipGate = newScanGate(c.Name(), agentRoots, records)
 			}
 		}
 		collected, err := c.Collect(ctx, creq, log)
@@ -223,7 +226,7 @@ func RunCollect(ctx context.Context, deps *Deps, usageDB *db.DB, log *slog.Logge
 			}
 		}
 		if err := persistClientBatch(ctx, usageDB, c.Name(), creq, collected,
-			routerFetched, routerResult, router, log); err != nil {
+			routerFetched, routerResult, router, agentRoots, log); err != nil {
 			// persistClientBatch 失败后再检查 ctx：若事务因 ctx 取消而失败，
 			// 取消不是采集故障，不调用 RecordErrorsByDate（与读阶段取消语义一致）。
 			if ctx.Err() != nil {
@@ -314,6 +317,15 @@ func requestForCollector(
 	return req, false, nil
 }
 
+// claudeAgentRootsFor 返回 client 的受控 agent 判定根：仅 claude 需要
+// （主根 + cc-switch 账号根，含符号链接解析形态），其他 client 返回 nil。
+func claudeAgentRootsFor(deps *Deps, client string) []string {
+	if client != "claude" {
+		return nil
+	}
+	return collector.ClaudeProjectsRoots(deps.cfg)
+}
+
 // persistClientBatch 是单次 client batch 的事务边界。defer Rollback 只存在该 helper 内。
 // 顺序：mimocode 双向历史 re-key（其他 client 无操作）→ UpsertMessages →
 // UpsertSessionMeta → 删除 mimocode 源侧历史并关闭 bypass → UpsertRawRouterLogs
@@ -330,6 +342,7 @@ func persistClientBatch(
 	routerFetched bool,
 	routerResult collector.RouterCollectResult,
 	router collector.RouterAdapter,
+	agentRoots []string,
 	log *slog.Logger,
 ) error {
 	mimoRekey, err := buildMimoPersistRekeyPlan(client, collected)
@@ -477,7 +490,7 @@ func persistClientBatch(
 	// 与注入侧同一白名单）：文件级判定，含坏行/尾行未完成/快照不一致的文件
 	// 不写门，批次 PartialErr 不拖累同批好文件。
 	if req.ScanExistingJSONL && scanGateSupported(client) {
-		if rows := scanGateRowsFor(client, collected.FileStatuses); len(rows) > 0 {
+		if rows := scanGateRowsFor(client, agentRoots, collected.FileStatuses); len(rows) > 0 {
 			if err := db.UpsertFileScanLog(ctx, tx, rows); err != nil {
 				return fmt.Errorf("%s: %w", ui.Bi("save file scan log", "保存文件扫描状态"), err)
 			}
