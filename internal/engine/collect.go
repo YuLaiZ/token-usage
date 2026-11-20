@@ -328,7 +328,7 @@ func claudeAgentRootsFor(deps *Deps, client string) []string {
 
 // persistClientBatch 是单次 client batch 的事务边界。defer Rollback 只存在该 helper 内。
 // 顺序：mimocode 双向历史 re-key（其他 client 无操作）→ UpsertMessages →
-// UpsertSessionMeta → 删除 mimocode 源侧历史并关闭 bypass → UpsertRawRouterLogs
+// UpsertSessionMeta → Cowork 门命中元数据 UPDATE-only（若有）→ 删除 mimocode 源侧历史并关闭 bypass → UpsertRawRouterLogs
 // （若有）→（router 消息回填）→ 完整成功时写完成状态与 cursor → Commit。
 //
 // collected.PartialErr != nil 时仍保存成功解析的数据，但不写 collection_log、不解决旧错误、
@@ -379,6 +379,26 @@ func persistClientBatch(
 	if len(collected.Sessions) > 0 {
 		if _, err := db.UpsertSessionMeta(ctx, tx, collected.Sessions); err != nil {
 			return fmt.Errorf("%s: %w", ui.Bi("save session metadata", "保存 session metadata"), err)
+		}
+	}
+	// Cowork 门命中（文件未变）的元数据更新：采集器已在写入前按会话 ID 裁决
+	// 副本来源，这里只把已确认的元数据落到既有会话行（UPDATE-only），并同步
+	// 该会话下消息的归因，不建行、不覆盖时间/token/父关系。
+	if len(collected.SessionMetaUpdates) > 0 {
+		if _, err := db.UpdateSessionMetaIfExists(ctx, tx, collected.SessionMetaUpdates); err != nil {
+			return fmt.Errorf("%s: %w", ui.Bi("update session metadata", "更新 session metadata"), err)
+		}
+	}
+	// Claude 跨 client 写入即收敛：仅无日期过滤的全量采集触发；按本轮产出 id
+	// 集合，把另一 Claude 系 client 的同 id 旧行（含 router 归因）迁移后删除。
+	// 同批同 id 出现在两个 client 时跳过该 id。
+	if client == "claude" && len(req.Dates) == 0 && len(collected.Messages) > 0 {
+		if stats, conflict, err := convergeClaudeClientsInBatch(ctx, tx, collected.Messages, collected.Sessions); err != nil {
+			return fmt.Errorf("%s: %w", ui.Bi("converge claude client", "收敛 Claude client 归属"), err)
+		} else if stats.MigratedRouter > 0 || stats.DeletedMessages > 0 || conflict > 0 {
+			log.Debug("claude client convergence", "migrated_router", stats.MigratedRouter,
+				"deleted_messages", stats.DeletedMessages, "deleted_sessions", stats.DeletedSessions,
+				"skipped_conflicts", conflict)
 		}
 	}
 	// 会话关系专用写入（无消息中间层代理补父链）：只更新 agent_parent_id，
@@ -1009,4 +1029,48 @@ func filterUncollected(dates, collected []string) []string {
 		}
 	}
 	return out
+}
+
+// convergeClaudeClientsInBatch 构造本轮消息与会话的「id → 目标 Claude 系 client」映射，
+// 供 db.ConvergeClaudeClient 收敛另一 client 的同 id 旧行：
+//   - 只处理 Claude Code/Desktop 两个 client，其余忽略；
+//   - 同一 id 在本批出现两个不同 Claude 系 client 时视为同批冲突，跳过该 id
+//     （不承诺归并、不互相破坏），两侧都保留；
+//   - 冲突数单独返回供 Debug 日志。
+func convergeClaudeClientsInBatch(ctx context.Context, tx *sql.Tx, messages []model.Message, sessions []model.Session) (db.ClaudeConvergeStats, int, error) {
+	plan := db.ClaudeConvergePlan{
+		MessageTargets: make(map[string]string, len(messages)),
+		SessionTargets: make(map[string]string, len(sessions)),
+	}
+	// message 与 session 的 id 形态不同，冲突集合分开维护：message.id 冲突不应
+	// 影响同名 session.id 的收敛。早期版本混用一个 map 并对两张表无条件双向
+	// delete，属隐式耦合。
+	msgConflicts := make(map[string]struct{})
+	sessConflicts := make(map[string]struct{})
+	put := func(m *map[string]string, conflicts map[string]struct{}, id, client string) {
+		if id == "" || (client != model.ClientClaudeCode && client != model.ClientClaudeDesktop) {
+			return
+		}
+		if prior, ok := (*m)[id]; ok {
+			if prior != client {
+				conflicts[id] = struct{}{}
+			}
+			return
+		}
+		(*m)[id] = client
+	}
+	for _, msg := range messages {
+		put(&plan.MessageTargets, msgConflicts, msg.ID, msg.Client)
+	}
+	for _, s := range sessions {
+		put(&plan.SessionTargets, sessConflicts, s.ID, s.Client)
+	}
+	for id := range msgConflicts {
+		delete(plan.MessageTargets, id)
+	}
+	for id := range sessConflicts {
+		delete(plan.SessionTargets, id)
+	}
+	stats, err := db.ConvergeClaudeClient(ctx, tx, plan)
+	return stats, len(msgConflicts) + len(sessConflicts), err
 }

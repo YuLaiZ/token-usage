@@ -164,13 +164,8 @@ func TestClaudeNormalizeContentForms(t *testing.T) {
 	}
 }
 
-// TestClaudeStringContentRowsStayInert：字符串 content 行的兼容识别只消除按文件
-// 汇总噪音，对解析产出必须保持与识别前完全一致——这些行此前整体 Unmarshal
-// 失败，其 entrypoint/cwd/timestamp 从未参与元数据推断；若参与会翻转
-// client/directory/project 归类与时间戳边界，并在 (client,id) 主键下对既有库
-// 造成重复行。fixture 中字符串 user 行是唯一携带 entrypoint/cwd 的行，正是
-// 分类翻转的反例样本：断言归类与时间戳全部维持识别前的默认结果。
-func TestClaudeStringContentRowsStayInert(t *testing.T) {
+// 字符串 content 的 user 行参与 Desktop 判定。目录、项目与时间边界仍取用量行。
+func TestClaudeStringContentParticipatesInDesktopClassification(t *testing.T) {
 	_, path := copyFixtureToTempDir(t, "string-content.jsonl")
 
 	handler := &testLogHandler{}
@@ -185,8 +180,11 @@ func TestClaudeStringContentRowsStayInert(t *testing.T) {
 	firstTS := parseMillisOrFail(t, "2026-06-02T09:35:20.100Z")
 	lastTS := parseMillisOrFail(t, "2026-06-02T09:36:15.900Z")
 	for i, m := range result.Messages {
-		if m.Client != model.ClientClaudeCode {
-			t.Errorf("messages[%d].Client = %q, want %q（字符串行不得改变归类）", i, m.Client, model.ClientClaudeCode)
+		// 字符串 content 的 user 行携带 claude-desktop-3p
+		// entrypoint，参与「任一行 Desktop 即 Desktop」累积判定 → 整份归 Desktop；
+		// 但其 cwd 等元数据仍保持不可见（不进 entries，不参与目录/项目推断）。
+		if m.Client != model.ClientClaudeDesktop {
+			t.Errorf("messages[%d].Client = %q, want %q（字符串行的 Desktop entrypoint 参与判定）", i, m.Client, model.ClientClaudeDesktop)
 		}
 		if m.Directory != "" || m.Project != "" {
 			t.Errorf("messages[%d] 目录/项目应保持空（识别前无元数据来源）: directory=%q project=%q", i, m.Directory, m.Project)
@@ -196,8 +194,8 @@ func TestClaudeStringContentRowsStayInert(t *testing.T) {
 		t.Fatalf("sessions = %d, want 1", len(result.Sessions))
 	}
 	s := result.Sessions[0]
-	if s.Client != model.ClientClaudeCode || s.Directory != "" || s.Project != "" {
-		t.Errorf("session 归类应维持识别前默认: %+v", s)
+	if s.Client != model.ClientClaudeDesktop || s.Directory != "" || s.Project != "" {
+		t.Errorf("session 归类/元数据不符: %+v", s)
 	}
 	if s.FirstTS != firstTS || s.LastTS != lastTS {
 		t.Errorf("session first/last 应仅来自 assistant 行: got %d/%d want %d/%d",
@@ -396,7 +394,7 @@ func TestClaudeCollector_ChangedFileOnly(t *testing.T) {
 	}
 }
 
-// entrypoint=claude-desktop-3p 映射 Claude Desktop，其余映射 Claude Code。
+// Desktop entrypoint 家族（含 claude-desktop-3p）映射 Claude Desktop，其余（含 cli）映射 Claude Code。
 func TestClaudeCollector_ClientMapping(t *testing.T) {
 	setIsolatedHome(t)
 	projectsDir := t.TempDir()
@@ -427,6 +425,35 @@ func TestClaudeCollector_ClientMapping(t *testing.T) {
 		if messages[id].Provider != "Anthropic" {
 			t.Errorf("%s provider = %q, want Anthropic", id, messages[id].Provider)
 		}
+	}
+}
+
+// 官方 issue #110287 场景：同一 transcript 首行 cli、后行 claude-desktop，
+// 「任一行 Desktop 即 Desktop」应把整份文件（含首行 cli 的消息）归 Desktop。
+func TestClaudeCollector_MixedEntrypointWholeFileDesktop(t *testing.T) {
+	setIsolatedHome(t)
+	projectsDir := t.TempDir()
+	content := `{"type":"assistant","sessionId":"s1","timestamp":"2026-07-08T10:00:00+08:00","entrypoint":"cli","cwd":"/tmp/p","message":{"id":"early-cli","role":"assistant","model":"m","usage":{"input_tokens":1,"output_tokens":1}}}
+{"type":"assistant","sessionId":"s1","timestamp":"2026-07-08T10:01:00+08:00","entrypoint":"claude-desktop","cwd":"/tmp/p","message":{"id":"later-desktop","role":"assistant","model":"m","usage":{"input_tokens":2,"output_tokens":1}}}
+`
+	if err := os.WriteFile(filepath.Join(projectsDir, "mixed.jsonl"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := newClaudeCollectorCfg(t, projectsDir)
+	result, err := c.Collect(t.Context(), CollectRequest{Dates: []string{"2026-07-08"}}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(result.Messages))
+	}
+	for _, m := range result.Messages {
+		if m.Client != model.ClientClaudeDesktop {
+			t.Errorf("%s client = %q, want %q（整份归 Desktop）", m.ID, m.Client, model.ClientClaudeDesktop)
+		}
+	}
+	if len(result.Sessions) != 1 || result.Sessions[0].Client != model.ClientClaudeDesktop {
+		t.Fatalf("sessions = %+v, want one Desktop session", result.Sessions)
 	}
 }
 

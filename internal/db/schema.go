@@ -30,8 +30,13 @@ const currentSchemaVersion = 8
 // 归属与 meta.json description 标题；agent 文件绕过启动跳过门（标题证据不在门
 // 指纹内，每次启动 catch-up 重读），其历史文件由全扫范围扩展直接补齐；主
 // transcript 解析未变，但本次改变了 JSONL 采集产出语义，按契约递增使存量门
-// 记录整体失效、全部文件重读一次。
-const ParserVersion = 3
+// 记录整体失效、全部文件重读一次。v4（2026-11-18）：Claude 产出语义变更——
+// entrypoint 判定从字面量 claude-desktop-3p 改为 Desktop 家族四值累积（任一行
+// Desktop 即整份 Desktop，覆盖 1P 的 claude-desktop 与 Cowork 的 local-agent），
+// 并新增 Cowork local-agent-mode-sessions 补采（布局内强制 Desktop）。1P 用户
+// 既有 Code tab 文件此前被判为 Claude Code，必须重读才能按新口径归 Desktop，
+// 故按契约递增使存量门记录整体失效、全部文件重读一次。
+const ParserVersion = 4
 
 func ensureSchema(db *sql.DB) error {
 	version := getUserVersion(db)

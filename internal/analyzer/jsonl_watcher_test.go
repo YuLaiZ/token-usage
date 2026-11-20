@@ -456,3 +456,32 @@ func TestJSONLWatcher_FileRemoveDoesNotReregister(t *testing.T) {
 	}
 	watcher.Stop()
 }
+
+func TestCollectableJSONLPath_Cowork(t *testing.T) {
+	root := filepath.Join("/data", "local-agent-mode-sessions")
+	w := &JSONLWatcher{clientName: "claude", coworkRoots: []string{root}}
+	good := filepath.Join(root, "acct", "profile", "007393ce", ".claude", "projects", "session", "abc.jsonl")
+	if !w.collectableJSONLPath(good) {
+		t.Fatal("controlled Cowork transcript should be collectable")
+	}
+	// audit / ledger / uploads / subagents 等非受控 transcript 丢弃。
+	others := []string{
+		// 现场 audit.jsonl 位于会话目录根下（不在 .claude/projects 内）。
+		filepath.Join(root, "acct", "profile", "007393ce", "audit.jsonl"),
+		filepath.Join(root, "acct", "profile", "usage-ledger", "2026.ndjson"),
+		filepath.Join(root, "acct", "profile", "uploads", "file.jsonl"),
+		filepath.Join(root, "acct", "profile", "007393ce", ".claude", "projects", "session", "subagents", "agent-x.jsonl"),
+		// 两段布局不放行。
+		filepath.Join(root, "acct", "profile", ".claude", "projects", "session", "abc.jsonl"),
+	}
+	for _, p := range others {
+		if w.collectableJSONLPath(p) {
+			t.Errorf("non-controlled Cowork path should be dropped: %q", p)
+		}
+	}
+	// 未设置 Cowork 根时：非 agent 子树路径恒放行（行为不变）。
+	w2 := &JSONLWatcher{clientName: "claude"}
+	if !w2.collectableJSONLPath(good) {
+		t.Fatal("without cowork roots, behavior unchanged")
+	}
+}

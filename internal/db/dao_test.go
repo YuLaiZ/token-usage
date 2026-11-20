@@ -718,6 +718,90 @@ func TestQueryRouterLogsByMessageIDs_LargeBatch(t *testing.T) {
 	}
 }
 
+// TestBackfillRouterFields_ClaudeCrossClientFallback 覆盖改判后的晚到归因：
+// Claude 系消息被改判到另一 client（旧行已随收敛删除）后，路由日志仍按旧
+// app_type 带原 client，精确匹配落空；回填必须能按 id 从另一侧补齐，且只填空列。
+// 两侧按「日志 app_type 对应的 client」发起精确回填，兜底由另一侧反向执行。
+func TestBackfillRouterFields_ClaudeCrossClientFallback(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	// 改判后唯一保留的 Desktop 行归因为空；Code 侧不再有同 id 的新行。
+	if _, err := UpsertMessages(ctx, db, []model.Message{
+		{ID: "moved", SessionID: "s1", Client: model.ClientClaudeDesktop, Date: "2026-11-17", TS: 1000},
+		{ID: "own", SessionID: "s1", Client: model.ClientClaudeDesktop, Date: "2026-11-17", TS: 2000,
+			RouterProvider: "own-p", RouterModel: "own-m"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 晚到的路由日志仍以旧的 app_type=claude 入库，映射到 Claude Code；
+	// 反向一条覆盖「日志按 Desktop 记、消息仍在 Code」的情形。
+	if _, err := UpsertMessages(ctx, db, []model.Message{
+		{ID: "code-row", SessionID: "s2", Client: model.ClientClaudeCode, Date: "2026-11-17", TS: 3000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	infos := []model.RouterAttribution{
+		{Client: model.ClientClaudeCode, MessageID: "moved", Provider: "P", Model: "glm-5.5", RouterName: "cc_switch"},
+		{Client: model.ClientClaudeCode, MessageID: "own", Provider: "log-p", Model: "log-m", RouterName: "cc_switch"},
+		{Client: model.ClientClaudeDesktop, MessageID: "code-row", Provider: "P2", Model: "m2", RouterName: "cc_switch"},
+	}
+	if _, err := BackfillRouterFields(ctx, db, infos); err != nil {
+		t.Fatalf("BackfillRouterFields failed: %v", err)
+	}
+	m := scanMessage(t, db, model.ClientClaudeDesktop, "moved")
+	if m.RouterProvider != "P" || m.RouterModel != "glm-5.5" || m.RouterName != "cc_switch" {
+		t.Errorf("cross-client fallback not applied: %+v", m)
+	}
+	own := scanMessage(t, db, model.ClientClaudeDesktop, "own")
+	if own.RouterProvider != "own-p" || own.RouterModel != "own-m" {
+		t.Errorf("non-empty router must not be overwritten: %+v", own)
+	}
+	code := scanMessage(t, db, model.ClientClaudeCode, "code-row")
+	if code.RouterProvider != "P2" || code.RouterModel != "m2" {
+		t.Errorf("desktop-log to code-row fallback not applied: %+v", code)
+	}
+	// 不新增跨 client 行：回填只更新既有行。
+	var codeRows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM messages WHERE client=?", model.ClientClaudeCode).Scan(&codeRows); err != nil {
+		t.Fatal(err)
+	}
+	if codeRows != 1 {
+		t.Errorf("cross-client fallback must not create rows, got %d", codeRows)
+	}
+}
+
+func TestBackfillRouterFields_ClaudeCrossClientFallbackWithDuplicateInputs(t *testing.T) {
+	d := setupTestDB(t)
+	ctx := t.Context()
+	if _, err := UpsertMessages(ctx, d, []model.Message{
+		{ID: "moved", Client: model.ClientClaudeDesktop, Date: "2026-11-17"},
+		{ID: "precise", Client: model.ClientClaudeCode, Date: "2026-11-17"},
+		{ID: "precise", Client: model.ClientClaudeDesktop, Date: "2026-11-17"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	infos := []model.RouterAttribution{
+		{Client: model.ClientClaudeCode, MessageID: "moved", Provider: "first"},
+		{Client: model.ClientClaudeCode, MessageID: "moved", Provider: "second", Model: "late-model"},
+		{Client: model.ClientClaudeCode, MessageID: "precise", Provider: "precise-first"},
+		{Client: model.ClientClaudeCode, MessageID: "precise", Provider: "precise-last"},
+	}
+	count, err := BackfillRouterFields(ctx, d, infos)
+	if err != nil || count != len(infos) {
+		t.Fatalf("回填结果 count=%d, err=%v", count, err)
+	}
+	moved := scanMessage(t, d, model.ClientClaudeDesktop, "moved")
+	if moved.RouterProvider != "first" || moved.RouterModel != "late-model" {
+		t.Fatalf("跨 client 兜底只应补空列：%+v", moved)
+	}
+	if precise := scanMessage(t, d, model.ClientClaudeCode, "precise"); precise.RouterProvider != "precise-last" {
+		t.Fatalf("精确匹配应保留后一个非空值：%+v", precise)
+	}
+	if other := scanMessage(t, d, model.ClientClaudeDesktop, "precise"); other.RouterProvider != "" {
+		t.Fatalf("精确匹配存在时不应回填另一侧：%+v", other)
+	}
+}
+
 // BackfillRouterFields 非空覆盖
 func TestBackfillRouterFields(t *testing.T) {
 	db := setupTestDB(t)
@@ -873,5 +957,176 @@ func TestGetMessageIDsByDisplayNames_NoMatch(t *testing.T) {
 	}
 	if len(ids) != 0 {
 		t.Errorf("expected 0 ids, got %d", len(ids))
+	}
+}
+
+func TestUpdateSessionMetaIfExists(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	// 已存在的行：title/directory/project 更新，空值保留库值。
+	if _, err := UpsertSessionMeta(ctx, db, []model.Session{{
+		ID: "s1", Client: model.ClientClaudeDesktop, Title: "old-title", Directory: "/old/dir", Project: "old-proj",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	// 同一会话的两条消息：一条归因为空（映射晚到时重读的场景），一条自带非空归因。
+	if _, err := UpsertMessages(ctx, db, []model.Message{
+		{ID: "m-attrib", SessionID: "s1", Client: model.ClientClaudeDesktop, Date: "2026-11-17", TS: 1},
+		{ID: "m-kept", SessionID: "s1", Client: model.ClientClaudeDesktop, Date: "2026-11-17", TS: 2,
+			Directory: "/own/dir", Project: "own-proj"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := UpdateSessionMetaIfExists(ctx, db, []model.Session{{
+		ID: "s1", Client: model.ClientClaudeDesktop, Title: "new-title", Directory: "", Project: "new-proj",
+	}, {
+		ID: "no-such", Client: model.ClientClaudeDesktop, Title: "ghost", Directory: "x", Project: "y",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated != 1 {
+		t.Fatalf("updated = %d, want 1（不建行）", updated)
+	}
+	var title, dir, proj string
+	if err := db.QueryRow(`SELECT title, directory, project FROM sessions WHERE id='s1' AND client=?`,
+		model.ClientClaudeDesktop).Scan(&title, &dir, &proj); err != nil {
+		t.Fatal(err)
+	}
+	if title != "new-title" || dir != "/old/dir" || proj != "new-proj" {
+		t.Fatalf("meta = %q/%q/%q, want new-title//old/dir/new-proj", title, dir, proj)
+	}
+	// 同一会话下消息的归因列按会话行对齐（映射新增与删除都走这条通道），
+	// 保证会话列表与按项目汇总的用量口径一致。
+	var msgDir, msgProj string
+	if err := db.QueryRow("SELECT directory, project FROM messages WHERE client=? AND id=?", model.ClientClaudeDesktop, "m-attrib").Scan(&msgDir, &msgProj); err != nil {
+		t.Fatal(err)
+	}
+	if msgDir != "/old/dir" || msgProj != "new-proj" {
+		t.Fatalf("message attribution = %q/%q, want /old/dir/new-proj", msgDir, msgProj)
+	}
+	var keptDir, keptProj string
+	if err := db.QueryRow("SELECT directory, project FROM messages WHERE client=? AND id=?", model.ClientClaudeDesktop, "m-kept").Scan(&keptDir, &keptProj); err != nil {
+		t.Fatal(err)
+	}
+	if keptDir != "/old/dir" || keptProj != "new-proj" {
+		t.Fatalf("message attribution must follow session row: %q/%q", keptDir, keptProj)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("sessions = %d, want 1（幽灵行不应被创建）", count)
+	}
+}
+
+func TestConvergeClaudeClient_MigratesRouterAndDeletesOldRows(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	// 旧 Claude Code 行带 router 归因；新 Claude Desktop 行归因列为空。
+	if _, err := UpsertMessages(ctx, db, []model.Message{
+		{ID: "m1", Client: model.ClientClaudeCode, Date: "2026-11-17",
+			RouterProvider: "old-p", RouterModel: "old-m", RouterName: "cc"},
+		{ID: "m2", Client: model.ClientClaudeCode, Date: "2026-11-17"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UpsertMessages(ctx, db, []model.Message{
+		{ID: "m1", Client: model.ClientClaudeDesktop, Date: "2026-11-17"},
+		{ID: "m2", Client: model.ClientClaudeDesktop, Date: "2026-11-17", RouterModel: "already"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UpsertSessionMeta(ctx, db, []model.Session{{ID: "s1", Client: model.ClientClaudeCode}}); err != nil {
+		t.Fatal(err)
+	}
+	plan := ClaudeConvergePlan{
+		MessageTargets: map[string]string{"m1": model.ClientClaudeDesktop, "m2": model.ClientClaudeDesktop},
+		SessionTargets: map[string]string{"s1": model.ClientClaudeDesktop},
+	}
+	stats, err := ConvergeClaudeClient(ctx, db, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DeletedMessages != 2 || stats.DeletedSessions != 1 {
+		t.Fatalf("stats = %+v, want deleted 2 messages / 1 session", stats)
+	}
+	// m1 归因迁移到新行；m2 新行已有 router_model，不被覆盖。
+	var rp, rm string
+	if err := db.QueryRow(`SELECT router_provider, router_model FROM messages WHERE client=? AND id='m1'`,
+		model.ClientClaudeDesktop).Scan(&rp, &rm); err != nil {
+		t.Fatal(err)
+	}
+	if rp != "old-p" || rm != "old-m" {
+		t.Fatalf("m1 migrated router = %q/%q", rp, rm)
+	}
+	var rm2 string
+	if err := db.QueryRow(`SELECT router_model FROM messages WHERE client=? AND id='m2'`,
+		model.ClientClaudeDesktop).Scan(&rm2); err != nil {
+		t.Fatal(err)
+	}
+	if rm2 != "already" {
+		t.Fatalf("m2 router_model = %q, want already（目标非空不被覆盖）", rm2)
+	}
+	// 旧 Code 行全部删除。
+	var left int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE client=?`, model.ClientClaudeCode).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != 0 {
+		t.Fatalf("old Claude Code messages left = %d, want 0", left)
+	}
+}
+
+// 收敛删除会话行时，若该 client 仍有其它消息引用该会话，必须保留会话行，
+// 避免消息成为无会话行的孤儿、在 sessions JOIN messages 排行中消失。
+func TestConvergeClaudeClient_KeepsSessionWithUntouchedMessages(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	// 旧 Claude Code 会话 s1 有两条消息：m1 本轮触达、m2 未触达（ChangedFile 单文件轮常态）。
+	if _, err := UpsertMessages(ctx, db, []model.Message{
+		{ID: "m1", SessionID: "s1", Client: model.ClientClaudeCode, Date: "2026-11-17"},
+		{ID: "m2", SessionID: "s1", Client: model.ClientClaudeCode, Date: "2026-11-16"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UpsertSessionMeta(ctx, db, []model.Session{{ID: "s1", Client: model.ClientClaudeCode}}); err != nil {
+		t.Fatal(err)
+	}
+	// 本轮只把 m1 收敛到 Desktop；会话 s1 也在 SessionTargets 中。
+	plan := ClaudeConvergePlan{
+		MessageTargets: map[string]string{"m1": model.ClientClaudeDesktop},
+		SessionTargets: map[string]string{"s1": model.ClientClaudeDesktop},
+	}
+	stats, err := ConvergeClaudeClient(ctx, db, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DeletedMessages != 1 {
+		t.Fatalf("DeletedMessages = %d, want 1", stats.DeletedMessages)
+	}
+	// m2 仍在旧 client 引用 s1，会话行必须保留，否则 m2 变孤儿。
+	if stats.DeletedSessions != 0 {
+		t.Fatalf("DeletedSessions = %d, want 0（m2 仍引用 s1）", stats.DeletedSessions)
+	}
+	var s1 int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id=? AND client=?`, "s1", model.ClientClaudeCode).Scan(&s1); err != nil {
+		t.Fatal(err)
+	}
+	if s1 != 1 {
+		t.Fatalf("old Code session s1 count = %d, want 1（不得留下孤儿 m2）", s1)
+	}
+	// 第二轮把 m2 也收敛：此时旧 client 无消息引用 s1，会话行才可删除。
+	plan2 := ClaudeConvergePlan{
+		MessageTargets: map[string]string{"m2": model.ClientClaudeDesktop},
+		SessionTargets: map[string]string{"s1": model.ClientClaudeDesktop},
+	}
+	stats2, err := ConvergeClaudeClient(ctx, db, plan2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats2.DeletedMessages != 1 || stats2.DeletedSessions != 1 {
+		t.Fatalf("stats2 = %+v, want deleted 1 message / 1 session", stats2)
 	}
 }

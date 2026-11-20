@@ -915,6 +915,43 @@ const backfillRouterSQL = `UPDATE messages SET
  router_name=CASE WHEN ?!='' THEN ? ELSE router_name END
 WHERE client=? AND id=?;`
 
+// backfillGroupKey 是归因回填的按值分组键（同组一条批量 UPDATE）。
+type backfillGroupKey struct {
+	client, provider, model, routerName string
+}
+
+// claudeSiblingClient 返回 Claude 系 client 的另一侧：Claude Code 与
+// Claude Desktop 是同一份本地 transcript 的两种判定结果，改判会把消息行在
+// 两者之间挪动。非 Claude 系返回空串（不参与放宽匹配）。
+func claudeSiblingClient(client string) string {
+	switch client {
+	case model.ClientClaudeCode:
+		return model.ClientClaudeDesktop
+	case model.ClientClaudeDesktop:
+		return model.ClientClaudeCode
+	default:
+		return ""
+	}
+}
+
+// claudeCrossClientFallbackSQL 是 Claude 系的归因跨 client 兜底：当日志 app_type
+// 对应的 client 已没有该 id 的行（改判后旧行被收敛删除），把归因写到同 id
+// 唯一保留的另一侧 Claude 行上；该 client 仍有行时不动，保持精确匹配语义。
+//
+// 必要性：router 日志的 app_type（claude / claude-desktop）直接决定回填的
+// client，而消息的 client 来自 transcript 的 entrypoint 判定。一条消息被改判
+// 后（如 Claude Code → Claude Desktop，旧行随即被收敛删除），改判之前产生与
+// 之后晚到的日志仍带旧 app_type，精确匹配落空，实际供应商与模型归因会永久
+// 缺失——收敛时迁移归因只覆盖「改判前已写入旧行」的部分，晚到的日志没有这个
+// 通道。只填空列，不覆盖既有归因，也不新建行。
+const claudeCrossClientFallbackSQL = `UPDATE messages SET
+	router_provider = CASE WHEN COALESCE(messages.router_provider,'') = '' THEN ? ELSE messages.router_provider END,
+	router_model    = CASE WHEN COALESCE(messages.router_model,'')    = '' THEN ? ELSE messages.router_model END,
+	router_name     = CASE WHEN COALESCE(messages.router_name,'')     = '' THEN ? ELSE messages.router_name END
+WHERE messages.client = ?
+  AND NOT EXISTS (SELECT 1 FROM messages AS precise WHERE precise.id = messages.id AND precise.client = ?)
+  AND messages.id IN (`
+
 // BackfillRouterFields 将路由归因（provider/model/router_name）回填到 messages 表。
 // 空字符串不覆盖已有值。返回更新行数。
 //
@@ -925,6 +962,9 @@ WHERE client=? AND id=?;`
 // 按值分组批量执行不等价（IN 不重复计数且改变交错序）——检测到输入中
 // (client,message_id) 存在重复时整批回退逐项执行，不做去重预处理（去重会
 // 改变终值与计数语义，归属调用方数据问题）。
+// Claude 系额外做跨 client 兜底（见 claudeCrossClientFallbackSQL）：精确匹配
+// 因改判落空的 id，按 id 到另一侧 Claude 行补归因，只填空列。重复日志按输入顺序补齐，首个非空值保留；
+// 精确匹配仍按后续非空值覆盖。
 // 计数口径：累加每条批量语句的 RowsAffected（唯一键前提下与逐行累加严格
 // 一致），该口径是「UPDATE 命中行数」而非「字段实际变化次数」（现状即如此）。
 func BackfillRouterFields(ctx context.Context, q dbtx, infos []model.RouterAttribution) (int, error) {
@@ -937,14 +977,11 @@ func BackfillRouterFields(ctx context.Context, q dbtx, infos []model.RouterAttri
 		seen[key] = true
 	}
 
-	type groupKey struct {
-		client, provider, model, routerName string
-	}
 	// 分组保持首现顺序（map 迭代无序，order 记录组序）。
-	var order []groupKey
-	groups := make(map[groupKey][]string)
+	var order []backfillGroupKey
+	groups := make(map[backfillGroupKey][]string)
 	for _, info := range infos {
-		k := groupKey{info.Client, info.Provider, info.Model, info.RouterName}
+		k := backfillGroupKey{info.Client, info.Provider, info.Model, info.RouterName}
 		if _, ok := groups[k]; !ok {
 			order = append(order, k)
 		}
@@ -978,6 +1015,43 @@ func BackfillRouterFields(ctx context.Context, q dbtx, infos []model.RouterAttri
 			}
 			count += int(n)
 		}
+		// Claude 系跨 client 兜底：日志的 app_type 对应 client 已无行时，回填到
+		// 同 id 唯一保留的另一侧（改判后的晚到日志）。
+		if sibling := claudeSiblingClient(k.client); sibling != "" {
+			n, err := backfillRouterFieldsCrossClient(ctx, q, k, sibling, ids)
+			if err != nil {
+				return count, err
+			}
+			count += n
+		}
+	}
+	return count, nil
+}
+
+// backfillRouterFieldsCrossClient 对精确匹配落空的 Claude 系 id 做跨 client
+// 兜底（见 claudeCrossClientFallbackSQL）：日志对应的 client 已无该 id 的行时，
+// 把归因写到同 id 唯一保留的另一侧。不新建行、不清空既有归因。
+func backfillRouterFieldsCrossClient(ctx context.Context, q dbtx, k backfillGroupKey, sibling string, ids []string) (int, error) {
+	const fixedParams = 5
+	const chunkSize = upsertMaxSQLParams - fixedParams
+	count := 0
+	for start := 0; start < len(ids); start += chunkSize {
+		chunk := ids[start:min(start+chunkSize, len(ids))]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, 0, fixedParams+len(chunk))
+		args = append(args, k.provider, k.model, k.routerName, sibling, k.client)
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		res, err := q.ExecContext(ctx, claudeCrossClientFallbackSQL+placeholders+")", args...)
+		if err != nil {
+			return count, fmt.Errorf("跨 client 归因兜底失败（%q → %q，首条 %q）: %w", k.client, sibling, chunk[0], err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return count, fmt.Errorf("读取跨 client 归因兜底结果失败（%q，首条 %q）: %w", sibling, chunk[0], err)
+		}
+		count += int(n)
 	}
 	return count, nil
 }
@@ -1001,6 +1075,239 @@ func backfillRouterFieldsRowByRow(ctx context.Context, q dbtx, infos []model.Rou
 			return count, fmt.Errorf("读取回填结果 %q/%q 失败: %w", info.Client, info.MessageID, err)
 		}
 		count += int(n)
+		if sibling := claudeSiblingClient(info.Client); sibling != "" && n == 0 {
+			k := backfillGroupKey{info.Client, info.Provider, info.Model, info.RouterName}
+			updated, err := backfillRouterFieldsCrossClient(ctx, q, k, sibling, []string{info.MessageID})
+			if err != nil {
+				return count, err
+			}
+			count += updated
+		}
 	}
 	return count, nil
+}
+
+// updateSessionMetaIfExistsSQL 是门命中场景的会话元数据 UPDATE-only 语句。
+// 只更新已存在的会话行，不建行、不动 parent_id/first_ts/last_ts/token 列。
+// title/directory/project 传入空字符串时保留库值；与
+// ApplyCodexIndexTitles 同构，零消息文件无行可更新，幽灵行与先查后写窗口一并消除。
+const updateSessionMetaIfExistsSQL = `UPDATE sessions SET
+	title     = CASE WHEN ? <> '' THEN ? ELSE title END,
+	directory = CASE WHEN ? <> '' THEN ? ELSE directory END,
+	project   = CASE WHEN ? <> '' THEN ? ELSE project END
+WHERE id = ? AND client = ?`
+
+// updateMessageAttributionForSessionSQL 把会话名下消息的归因列对齐到会话行。
+// 消息的 directory/project 与会话同口径，而跳过门命中的文件不会重读，映射的
+// 晚到（新增或删除）只能在 UPDATE-only 通道里一并修好，否则会话行与会话列表
+// 一致、消息仍停留在旧值，按项目汇总的用量长期分叉。
+// 取值直接读会话行的最终值（子查询），而不是入参：入参的空值表示「保留库值」，
+// 会话行的实际值才是消息应对齐的口径。
+const updateMessageAttributionForSessionSQL = `UPDATE messages SET
+	directory = COALESCE((SELECT directory FROM sessions WHERE id = ? AND client = ?), directory),
+	project   = COALESCE((SELECT project FROM sessions WHERE id = ? AND client = ?), project)
+WHERE client = ? AND session_id = ?`
+
+// UpdateSessionMetaIfExists 只更新已存在会话行的 title/directory/project（UPDATE-only）。
+// 与 UpsertSessionMeta 分开：不建行、不覆盖时间/token/父关系；空值保留库值。
+// 同一会话下 messages.directory/project 一并按会话行对齐（映射新增与删除都
+// 需要这条通道），保持两表同口径。调用方负责事务边界（dbtx 可为 *DB 或 *sql.Tx）。
+// 返回更新的会话行数。
+func UpdateSessionMetaIfExists(ctx context.Context, q dbtx, sessions []model.Session) (int64, error) {
+	var updated int64
+	for _, s := range sessions {
+		if s.ID == "" {
+			continue
+		}
+		res, err := q.ExecContext(ctx, updateSessionMetaIfExistsSQL,
+			s.Title, s.Title, s.Directory, s.Directory, s.Project, s.Project, s.ID, s.Client)
+		if err != nil {
+			return updated, fmt.Errorf("更新会话元数据 %q/%q 失败: %w", s.Client, s.ID, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return updated, fmt.Errorf("读取会话元数据更新结果 %q/%q 失败: %w", s.Client, s.ID, err)
+		}
+		updated += n
+		// 无论入参是否为空都要同步：入参为空时会话行保留库值，消息仍要对齐到该值
+		// （映射被删除后重读会清空归属，两表必须一起清空）。
+		if _, err := q.ExecContext(ctx, updateMessageAttributionForSessionSQL,
+			s.ID, s.Client, s.ID, s.Client, s.Client, s.ID); err != nil {
+			return updated, fmt.Errorf("同步会话 %q/%q 的消息归因失败: %w", s.Client, s.ID, err)
+		}
+	}
+	return updated, nil
+}
+
+// migrateRouterSQL 是跨 client 收敛时的归因迁移语句：语义是「目标列为空才写」，
+// 只在新行对应列为空时填入旧行非空归因，不覆盖新行已有值。
+const migrateRouterSQL = `UPDATE messages SET
+	router_provider = CASE WHEN COALESCE(router_provider,'') = '' THEN ? ELSE router_provider END,
+	router_model    = CASE WHEN COALESCE(router_model,'')    = '' THEN ? ELSE router_model END,
+	router_name     = CASE WHEN COALESCE(router_name,'')     = '' THEN ? ELSE router_name END
+WHERE client = ? AND id = ?`
+
+// ClaudeConvergeStats 是 Claude 系跨 client 收敛的执行统计（供 engine 记 Debug）。
+type ClaudeConvergeStats struct {
+	MigratedRouter  int
+	DeletedMessages int64
+	DeletedSessions int64
+}
+
+// ClaudeConvergePlan 是 Claude 跨 client 收敛的本轮产出集合：
+// MessageTargets/SessionTargets 均为「id → 目标 Claude 系 client」，分别用于
+// 消息（含归因迁移）与会话行的收敛。同批多 client 冲突由 engine 在构造时跳过。
+type ClaudeConvergePlan struct {
+	MessageTargets map[string]string
+	SessionTargets map[string]string
+}
+
+const (
+	claudeConvergeMessageChunkIDs = upsertMaxSQLParams - 1
+	// 会话删除和消息引用检查各绑定一次 client。
+	claudeConvergeSessionChunkIDs = upsertMaxSQLParams - 2
+)
+
+// ConvergeClaudeClient 把本轮产出的消息/会话从「另一 Claude 系 client」收敛到目标 client：
+// 先迁移旧行非空 router_* 到新消息行（目标列为空才写），再删除旧 client 的同 id
+// 消息与会话行。调用方负责事务边界；收敛在 Upsert 之后同一事务内执行。
+func ConvergeClaudeClient(ctx context.Context, q dbtx, plan ClaudeConvergePlan) (ClaudeConvergeStats, error) {
+	var stats ClaudeConvergeStats
+	type pair struct{ target, other string }
+	msgGroups := make(map[pair][]string)
+	sessGroups := make(map[pair][]string)
+	groupKey := func(target string) (pair, bool) {
+		switch target {
+		case model.ClientClaudeDesktop:
+			return pair{model.ClientClaudeDesktop, model.ClientClaudeCode}, true
+		case model.ClientClaudeCode:
+			return pair{model.ClientClaudeCode, model.ClientClaudeDesktop}, true
+		default:
+			return pair{}, false
+		}
+	}
+	for id, target := range plan.MessageTargets {
+		if p, ok := groupKey(target); ok {
+			msgGroups[p] = append(msgGroups[p], id)
+		}
+	}
+	for id, target := range plan.SessionTargets {
+		if p, ok := groupKey(target); ok {
+			sessGroups[p] = append(sessGroups[p], id)
+		}
+	}
+	for p, ids := range msgGroups {
+		for start := 0; start < len(ids); start += claudeConvergeMessageChunkIDs {
+			end := start + claudeConvergeMessageChunkIDs
+			if end > len(ids) {
+				end = len(ids)
+			}
+			chunk := ids[start:end]
+			if err := migrateClaudeRouterFields(ctx, q, chunk, p.other, p.target, &stats); err != nil {
+				return stats, err
+			}
+			if err := deleteClaudeRows(ctx, q, chunk, p.other, true, &stats); err != nil {
+				return stats, err
+			}
+		}
+	}
+	for p, ids := range sessGroups {
+		for start := 0; start < len(ids); start += claudeConvergeSessionChunkIDs {
+			end := start + claudeConvergeSessionChunkIDs
+			if end > len(ids) {
+				end = len(ids)
+			}
+			if err := deleteClaudeRows(ctx, q, ids[start:end], p.other, false, &stats); err != nil {
+				return stats, err
+			}
+		}
+	}
+	return stats, nil
+}
+
+// migrateClaudeRouterFields 读取旧 client 的 id 归因并迁移到新行（目标列为空才写）。
+func migrateClaudeRouterFields(ctx context.Context, q dbtx, ids []string, fromClient, toClient string, stats *ClaudeConvergeStats) error {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	query := `SELECT id, router_provider, router_model, router_name FROM messages WHERE client=? AND id IN (` + placeholders + `)`
+	args := make([]interface{}, 0, 1+len(ids))
+	args = append(args, fromClient)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("查询旧 client 归因失败: %w", err)
+	}
+	type routerVals struct{ provider, model, name string }
+	vals := make(map[string]routerVals)
+	for rows.Next() {
+		var id string
+		var v routerVals
+		if err := rows.Scan(&id, &v.provider, &v.model, &v.name); err != nil {
+			rows.Close()
+			return fmt.Errorf("扫描旧 client 归因失败: %w", err)
+		}
+		vals[id] = v
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("遍历旧 client 归因失败: %w", err)
+	}
+	rows.Close()
+	for _, id := range ids {
+		v, ok := vals[id]
+		if !ok || (v.provider == "" && v.model == "" && v.name == "") {
+			continue
+		}
+		res, err := q.ExecContext(ctx, migrateRouterSQL, v.provider, v.model, v.name, toClient, id)
+		if err != nil {
+			return fmt.Errorf("迁移归因 %q/%q 失败: %w", toClient, id, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("读取归因迁移结果 %q/%q 失败: %w", toClient, id, err)
+		}
+		stats.MigratedRouter += int(n)
+	}
+	return nil
+}
+
+// deleteClaudeRows 删除旧 client 的同 id 消息或会话行。messages=true 删 messages，
+// 否则删 sessions（两者 id 口径不同：message.id 与 session.id）。
+//
+// 会话行的删除额外带 NOT EXISTS 保护：只有当该 client 在 messages 中已无引用该
+// session 的消息时才删会话行。否则 ChangedFile 单文件轮（Dates 为空、本轮 id
+// 集合只含被触达文件）会删掉旧 client 的会话行，而该会话另一日期/另一文件的
+// 消息仍留在 messages —— 成为无会话行的孤儿，在 sessions JOIN messages 的会话
+// 排行中彻底消失（本轮 id 集合只是删除单位，覆盖不到这种常态场景）。
+// 消息在本轮 id 集合内先行删除（msgGroups 循环先于 sessGroups），因此 UPDATE
+// 触达的消息删除后，无残留引用的会话行可安全删除；仍有其它消息引用的会话行
+// 保留，其消息由后续各自文件的收敛轮逐步迁走，最后一条迁走时该行自然被删。
+func deleteClaudeRows(ctx context.Context, q dbtx, ids []string, client string, messages bool, stats *ClaudeConvergeStats) error {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]interface{}, 0, 1+len(ids))
+	args = append(args, client)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	query := "DELETE FROM messages WHERE client=? AND id IN (" + placeholders + ")"
+	table := "messages"
+	if !messages {
+		table = "sessions"
+		query = "DELETE FROM sessions WHERE client=? AND id IN (" + placeholders + ")" +
+			" AND NOT EXISTS (SELECT 1 FROM messages WHERE messages.client=? AND messages.session_id=sessions.id)"
+		args = append(args, client)
+	}
+	res, err := q.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("删除旧 client %s 失败: %w", table, err)
+	}
+	if n, e := res.RowsAffected(); e == nil {
+		if messages {
+			stats.DeletedMessages += n
+		} else {
+			stats.DeletedSessions += n
+		}
+	}
+	return nil
 }

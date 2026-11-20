@@ -7,17 +7,36 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 // setIsolatedHome 把 os.UserHomeDir 隔离到临时目录：本机 ~/.cc-switch 真实存在，
-// 不隔离会让发现结果依赖本机状态。USERPROFILE 与 HOME 同时设，兼容 Windows。
+// 不隔离会让发现结果依赖本机状态。USERPROFILE 与 HOME 同时设，兼容 Windows；
+// APPDATA 一并指向隔离目录——Windows 下 Claude Desktop 的数据目录按进程
+// APPDATA 推导，而 Claude 采集每轮都会做 Cowork 自动发现，只隔离 home 会让
+// 测试读到本机真实的应用数据目录。
 func setIsolatedHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
 	return home
+}
+
+// setIsolatedClaudeDesktopHome 保留显式命名：需要 Cowork/Desktop 目录的用例用它
+// 声明依赖（隔离内容与 setIsolatedHome 相同）。
+func setIsolatedClaudeDesktopHome(t *testing.T) string {
+	t.Helper()
+	return setIsolatedHome(t)
+}
+
+// currentTestCoworkRoots 按当前进程环境（与生产装配同一取值方式）计算 Cowork
+// 根，保证测试夹具与采集器指向同一目录。
+func currentTestCoworkRoots() []string {
+	home, _ := os.UserHomeDir()
+	return ClaudeCoworkRoots(home, runtime.GOOS, os.Getenv)
 }
 
 // ccSwitchAccountProjects 返回隔离 home 下指定账号 id 的 projects 目录路径。
@@ -126,7 +145,7 @@ func TestClaudeCollector_CollectsCCSwitchAccountProjects(t *testing.T) {
 	if len(result.FileStatuses) != 2 {
 		t.Fatalf("statuses = %+v", result.FileStatuses)
 	}
-	// 主根文件在前（D5 顺序合同）。
+	// 主根文件在前（合并顺序合同）。
 	if filepath.Base(result.FileStatuses[0].Path) != "main.jsonl" ||
 		filepath.Base(result.FileStatuses[1].Path) != "acct.jsonl" {
 		t.Fatalf("status order = %v then %v", result.FileStatuses[0].Path, result.FileStatuses[1].Path)

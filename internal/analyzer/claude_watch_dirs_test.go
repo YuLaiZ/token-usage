@@ -4,21 +4,30 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/YuLaiZ/token-usage/internal/collector"
 )
 
-// claude watcher 根列表：强根=projects_dir、可选根=cc-switch 多账号根；home 取不到只有强根。
+// claude watcher 根列表：强根=projects_dir；可选根=cc-switch 多账号根 + Cowork 根。
+// Cowork 根按与生产装配相同的取值方式（进程环境，含 Windows 的 APPDATA）计算，
+// 测试夹具与装配点因此不会因环境取值不同而指向不同目录。
 func TestClaudeWatchRoots(t *testing.T) {
 	strong, optional := claudeWatchRoots("/data/projects", "/home/u")
 	if len(strong) != 1 || strong[0] != "/data/projects" {
 		t.Fatalf("strong = %v, want [/data/projects]", strong)
 	}
-	want := collector.CCSwitchClaudeAccountsRoot("/home/u")
-	if len(optional) != 1 || optional[0] != want {
-		t.Fatalf("optional = %v, want [%s]", optional, want)
+	cowork := collector.ClaudeCoworkRoots("/home/u", runtime.GOOS, os.Getenv)
+	want := append([]string{collector.CCSwitchClaudeAccountsRoot("/home/u")}, cowork...)
+	if len(optional) != len(want) {
+		t.Fatalf("optional = %v, want %v", optional, want)
+	}
+	for i := range want {
+		if optional[i] != want[i] {
+			t.Fatalf("optional[%d] = %q, want %q", i, optional[i], want[i])
+		}
 	}
 }
 
@@ -65,17 +74,26 @@ poll_interval = 1
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{
+	wantDirs := []string{
 		filepath.Clean(filepath.Join(tmpDir, "claude")),
-		collector.CCSwitchClaudeAccountsRoot(home),
 	}
-	if len(claude.dirs) != 2 || claude.dirs[0] != want[0] || claude.dirs[1] != want[1] {
+	wantOptional := append([]string{collector.CCSwitchClaudeAccountsRoot(home)},
+		collector.ClaudeCoworkRoots(home, runtime.GOOS, os.Getenv)...)
+	want := append(append([]string{}, wantDirs...), wantOptional...)
+	if len(claude.dirs) != len(want) {
 		t.Fatalf("claude watcher dirs = %v, want %v", claude.dirs, want)
 	}
-	if len(claude.optional) != 1 {
-		t.Fatalf("claude watcher optional = %v, want exactly the account root", claude.optional)
+	for i := range want {
+		if claude.dirs[i] != want[i] {
+			t.Fatalf("claude watcher dirs[%d] = %q, want %q", i, claude.dirs[i], want[i])
+		}
 	}
-	if _, ok := claude.optional[want[1]]; !ok {
-		t.Fatalf("claude watcher optional = %v, want %q marked optional", claude.optional, want[1])
+	if len(claude.optional) != len(wantOptional) {
+		t.Fatalf("claude watcher optional = %v, want %v", claude.optional, wantOptional)
+	}
+	for _, w := range wantOptional {
+		if _, ok := claude.optional[w]; !ok {
+			t.Fatalf("claude watcher optional = %v, want %q marked optional", claude.optional, w)
+		}
 	}
 }

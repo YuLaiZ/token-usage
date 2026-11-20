@@ -9,6 +9,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -337,6 +338,58 @@ func TestUpsertChunkConstants(t *testing.T) {
 	}
 	if backfillPrefixParams+maxBackfillIDsPerStmt > upsertMaxSQLParams {
 		t.Fatalf("backfill 满块参数超限: %d+%d > %d", backfillPrefixParams, maxBackfillIDsPerStmt, upsertMaxSQLParams)
+	}
+}
+
+type parameterBudgetDB struct {
+	dbtx
+}
+
+func (q parameterBudgetDB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if len(args) > upsertMaxSQLParams {
+		return nil, fmt.Errorf("绑定参数 %d 个，超过预算 %d", len(args), upsertMaxSQLParams)
+	}
+	return q.dbtx.ExecContext(ctx, query, args...)
+}
+
+func TestConvergeClaudeClient_SessionDeleteParameterBudget(t *testing.T) {
+	d := setupTestDB(t)
+	ctx := t.Context()
+	// 旧分块大小恰好会让会话删除多绑定一个参数。
+	const count = upsertMaxSQLParams - 1
+	sessions := make([]model.Session, 0, count)
+	targets := make(map[string]string, count)
+	for i := range count {
+		id := fmt.Sprint(i)
+		sessions = append(sessions, model.Session{ID: id, Client: model.ClientClaudeCode})
+		targets[id] = model.ClientClaudeDesktop
+	}
+	if _, err := UpsertSessionMeta(ctx, d, sessions); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := ConvergeClaudeClient(ctx, parameterBudgetDB{d}, ClaudeConvergePlan{SessionTargets: targets})
+	if err != nil || stats.DeletedSessions != count {
+		t.Fatalf("应删除 %d 条旧会话，得到 %d，错误：%v", count, stats.DeletedSessions, err)
+	}
+}
+
+func TestBackfillRouterFields_ClaudeFallbackParameterBudget(t *testing.T) {
+	d := setupTestDB(t)
+	ctx := t.Context()
+	const count = upsertMaxSQLParams
+	messages := make([]model.Message, 0, count)
+	infos := make([]model.RouterAttribution, 0, count)
+	for i := range count {
+		id := fmt.Sprint(i)
+		messages = append(messages, model.Message{ID: id, Client: model.ClientClaudeDesktop})
+		infos = append(infos, model.RouterAttribution{MessageID: id, Client: model.ClientClaudeCode, Provider: "provider"})
+	}
+	if _, err := UpsertMessages(ctx, d, messages); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := BackfillRouterFields(ctx, parameterBudgetDB{d}, infos)
+	if err != nil || updated != count {
+		t.Fatalf("应回填 %d 条消息，得到 %d，错误：%v", count, updated, err)
 	}
 }
 

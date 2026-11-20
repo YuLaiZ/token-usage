@@ -855,6 +855,10 @@ func TestJSONLWatcher_InvalidatedTreeReleaseKeepsUnconfirmed(t *testing.T) {
 	if len(watcher.watched) != 0 {
 		t.Fatalf("事件清理应清除本地记录: %v", watcher.watched)
 	}
+	if len(watcher.watchOwners) != 0 || len(watcher.watchOwnerRealPaths) != 0 {
+		t.Fatalf("事件清理应释放登记时的所有者键: owners=%v resolved=%v",
+			watcher.watchOwners, watcher.watchOwnerRealPaths)
+	}
 	if len(watcher.unconfirmed) != 3 {
 		t.Fatalf("事件清理不得清掉未确认标记: %v", watcher.unconfirmed)
 	}

@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -61,13 +63,52 @@ func (c *ClaudeCollector) Collect(ctx context.Context, req CollectRequest, logge
 
 	files := []string(nil)
 	var scanErr error
-	if req.ChangedFile != "" {
+	// coworkOutcomes 是参与组裁决的 Cowork transcript（含映射损坏而跳过的副本，
+	// 不含主根内副本）。同一逻辑会话 ID 的多份现存文件必须一起核对：元数据来源
+	// 在写入前确定，不依赖库中残留状态，也不受跳过门命中与否影响；组内任一
+	// 副本映射损坏时整组冻结，健康副本不得接管归因。
+	var coworkOutcomes []claudeCoworkTranscriptOutcome
+	// 枚举不完整时，未读到的目录可能包含任意同 ID 副本，不能裁决 Cowork 归因。
+	var coworkScanErr error
+	coworkRoots := claudeCoworkRootsFromEnv()
+	// projectsRoots 用作 Cowork 与主根的重叠边界：会话目录 .claude 为符号链接时，
+	// Cowork 枚举会跟随到 projects 根下的 transcript。这类副本由主根全扫按其
+	// entrypoint 正常判定，必须跳过 Cowork 强制 Desktop，避免同一 message.id
+	// 跨 client 双计。
+	agentRoots := ClaudeProjectsRoots(c.cfg)
+	projectsRoots := slices.Clone(agentRoots)
+	for i, root := range projectsRoots {
+		if real, err := filepath.EvalSymlinks(root); err == nil {
+			projectsRoots[i] = real
+		}
+	}
+	changed := req.ChangedFile
+	if changed != "" {
 		// 与全扫、watcher 事件统一为绝对 Clean 形态（受控判定根为绝对路径）。
-		changed := req.ChangedFile
 		if abs, aerr := filepath.Abs(changed); aerr == nil {
 			changed = filepath.Clean(abs)
 		}
-		files = []string{changed}
+		if IsClaudeCoworkTranscriptInRoots(coworkRoots, changed) {
+			// 通过 Cowork 别名补采主根文件时用真实路径，保留原生分类和子代理归属。
+			// 在读取 Cowork 映射前判定，主根文件不受别名侧映射状态影响。
+			if native := claudeCoworkProjectsPath(changed, projectsRoots); native != "" {
+				files = []string{native}
+			}
+		}
+		if len(files) == 0 {
+			out, inCoworkRoot, controlled := claudeCoworkOutcomeForPath(coworkRoots, changed, logger)
+			switch {
+			case inCoworkRoot && !controlled:
+				logger.Debug("Claude Cowork non-transcript ChangedFile skipped", "file", changed)
+				return CollectResult{}, nil
+			case controlled && out.Skip:
+				coworkOutcomes = []claudeCoworkTranscriptOutcome{out}
+			case controlled:
+				coworkOutcomes, coworkScanErr = claudeCoworkGroupForChanged(ctx, coworkRoots, changed, out, projectsRoots, logger)
+			default:
+				files = []string{changed}
+			}
+		}
 	} else {
 		files, scanErr = findClaudeJSONLFiles(ctx, clientCfg.Paths["projects_dir"])
 		home, _ := os.UserHomeDir()
@@ -76,10 +117,16 @@ func (c *ClaudeCollector) Collect(ctx context.Context, req CollectRequest, logge
 			files = dedupeCleanedFilePaths(files, extraFiles)
 			scanErr = errors.Join(scanErr, extraErr)
 		}
-		if scanErr != nil && (errors.Is(scanErr, context.Canceled) ||
-			errors.Is(scanErr, context.DeadlineExceeded)) {
-			return CollectResult{}, scanErr
-		}
+		// Cowork 补采：逐层 ReadDir 枚举受控布局 transcript，按会话目录关联
+		// 映射。映射损坏的副本也保留在组内（Skip 标记），让组裁决按会话 ID
+		// 整组冻结；失败原因统一在组裁决按会话目录 Warn 一次并计入部分失败。
+		coworkOutcomes, coworkScanErr = claudeCoworkEnumerate(ctx, coworkRoots, logger)
+		coworkOutcomes = slices.DeleteFunc(coworkOutcomes, func(out claudeCoworkTranscriptOutcome) bool {
+			return claudeCoworkProjectsPath(out.Path, projectsRoots) != ""
+		})
+	}
+	if err := ctx.Err(); err != nil {
+		return CollectResult{}, err
 	}
 
 	dateSet := make(map[string]struct{}, len(req.Dates))
@@ -91,9 +138,14 @@ func (c *ClaudeCollector) Collect(ctx context.Context, req CollectRequest, logge
 	if scanErr != nil {
 		result.PartialErr = fmt.Errorf("查找 Claude JSONL 文件失败: %w", scanErr)
 	}
-	// 受控 agent 判定根：主根 + cc-switch 账号根（含符号链接解析形态），
-	// ChangedFile 与全扫共用同一集合。
-	agentRoots := ClaudeProjectsRoots(c.cfg)
+	if coworkScanErr != nil {
+		scanFailure := fmt.Errorf("查找 Claude Cowork 文件失败: %w", coworkScanErr)
+		logger.Warn("Claude Cowork enumeration incomplete", "changed_file", changed, "error", coworkScanErr)
+		result.PartialErr = errors.Join(result.PartialErr, scanFailure)
+		if changed != "" {
+			result.FileStatuses = append(result.FileStatuses, FileScanStatus{Path: changed, Err: scanFailure})
+		}
+	}
 	for _, file := range files {
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -117,7 +169,197 @@ func (c *ClaudeCollector) Collect(ctx context.Context, req CollectRequest, logge
 		result.Messages = append(result.Messages, part.Messages...)
 		result.Sessions = append(result.Sessions, part.Sessions...)
 	}
+
+	// Cowork 组裁决：同一逻辑会话 ID 的多份现存 transcript 一起核对，按路径
+	// 字典序取第一份实际产出用量的文件提供会话元数据。全扫、启动补采与
+	// ChangedFile 共用这条规则，避免同一组文件因跳过门状态不同而选出不同的
+	// 标题或项目。组内只有一份时继续使用跳过门（未变文件不重读，只走
+	// UPDATE-only 元数据通道）。组内任一副本映射损坏时整组冻结：健康但无映射
+	// 的副本不得接管归因，否则会把已有 sessions/messages 的 directory/project
+	// 写空；失败逐条计入部分失败，映射修复后重试。
+	groups := groupClaudeCoworkOutcomes(coworkOutcomes)
+	groupIDs := make([]string, 0, len(groups))
+	for id := range groups {
+		groupIDs = append(groupIDs, id)
+	}
+	sort.Strings(groupIDs)
+	// Warn 按失败原因（会话目录 + 映射路径）去重：同一目录下的多个 transcript
+	// 只打印一条，部分失败通道仍按文件逐条记录。
+	warnedSessionDirs := make(map[string]struct{})
+	for _, id := range groupIDs {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		if skips := claudeCoworkGroupSkips(groups[id]); len(skips) > 0 {
+			for _, out := range skips {
+				skipErr := out.SkipErr
+				if skipErr == nil {
+					skipErr = fmt.Errorf("Claude Cowork transcript skipped: %s", out.Path)
+				}
+				if _, dup := warnedSessionDirs[skipErr.Error()]; !dup {
+					warnedSessionDirs[skipErr.Error()] = struct{}{}
+					logger.Warn("Claude Cowork transcript skipped", "file", out.Path, "reason", skipErr)
+				}
+				result.FileStatuses = append(result.FileStatuses, FileScanStatus{Path: out.Path, Err: skipErr})
+				result.PartialErr = errors.Join(result.PartialErr, fmt.Errorf("%s: %w", out.Path, skipErr))
+			}
+			continue
+		}
+		if coworkScanErr != nil {
+			continue
+		}
+		msgs, sess, statuses, updates, groupErrs := collectClaudeCoworkGroup(ctx, groups[id], req.SkipGate, agentRoots, dateSet, logger)
+		result.Messages = append(result.Messages, msgs...)
+		result.Sessions = append(result.Sessions, sess...)
+		result.FileStatuses = append(result.FileStatuses, statuses...)
+		result.SessionMetaUpdates = append(result.SessionMetaUpdates, updates...)
+		for _, gerr := range groupErrs {
+			result.PartialErr = errors.Join(result.PartialErr, gerr)
+		}
+		// 组内解析中途取消时不能把结果当成功返回：与普通文件路径一致，取消
+		// 是请求中止而不是部分失败。
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+	}
 	return result, nil
+}
+
+// collectClaudeCoworkGroup 处理同一逻辑会话 ID 的一组 transcript（group 已按
+// 绝对路径字典序排序，且调用方已保证组内没有映射损坏的副本）。组内只有一份时
+// 沿用跳过门：门命中只提交 UPDATE-only 元数据候选，不重读文件。组内有多份现存
+// 副本时整组强制重读——只有实际读取内容才能判断哪一份真正产出用量，按「第一份
+// 实际产出用量」确定元数据来源，其余副本只贡献消息、不产出会话行。调用方负责
+// 把返回值并入 CollectResult。
+func collectClaudeCoworkGroup(
+	ctx context.Context,
+	group []claudeCoworkTranscriptOutcome,
+	gate FileSkipGate,
+	agentRoots []string,
+	dateSet map[string]struct{},
+	logger *slog.Logger,
+) (messages []model.Message, sessions []model.Session, statuses []FileScanStatus, metaUpdates []model.Session, errs []error) {
+	if len(group) == 1 {
+		out := group[0]
+		path := out.Path
+		before := fsident.SnapshotOfFile(path)
+		if skipGateHit(gate, path, before) {
+			statuses = append(statuses, FileScanStatus{Path: path, Skipped: true, Before: before})
+			// 门命中且映射可用：只更新已存在会话行的元数据（UPDATE-only），
+			// 不读 transcript、不建行。title/directory/project 空值不覆盖库值；
+			// 无映射 transcript 门命中无元数据可更新，不做任何更新（不清空历史值）。
+			if id := strings.TrimSpace(out.Meta.CLISessionID); id != "" {
+				directory, project := claudeCoworkDirectoryProject(out.Meta)
+				metaUpdates = append(metaUpdates, model.Session{
+					ID:        id,
+					Client:    model.ClientClaudeDesktop,
+					Title:     out.Meta.Title,
+					Directory: directory,
+					Project:   project,
+				})
+			}
+			return
+		}
+		part, status, err := parseClaudeMessageFile(path, agentRoots, dateSet, logger)
+		status.Before = before
+		status.After = fsident.SnapshotOfFile(path)
+		statuses = append(statuses, status)
+		if err != nil {
+			logger.Warn("Claude Cowork transcript parse failed, skipped", "file", path, "error", err)
+			statuses[len(statuses)-1].Err = err
+			errs = append(errs, fmt.Errorf("%s: %w", path, err))
+			return
+		}
+		applyCoworkGroupMeta(&part, out, true)
+		messages = part.Messages
+		sessions = part.Sessions
+		metaUpdates = coworkMetaUpdatesForSessions(out, part.Sessions)
+		return
+	}
+
+	// 多副本：整组强制重读，结果不依赖跳过门状态。
+	parts := make([]CollectResult, len(group))
+	for i, out := range group {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			return
+		}
+		path := out.Path
+		before := fsident.SnapshotOfFile(path)
+		part, status, err := parseClaudeMessageFile(path, agentRoots, dateSet, logger)
+		status.Before = before
+		status.After = fsident.SnapshotOfFile(path)
+		statuses = append(statuses, status)
+		if err != nil {
+			logger.Warn("Claude Cowork transcript parse failed, skipped", "file", path, "error", err)
+			statuses[len(statuses)-1].Err = err
+			errs = append(errs, fmt.Errorf("%s: %w", path, err))
+			continue
+		}
+		parts[i] = part
+	}
+	if len(errs) > 0 {
+		// 部分读取不能证明归因来源。保留失败文件状态，未写入的成功副本不推进跳过门。
+		statuses = slices.DeleteFunc(statuses, func(status FileScanStatus) bool { return status.Err == nil })
+		return
+	}
+	// 元数据来源：排序后的第一份完整 transcript 产出用量的副本。判定基于
+	// hasUsage（日期过滤之前记录），因此按日期采集不会改选另一份副本；空
+	// transcript（只有用户消息、无 usage）不提供元数据，也不会挡住后面有
+	// 消息的副本。
+	source := -1
+	for i := range group {
+		if parts[i].hasUsage {
+			source = i
+			break
+		}
+	}
+	if source < 0 {
+		// 整组都没有用量：不产出会话行，也不提交元数据更新，避免空值覆盖库中
+		// 既有归属（文件未变时单副本路径的门命中仍会走 UPDATE-only）。
+		return
+	}
+	// 来源副本在当日没有消息（日期过滤后 Sessions 为空），但同组其他副本有
+	// 消息等待入库：用来源副本的完整会话骨架生成会话行，消息仍按请求日期
+	// 筛选。否则空库首次按日期采集会只写消息、不写会话行，会话排行查不到
+	// 这批用量；而让次份生成会话行又会改写元数据来源。
+	if len(parts[source].Sessions) == 0 && parts[source].sessionSkeleton != nil {
+		for i := range group {
+			if len(parts[i].Messages) > 0 {
+				parts[source].Sessions = append(parts[source].Sessions, *parts[source].sessionSkeleton)
+				break
+			}
+		}
+	}
+	for i := range group {
+		applyCoworkGroupMeta(&parts[i], group[source], i == source)
+		messages = append(messages, parts[i].Messages...)
+		sessions = append(sessions, parts[i].Sessions...)
+	}
+	metaUpdates = coworkMetaUpdatesForSessions(group[source], sessions)
+	return
+}
+
+// coworkMetaUpdatesForSessions 生成会话归因对齐候选：Cowork 的 directory/project
+// 只由映射决定，且映射可能晚于 transcript 落盘（新增或删除）。消息 UPSERT 对
+// 同一时间戳不会重写归因，因此会话写完后还要走一次 UPDATE-only 通道，把该会话
+// 下消息的归因对齐到会话行，保证会话列表与按项目汇总口径一致。
+func coworkMetaUpdatesForSessions(source claudeCoworkTranscriptOutcome, sessions []model.Session) []model.Session {
+	if len(sessions) == 0 {
+		return nil
+	}
+	directory, project := claudeCoworkDirectoryProject(source.Meta)
+	updates := make([]model.Session, 0, len(sessions))
+	for _, s := range sessions {
+		updates = append(updates, model.Session{
+			ID:        s.ID,
+			Client:    s.Client,
+			Title:     s.Title,
+			Directory: directory,
+			Project:   project,
+		})
+	}
+	return updates
 }
 
 // findClaudeJSONLFiles 递归查找主根（projects_dir）下所有 .jsonl 文件；
@@ -274,6 +516,19 @@ func walkClaudeJSONLDir(ctx context.Context, dir string) ([]string, error) {
 // 上限防御异常损坏文件造成的内存尖峰；超限按不可解析处理（标题留空）。
 const maxClaudeAgentMetaSize = 1 << 20
 
+// isClaudeDesktopEntrypoint 报告 entrypoint 是否属于 Claude Desktop 家族。
+// 只认四份落地证据覆盖的显式值，不做前缀匹配（claude-desktop-worktree /
+// claude-desktop-ssh 等变体是否落盘无证据）。四值仅是判定输入，输出统一归
+// Claude Desktop，不产生子类型、不记录入口来源。
+func isClaudeDesktopEntrypoint(entrypoint string) bool {
+	switch entrypoint {
+	case "claude-desktop", "claude-desktop-3p", "local-agent", "local_agent":
+		return true
+	default:
+		return false
+	}
+}
+
 // isClaudeAgentJSONLName 报告文件名是否为 agent-<id>.jsonl（subagents 下的
 // agent transcript 命名）。
 func isClaudeAgentJSONLName(name string) bool {
@@ -398,6 +653,53 @@ func ClaudePathInAgentSubtree(roots []string, path string) bool {
 		}
 	}
 	return false
+}
+
+// IsClaudeAgentDirInRoots 报告 dir 是否为任一采集根下受控 Claude 子代理布局的
+// 目录容器：<proj>/subagents、<proj>/subagents/workflows、
+// <proj>/subagents/workflows/<runId>。这些目录只放行 agent-*.jsonl，合成普通
+// probe.jsonl 的采集资格判定会误判；watcher 目录事件用本谓词保留原生
+// subagents 入口，避免被 Cowork 别名改写后丢失父会话与标题。
+func IsClaudeAgentDirInRoots(roots []string, dir string) bool {
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		if claudeAgentDirInRoot(root, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// claudeAgentDirInRoot 判定目录相对单个采集根是否位于受控子代理容器层级。
+// 受控布局：<proj>/subagents/agent-*.jsonl 与
+// <proj>/subagents/workflows/<runId>/agent-*.jsonl。
+func claudeAgentDirInRoot(root, dir string) bool {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return false
+	}
+	parts := strings.Split(rel, "/")
+	// 受控 agent transcript 的相对布局是 <a>/<b>/subagents[/workflows/<runId>]，
+	// subagents 固定在第 3 段（索引 2）。
+	if len(parts) < 3 || parts[2] != "subagents" {
+		return false
+	}
+	switch len(parts) {
+	case 3: // <a>/<b>/subagents
+		return true
+	case 4: // <a>/<b>/subagents/workflows
+		return parts[3] == "workflows"
+	case 5: // <a>/<b>/subagents/workflows/<runId>
+		return parts[3] == "workflows"
+	default:
+		return false
+	}
 }
 
 // claudeAgentParentInRoots 从 agent transcript 路径推导父会话 id：受控布局中
@@ -722,6 +1024,11 @@ func parseClaudeMessageFile(filePath string, agentRoots []string, dates map[stri
 	// 上游合法数据形态变化（如 user 行 content 为字符串）会让失败在全量扫描中
 	// 必然重复出现，逐行打印只产生噪音。
 	var outcome parseFileOutcome
+	// hasDesktopEntrypoint 累积整份文件是否出现过 Desktop entrypoint。累积点放在
+	// content 归一之前（父归属判定之后），使字符串 content 的 user 行（被归入
+	// chainOnly 后 continue）也参与判定——官方 issue #110287 实测同一 transcript
+	// 可混有 cli 与 claude-desktop 行，任一 Desktop 行即整份归 Claude Desktop。
+	hasDesktopEntrypoint := false
 	it := newJSONLLineIter(context.Background(), file, maxJSONLLineSize)
 	for it.Next() {
 		if it.Oversized() {
@@ -736,6 +1043,10 @@ func parseClaudeMessageFile(filePath string, agentRoots []string, dates map[stri
 		if err := json.Unmarshal(raw, &entry); err != nil {
 			outcome.addBad(it.LineNo(), err)
 			continue
+		}
+		// Desktop entrypoint 家族累积：白名单内四个显式值（不做前缀匹配）。
+		if isClaudeDesktopEntrypoint(entry.Entrypoint) {
+			hasDesktopEntrypoint = true
 		}
 		// agent transcript 父归属：行序首个有效非空 sessionId（空值或等于文件名
 		// agent id 的行跳过继续找）。放在 content 归一之前，字符串 content 行也
@@ -770,15 +1081,12 @@ func parseClaudeMessageFile(filePath string, agentRoots []string, dates map[stri
 		outcome.trailingNewline = tailHasNewline(file, fi.Size())
 	}
 
-	// 文件级元信息：entrypoint、cwd、最后非空 title、first/last ts。
-	entrypoint := ""
+	// 文件级元信息：cwd、最后非空 title、first/last ts。
+	// entrypoint 已改为在行解析循环内累积为 hasDesktopEntrypoint（见上）。
 	cwd := ""
 	customTitle := ""
 	var firstTS, lastTS int64
 	for _, entry := range entries {
-		if entry.Entrypoint != "" && entrypoint == "" {
-			entrypoint = entry.Entrypoint
-		}
 		if entry.Cwd != "" && cwd == "" {
 			cwd = entry.Cwd
 		}
@@ -806,7 +1114,7 @@ func parseClaudeMessageFile(filePath string, agentRoots []string, dates map[stri
 	}
 
 	client := model.RawClientClaudeCode
-	if entrypoint == "claude-desktop-3p" {
+	if hasDesktopEntrypoint {
 		client = model.RawClientClaudeDesktop
 	}
 
@@ -837,6 +1145,10 @@ func parseClaudeMessageFile(filePath string, agentRoots []string, dates map[stri
 
 	seen := make(map[string]bool)
 	var messages []model.Message
+	// hasUsage 记录完整 transcript 是否产出过量（与请求日期无关）：同一会话
+	// 多副本的来源裁决必须以整份文件为依据，否则日期采集会改选另一份副本，
+	// 把整场会话的历史归属改写成过滤后仍有消息的那份。
+	hasUsage := false
 	for _, entry := range entries {
 		if entry.Type != "assistant" || entry.Message == nil || entry.Message.ID == "" || entry.Message.Usage == nil {
 			continue
@@ -858,6 +1170,7 @@ func parseClaudeMessageFile(filePath string, agentRoots []string, dates map[stri
 			continue
 		}
 		seen[entry.Message.ID] = true
+		hasUsage = true
 
 		ts := timestamp.UnixMilli()
 		date := tsMsToDate(ts)
@@ -891,22 +1204,26 @@ func parseClaudeMessageFile(filePath string, agentRoots []string, dates map[stri
 
 	var result CollectResult
 	result.Messages = messages
-	// 仅当存在命中消息时返回 Session（避免无消息的空会话污染结果）。
-	if len(messages) > 0 {
-		title := customTitle
-		if agentTitle != "" {
-			title = agentTitle
-		}
-		result.Sessions = append(result.Sessions, model.Session{
+	result.hasUsage = hasUsage
+	// 会话骨架：仅当完整文件产出了用量时构造，供 Cowork 组裁决在「来源副本
+	// 当日无消息、其他副本有消息待入库」时生成会话行。首末时间取完整文件
+	// 范围，不受请求日期影响。
+	if hasUsage {
+		skeleton := model.Session{
 			ID:            fileSessionID,
 			Client:        model.RawClientToClient[client],
 			Directory:     cwd,
 			Project:       project,
-			Title:         title,
+			Title:         claudeSessionTitle(customTitle, agentTitle),
 			AgentParentID: agentParentID,
 			FirstTS:       firstTS,
 			LastTS:        lastTS,
-		})
+		}
+		result.sessionSkeleton = &skeleton
+		// 有命中请求日期的消息时才返回会话。其他 Cowork 副本可用骨架补齐。
+		if len(messages) > 0 {
+			result.Sessions = append(result.Sessions, skeleton)
+		}
 	}
 	// 坏行汇总在两个解析循环之后打（行解析与消息产出都可能计入坏行）。
 	if outcome.badLines > 0 {
@@ -915,6 +1232,15 @@ func parseClaudeMessageFile(filePath string, agentRoots []string, dates map[stri
 	}
 	outcome.fillStatus(&status)
 	return result, status, nil
+}
+
+// claudeSessionTitle 返回会话标题：agent transcript 的 meta description 优先，
+// 否则使用 transcript 行内自定义标题。普通 transcript 与 Cowork 会话骨架共用。
+func claudeSessionTitle(customTitle, agentTitle string) string {
+	if agentTitle != "" {
+		return agentTitle
+	}
+	return customTitle
 }
 
 // inferProject 从工作目录路径提取项目名

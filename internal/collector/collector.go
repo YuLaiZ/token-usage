@@ -107,12 +107,26 @@ func skipGateHit(gate FileSkipGate, path string, before model.FileSnapshot) bool
 type CollectResult struct {
 	Messages []model.Message
 	Sessions []model.Session
+	// hasUsage 报告该文件完整解析后是否存在带非零 token 的 assistant 消息，
+	// 与按日期过滤无关。仅 collector 内部用于同一会话多副本的元数据来源裁决：
+	// 日期采集不能因为过滤后的消息为空而改选其他副本。
+	hasUsage bool
+	// sessionSkeleton 是完整文件解析出的会话行骨架（与请求日期无关）。仅
+	// collector 内部用于 Cowork 组裁决：选中的元数据来源在当日没有消息、但同组
+	// 其他副本有消息待入库时，用骨架生成会话行，避免空库首次按日期采集只写
+	// 消息、不写会话行。普通文件路径不使用（Sessions 仍按日期过滤后的消息产出）。
+	sessionSkeleton *model.Session
 	// SessionRelations 只携带「会话关系」的最小元数据（ID/Client/AgentParentID），
 	// 供无消息中间层代理补父链：engine 用专用写入仅更新 sessions.agent_parent_id，
 	// 不触碰 directory/project/parent_id/title 等完整元数据。与 Sessions 分开的
 	// 目的：避免按日期采集或历史空数据把日期外的会话完整元数据覆盖掉。
 	SessionRelations []model.Session
-	NextCursors      map[string]model.SyncCursor
+	// SessionMetaUpdates 是门命中（文件未变）时只更新已存在会话行元数据的通道
+	// （Claude Cowork）：UPDATE-only，不建行、不读 transcript、不动 token/时间列。
+	// 与 Sessions（走 UpsertSessionMeta，可建行）区分；engine 在写事务内、
+	// UpsertSessionMeta 之后调用 db.UpdateSessionMetaIfExists。
+	SessionMetaUpdates []model.Session
+	NextCursors        map[string]model.SyncCursor
 	// PartialErr 表示部分源文件读取失败，但 Messages/Sessions 中的成功部分仍应事务落库。
 	// engine 在落库后记录该错误并令本次请求返回失败，避免“丢弃好数据”和“静默成功”二选一。
 	PartialErr error

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 
@@ -267,7 +268,11 @@ func claudeWatchRoots(dir, home string) (strong, optional []string) {
 	if home == "" {
 		return strong, nil
 	}
-	return strong, []string{collector.CCSwitchClaudeAccountsRoot(home)}
+	// Cowork 根（1P/3P 各一）作为可选监控根追加：目录通常不存在，注册失败
+	// 降级锚定祖先、不拖停强根监控；运行期 Create 事件接管后触发增量采集。
+	optional = append(optional, collector.CCSwitchClaudeAccountsRoot(home))
+	optional = append(optional, collector.ClaudeCoworkRoots(home, runtime.GOOS, os.Getenv)...)
+	return strong, optional
 }
 
 // sqliteMonitorClients 是 client 源 SQLite poller 监控的客户端与其路径键。
@@ -403,6 +408,13 @@ func (a *Analyzer) setupFromConfig(cfg *config.Config, debounceDuration time.Dur
 			// （如运行期新增账号）后经刷新函数更新。
 			watcher.SetClaudeAgentRoots(collector.ClaudeProjectsRoots(cfg), func() []string {
 				return collector.ClaudeProjectsRoots(cfg)
+			})
+			// Cowork 采集根：与 agent 根判定语义不同（受控布局谓词），用平行 setter
+			// 注入；动态接管后随 refreshRoots 一并刷新。
+			home, _ := os.UserHomeDir()
+			coworkRoots := collector.ClaudeCoworkRoots(home, runtime.GOOS, os.Getenv)
+			watcher.SetClaudeCoworkRoots(coworkRoots, func() []string {
+				return collector.ClaudeCoworkRoots(home, runtime.GOOS, os.Getenv)
 			})
 		}
 		a.addWatcher(watcher)

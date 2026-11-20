@@ -134,12 +134,14 @@ func runGateCollect(t *testing.T, deps *Deps, usageDB *db.DB, handler *levelCapt
 }
 
 // isolateClaudeDiscoveryHome 把 HOME 隔离到临时目录：真实 ClaudeCollector 的
-// 自动发现分支会读真实 ~/.cc-switch，走发现分支的集成测试须与本机状态隔离。
+// 自动发现分支会读真实 ~/.cc-switch 与 Claude Desktop 数据目录，走发现分支的
+// 集成测试须与本机状态隔离（APPDATA 一并隔离，Windows 下 Cowork 根按它推导）。
 func isolateClaudeDiscoveryHome(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
 }
 
 // requireGateIdentityEnv 在当前环境不提供文件实体标识时跳过测试。本文件的门

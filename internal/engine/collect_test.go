@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1320,5 +1321,77 @@ func TestDatesToMark_MergesRequestAndActualDates(t *testing.T) {
 		if got[i] != w {
 			t.Fatalf("datesToMark[%d]=%q want %q", i, got[i], w)
 		}
+	}
+}
+
+// 日期模式（Dates 非空）不触发 Claude 跨 client 收敛。
+func TestRunCollect_DateModeSkipsClaudeConvergence(t *testing.T) {
+	isolateClaudeDiscoveryHome(t)
+	projectsDir := t.TempDir()
+	// 构造一个 plain Claude Code transcript（无 Desktop entrypoint）。
+	line := `{"type":"assistant","sessionId":"s1","timestamp":"2026-11-17T10:00:00+08:00","cwd":"/tmp/p","message":{"id":"m-date","role":"assistant","model":"m","usage":{"input_tokens":10,"output_tokens":5}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(projectsDir, "s1.jsonl"), []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+	ctx := context.Background()
+	// 预置旧 Claude Desktop 同 id 行（目标 client 与采集产出不同）。
+	if _, err := db.UpsertMessages(ctx, usageDB, []model.Message{{
+		ID: "m-date", Client: model.ClientClaudeDesktop, Date: "2026-11-17",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Clients: map[string]config.Client{
+		"claude": {Enabled: true, Paths: map[string]string{"projects_dir": projectsDir}},
+	}}
+	res := RunCollect(ctx, NewDeps(cfg), usageDB, silentLogger(), io.Discard, "claude",
+		collector.CollectRequest{Dates: []string{"2026-11-17"}}, false, false)
+	if !res.Complete() {
+		t.Fatalf("RunCollect 失败: %+v", res)
+	}
+	// 日期模式不收敛：两个 client 的同 id 行都保留。
+	var cnt int
+	if err := usageDB.QueryRow(`SELECT COUNT(*) FROM messages WHERE id='m-date'`).Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 2 {
+		t.Fatalf("date mode message count = %d, want 2（不收敛）", cnt)
+	}
+}
+
+// 同批同 id 跨两个 Claude 系 client 时跳过收敛。
+func TestConvergeClaudeClientsInBatch_ConflictSkipped(t *testing.T) {
+	messages := []model.Message{
+		{ID: "same", Client: model.ClientClaudeCode},
+		{ID: "same", Client: model.ClientClaudeDesktop},
+		{ID: "only-code", Client: model.ClientClaudeCode},
+	}
+	usageDB, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer usageDB.Close()
+	tx, err := usageDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, conflicts, err := convergeClaudeClientsInBatch(context.Background(), tx, messages, nil)
+	if err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	// 未触达 any rows：same 两侧保留、only-code 在库中无旧行可收敛，故 stats 全零。
+	if stats.DeletedMessages != 0 || stats.DeletedSessions != 0 || stats.MigratedRouter != 0 {
+		t.Fatalf("stats = %+v, want zero", stats)
+	}
+	if conflicts != 1 {
+		t.Fatalf("conflicts = %d, want 1", conflicts)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
 	}
 }
