@@ -1130,3 +1130,188 @@ func TestConvergeClaudeClient_KeepsSessionWithUntouchedMessages(t *testing.T) {
 		t.Fatalf("stats2 = %+v, want deleted 1 message / 1 session", stats2)
 	}
 }
+
+// ---- ResolveErrorsByMessagePrefixes：router 阶段错误按 message 前缀结案 ----
+
+// routerStageResolvePrefixes 返回 claude 来源下 4 个 router 阶段错误在
+// collection_errors.message 中的登记前缀（与 engine 侧 runRouterOnlyCollect
+// 的 recordFailure 登记形态一致），供本文件结案单测复用。
+func routerStageResolvePrefixes() []string {
+	return []string{
+		"claude read cursor / 读取 router 游标失败:",
+		"claude read logs / 读取 router 日志失败:",
+		"claude open write / 开启写事务失败:",
+		"claude router write / router 写入事务失败:",
+	}
+}
+
+// 命中前缀的未解决 error 被结案、返回行数正确，且不受登记日期限制。
+func TestResolveErrorsByMessagePrefixes_ResolvesMatchingUnresolved(t *testing.T) {
+	d := setupTestDB(t)
+	ctx := context.Background()
+	RecordErrorsByDate(ctx, d, []string{"2026-11-20"}, "claude", "claude read logs / 读取 router 日志失败: 加载 providers 失败", "")
+	RecordErrorsByDate(ctx, d, []string{"2026-06-01"}, "claude", "claude router write / router 写入事务失败: 保存 router 日志失败: disk I/O error", "")
+	resolved, err := ResolveErrorsByMessagePrefixes(ctx, d, "claude", routerStageResolvePrefixes())
+	if err != nil || resolved != 2 {
+		t.Fatalf("resolved = %d, err = %v, want 2", resolved, err)
+	}
+	remaining, _ := GetErrors(d, ErrorFilter{Source: "claude", Unresolved: true})
+	if len(remaining) != 0 {
+		t.Fatalf("命中前缀的历史错误应全部结案: %+v", remaining)
+	}
+}
+
+// 同一来源下 message 不以任一前缀开头的记录保持未解决。
+func TestResolveErrorsByMessagePrefixes_KeepsNonMatchingUnresolved(t *testing.T) {
+	d := setupTestDB(t)
+	ctx := context.Background()
+	RecordErrorsByDate(ctx, d, []string{"2026-11-20"}, "claude", "claude collect messages / 采集消息失败: boom", "")
+	RecordErrorsByDate(ctx, d, []string{"2026-11-20"}, "claude", "claude save router logs / 保存 router 日志失败: boom", "")
+	resolved, err := ResolveErrorsByMessagePrefixes(ctx, d, "claude", routerStageResolvePrefixes())
+	if err != nil || resolved != 0 {
+		t.Fatalf("resolved = %d, err = %v, want 0", resolved, err)
+	}
+	remaining, _ := GetErrors(d, ErrorFilter{Source: "claude", Unresolved: true})
+	if len(remaining) != 2 {
+		t.Fatalf("前缀不匹配的记录应保持未解决: %+v", remaining)
+	}
+}
+
+// 其他来源的记录保持未解决，即使 message 前缀文案完全相同。
+func TestResolveErrorsByMessagePrefixes_IsolatedBySource(t *testing.T) {
+	d := setupTestDB(t)
+	ctx := context.Background()
+	// codex 的 message 即使逐字复用 claude 的 router 阶段文案也不得被结案。
+	RecordErrorsByDate(ctx, d, []string{"2026-11-20"}, "codex", "claude read logs / 读取 router 日志失败: 误挂到 codex", "")
+	RecordErrorsByDate(ctx, d, []string{"2026-11-20"}, "claude", "claude read logs / 读取 router 日志失败: 正常命中", "")
+	resolved, err := ResolveErrorsByMessagePrefixes(ctx, d, "claude", routerStageResolvePrefixes())
+	if err != nil || resolved != 1 {
+		t.Fatalf("resolved = %d, err = %v, want 1", resolved, err)
+	}
+	remaining, _ := GetErrors(d, ErrorFilter{Source: "codex", Unresolved: true})
+	if len(remaining) != 1 {
+		t.Fatalf("其他来源的记录应保持未解决: %+v", remaining)
+	}
+}
+
+// monitor 类型的记录保持未解决，即使摘要恰好命中 router 阶段前缀。
+func TestResolveErrorsByMessagePrefixes_LeavesMonitorUntouched(t *testing.T) {
+	d := setupTestDB(t)
+	ctx := context.Background()
+	if err := RecordMonitorError(ctx, d, "2026-11-20", "claude",
+		"claude read logs / 读取 router 日志失败: 监听中断",
+		MonitorErrorDetail{InstanceID: "inst-prefix", Kind: "failed", OccurredAt: "2026-11-20T15:35:00+08:00", Source: "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	RecordErrorsByDate(ctx, d, []string{"2026-11-20"}, "claude", "claude read logs / 读取 router 日志失败: 加载 providers 失败", "")
+	resolved, err := ResolveErrorsByMessagePrefixes(ctx, d, "claude", routerStageResolvePrefixes())
+	if err != nil || resolved != 1 {
+		t.Fatalf("resolved = %d, err = %v, want 1（仅普通 error）", resolved, err)
+	}
+	if isResolved, _ := IsMonitorInstanceResolved(ctx, d, "inst-prefix"); isResolved {
+		t.Fatal("monitor 记录不得被按消息前缀结案")
+	}
+	remaining, _ := GetErrors(d, ErrorFilter{Source: "claude", Type: "error", Unresolved: true})
+	if len(remaining) != 0 {
+		t.Fatalf("普通 error 应已结案: %+v", remaining)
+	}
+	unresolvedMonitor, _ := GetErrors(d, ErrorFilter{Source: "claude", Type: "monitor", Unresolved: true})
+	if len(unresolvedMonitor) != 1 {
+		t.Fatalf("monitor 记录应保持未解决: %+v", unresolvedMonitor)
+	}
+}
+
+// 已结案的记录不被重复计数：同一组再调一次返回 0。
+func TestResolveErrorsByMessagePrefixes_DoesNotRecountResolved(t *testing.T) {
+	d := setupTestDB(t)
+	ctx := context.Background()
+	RecordErrorsByDate(ctx, d, []string{"2026-11-20"}, "claude", "claude open write / 开启写事务失败: database is locked", "")
+	first, err := ResolveErrorsByMessagePrefixes(ctx, d, "claude", routerStageResolvePrefixes())
+	if err != nil || first != 1 {
+		t.Fatalf("first resolved = %d, err = %v, want 1", first, err)
+	}
+	second, err := ResolveErrorsByMessagePrefixes(ctx, d, "claude", routerStageResolvePrefixes())
+	if err != nil || second != 0 {
+		t.Fatalf("second resolved = %d, err = %v, want 0（不重复计数）", second, err)
+	}
+}
+
+// prefixes 为空时不执行任何更新，返回 0、nil。
+func TestResolveErrorsByMessagePrefixes_EmptyPrefixesNoOp(t *testing.T) {
+	d := setupTestDB(t)
+	ctx := context.Background()
+	RecordErrorsByDate(ctx, d, []string{"2026-11-20"}, "claude", "claude read logs / 读取 router 日志失败: boom", "")
+	resolved, err := ResolveErrorsByMessagePrefixes(ctx, d, "claude", nil)
+	if err != nil || resolved != 0 {
+		t.Fatalf("resolved = %d, err = %v, want 0, nil", resolved, err)
+	}
+	remaining, _ := GetErrors(d, ErrorFilter{Source: "claude", Unresolved: true})
+	if len(remaining) != 1 {
+		t.Fatalf("空前缀不得改动任何记录: %+v", remaining)
+	}
+}
+
+// 前缀锚定在 message 开头：子串命中但开头不符时不得结案（双向验证）。
+func TestResolveErrorsByMessagePrefixes_AnchorsAtMessageStart(t *testing.T) {
+	ctx := context.Background()
+	// 场景 A：write 前缀不匹配以 router write 开头的 message。
+	d := setupTestDB(t)
+	RecordErrorsByDate(ctx, d, []string{"2026-11-20"}, "claude", "claude router write / router 写入事务失败: x", "")
+	resolved, err := ResolveErrorsByMessagePrefixes(ctx, d, "claude", []string{"claude write / 写入事务失败:"})
+	if err != nil || resolved != 0 {
+		t.Fatalf("resolved = %d, err = %v, want 0（前缀必须锚定在开头）", resolved, err)
+	}
+	remaining, _ := GetErrors(d, ErrorFilter{Source: "claude", Unresolved: true})
+	if len(remaining) != 1 {
+		t.Fatalf("非开头命中不得结案: %+v", remaining)
+	}
+	// 场景 B：router write 前缀同样不匹配以 write 开头的 message。
+	d2 := setupTestDB(t)
+	RecordErrorsByDate(ctx, d2, []string{"2026-11-20"}, "claude", "claude write / 写入事务失败: x", "")
+	resolved2, err := ResolveErrorsByMessagePrefixes(ctx, d2, "claude", []string{"claude router write / router 写入事务失败:"})
+	if err != nil || resolved2 != 0 {
+		t.Fatalf("resolved = %d, err = %v, want 0（前缀必须锚定在开头）", resolved2, err)
+	}
+	remaining2, _ := GetErrors(d2, ErrorFilter{Source: "claude", Unresolved: true})
+	if len(remaining2) != 1 {
+		t.Fatalf("非开头命中不得结案: %+v", remaining2)
+	}
+	// 场景 C：message 中间出现完整前缀、但开头不是它，不得结案。
+	d3 := setupTestDB(t)
+	RecordErrorsByDate(ctx, d3, []string{"2026-11-20"}, "claude",
+		"claude router write / router 写入事务失败: 重试时再次遇到 claude read logs / 读取 router 日志失败: nested", "")
+	resolved3, err := ResolveErrorsByMessagePrefixes(ctx, d3, "claude", []string{"claude read logs / 读取 router 日志失败:"})
+	if err != nil || resolved3 != 0 {
+		t.Fatalf("resolved = %d, err = %v, want 0（前缀必须锚定在开头，中间命中不算）", resolved3, err)
+	}
+	remaining3, _ := GetErrors(d3, ErrorFilter{Source: "claude", Unresolved: true})
+	if len(remaining3) != 1 {
+		t.Fatalf("中间命中不得结案: %+v", remaining3)
+	}
+}
+
+// 空字符串前缀必须被丢弃：它会拼成只含 % 的模式、命中该来源全部未解决错误，
+// 属于越界结案；全部前缀为空时不执行任何更新。
+func TestResolveErrorsByMessagePrefixes_SkipsEmptyPrefix(t *testing.T) {
+	d := setupTestDB(t)
+	ctx := context.Background()
+	RecordErrorsByDate(ctx, d, []string{"2026-11-20"}, "claude", "claude read logs / 读取 router 日志失败: boom", "")
+	RecordErrorsByDate(ctx, d, []string{"2026-11-20"}, "claude", "claude collect messages / 采集消息失败: boom", "")
+	resolved, err := ResolveErrorsByMessagePrefixes(ctx, d, "claude", []string{"claude read logs / 读取 router 日志失败:", ""})
+	if err != nil || resolved != 1 {
+		t.Fatalf("resolved = %d, err = %v, want 1（空前缀必须丢弃，不得越界结案）", resolved, err)
+	}
+	remaining, _ := GetErrors(d, ErrorFilter{Source: "claude", Unresolved: true})
+	if len(remaining) != 1 || remaining[0].Message != "claude collect messages / 采集消息失败: boom" {
+		t.Fatalf("只剩非命中那条应保持未解决: %+v", remaining)
+	}
+	// 全部前缀为空：不执行任何更新。
+	resolvedEmpty, err := ResolveErrorsByMessagePrefixes(ctx, d, "claude", []string{""})
+	if err != nil || resolvedEmpty != 0 {
+		t.Fatalf("resolved = %d, err = %v, want 0, nil（全空前缀不执行 SQL）", resolvedEmpty, err)
+	}
+	remaining2, _ := GetErrors(d, ErrorFilter{Source: "claude", Unresolved: true})
+	if len(remaining2) != 1 || remaining2[0].Message != "claude collect messages / 采集消息失败: boom" {
+		t.Fatalf("全空前缀不得改动任何记录: %+v", remaining2)
+	}
+}

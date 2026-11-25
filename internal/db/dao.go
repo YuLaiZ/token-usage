@@ -142,6 +142,44 @@ func ResolveErrorsByDateSource(ctx context.Context, q dbtx, date, source string)
 	return result.RowsAffected()
 }
 
+// ResolveErrorsByMessagePrefixes 解决 source 下 message 以任一前缀开头的未解决
+// 普通采集错误，不受登记日期限制；只作用于 error_type='error'。返回解决行数。
+// 空前缀会被丢弃（拼出来是只含 % 的模式，会越界结案该来源全部错误）；全部
+// 为空时不执行 SQL。前缀直接拼成 LIKE 前缀模式（后接 % 锚定在 message 开头），
+// 不得含通配字符 % 与 _，本函数不做转义；只结案 error_type='error' 是为了
+// 不误结案监控中断事件（monitor）：监控中断由独立恢复确认路径按实例结案，
+// 即使摘要命中同一前缀也不得被按消息前缀误结案。
+func ResolveErrorsByMessagePrefixes(ctx context.Context, q dbtx, source string, prefixes []string) (int64, error) {
+	var builder strings.Builder
+	args := make([]interface{}, 0, len(prefixes)+1)
+	args = append(args, source)
+	builder.WriteString(`UPDATE collection_errors
+		SET resolved = 1, updated_at = datetime('now')
+		WHERE source = ? AND error_type = 'error' AND resolved = 0
+		  AND (`)
+	for _, prefix := range prefixes {
+		// 空前缀会拼成只含 % 的模式、命中该来源全部未解决错误，必须丢弃。
+		if prefix == "" {
+			continue
+		}
+		if len(args) > 1 {
+			builder.WriteString(" OR ")
+		}
+		builder.WriteString("message LIKE ?")
+		// 前缀锚定在 message 开头（后接 %，无前置 %）。
+		args = append(args, prefix+"%")
+	}
+	if len(args) == 1 {
+		return 0, nil
+	}
+	builder.WriteString(")")
+	result, err := q.ExecContext(ctx, builder.String(), args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func GetErrors(d *DB, filter ErrorFilter) ([]model.CollectionError, error) {
 	return GetErrorsContext(context.Background(), d, filter)
 }

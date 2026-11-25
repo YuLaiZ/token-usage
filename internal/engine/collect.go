@@ -526,10 +526,35 @@ func persistClientBatch(
 	return nil
 }
 
+// routerFailureStages 是 router-only 轮 recordFailure 登记失败时使用的阶段
+// 短语。登记（下方各 recordFailure 调用）与结案（成功轮的
+// routerFailurePrefixes）共用这一份短语，避免两处各写一份字符串而在文案漂移
+// 时结案前缀对不上、历史错误静默残留。
+var routerFailureStages = []string{
+	ui.Bi("read cursor", "读取 router 游标失败"),
+	ui.Bi("read logs", "读取 router 日志失败"),
+	ui.Bi("open write", "开启写事务失败"),
+	ui.Bi("router write", "router 写入事务失败"),
+}
+
+// routerFailurePrefixes 返回 source 下各 router 阶段错误在 collection_errors
+// message 中的登记前缀（`<来源> <短语>:`，recordFailure 以
+// `fmt.Errorf("%s %s: %w", source, stage, cause)` 拼 message），顺序与
+// routerFailureStages 一致，供成功轮在同一事务内按前缀结案历史错误。
+func routerFailurePrefixes(source string) []string {
+	prefixes := make([]string, len(routerFailureStages))
+	for i, stage := range routerFailureStages {
+		prefixes[i] = fmt.Sprintf("%s %s:", source, stage)
+	}
+	return prefixes
+}
+
 // runRouterOnlyCollect 处理 Source=router 专用路径：
 // 不调用任何 client collector，只补 router 字段。同事务内 UpsertRawRouterLogs →
 // 归因回填（claude 系按非空 MessageID 查 attribution；codex 走 session+时间窗
 // 双侧全量路径）→ SetSyncCursors。不写 collection_log，不改 messages token 字段。
+// 整轮成功时在同一事务内、提交前按来源与阶段前缀结案此前登记的 router 阶段
+// 错误（不限登记日期）；事务失败则随回滚一并撤销，再照常登记本轮失败。
 func runRouterOnlyCollect(
 	ctx context.Context,
 	deps *Deps,
@@ -557,7 +582,7 @@ func runRouterOnlyCollect(
 	// 读取 router cursor（事务外）
 	cursors, err := db.GetSyncCursors(ctx, usageDB, client, []string{router.SyncSource()})
 	if err != nil {
-		recordFailure(&result, client, failureDates(req, nil), ui.Bi("read cursor", "读取 router 游标失败"), err)
+		recordFailure(&result, client, failureDates(req, nil), routerFailureStages[0], err)
 		return result
 	}
 	routerReq := collector.RouterCollectRequest{
@@ -571,7 +596,7 @@ func runRouterOnlyCollect(
 				fmt.Errorf("%s %s: %w", client, ui.Bi("router collection canceled", "router 采集已取消"), err))
 			return result
 		}
-		recordFailure(&result, client, failureDates(req, nil), ui.Bi("read logs", "读取 router 日志失败"), err)
+		recordFailure(&result, client, failureDates(req, nil), routerFailureStages[1], err)
 		return result
 	}
 	if ctx.Err() != nil {
@@ -582,7 +607,7 @@ func runRouterOnlyCollect(
 
 	tx, err := usageDB.BeginTx(ctx, nil)
 	if err != nil {
-		recordFailure(&result, client, failureDates(req, nil), ui.Bi("open write", "开启写事务失败"), err)
+		recordFailure(&result, client, failureDates(req, nil), routerFailureStages[2], err)
 		return result
 	}
 
@@ -597,7 +622,7 @@ func runRouterOnlyCollect(
 					fmt.Errorf("%s %s: %w", client, ui.Bi("router collection canceled", "router 采集已取消"), txErr))
 				return
 			}
-			recordFailure(&result, client, failureDates(req, nil), ui.Bi("router write", "router 写入事务失败"), txErr)
+			recordFailure(&result, client, failureDates(req, nil), routerFailureStages[3], txErr)
 		}
 	}()
 
@@ -653,6 +678,14 @@ func runRouterOnlyCollect(
 		}
 	}
 
+	// 整轮成功时在同一事务内、提交前按来源与阶段前缀结案此前登记的 router
+	// 阶段错误（不限登记日期）；结案失败随整个事务回滚，本轮不记为成功。
+	resolved, err := db.ResolveErrorsByMessagePrefixes(ctx, tx, client, routerFailurePrefixes(client))
+	if err != nil {
+		txErr = fmt.Errorf("%s: %w", ui.Bi("resolve router errors", "恢复 router 错误状态"), err)
+		return result
+	}
+
 	if err := tx.Commit(); err != nil {
 		txErr = fmt.Errorf("%s: %w", ui.Bi("commit write transaction", "提交写事务"), err)
 		return result
@@ -661,6 +694,10 @@ func runRouterOnlyCollect(
 	result.Succeeded++
 	// router 轮完成心跳与 client 路径「采集完成」同级别语义，同降 Debug。
 	log.Debug("router collection completed", "client", client, "logs", len(routerResult.Logs))
+	// 结案数量心跳与完成心跳同级别（Debug）；0 条不打。
+	if resolved > 0 {
+		log.Debug("router collection errors resolved", "client", client, "count", resolved)
+	}
 	if out != nil {
 		fmt.Fprintf(out, "✓ %s: %s\n", client,
 			ui.Bi(fmt.Sprintf("router backfilled %d attributions", len(routerResult.Logs)),

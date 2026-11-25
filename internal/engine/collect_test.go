@@ -1395,3 +1395,289 @@ func TestConvergeClaudeClientsInBatch_ConflictSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// ---- router-only 轮成功结案 router 阶段错误（按来源 + message 阶段前缀）----
+
+// seedRouterStageErrors 按 runRouterOnlyCollect 的真实登记形态预置 claude 的
+// 4 条 router 阶段失败；日期统一用固定的过去日期 2026-11-20，与本轮新登记的
+// 当天日期区分开。
+func seedRouterStageErrors(t *testing.T, usageDB *db.DB) {
+	t.Helper()
+	messages := []string{
+		"claude read cursor / 读取 router 游标失败: 读取 sync_state 失败",
+		"claude read logs / 读取 router 日志失败: 加载 providers 失败",
+		"claude open write / 开启写事务失败: database is locked",
+		"claude router write / router 写入事务失败: 保存 router 日志失败: disk I/O error",
+	}
+	for _, m := range messages {
+		if err := db.RecordErrorsByDate(context.Background(), usageDB, []string{"2026-11-20"}, "claude", m, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// routerOnlyDeps 构造仅装配 claude router 的 Deps（router-only 路径只需 cfg
+// 与 routers 两项）。
+func routerOnlyDeps(router *fakeRouter) *Deps {
+	return &Deps{
+		cfg:     &config.Config{Clients: map[string]config.Client{"claude": {Enabled: true, Router: "cc_switch"}}},
+		routers: map[string]collector.RouterAdapter{"cc_switch": router},
+	}
+}
+
+// seededRouterLog 返回一条最小 router 日志（成功轮写库用）。
+func seededRouterLog() []model.RouterLog {
+	return []model.RouterLog{{RequestID: "r1", MessageID: "m1", RouterName: "cc_switch", AppType: "claude"}}
+}
+
+// TestRunCollect_RouterOnlyPathResolvesStageErrors：router 轮整轮成功时，
+// 同一来源此前登记的 router 阶段错误（不限登记日期）在同一事务内被结案。
+func TestRunCollect_RouterOnlyPathResolvesStageErrors(t *testing.T) {
+	usageDB, _ := db.Open(":memory:")
+	defer usageDB.Close()
+	seedRouterStageErrors(t, usageDB)
+	router := newFakeRouter()
+	router.result = collector.RouterCollectResult{Logs: seededRouterLog()}
+	result := RunCollect(context.Background(), routerOnlyDeps(router), usageDB,
+		collectTestLogger(), io.Discard, "claude",
+		collector.CollectRequest{Source: collector.CollectSourceRouter}, true /*recordError*/, false)
+	if !result.Complete() {
+		t.Fatalf("router round must complete: %+v", result)
+	}
+	remaining, _ := db.GetErrors(usageDB, db.ErrorFilter{Source: "claude", Unresolved: true})
+	if len(remaining) != 0 {
+		t.Fatalf("预置的 4 条 router 阶段错误应全部结案: %+v", remaining)
+	}
+}
+
+// TestRunCollect_RouterOnlyPathResolveDoesNotCrossBoundary：结案只作用于同
+// 来源、message 以 router 阶段前缀开头的普通 error；不同来源、非 router 前缀
+// message、以及 monitor 记录都保持未解决。
+func TestRunCollect_RouterOnlyPathResolveDoesNotCrossBoundary(t *testing.T) {
+	usageDB, _ := db.Open(":memory:")
+	defer usageDB.Close()
+	ctx := context.Background()
+	seedRouterStageErrors(t, usageDB)
+	// 对照 1：同来源 claude、message 不以 router 阶段前缀开头。
+	if err := db.RecordErrorsByDate(ctx, usageDB, []string{"2026-11-20"}, "claude",
+		"claude collect messages / 采集消息失败: boom", ""); err != nil {
+		t.Fatal(err)
+	}
+	// 对照 2：其他来源 codex、message 以 router 阶段文案开头。
+	if err := db.RecordErrorsByDate(ctx, usageDB, []string{"2026-11-20"}, "codex",
+		"codex read logs / 读取 router 日志失败: boom", ""); err != nil {
+		t.Fatal(err)
+	}
+	// 对照 3：claude 的 monitor 记录、摘要以 router 阶段前缀开头。
+	if err := db.RecordMonitorError(ctx, usageDB, "2026-11-20", "claude",
+		"claude read logs / 读取 router 日志失败: 监控中断摘要",
+		db.MonitorErrorDetail{InstanceID: "inst-t2", Kind: "failed", OccurredAt: "2026-11-20T15:35:00+08:00", Source: "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	router := newFakeRouter()
+	router.result = collector.RouterCollectResult{Logs: seededRouterLog()}
+	result := RunCollect(ctx, routerOnlyDeps(router), usageDB,
+		collectTestLogger(), io.Discard, "claude",
+		collector.CollectRequest{Source: collector.CollectSourceRouter}, true, false)
+	if !result.Complete() {
+		t.Fatalf("router round must complete: %+v", result)
+	}
+	// claude 普通错误只剩对照 1 一条未解决；4 条 router 阶段错误已结案。
+	remaining, _ := db.GetErrors(usageDB, db.ErrorFilter{Source: "claude", Type: "error", Unresolved: true})
+	if len(remaining) != 1 || remaining[0].Message != "claude collect messages / 采集消息失败: boom" {
+		t.Fatalf("只有非 router 前缀的普通错误保持未解决: %+v", remaining)
+	}
+	// 对照 2：codex 对照保持未解决。
+	codexRemaining, _ := db.GetErrors(usageDB, db.ErrorFilter{Source: "codex", Unresolved: true})
+	if len(codexRemaining) != 1 {
+		t.Fatalf("其他来源的错误应保持未解决: %+v", codexRemaining)
+	}
+	// 对照 3：claude monitor 对照保持未解决。
+	if resolved, _ := db.IsMonitorInstanceResolved(ctx, usageDB, "inst-t2"); resolved {
+		t.Fatal("monitor 记录不得被 router 轮成功结案")
+	}
+}
+
+// TestRunCollect_RouterOnlyPathTxnFailureDoesNotResolve：router 写事务失败时
+// 不结案任何预置错误，本轮失败照常登记。
+func TestRunCollect_RouterOnlyPathTxnFailureDoesNotResolve(t *testing.T) {
+	usageDB, _ := db.Open(":memory:")
+	defer usageDB.Close()
+	// 在 raw_router_logs 建 trigger 强制写入失败
+	if _, err := usageDB.Exec(`CREATE TRIGGER fail_router_log BEFORE INSERT ON raw_router_logs
+		BEGIN SELECT RAISE(ABORT, 'router log forced fail'); END`); err != nil {
+		t.Fatal(err)
+	}
+	seedRouterStageErrors(t, usageDB)
+	router := newFakeRouter()
+	router.result = collector.RouterCollectResult{Logs: seededRouterLog()}
+	result := RunCollect(context.Background(), routerOnlyDeps(router), usageDB,
+		collectTestLogger(), io.Discard, "claude",
+		collector.CollectRequest{Source: collector.CollectSourceRouter}, true, false)
+	if result.Complete() || result.Err == nil {
+		t.Fatalf("router-only txn failure must fail: %+v", result)
+	}
+	// 预置 4 条（2026-11-20）保持未解决。
+	seeded, _ := db.GetErrors(usageDB, db.ErrorFilter{Dates: []string{"2026-11-20"}, Unresolved: true})
+	if len(seeded) != 4 {
+		t.Fatalf("预置 router 阶段错误不得在失败轮被结案: %+v", seeded)
+	}
+	// 全部未解决 5 条：4 条预置 + 本轮新登记 1 条。
+	all, _ := db.GetErrors(usageDB, db.ErrorFilter{Unresolved: true})
+	if len(all) != 5 {
+		t.Fatalf("unresolved = %d, want 5（4 预置 + 本轮 1）: %+v", len(all), all)
+	}
+}
+
+// TestRunCollect_RouterOnlyPathResolveFailureRollsBack：结案本身失败时整个
+// 事务回滚——游标不推进、预置错误保持未解决、本轮失败照常登记。
+func TestRunCollect_RouterOnlyPathResolveFailureRollsBack(t *testing.T) {
+	usageDB, _ := db.Open(":memory:")
+	defer usageDB.Close()
+	if _, err := usageDB.Exec(`CREATE TRIGGER fail_resolve BEFORE UPDATE OF resolved ON collection_errors
+		WHEN NEW.resolved = 1 BEGIN SELECT RAISE(ABORT, 'resolve forced fail'); END`); err != nil {
+		t.Fatal(err)
+	}
+	seedRouterStageErrors(t, usageDB)
+	router := newFakeRouter()
+	router.result = collector.RouterCollectResult{
+		Logs:       seededRouterLog(),
+		NextCursor: model.SyncCursor{Value: 42, ID: "c42"},
+	}
+	ctx := context.Background()
+	before, err := db.GetSyncCursors(ctx, usageDB, "claude", []string{router.SyncSource()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := RunCollect(ctx, routerOnlyDeps(router), usageDB,
+		collectTestLogger(), io.Discard, "claude",
+		collector.CollectRequest{Source: collector.CollectSourceRouter}, true, false)
+	if result.Complete() || result.Err == nil {
+		t.Fatalf("resolve failure must fail the round: %+v", result)
+	}
+	// 游标未推进（回滚撤销 SetSyncCursors）。
+	after, err := db.GetSyncCursors(ctx, usageDB, "claude", []string{router.SyncSource()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before[router.SyncSource()] != after[router.SyncSource()] {
+		t.Fatalf("cursor must not advance when resolve fails: before=%+v after=%+v", before, after)
+	}
+	// 预置 4 条保持未解决。
+	seeded, _ := db.GetErrors(usageDB, db.ErrorFilter{Dates: []string{"2026-11-20"}, Unresolved: true})
+	if len(seeded) != 4 {
+		t.Fatalf("预置错误在结案失败回滚后必须保持未解决: %+v", seeded)
+	}
+	// 全部未解决 5 条：4 条预置 + 本轮新登记 1 条。
+	all, _ := db.GetErrors(usageDB, db.ErrorFilter{Unresolved: true})
+	if len(all) != 5 {
+		t.Fatalf("unresolved = %d, want 5: %+v", len(all), all)
+	}
+	// 本轮新登记那条的 message 前缀（router write 阶段包裹 resolve 失败）。
+	today := time.Now().Format("2006-01-02")
+	fresh, _ := db.GetErrors(usageDB, db.ErrorFilter{Dates: []string{today}, Unresolved: true})
+	const wantPrefix = "claude router write / router 写入事务失败: resolve router errors / 恢复 router 错误状态:"
+	if len(fresh) != 1 || !strings.HasPrefix(fresh[0].Message, wantPrefix) {
+		t.Fatalf("新登记错误前缀不符: %+v, want prefix %q", fresh, wantPrefix)
+	}
+}
+
+// TestRunCollect_RouterOnlyPathResolvesOnEmptyLogs：0 条日志、零值游标的空轮
+// 同样算整轮成功，结案预置错误。
+func TestRunCollect_RouterOnlyPathResolvesOnEmptyLogs(t *testing.T) {
+	usageDB, _ := db.Open(":memory:")
+	defer usageDB.Close()
+	seedRouterStageErrors(t, usageDB)
+	router := newFakeRouter() // 0 日志、零值 NextCursor
+	result := RunCollect(context.Background(), routerOnlyDeps(router), usageDB,
+		collectTestLogger(), io.Discard, "claude",
+		collector.CollectRequest{Source: collector.CollectSourceRouter}, true, false)
+	if !result.Complete() {
+		t.Fatalf("empty router round must complete: %+v", result)
+	}
+	remaining, _ := db.GetErrors(usageDB, db.ErrorFilter{Unresolved: true})
+	if len(remaining) != 0 {
+		t.Fatalf("空轮成功也应结案预置错误: %+v", remaining)
+	}
+}
+
+// TestRunCollect_RouterOnlyPathRetrySuccessLeavesNoError：router 第一次读取
+// 失败、重试成功时——首次失败先落库登记一条 read logs 阶段错误；成功轮按
+// 前缀结案同一条（ID 不变、无重复登记），且自动结案不累加重试计数，库里不
+// 残留未解决错误。取证在闭包内完成、断言全部放在 RunCollectWithRetry 返回
+// 之后。不调用 engine.ValidateResult：本用例未装配 collector，Matched=false
+// 会报未知客户端，与本用例无关。
+func TestRunCollect_RouterOnlyPathRetrySuccessLeavesNoError(t *testing.T) {
+	usageDB, _ := db.Open(":memory:")
+	defer usageDB.Close()
+	router := newFakeRouter()
+	router.result = collector.RouterCollectResult{Logs: seededRouterLog()}
+	deps := routerOnlyDeps(router)
+	calls := 0
+	var firstErrs []model.CollectionError
+	var firstQueryErr error
+	collectFn := func(ctx context.Context) Result {
+		calls++
+		if calls == 1 {
+			router.err = errors.New("transient router read failure")
+		} else {
+			router.err = nil
+		}
+		res := RunCollect(ctx, deps, usageDB, collectTestLogger(), io.Discard, "claude",
+			collector.CollectRequest{Source: collector.CollectSourceRouter}, true /*recordError*/, false)
+		// 首次采集返回后立刻取证：失败必须已登记为未解决错误。
+		if calls == 1 {
+			firstErrs, firstQueryErr = db.GetErrors(usageDB, db.ErrorFilter{Source: "claude", Unresolved: true})
+		}
+		return res
+	}
+	res := RunCollectWithRetry(context.Background(), collectFn, 3, func(int) time.Duration { return 0 }, nil)
+	if !res.Complete() {
+		t.Fatalf("retry must succeed: res=%+v", res)
+	}
+	if calls != 2 {
+		t.Fatalf("collect calls = %d, want 2（一次失败 + 一次成功）", calls)
+	}
+	if firstQueryErr != nil {
+		t.Fatalf("首次失败后查询未解决错误失败: err=%v", firstQueryErr)
+	}
+	if len(firstErrs) != 1 {
+		t.Fatalf("首次失败后未解决错误 = %d, want 1（失败必须先落库）: err=%v records=%+v", len(firstErrs), firstQueryErr, firstErrs)
+	}
+	first := firstErrs[0]
+	if first.Resolved {
+		t.Fatalf("首次登记的记录应为未解决: %+v", first)
+	}
+	if first.RetryCount != 0 {
+		t.Fatalf("首次登记 RetryCount = %d, want 0: %+v", first.RetryCount, first)
+	}
+	const stagePrefix = "claude read logs / 读取 router 日志失败:"
+	if !strings.HasPrefix(first.Message, stagePrefix) {
+		t.Fatalf("首次登记 message = %q, want 前缀 %q", first.Message, stagePrefix)
+	}
+	// 结案后按来源全量查（不带 Unresolved）：恰好还是那一条，ID 不变、无重复登记。
+	after, err := db.GetErrors(usageDB, db.ErrorFilter{Source: "claude"})
+	if err != nil {
+		t.Fatalf("结案后查询 source=claude 失败: err=%v", err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("结案后 source=claude 记录 = %d, want 1（不得重复登记）: %+v", len(after), after)
+	}
+	if after[0].ID != first.ID {
+		t.Fatalf("结案记录 ID = %d, want 首次登记的 %d（应为同一条）: %+v", after[0].ID, first.ID, after)
+	}
+	if !after[0].Resolved {
+		t.Fatalf("结案后记录应已解决: %+v", after[0])
+	}
+	if after[0].RetryCount != 0 {
+		t.Fatalf("自动结案不得累加重试计数: RetryCount = %d, want 0: %+v", after[0].RetryCount, after[0])
+	}
+	// 全库视角再确认：无任何未解决错误残留。
+	unresolved, err := db.GetErrors(usageDB, db.ErrorFilter{Unresolved: true})
+	if err != nil {
+		t.Fatalf("最终未解决查询失败: err=%v", err)
+	}
+	if len(unresolved) != 0 {
+		t.Fatalf("最终未解决错误 = %d, want 0: %+v", len(unresolved), unresolved)
+	}
+}
